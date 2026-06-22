@@ -1,0 +1,12 @@
+bin/
+obj/
+.vs/
+.idea/
+*.user
+*.suo
+TestResults/
+artifacts/
+coverage/
+*.log
+*.tmp
+appsettings.Production.json

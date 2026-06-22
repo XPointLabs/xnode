@@ -1,0 +1,54 @@
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "vless-ingress",
+      "listen": "{{ inbound_listen_host }}",
+      "port": "{{ inbound_listen_port }}",
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "{{ client_id }}",
+            "flow": "xtls-rprx-vision"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": "{{ mask_domain }}:443",
+          "serverNames": [ "{{ mask_domain }}" ],
+          "privateKey": "{{ reality_private_key }}",
+          "shortIds": [ "{{ reality_short_id }}" ],
+          "fingerprint": "chrome",
+          "spiderX": "/"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "local-session-router",
+      "protocol": "freedom",
+      "settings": {
+        "redirect": "127.0.0.1:8080"
+      }
+    }
+  ],
+  "routing": {
+    "domainStrategy": "AsIs",
+    "rules": [
+      {
+        "type": "field",
+        "inboundTag": [ "vless-ingress" ],
+        "outboundTag": "local-session-router"
+      }
+    ]
+  }
+}

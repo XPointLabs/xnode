@@ -1,0 +1,42 @@
+﻿{
+  "node": {
+    "dataDirectory": "/var/lib/xnode",
+    "routerId": "0000000000000000000000000000000000000000000000000000000000000001",
+    "isRelay": true,
+    "network": "mainnet",
+    "apiListenUrl": "http://127.0.0.1:8080",
+    "publicHost": "node.example.org",
+    "publicPort": 443
+  },
+  "paths": {
+    "edgeConnections": 4,
+    "outboundPaths": 2,
+    "clientHops": 3,
+    "inboundPaths": 4,
+    "uniqueHopNetmask": 24
+  },
+  "vless": {
+    "enabled": true,
+    "xrayExecutablePath": "/usr/local/bin/xray",
+    "generatedConfigPath": "/etc/xnode/xray.generated.json",
+    "inboundListenHost": "0.0.0.0",
+    "inboundListenPort": 443,
+    "publicHost": "node.example.org",
+    "publicPort": 443,
+    "apiIngressHost": "127.0.0.1",
+    "apiIngressPort": 8080,
+    "clientId": "00000000-0000-0000-0000-000000000001",
+    "maskDomain": "www.microsoft.com",
+    "transportMode": "Reality",
+    "reality": {
+      "serverName": "www.microsoft.com",
+      "publicKey": "REPLACE_WITH_REALITY_PUBLIC_KEY",
+      "privateKey": "REPLACE_WITH_REALITY_PRIVATE_KEY",
+      "shortId": "0123456789abcdef",
+      "fingerprint": "chrome",
+      "spiderX": "/"
+    },
+    "capabilities": [ "session-rpc", "client-bootstrap", "vless-ingress" ],
+    "configVersion": 1
+  }
+}

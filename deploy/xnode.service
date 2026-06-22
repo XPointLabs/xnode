@@ -1,0 +1,24 @@
+﻿[Unit]
+Description=XNode
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=deep
+Group=deep
+WorkingDirectory=/opt/xnode
+Environment=DOTNET_ENVIRONMENT=Production
+Environment=ASPNETCORE_URLS=http://127.0.0.1:8080
+ExecStart=/opt/xnode/XNode
+Restart=always
+RestartSec=5
+LimitNOFILE=1048576
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/xnode /etc/xnode
+
+[Install]
+WantedBy=multi-user.target

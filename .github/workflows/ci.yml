@@ -1,0 +1,72 @@
+﻿name: ci
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Restore
+        run: dotnet restore
+      - name: Format
+        run: dotnet format --verify-no-changes --no-restore
+      - name: Build
+        run: dotnet build --configuration Release --no-restore
+      - name: Unit tests
+        run: dotnet test tests/XNode.Tests/XNode.Tests.csproj --configuration Release --no-build --logger trx
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    needs: build-test
+    env:
+      Vless__MockProcess: "true"
+      Vless__XrayExecutablePath: "mock"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Restore
+        run: dotnet restore
+      - name: Build
+        run: dotnet build --configuration Release --no-restore
+      - name: Integration tests with mocked Xray
+        run: dotnet test tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj --configuration Release --no-build --logger trx
+      - name: Upload C3 test artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: c3-test-results
+          path: artifacts/test-results/c3
+          if-no-files-found: error
+
+  publish-linux-x64:
+    runs-on: ubuntu-latest
+    needs: [ build-test, integration-tests ]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Publish self-contained linux-x64
+        run: >
+          dotnet publish src/XNode/XNode.csproj
+          --configuration Release
+          --runtime linux-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:PublishTrimmed=false
+          --output artifacts/xnode-linux-x64
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xnode-linux-x64
+          path: artifacts/xnode-linux-x64
