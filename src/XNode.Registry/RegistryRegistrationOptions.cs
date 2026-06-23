@@ -10,6 +10,8 @@ public sealed class RegistryRegistrationOptions
 
     public long StakeAtomic { get; set; }
 
+    public long ChainId { get; set; }
+
     public string Ed25519PublicKey { get; set; } = "";
 
     public string Ed25519Signature { get; set; } = "";

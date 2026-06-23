@@ -13,7 +13,7 @@ public sealed class Bls12381QuorumSigningService
 
     private readonly HttpClient _httpClient;
     private readonly SemaphoreSlim _tagGate = new(1, 1);
-    private ContractTags? _tags;
+    private ServiceNodeContractTags? _tags;
 
     public Bls12381QuorumSigningService(HttpClient httpClient)
     {
@@ -69,7 +69,7 @@ public sealed class Bls12381QuorumSigningService
     private static byte[] BuildEncodedMessage(
         string messageType,
         QuorumSignatureRequest request,
-        ContractTags tags)
+        ServiceNodeContractTags tags)
     {
         return messageType switch
         {
@@ -80,7 +80,7 @@ public sealed class Bls12381QuorumSigningService
         };
     }
 
-    private static byte[] BuildRewardMessage(QuorumSignatureRequest request, ContractTags tags)
+    private static byte[] BuildRewardMessage(QuorumSignatureRequest request, ServiceNodeContractTags tags)
     {
         if (request.Amount < 0)
         {
@@ -108,7 +108,7 @@ public sealed class Bls12381QuorumSigningService
             UInt256ToBytes32(request.Timestamp));
     }
 
-    private async Task<ContractTags> GetTagsAsync(
+    private async Task<ServiceNodeContractTags> GetTagsAsync(
         RegistryRegistrationOptions options,
         CancellationToken cancellationToken)
     {
@@ -123,6 +123,12 @@ public sealed class Bls12381QuorumSigningService
             if (_tags is { } cachedInside)
             {
                 return cachedInside;
+            }
+
+            if (ServiceNodeContractTagBuilder.TryBuild(options) is { } configuredTags)
+            {
+                _tags = configuredTags;
+                return configuredTags;
             }
 
             var rewardTag = await EthCallAsync(
@@ -146,7 +152,8 @@ public sealed class Bls12381QuorumSigningService
                 Epoche.Keccak256.ComputeEthereumFunctionSelector("hashToG2Tag()", true),
                 cancellationToken).ConfigureAwait(false);
 
-            var loaded = new ContractTags(
+            var loaded = new ServiceNodeContractTags(
+                Array.Empty<byte>(),
                 HexToBytes(rewardTag),
                 HexToBytes(exitTag),
                 HexToBytes(liquidateTag),
@@ -387,9 +394,4 @@ public sealed class Bls12381QuorumSigningService
         return result;
     }
 
-    private sealed record ContractTags(
-        byte[] RewardTag,
-        byte[] ExitTag,
-        byte[] LiquidateTag,
-        byte[] HashToG2Tag);
 }

@@ -8,18 +8,19 @@ public sealed class Bls12381RegistrationProofService
 {
     private const int G1EipBytes = 128;
     private const int G2EipBytes = 256;
+    private const int MaxRpcAttempts = 5;
     private const string MapFp2ToG2Precompile = "0x0000000000000000000000000000000000000011";
 
     private readonly HttpClient _httpClient;
-    private readonly object _gate = new();
-    private Task<BlsRegistrationProof>? _cachedProof;
+    private readonly SemaphoreSlim _proofGate = new(1, 1);
+    private BlsRegistrationProof? _cachedProof;
 
     public Bls12381RegistrationProofService(HttpClient httpClient)
     {
         _httpClient = httpClient;
     }
 
-    public Task<BlsRegistrationProof> CreateProofAsync(
+    public async Task<BlsRegistrationProof> CreateProofAsync(
         RegistryRegistrationOptions options,
         string serviceNodePubkey,
         CancellationToken cancellationToken)
@@ -27,9 +28,9 @@ public sealed class Bls12381RegistrationProofService
         if (!string.IsNullOrWhiteSpace(options.BlsPublicKey)
             && !string.IsNullOrWhiteSpace(options.BlsSignature))
         {
-            return Task.FromResult(new BlsRegistrationProof(
+            return new BlsRegistrationProof(
                 NormalizeHex(options.BlsPublicKey, G1EipBytes),
-                NormalizeHex(options.BlsSignature, G2EipBytes)));
+                NormalizeHex(options.BlsSignature, G2EipBytes));
         }
 
         var privateKey = options.GetBlsPrivateKey();
@@ -48,10 +49,26 @@ public sealed class Bls12381RegistrationProofService
             throw new InvalidOperationException("RegistryRegistration:ServiceNodeRewardsAddress is required when deriving BLS proof.");
         }
 
-        lock (_gate)
+        if (_cachedProof is not null)
         {
-            _cachedProof ??= DeriveProofAsync(options, privateKey, serviceNodePubkey, cancellationToken);
             return _cachedProof;
+        }
+
+        await _proofGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_cachedProof is not null)
+            {
+                return _cachedProof;
+            }
+
+            _cachedProof = await DeriveProofAsync(options, privateKey, serviceNodePubkey, cancellationToken)
+                .ConfigureAwait(false);
+            return _cachedProof;
+        }
+        finally
+        {
+            _proofGate.Release();
         }
     }
 
@@ -64,24 +81,27 @@ public sealed class Bls12381RegistrationProofService
         var scalar = ScalarFromBigEndianHex(privateKey);
         var pubkey = ToAffine(G1Affine.Generator * scalar);
         var eipPubkey = NeoG1ToEip(pubkey.ToUncompressed());
+        var tags = ServiceNodeContractTagBuilder.TryBuild(options);
 
-        var proofOfPossessionTag = await EthCallAsync(
-            options.EthereumRpcUrl,
-            options.ServiceNodeRewardsAddress,
-            Epoche.Keccak256.ComputeEthereumFunctionSelector("proofOfPossessionTag()", true),
-            cancellationToken).ConfigureAwait(false);
-        var hashToG2Tag = await EthCallAsync(
-            options.EthereumRpcUrl,
-            options.ServiceNodeRewardsAddress,
-            Epoche.Keccak256.ComputeEthereumFunctionSelector("hashToG2Tag()", true),
-            cancellationToken).ConfigureAwait(false);
+        var proofOfPossessionTag = tags?.ProofOfPossessionTag
+            ?? HexToBytes(await EthCallAsync(
+                options.EthereumRpcUrl,
+                options.ServiceNodeRewardsAddress,
+                Epoche.Keccak256.ComputeEthereumFunctionSelector("proofOfPossessionTag()", true),
+                cancellationToken).ConfigureAwait(false));
+        var hashToG2Tag = tags?.HashToG2Tag
+            ?? HexToBytes(await EthCallAsync(
+                options.EthereumRpcUrl,
+                options.ServiceNodeRewardsAddress,
+                Epoche.Keccak256.ComputeEthereumFunctionSelector("hashToG2Tag()", true),
+                cancellationToken).ConfigureAwait(false));
 
         var encodedMessage = Concat(
-            HexToBytes(proofOfPossessionTag),
+            proofOfPossessionTag,
             eipPubkey,
             HexToBytes(NormalizeAddress(options.OperatorAddress)),
             UInt256HexToBytes32(serviceNodePubkey));
-        var digest = Epoche.Keccak256.ComputeHash(Concat(HexToBytes(hashToG2Tag), encodedMessage));
+        var digest = Epoche.Keccak256.ComputeHash(Concat(hashToG2Tag, encodedMessage));
         var mapInput = Concat(new byte[32], digest, new byte[32], new byte[32]);
         var mappedEip = await EthCallAsync(
             options.EthereumRpcUrl,
@@ -115,20 +135,75 @@ public sealed class Bls12381RegistrationProofService
             }
         });
 
-        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
-        using var response = await _httpClient.PostAsync(rpcUrl, content, cancellationToken).ConfigureAwait(false);
-        var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
-
-        using var doc = JsonDocument.Parse(body);
-        if (doc.RootElement.TryGetProperty("error", out var error))
+        for (var attempt = 1; attempt <= MaxRpcAttempts; attempt++)
         {
-            throw new InvalidOperationException($"eth_call failed: {error}");
+            using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+            using var response = await _httpClient.PostAsync(rpcUrl, content, cancellationToken).ConfigureAwait(false);
+            var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                if (attempt < MaxRpcAttempts && IsTransient(response.StatusCode))
+                {
+                    await Task.Delay(RetryDelay(attempt), cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                throw new HttpRequestException(
+                    $"eth_call HTTP {(int)response.StatusCode} {response.ReasonPhrase}: {Truncate(body)}",
+                    null,
+                    response.StatusCode);
+            }
+
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.TryGetProperty("error", out var error))
+            {
+                if (attempt < MaxRpcAttempts && IsTransientJsonRpcError(error))
+                {
+                    await Task.Delay(RetryDelay(attempt), cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                throw new InvalidOperationException($"eth_call failed: {error}");
+            }
+
+            return doc.RootElement.GetProperty("result").GetString()
+                ?? throw new InvalidOperationException("eth_call response did not include result.");
         }
 
-        return doc.RootElement.GetProperty("result").GetString()
-            ?? throw new InvalidOperationException("eth_call response did not include result.");
+        throw new InvalidOperationException("eth_call retry loop exited without a result.");
     }
+
+    private static bool IsTransient(System.Net.HttpStatusCode statusCode)
+    {
+        var code = (int)statusCode;
+        return statusCode == System.Net.HttpStatusCode.TooManyRequests
+            || statusCode == System.Net.HttpStatusCode.RequestTimeout
+            || code >= 500;
+    }
+
+    private static bool IsTransientJsonRpcError(JsonElement error)
+    {
+        if (error.TryGetProperty("code", out var code)
+            && code.ValueKind == JsonValueKind.Number
+            && code.TryGetInt32(out var numericCode)
+            && (numericCode == 429 || numericCode == -32005))
+        {
+            return true;
+        }
+
+        var message = error.ToString();
+        return message.Contains("rate", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("too many", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("timeout", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("temporar", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static TimeSpan RetryDelay(int attempt) =>
+        TimeSpan.FromSeconds(Math.Min(30, Math.Pow(2, attempt)));
+
+    private static string Truncate(string value) =>
+        value.Length <= 512 ? value : value[..512] + "...";
 
     private static Scalar ScalarFromBigEndianHex(string hex)
     {
