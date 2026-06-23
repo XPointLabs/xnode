@@ -29,4 +29,25 @@ public sealed class ClientBootstrapTests
         Assert.Contains("pbk=pub", bootstrap.VlessUri);
         Assert.Equal("node.example.org", bootstrap.XrayOutbound["settings"]!["vnext"]![0]!["address"]!.GetValue<string>());
     }
+
+    [Fact]
+    public void ClientBootstrap_UsesConfiguredPublicPort()
+    {
+        var transport = XrayConfigGenerationTests.Options();
+        transport.PublicPort = 8443;
+        var factory = new RegistryPayloadFactory(
+            new RouterNodeOptions
+            {
+                RouterId = TestData.Id(1).Value,
+                PublicHost = transport.PublicHost,
+                PublicPort = transport.PublicPort
+            },
+            transport);
+
+        var bootstrap = new ClientBootstrapService(factory, transport).Create();
+
+        Assert.Equal(8443, bootstrap.PublicPort);
+        Assert.Contains("@node.example.org:8443?", bootstrap.VlessUri);
+        Assert.Equal(8443, bootstrap.XrayOutbound["settings"]!["vnext"]![0]!["port"]!.GetValue<int>());
+    }
 }

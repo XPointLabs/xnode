@@ -14,6 +14,7 @@ public sealed class XrayConfigGenerationTests
 
         var inbound = root["inbounds"]![0]!.AsObject();
         Assert.Equal("vless", inbound["protocol"]!.GetValue<string>());
+        Assert.Equal(options.InboundListenPort, inbound["port"]!.GetValue<int>());
         Assert.Equal("reality", inbound["streamSettings"]!["security"]!.GetValue<string>());
         Assert.Equal(options.ClientId, inbound["settings"]!["clients"]![0]!["id"]!.GetValue<string>());
 
@@ -28,6 +29,7 @@ public sealed class XrayConfigGenerationTests
         {
             PublicHost = "node.example.org",
             PublicPort = 443,
+            InboundListenPort = 443,
             ApiIngressHost = "127.0.0.1",
             ApiIngressPort = 8080,
             ClientId = "11111111-1111-1111-1111-111111111111",
