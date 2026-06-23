@@ -9,6 +9,7 @@ public sealed class Bls12381QuorumSigningService
 {
     private const int G1EipBytes = 128;
     private const int G2EipBytes = 256;
+    private const int MaxRpcAttempts = 3;
     private const string MapFp2ToG2Precompile = "0x0000000000000000000000000000000000000011";
 
     private readonly HttpClient _httpClient;
@@ -28,7 +29,8 @@ public sealed class Bls12381QuorumSigningService
     {
         var privateKey = options.GetBlsPrivateKey();
 
-        if (string.IsNullOrWhiteSpace(options.EthereumRpcUrl))
+        var rpcUrls = options.GetEthereumRpcUrls();
+        if (rpcUrls.Count == 0)
         {
             throw new InvalidOperationException("RegistryRegistration:EthereumRpcUrl is required for quorum signing.");
         }
@@ -41,13 +43,13 @@ public sealed class Bls12381QuorumSigningService
         var scalar = ScalarFromBigEndianHex(privateKey);
         var publicKey = ToAffine(G1Affine.Generator * scalar);
         var eipPublicKey = NeoG1ToEip(publicKey.ToUncompressed());
-        var tags = await GetTagsAsync(options, cancellationToken).ConfigureAwait(false);
+        var tags = await GetTagsAsync(options, rpcUrls, cancellationToken).ConfigureAwait(false);
         var messageType = NormalizeMessageType(request.Type);
         var encodedMessage = BuildEncodedMessage(messageType, request, tags);
         var digest = Epoche.Keccak256.ComputeHash(Concat(tags.HashToG2Tag, encodedMessage));
         var mapInput = Concat(new byte[32], digest, new byte[32], new byte[32]);
         var mappedEip = await EthCallAsync(
-            options.EthereumRpcUrl,
+            rpcUrls,
             MapFp2ToG2Precompile,
             "0x" + Hex(mapInput),
             cancellationToken).ConfigureAwait(false);
@@ -110,6 +112,7 @@ public sealed class Bls12381QuorumSigningService
 
     private async Task<ServiceNodeContractTags> GetTagsAsync(
         RegistryRegistrationOptions options,
+        IReadOnlyList<string> rpcUrls,
         CancellationToken cancellationToken)
     {
         if (_tags is { } cached)
@@ -132,22 +135,22 @@ public sealed class Bls12381QuorumSigningService
             }
 
             var rewardTag = await EthCallAsync(
-                options.EthereumRpcUrl,
+                rpcUrls,
                 options.ServiceNodeRewardsAddress,
                 Epoche.Keccak256.ComputeEthereumFunctionSelector("rewardTag()", true),
                 cancellationToken).ConfigureAwait(false);
             var exitTag = await EthCallAsync(
-                options.EthereumRpcUrl,
+                rpcUrls,
                 options.ServiceNodeRewardsAddress,
                 Epoche.Keccak256.ComputeEthereumFunctionSelector("exitTag()", true),
                 cancellationToken).ConfigureAwait(false);
             var liquidateTag = await EthCallAsync(
-                options.EthereumRpcUrl,
+                rpcUrls,
                 options.ServiceNodeRewardsAddress,
                 Epoche.Keccak256.ComputeEthereumFunctionSelector("liquidateTag()", true),
                 cancellationToken).ConfigureAwait(false);
             var hashToG2Tag = await EthCallAsync(
-                options.EthereumRpcUrl,
+                rpcUrls,
                 options.ServiceNodeRewardsAddress,
                 Epoche.Keccak256.ComputeEthereumFunctionSelector("hashToG2Tag()", true),
                 cancellationToken).ConfigureAwait(false);
@@ -168,7 +171,7 @@ public sealed class Bls12381QuorumSigningService
     }
 
     private async Task<string> EthCallAsync(
-        string rpcUrl,
+        IReadOnlyList<string> rpcUrls,
         string to,
         string data,
         CancellationToken cancellationToken)
@@ -185,20 +188,92 @@ public sealed class Bls12381QuorumSigningService
             }
         });
 
-        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
-        using var response = await _httpClient.PostAsync(rpcUrl, content, cancellationToken).ConfigureAwait(false);
-        var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
-
-        using var doc = JsonDocument.Parse(body);
-        if (doc.RootElement.TryGetProperty("error", out var error))
+        Exception? lastTransient = null;
+        foreach (var rpcUrl in rpcUrls)
         {
-            throw new InvalidOperationException($"eth_call failed: {error}");
+            for (var attempt = 1; attempt <= MaxRpcAttempts; attempt++)
+            {
+                using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+                using var response = await _httpClient.PostAsync(rpcUrl, content, cancellationToken).ConfigureAwait(false);
+                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    var exception = new HttpRequestException(
+                        $"eth_call HTTP {(int)response.StatusCode} {response.ReasonPhrase}: {Truncate(body)}",
+                        null,
+                        response.StatusCode);
+                    if (IsTransient(response.StatusCode))
+                    {
+                        lastTransient = exception;
+                        if (attempt < MaxRpcAttempts)
+                        {
+                            await Task.Delay(RetryDelay(attempt), cancellationToken).ConfigureAwait(false);
+                            continue;
+                        }
+
+                        break;
+                    }
+
+                    throw exception;
+                }
+
+                using var doc = JsonDocument.Parse(body);
+                if (doc.RootElement.TryGetProperty("error", out var error))
+                {
+                    if (IsTransientJsonRpcError(error))
+                    {
+                        lastTransient = new InvalidOperationException($"eth_call failed: {error}");
+                        if (attempt < MaxRpcAttempts)
+                        {
+                            await Task.Delay(RetryDelay(attempt), cancellationToken).ConfigureAwait(false);
+                            continue;
+                        }
+
+                        break;
+                    }
+
+                    throw new InvalidOperationException($"eth_call failed: {error}");
+                }
+
+                return doc.RootElement.GetProperty("result").GetString()
+                    ?? throw new InvalidOperationException("eth_call response did not include result.");
+            }
         }
 
-        return doc.RootElement.GetProperty("result").GetString()
-            ?? throw new InvalidOperationException("eth_call response did not include result.");
+        throw new InvalidOperationException("All configured Arbitrum RPC endpoints failed.", lastTransient);
     }
+
+    private static bool IsTransient(System.Net.HttpStatusCode statusCode)
+    {
+        var code = (int)statusCode;
+        return statusCode == System.Net.HttpStatusCode.TooManyRequests
+            || statusCode == System.Net.HttpStatusCode.RequestTimeout
+            || code >= 500;
+    }
+
+    private static bool IsTransientJsonRpcError(JsonElement error)
+    {
+        if (error.TryGetProperty("code", out var code)
+            && code.ValueKind == JsonValueKind.Number
+            && code.TryGetInt32(out var numericCode)
+            && (numericCode == 429 || numericCode == -32005))
+        {
+            return true;
+        }
+
+        var message = error.ToString();
+        return message.Contains("rate", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("too many", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("timeout", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("temporar", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static TimeSpan RetryDelay(int attempt) =>
+        TimeSpan.FromSeconds(Math.Min(10, Math.Pow(2, attempt)));
+
+    private static string Truncate(string value) =>
+        value.Length <= 512 ? value : value[..512] + "...";
 
     private static Scalar ScalarFromBigEndianHex(string hex)
     {

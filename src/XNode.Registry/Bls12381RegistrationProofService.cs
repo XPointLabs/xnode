@@ -39,7 +39,8 @@ public sealed class Bls12381RegistrationProofService
             throw new InvalidOperationException("RegistryRegistration:BlsPrivateKey or BlsPublicKey+BlsSignature is required.");
         }
 
-        if (string.IsNullOrWhiteSpace(options.EthereumRpcUrl))
+        var rpcUrls = options.GetEthereumRpcUrls();
+        if (rpcUrls.Count == 0)
         {
             throw new InvalidOperationException("RegistryRegistration:EthereumRpcUrl is required when deriving BLS proof.");
         }
@@ -62,7 +63,7 @@ public sealed class Bls12381RegistrationProofService
                 return _cachedProof;
             }
 
-            _cachedProof = await DeriveProofAsync(options, privateKey, serviceNodePubkey, cancellationToken)
+            _cachedProof = await DeriveProofAsync(options, rpcUrls, privateKey, serviceNodePubkey, cancellationToken)
                 .ConfigureAwait(false);
             return _cachedProof;
         }
@@ -74,6 +75,7 @@ public sealed class Bls12381RegistrationProofService
 
     private async Task<BlsRegistrationProof> DeriveProofAsync(
         RegistryRegistrationOptions options,
+        IReadOnlyList<string> rpcUrls,
         string privateKey,
         string serviceNodePubkey,
         CancellationToken cancellationToken)
@@ -85,13 +87,13 @@ public sealed class Bls12381RegistrationProofService
 
         var proofOfPossessionTag = tags?.ProofOfPossessionTag
             ?? HexToBytes(await EthCallAsync(
-                options.EthereumRpcUrl,
+                rpcUrls,
                 options.ServiceNodeRewardsAddress,
                 Epoche.Keccak256.ComputeEthereumFunctionSelector("proofOfPossessionTag()", true),
                 cancellationToken).ConfigureAwait(false));
         var hashToG2Tag = tags?.HashToG2Tag
             ?? HexToBytes(await EthCallAsync(
-                options.EthereumRpcUrl,
+                rpcUrls,
                 options.ServiceNodeRewardsAddress,
                 Epoche.Keccak256.ComputeEthereumFunctionSelector("hashToG2Tag()", true),
                 cancellationToken).ConfigureAwait(false));
@@ -104,7 +106,7 @@ public sealed class Bls12381RegistrationProofService
         var digest = Epoche.Keccak256.ComputeHash(Concat(hashToG2Tag, encodedMessage));
         var mapInput = Concat(new byte[32], digest, new byte[32], new byte[32]);
         var mappedEip = await EthCallAsync(
-            options.EthereumRpcUrl,
+            rpcUrls,
             MapFp2ToG2Precompile,
             "0x" + Hex(mapInput),
             cancellationToken).ConfigureAwait(false);
@@ -118,7 +120,7 @@ public sealed class Bls12381RegistrationProofService
     }
 
     private async Task<string> EthCallAsync(
-        string rpcUrl,
+        IReadOnlyList<string> rpcUrls,
         string to,
         string data,
         CancellationToken cancellationToken)
@@ -135,43 +137,60 @@ public sealed class Bls12381RegistrationProofService
             }
         });
 
-        for (var attempt = 1; attempt <= MaxRpcAttempts; attempt++)
+        Exception? lastTransient = null;
+        foreach (var rpcUrl in rpcUrls)
         {
-            using var content = new StringContent(payload, Encoding.UTF8, "application/json");
-            using var response = await _httpClient.PostAsync(rpcUrl, content, cancellationToken).ConfigureAwait(false);
-            var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-
-            if (!response.IsSuccessStatusCode)
+            for (var attempt = 1; attempt <= MaxRpcAttempts; attempt++)
             {
-                if (attempt < MaxRpcAttempts && IsTransient(response.StatusCode))
+                using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+                using var response = await _httpClient.PostAsync(rpcUrl, content, cancellationToken).ConfigureAwait(false);
+                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+
+                if (!response.IsSuccessStatusCode)
                 {
-                    await Task.Delay(RetryDelay(attempt), cancellationToken).ConfigureAwait(false);
-                    continue;
+                    var exception = new HttpRequestException(
+                        $"eth_call HTTP {(int)response.StatusCode} {response.ReasonPhrase}: {Truncate(body)}",
+                        null,
+                        response.StatusCode);
+                    if (IsTransient(response.StatusCode))
+                    {
+                        lastTransient = exception;
+                        if (attempt < MaxRpcAttempts)
+                        {
+                            await Task.Delay(RetryDelay(attempt), cancellationToken).ConfigureAwait(false);
+                            continue;
+                        }
+
+                        break;
+                    }
+
+                    throw exception;
                 }
 
-                throw new HttpRequestException(
-                    $"eth_call HTTP {(int)response.StatusCode} {response.ReasonPhrase}: {Truncate(body)}",
-                    null,
-                    response.StatusCode);
-            }
-
-            using var doc = JsonDocument.Parse(body);
-            if (doc.RootElement.TryGetProperty("error", out var error))
-            {
-                if (attempt < MaxRpcAttempts && IsTransientJsonRpcError(error))
+                using var doc = JsonDocument.Parse(body);
+                if (doc.RootElement.TryGetProperty("error", out var error))
                 {
-                    await Task.Delay(RetryDelay(attempt), cancellationToken).ConfigureAwait(false);
-                    continue;
+                    if (IsTransientJsonRpcError(error))
+                    {
+                        lastTransient = new InvalidOperationException($"eth_call failed: {error}");
+                        if (attempt < MaxRpcAttempts)
+                        {
+                            await Task.Delay(RetryDelay(attempt), cancellationToken).ConfigureAwait(false);
+                            continue;
+                        }
+
+                        break;
+                    }
+
+                    throw new InvalidOperationException($"eth_call failed: {error}");
                 }
 
-                throw new InvalidOperationException($"eth_call failed: {error}");
+                return doc.RootElement.GetProperty("result").GetString()
+                    ?? throw new InvalidOperationException("eth_call response did not include result.");
             }
-
-            return doc.RootElement.GetProperty("result").GetString()
-                ?? throw new InvalidOperationException("eth_call response did not include result.");
         }
 
-        throw new InvalidOperationException("eth_call retry loop exited without a result.");
+        throw new InvalidOperationException("All configured Arbitrum RPC endpoints failed.", lastTransient);
     }
 
     private static bool IsTransient(System.Net.HttpStatusCode statusCode)

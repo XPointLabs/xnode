@@ -30,6 +30,8 @@ public sealed class RegistryRegistrationOptions
 
     public string EthereumRpcUrl { get; set; } = "";
 
+    public string EthereumFallbackRpcUrls { get; set; } = "";
+
     public string ServiceNodeRewardsAddress { get; set; } = "";
 
     public string SigningEndpoint { get; set; } = "";
@@ -61,5 +63,33 @@ public sealed class RegistryRegistrationOptions
         }
 
         return key;
+    }
+
+    public IReadOnlyList<string> GetEthereumRpcUrls()
+    {
+        var urls = new List<string>();
+        AddIfPresent(EthereumRpcUrl);
+        foreach (var item in EthereumFallbackRpcUrls.Split(
+            new[] { ',', ';', '\r', '\n', '\t', ' ' },
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            AddIfPresent(item);
+        }
+
+        return urls;
+
+        void AddIfPresent(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return;
+            }
+
+            var normalized = value.Trim();
+            if (!urls.Contains(normalized, StringComparer.OrdinalIgnoreCase))
+            {
+                urls.Add(normalized);
+            }
+        }
     }
 }
