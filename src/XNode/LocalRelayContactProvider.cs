@@ -30,10 +30,10 @@ public sealed class LocalRelayContactProvider : ILocalRelayContactProvider
             PublicHost = string.IsNullOrWhiteSpace(_transportOptions.PublicHost)
                 ? _nodeOptions.PublicHost
                 : _transportOptions.PublicHost,
-            PublicIp = null,
+            PublicIp = string.IsNullOrWhiteSpace(_nodeOptions.PublicIp) ? null : _nodeOptions.PublicIp.Trim(),
             PublicPort = _transportOptions.PublicPort == 0 ? _nodeOptions.PublicPort : _transportOptions.PublicPort,
             X25519PublicKey = OnionCrypto.Hex(onionKeys.PublicKey),
-            RpcEndpoint = NormalizeRpcEndpoint(),
+            RpcEndpoint = NormalizePeerRpcEndpoint(),
             SignedAt = now,
             ExpiresAt = now.Add(RelayContact.Lifetime),
             RouterVersion = typeof(LocalRelayContactProvider).Assembly.GetName().Version?.ToString() ?? "0.0.0",
@@ -51,25 +51,27 @@ public sealed class LocalRelayContactProvider : ILocalRelayContactProvider
         return RelayContactSigner.Sign(contact, privateKey);
     }
 
-    private string NormalizeRpcEndpoint()
+    private string NormalizePeerRpcEndpoint()
     {
-        if (!string.IsNullOrWhiteSpace(_nodeOptions.PublicRpcEndpoint))
+        if (!string.IsNullOrWhiteSpace(_nodeOptions.PublicPeerRpcEndpoint))
         {
-            return NormalizeEndpoint(_nodeOptions.PublicRpcEndpoint);
+            return NormalizeEndpoint(_nodeOptions.PublicPeerRpcEndpoint);
         }
 
-        if (Uri.TryCreate(_nodeOptions.ApiListenUrl, UriKind.Absolute, out var listenUri)
-            && !string.IsNullOrWhiteSpace(_nodeOptions.PublicHost))
+        var host = string.IsNullOrWhiteSpace(_nodeOptions.PublicIp)
+            ? _nodeOptions.PublicHost
+            : _nodeOptions.PublicIp;
+        if (!string.IsNullOrWhiteSpace(host) && _nodeOptions.PublicPeerRpcPort is > 0 and <= 65535)
         {
-            var builder = new UriBuilder(listenUri)
+            var builder = new UriBuilder(Uri.UriSchemeHttp, host, _nodeOptions.PublicPeerRpcPort)
             {
-                Host = _nodeOptions.PublicHost,
-                Port = listenUri.Port
+                Path = "/api/peer/onion"
             };
             return NormalizeEndpoint(builder.Uri.ToString());
         }
 
-        return NormalizeEndpoint(_nodeOptions.ApiListenUrl);
+        throw new InvalidOperationException(
+            "Node:PublicPeerRpcEndpoint or Node:PublicIp with Node:PublicPeerRpcPort is required.");
     }
 
     private static string NormalizeEndpoint(string endpoint)
@@ -78,7 +80,7 @@ public sealed class LocalRelayContactProvider : ILocalRelayContactProvider
         if (!Uri.TryCreate(trimmed, UriKind.Absolute, out var uri)
             || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
         {
-            throw new InvalidOperationException("Node:PublicRpcEndpoint must be an absolute http(s) URL.");
+            throw new InvalidOperationException("Node:PublicPeerRpcEndpoint must be an absolute http(s) URL.");
         }
 
         return trimmed;

@@ -283,9 +283,9 @@ public sealed class RouterRuntimeIntegrationTests
                 CreateRuntime(roots[2], nodes[2], new FakeStorageBackend(contacts), new RouterRuntimeOptions { BootstrapFromStorage = true, RequireSignedRelayContacts = true }, new PathSelectionOptions { ClientHops = 3 }, storageBackends[2], peerClient)
             };
 
-            peerClient.Register(nodes[0].PublicRpcEndpoint, runtimes[0]);
-            peerClient.Register(nodes[1].PublicRpcEndpoint, runtimes[1]);
-            peerClient.Register(nodes[2].PublicRpcEndpoint, runtimes[2]);
+            peerClient.Register(nodes[0].PublicPeerRpcEndpoint, runtimes[0]);
+            peerClient.Register(nodes[1].PublicPeerRpcEndpoint, runtimes[1]);
+            peerClient.Register(nodes[2].PublicPeerRpcEndpoint, runtimes[2]);
 
             foreach (var runtime in runtimes)
             {
@@ -435,7 +435,7 @@ public sealed class RouterRuntimeIntegrationTests
             Network = "testnet",
             PublicHost = new Uri(rpcEndpoint).Host,
             PublicPort = 443,
-            PublicRpcEndpoint = rpcEndpoint
+            PublicPeerRpcEndpoint = rpcEndpoint
         };
     }
 
@@ -475,7 +475,7 @@ public sealed class RouterRuntimeIntegrationTests
             PublicIp = null,
             PublicPort = node.PublicPort,
             X25519PublicKey = OnionCrypto.Hex(onion.PublicKey),
-            RpcEndpoint = node.PublicRpcEndpoint,
+            RpcEndpoint = node.PublicPeerRpcEndpoint,
             SignedAt = TestData.Now,
             ExpiresAt = TestData.Now.AddDays(1),
             IsReachable = true,

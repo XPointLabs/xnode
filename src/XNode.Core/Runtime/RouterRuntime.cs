@@ -702,13 +702,17 @@ public sealed class RouterRuntime : IRouterRuntime
                 index,
                 routerId = contact.RouterId.Value,
                 publicHost = contact.PublicHost,
+                publicIp = contact.PublicIp,
                 publicPort = contact.PublicPort,
                 x25519PublicKey = contact.X25519PublicKey,
                 rpcEndpoint = contact.RpcEndpoint,
                 isReachable = contact.IsReachable,
                 capabilities = contact.Capabilities,
                 signedAt = contact.SignedAt,
-                expiresAt = contact.ExpiresAt
+                expiresAt = contact.ExpiresAt,
+                routerVersion = contact.RouterVersion,
+                signatureAlgorithm = contact.SignatureAlgorithm,
+                signature = contact.Signature
             })
             .Cast<object>()
             .ToArray();

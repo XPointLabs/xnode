@@ -1,5 +1,9 @@
 ﻿using XNode;
 using XNode.Core;
+using XNode.Core.Onion;
+using System.Text.Json;
+using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.RateLimiting;
 using XNode.Core.NodeDb;
 using XNode.Core.Paths;
 using XNode.Core.Runtime;
@@ -30,9 +34,17 @@ vlessOptions.PublicHost = string.IsNullOrWhiteSpace(vlessOptions.PublicHost) ? n
 vlessOptions.PublicPort = vlessOptions.PublicPort == 0 ? nodeOptions.PublicPort : vlessOptions.PublicPort;
 vlessOptions.ApiIngressPort = new Uri(nodeOptions.ApiListenUrl).Port;
 
-builder.WebHost.UseUrls(nodeOptions.ApiListenUrl);
+var apiListenUri = new Uri(nodeOptions.ApiListenUrl);
+var peerRpcListenUri = new Uri(nodeOptions.PeerRpcListenUrl);
+if (apiListenUri.Port == peerRpcListenUri.Port)
+{
+    throw new InvalidOperationException("Node API and peer RPC listeners must use different ports.");
+}
+
+builder.WebHost.UseUrls(nodeOptions.ApiListenUrl, nodeOptions.PeerRpcListenUrl);
 
 builder.Services.AddSingleton<IClock, SystemClock>();
+builder.Services.AddSingleton<OnionPeerReplayGuard>();
 builder.Services.AddSingleton(nodeOptions);
 builder.Services.AddSingleton(pathOptions);
 builder.Services.AddSingleton(runtimeOptions);
@@ -75,8 +87,44 @@ builder.Services.AddSingleton<RegistryRegistrationPayloadFactory>();
 builder.Services.AddSingleton<ClientBootstrapService>();
 builder.Services.AddSingleton<IRegistryClient>(_ => new HttpRegistryClient(new HttpClient(), heartbeatOptions));
 builder.Services.AddHostedService<RegistrationHeartbeatService>();
+builder.Services.AddRateLimiter(options =>
+{
+    options.AddPolicy("peer-onion", context => RateLimitPartition.GetFixedWindowLimiter(
+        context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 240,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 16,
+            QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+            AutoReplenishment = true
+        }));
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+});
 
 var app = builder.Build();
+
+app.Use(async (context, next) =>
+{
+    if (context.Connection.LocalPort != peerRpcListenUri.Port)
+    {
+        await next(context);
+        return;
+    }
+
+    var path = context.Request.Path;
+    var allowed = path.Equals("/api/peer/onion")
+        || path.Equals("/health/live")
+        || path.Equals("/health/ready");
+    if (!allowed)
+    {
+        context.Response.StatusCode = StatusCodes.Status404NotFound;
+        return;
+    }
+
+    await next(context);
+});
+app.UseRateLimiter();
 
 app.MapGet("/", () => Results.Redirect("/status"));
 
@@ -156,6 +204,42 @@ app.MapPost("/api/session/rpc", async (
     var response = await runtime.HandleRpcAsync(request, cancellationToken);
     return response.Success ? Results.Ok(response) : Results.BadRequest(response);
 });
+
+app.MapPost("/api/peer/onion", async (
+    SignedOnionPeerRequest request,
+    NodeDb nodeDb,
+    IClock clock,
+    OnionPeerReplayGuard replayGuard,
+    IRouterRuntime runtime,
+    CancellationToken cancellationToken) =>
+{
+    var now = clock.UtcNow;
+    if (!RouterId.TryParse(request.SenderRouterId, out var senderId)
+        || !SignedOnionPeerRequestAuthenticator.Verify(request, now))
+    {
+        return Results.Unauthorized();
+    }
+
+    var senderContact = nodeDb.GetContact(senderId);
+    if (senderContact is null
+        || senderContact.IsExpired(now)
+        || !RelayContactSigner.Verify(senderContact))
+    {
+        return Results.Unauthorized();
+    }
+
+    if (!replayGuard.TryAccept(request.SenderRouterId, request.Nonce, request.TimestampUnixMs, now))
+    {
+        return Results.Conflict();
+    }
+
+    var rpc = new SessionRpcRequest(
+        Guid.NewGuid().ToString("N"),
+        "onion_request",
+        JsonSerializer.SerializeToElement(request.Request, SessionRpc.JsonOptions));
+    var response = await runtime.HandleRpcAsync(rpc, cancellationToken);
+    return Results.Ok(response);
+}).RequireRateLimiting("peer-onion");
 
 app.Run();
 
