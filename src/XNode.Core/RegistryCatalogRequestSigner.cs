@@ -31,7 +31,7 @@ public static class RegistryCatalogRequestSigner
         var payload = new CatalogRequestPayload(
             PayloadVersion,
             request.Method.Method.ToUpperInvariant(),
-            request.RequestUri?.AbsolutePath ?? "/",
+            GetRequestPath(request.RequestUri),
             nodeId,
             timestampUnixMs,
             nonce);
@@ -41,6 +41,22 @@ public static class RegistryCatalogRequestSigner
         request.Headers.Add(TimestampHeader, timestampUnixMs.ToString(System.Globalization.CultureInfo.InvariantCulture));
         request.Headers.Add(NonceHeader, nonce);
         request.Headers.Add(SignatureHeader, Convert.ToHexString(signature).ToLowerInvariant());
+    }
+
+    private static string GetRequestPath(Uri? uri)
+    {
+        if (uri is null)
+        {
+            return "/";
+        }
+        if (uri.IsAbsoluteUri)
+        {
+            return uri.AbsolutePath;
+        }
+
+        var value = uri.OriginalString;
+        var queryIndex = value.IndexOf('?');
+        return queryIndex >= 0 ? value[..queryIndex] : value;
     }
 
     private static byte[] DecodeHex(string value, int expectedBytes)
