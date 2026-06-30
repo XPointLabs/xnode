@@ -1,5 +1,9 @@
 ﻿# XNode
 
+Production images are published to `ghcr.io/xpointlabs/xnode` only through the
+manual **Publish production image** GitHub Actions workflow. A push to `main`
+never publishes or changes a release tag.
+
 .NET port of the XNode runtime with Session Router semantics above the transport layer and VLESS/Xray used only as the client-to-node ingress transport.
 
 ## Agent Specs
