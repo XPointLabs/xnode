@@ -17,6 +17,9 @@ public sealed class XrayConfigGenerationTests
         Assert.Equal(options.InboundListenPort, inbound["port"]!.GetValue<int>());
         Assert.Equal("reality", inbound["streamSettings"]!["security"]!.GetValue<string>());
         Assert.Equal(options.ClientId, inbound["settings"]!["clients"]![0]!["id"]!.GetValue<string>());
+        Assert.Equal("cloudflare-dns.com:443", inbound["streamSettings"]!["realitySettings"]!["target"]!.GetValue<string>());
+        Assert.Null(inbound["streamSettings"]!["realitySettings"]!["dest"]);
+        Assert.Single(inbound["streamSettings"]!["realitySettings"]!["serverNames"]!.AsArray());
 
         var outbound = root["outbounds"]![0]!.AsObject();
         Assert.Equal("freedom", outbound["protocol"]!.GetValue<string>());
@@ -33,11 +36,11 @@ public sealed class XrayConfigGenerationTests
             ApiIngressHost = "127.0.0.1",
             ApiIngressPort = 8080,
             ClientId = "11111111-1111-1111-1111-111111111111",
-            MaskDomain = "www.microsoft.com",
+            MaskDomain = "cloudflare-dns.com",
             TransportMode = VlessTransportMode.Reality,
             Reality = new RealityMetadata
             {
-                ServerName = "www.microsoft.com",
+                ServerName = "cloudflare-dns.com",
                 PublicKey = "pub",
                 PrivateKey = "priv",
                 ShortId = "abcd",

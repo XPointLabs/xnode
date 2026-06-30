@@ -84,7 +84,7 @@ public sealed class ClientBootstrapService
             {
                 ["serverName"] = payload.MaskDomain,
                 ["fingerprint"] = payload.Reality?.Fingerprint ?? "chrome",
-                ["publicKey"] = payload.Reality?.PublicKey ?? "",
+                ["password"] = payload.Reality?.PublicKey ?? "",
                 ["shortId"] = payload.Reality?.ShortId ?? "",
                 ["spiderX"] = payload.Reality?.SpiderX ?? "/"
             };

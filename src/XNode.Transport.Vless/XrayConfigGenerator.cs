@@ -99,12 +99,17 @@ public sealed class XrayConfigGenerator
         switch (options.TransportMode)
         {
             case VlessTransportMode.Reality:
+                var serverNames = new[] { options.MaskDomain, options.Reality.ServerName }
+                    .Where(value => !string.IsNullOrWhiteSpace(value))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Select(value => JsonValue.Create(value))
+                    .ToArray();
                 stream["security"] = "reality";
                 stream["realitySettings"] = new JsonObject
                 {
                     ["show"] = false,
-                    ["dest"] = $"{options.MaskDomain}:443",
-                    ["serverNames"] = new JsonArray { options.MaskDomain, options.Reality.ServerName },
+                    ["target"] = $"{options.MaskDomain}:443",
+                    ["serverNames"] = new JsonArray(serverNames),
                     ["privateKey"] = options.Reality.PrivateKey,
                     ["shortIds"] = new JsonArray { options.Reality.ShortId },
                     ["fingerprint"] = options.Reality.Fingerprint,

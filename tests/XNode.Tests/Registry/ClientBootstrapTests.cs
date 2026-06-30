@@ -25,7 +25,7 @@ public sealed class ClientBootstrapTests
         Assert.Equal("node.example.org", bootstrap.PublicHost);
         Assert.Equal(443, bootstrap.PublicPort);
         Assert.Contains("security=reality", bootstrap.VlessUri);
-        Assert.Contains("sni=www.microsoft.com", bootstrap.VlessUri);
+        Assert.Contains("sni=cloudflare-dns.com", bootstrap.VlessUri);
         Assert.Contains("pbk=pub", bootstrap.VlessUri);
         Assert.Equal("node.example.org", bootstrap.XrayOutbound["settings"]!["vnext"]![0]!["address"]!.GetValue<string>());
     }

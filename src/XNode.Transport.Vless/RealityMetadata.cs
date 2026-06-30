@@ -2,7 +2,7 @@
 
 public sealed class RealityMetadata
 {
-    public string ServerName { get; set; } = "www.microsoft.com";
+    public string ServerName { get; set; } = "cloudflare-dns.com";
 
     public string PublicKey { get; set; } = "";
 

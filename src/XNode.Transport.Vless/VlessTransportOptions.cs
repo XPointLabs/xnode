@@ -24,7 +24,7 @@ public sealed class VlessTransportOptions
 
     public string ClientId { get; set; } = "00000000-0000-0000-0000-000000000001";
 
-    public string MaskDomain { get; set; } = "www.microsoft.com";
+    public string MaskDomain { get; set; } = "cloudflare-dns.com";
 
     public VlessTransportMode TransportMode { get; set; } = VlessTransportMode.Reality;
 
