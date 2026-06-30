@@ -64,7 +64,11 @@ builder.Services.AddSingleton<PathSelector>();
 builder.Services.AddSingleton<IStorageBackend>(provider =>
     string.IsNullOrWhiteSpace(registryBootstrapOptions.BaseUrl)
         ? new NodeDbStorageBackend(provider.GetRequiredService<NodeDb>(), nodeOptions)
-        : new RegistryRelayContactBootstrapBackend(new HttpClient(), registryBootstrapOptions));
+        : new RegistryRelayContactBootstrapBackend(
+            new HttpClient(),
+            registryBootstrapOptions,
+            nodeOptions,
+            provider.GetRequiredService<IClock>()));
 builder.Services.AddSingleton<ISessionStorageRpcBackend>(_ =>
     string.IsNullOrWhiteSpace(storageRpcOptions.BaseUrl)
         ? new DisabledSessionStorageRpcBackend()
