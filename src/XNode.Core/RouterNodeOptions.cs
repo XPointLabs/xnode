@@ -28,6 +28,8 @@ public sealed class RouterNodeOptions
 
     public int PublicPeerRpcPort { get; set; } = 22020;
 
+    public string QuorumCoordinatorNetworks { get; set; } = "";
+
     public RouterId GetRouterId() => XNode.Core.RouterId.FromHex(RouterId);
 
     public string GetEd25519PrivateKey()

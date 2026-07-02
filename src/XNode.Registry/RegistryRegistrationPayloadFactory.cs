@@ -35,6 +35,7 @@ public sealed class RegistryRegistrationPayloadFactory
     public async Task<RegistryRegistrationPayload> CreateAsync(CancellationToken cancellationToken)
     {
         var runtime = _payloadFactory.Create();
+        var relayContact = _relayContactProvider.Create();
         var operatorAddress = NormalizeAddress(_registrationOptions.OperatorAddress);
         var rewardsAddress = string.IsNullOrWhiteSpace(_registrationOptions.RewardsAddress)
             ? operatorAddress
@@ -65,10 +66,10 @@ public sealed class RegistryRegistrationPayloadFactory
             [
                 new ContributorStake(operatorAddress, rewardsAddress, _registrationOptions.StakeAtomic)
             ],
-            SigningEndpoint: NormalizeSigningEndpoint(_registrationOptions.SigningEndpoint),
+            SigningEndpoint: BuildSigningEndpoint(relayContact.RpcEndpoint),
             TransportStatus: runtime.Transport,
             Transport: ToTransportBundle(runtime),
-            RelayContact: _relayContactProvider.Create());
+            RelayContact: relayContact);
     }
 
     private TransportBundle ToTransportBundle(RegistryPayload payload)
@@ -125,21 +126,20 @@ public sealed class RegistryRegistrationPayloadFactory
         return "0x" + normalized.ToLowerInvariant();
     }
 
-    private static string NormalizeSigningEndpoint(string endpoint)
+    private static string BuildSigningEndpoint(string peerRpcEndpoint)
     {
-        if (string.IsNullOrWhiteSpace(endpoint))
-        {
-            return "";
-        }
-
-        var trimmed = endpoint.Trim().TrimEnd('/');
-        if (!Uri.TryCreate(trimmed, UriKind.Absolute, out var uri)
+        if (!Uri.TryCreate(peerRpcEndpoint.Trim(), UriKind.Absolute, out var uri)
             || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
         {
-            throw new InvalidOperationException("RegistryRegistration:SigningEndpoint must be an absolute http(s) URL.");
+            throw new InvalidOperationException("Relay contact RPC endpoint must be an absolute http(s) URL.");
         }
 
-        return trimmed;
+        var builder = new UriBuilder(uri)
+        {
+            Path = "/api/staking/quorum/sign",
+            Query = ""
+        };
+        return builder.Uri.ToString().TrimEnd('/');
     }
 
     private static string NormalizeHex(string value, int expectedBytes)

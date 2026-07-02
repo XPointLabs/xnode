@@ -34,8 +34,6 @@ public sealed class RegistryRegistrationOptions
 
     public string ServiceNodeRewardsAddress { get; set; } = "";
 
-    public string SigningEndpoint { get; set; } = "";
-
     public string GetBlsPrivateKey()
     {
         if (!string.IsNullOrWhiteSpace(BlsPrivateKey))

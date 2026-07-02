@@ -119,7 +119,11 @@ app.Use(async (context, next) =>
     var path = context.Request.Path;
     var allowed = path.Equals("/api/peer/onion")
         || path.Equals("/health/live")
-        || path.Equals("/health/ready");
+        || path.Equals("/health/ready")
+        || (path.Equals("/api/staking/quorum/sign")
+            && QuorumCoordinatorAccess.IsAllowed(
+                context.Connection.RemoteIpAddress,
+                nodeOptions.QuorumCoordinatorNetworks));
     if (!allowed)
     {
         context.Response.StatusCode = StatusCodes.Status404NotFound;
@@ -198,7 +202,7 @@ app.MapPost("/api/staking/quorum/sign", async (
     {
         return Results.Problem(ex.Message, statusCode: StatusCodes.Status400BadRequest);
     }
-});
+}).RequireRateLimiting("peer-onion");
 
 app.MapPost("/api/session/rpc", async (
     SessionRpcRequest request,
