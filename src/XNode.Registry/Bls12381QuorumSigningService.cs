@@ -13,12 +13,14 @@ public sealed class Bls12381QuorumSigningService
     private const string MapFp2ToG2Precompile = "0x0000000000000000000000000000000000000011";
 
     private readonly HttpClient _httpClient;
+    private readonly QuorumSigningPolicyValidator _policy;
     private readonly SemaphoreSlim _tagGate = new(1, 1);
     private ServiceNodeContractTags? _tags;
 
     public Bls12381QuorumSigningService(HttpClient httpClient)
     {
         _httpClient = httpClient;
+        _policy = new QuorumSigningPolicyValidator(httpClient);
     }
 
     public async Task<QuorumSignatureResponse> SignAsync(
@@ -43,8 +45,17 @@ public sealed class Bls12381QuorumSigningService
         var scalar = ScalarFromBigEndianHex(privateKey);
         var publicKey = ToAffine(G1Affine.Generator * scalar);
         var eipPublicKey = NeoG1ToEip(publicKey.ToUncompressed());
-        var tags = await GetTagsAsync(options, rpcUrls, cancellationToken).ConfigureAwait(false);
+        var localBlsPublicKey = Hex(eipPublicKey);
         var messageType = NormalizeMessageType(request.Type);
+        await _policy.ValidateAsync(
+            options,
+            rpcUrls,
+            messageType,
+            request,
+            localBlsPublicKey,
+            cancellationToken).ConfigureAwait(false);
+
+        var tags = await GetTagsAsync(options, rpcUrls, cancellationToken).ConfigureAwait(false);
         var encodedMessage = BuildEncodedMessage(messageType, request, tags);
         var digest = Epoche.Keccak256.ComputeHash(Concat(tags.HashToG2Tag, encodedMessage));
         var mapInput = Concat(new byte[32], digest, new byte[32], new byte[32]);
@@ -60,7 +71,7 @@ public sealed class Bls12381QuorumSigningService
         {
             Type = messageType,
             NodeId = NormalizeHex(nodeId, 32),
-            BlsPublicKey = Hex(eipPublicKey),
+            BlsPublicKey = localBlsPublicKey,
             Amount = request.Amount,
             Timestamp = request.Timestamp,
             MessageToSign = Hex(encodedMessage),

@@ -34,6 +34,16 @@ public sealed class RegistryRegistrationOptions
 
     public string ServiceNodeRewardsAddress { get; set; } = "";
 
+    public bool EnforceQuorumSigningPolicy { get; set; } = true;
+
+    public string QuorumPolicyBackendBaseUrl { get; set; } = "";
+
+    public int QuorumPolicyBackendTimeoutSeconds { get; set; } = 5;
+
+    public long MaxRewardSignatureIncreaseAtomic { get; set; } = 100_000L * 1_000_000_000L;
+
+    public int MaxQuorumSignatureTimestampSkewSeconds { get; set; } = 300;
+
     public string GetBlsPrivateKey()
     {
         if (!string.IsNullOrWhiteSpace(BlsPrivateKey))

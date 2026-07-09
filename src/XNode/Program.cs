@@ -194,6 +194,10 @@ app.MapPost("/api/staking/quorum/sign", async (
             cancellationToken);
         return Results.Ok(signature);
     }
+    catch (QuorumSignatureRejectedException ex)
+    {
+        return Results.Problem(ex.Message, statusCode: StatusCodes.Status409Conflict);
+    }
     catch (InvalidOperationException ex)
     {
         return Results.Problem(ex.Message, statusCode: StatusCodes.Status503ServiceUnavailable);

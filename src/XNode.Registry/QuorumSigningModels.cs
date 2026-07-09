@@ -37,6 +37,9 @@ public sealed record QuorumSignatureRequest
     [JsonPropertyName("amount")]
     public long Amount { get; init; }
 
+    [JsonPropertyName("policyQuote")]
+    public string PolicyQuote { get; init; } = "";
+
     [JsonPropertyName("blsPublicKey")]
     public string BlsPublicKey { get; init; } = "";
 
