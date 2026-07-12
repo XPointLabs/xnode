@@ -157,15 +157,17 @@ public sealed class NodeDb
                 toPersist = contact;
                 result = new NodeDbPutResult(true, shouldGossip, shouldGossip ? "significant-update" : "stored-update");
             }
+
+            if (toPersist is not null)
+            {
+                // Persist while holding the state gate so a slower older write cannot
+                // replace a newer contact after this method has returned.
+                await PersistAsync(toPersist, cancellationToken).ConfigureAwait(false);
+            }
         }
         finally
         {
             _gate.Release();
-        }
-
-        if (toPersist is not null)
-        {
-            await PersistAsync(toPersist, cancellationToken).ConfigureAwait(false);
         }
 
         return result;
@@ -184,6 +186,7 @@ public sealed class NodeDb
                 {
                     _contacts.Remove(routerId);
                     _knownRouterIds.Remove(routerId);
+                    _registeredRelays.Remove(routerId);
                     removed.Add(routerId);
                 }
             }
@@ -191,20 +194,19 @@ public sealed class NodeDb
             if (removed.Count > 0)
             {
                 RebuildBucketHashes();
+                foreach (var routerId in removed)
+                {
+                    var file = GetContactPath(routerId);
+                    if (File.Exists(file))
+                    {
+                        File.Delete(file);
+                    }
+                }
             }
         }
         finally
         {
             _gate.Release();
-        }
-
-        foreach (var routerId in removed)
-        {
-            var file = GetContactPath(routerId);
-            if (File.Exists(file))
-            {
-                File.Delete(file);
-            }
         }
 
         return removed.Count;
@@ -220,27 +222,6 @@ public sealed class NodeDb
             {
                 _registeredRelays.Add(relayId);
                 _knownRouterIds.Add(relayId);
-            }
-        }
-        finally
-        {
-            _gate.Release();
-        }
-    }
-
-    public void LoadRegisteredRelaysFallback()
-    {
-        _gate.Wait();
-        try
-        {
-            if (_registeredRelays.Count > 0)
-            {
-                return;
-            }
-
-            foreach (var contact in _contacts.Values.Where(contact => !contact.IsExpired(_clock.UtcNow)))
-            {
-                _registeredRelays.Add(contact.RouterId);
             }
         }
         finally
@@ -380,16 +361,26 @@ public sealed class NodeDb
 
     private async Task PersistAsync(RelayContact contact, CancellationToken cancellationToken)
     {
-        var tempPath = GetContactPath(contact.RouterId) + ".tmp";
+        var tempPath = GetContactPath(contact.RouterId) + $".{Guid.NewGuid():N}.tmp";
         var finalPath = GetContactPath(contact.RouterId);
 
-        await File.WriteAllTextAsync(
-            tempPath,
-            JsonSerializer.Serialize(contact, _jsonOptions),
-            Encoding.UTF8,
-            cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await File.WriteAllTextAsync(
+                tempPath,
+                JsonSerializer.Serialize(contact, _jsonOptions),
+                Encoding.UTF8,
+                cancellationToken).ConfigureAwait(false);
 
-        File.Move(tempPath, finalPath, overwrite: true);
+            File.Move(tempPath, finalPath, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(tempPath))
+            {
+                File.Delete(tempPath);
+            }
+        }
     }
 
     private string GetContactPath(RouterId routerId) => Path.Combine(RootDirectory, $"{routerId.Value}.json");

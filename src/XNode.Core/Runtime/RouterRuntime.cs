@@ -13,6 +13,8 @@ namespace XNode.Core.Runtime;
 
 public sealed class RouterRuntime : IRouterRuntime
 {
+    private const int StorageRouteHopCount = 3;
+
     private readonly RouterNodeOptions _nodeOptions;
     private readonly RouterRuntimeOptions _runtimeOptions;
     private readonly NodeDatabase _nodeDb;
@@ -29,6 +31,7 @@ public sealed class RouterRuntime : IRouterRuntime
     private CancellationTokenSource? _backgroundCts;
     private Task? _backgroundLoop;
     private OnionKeyMaterial? _onionKeys;
+    private string? _identityPrivateKey;
     private DateTimeOffset _lastPathFailureDecay = DateTimeOffset.UnixEpoch;
 
     private long _rpcRequests;
@@ -154,7 +157,6 @@ public sealed class RouterRuntime : IRouterRuntime
                 await SyncRelayContactsAsync(cancellationToken).ConfigureAwait(false);
             }
 
-            _nodeDb.LoadRegisteredRelaysFallback();
             _startedAt = _clock.UtcNow;
             _lastPathFailureDecay = _startedAt;
             _started = true;
@@ -202,6 +204,26 @@ public sealed class RouterRuntime : IRouterRuntime
     {
         Interlocked.Increment(ref _rpcRequests);
 
+        var response = await HandleUnsignedRpcAsync(request, cancellationToken).ConfigureAwait(false);
+        return SessionRpcResponseAuthenticator.Sign(
+            request,
+            response,
+            _nodeOptions.GetRouterId(),
+            GetIdentityPrivateKey(),
+            _clock.UtcNow);
+    }
+
+    private async Task<SessionRpcResponse> HandleUnsignedRpcAsync(
+        SessionRpcRequest request,
+        CancellationToken cancellationToken)
+    {
+
+        if (!IsRequestWithinQuota(request))
+        {
+            Interlocked.Increment(ref _rpcFailures);
+            return SessionRpcResponse.Fail(request.Id, "rpc-request-too-large");
+        }
+
         if (!_started)
         {
             Interlocked.Increment(ref _rpcFailures);
@@ -220,7 +242,9 @@ public sealed class RouterRuntime : IRouterRuntime
                 return SessionRpcResponse.Ok(request.Id, _nodeDb.GetRegisteredRelays().Select(id => id.Value).ToArray());
 
             case "fetch_rcs":
-                return SessionRpcResponse.Ok(request.Id, _nodeDb.Contacts);
+                return SessionRpcResponse.Ok(
+                    request.Id,
+                    _nodeDb.Contacts.Take(Math.Max(1, _runtimeOptions.MaxRelayContactsPerResponse)).ToArray());
 
             case "select_path":
                 return SelectPath(request);
@@ -405,14 +429,14 @@ public sealed class RouterRuntime : IRouterRuntime
 
     private SessionRpcResponse SelectStorageRoute(SessionRpcRequest request)
     {
-        var targetKey = GetStorageTargetKey(request.Payload);
-        if (string.IsNullOrWhiteSpace(targetKey))
+        var routeNonce = GetRouteNonce(request.Payload);
+        if (routeNonce is null)
         {
             Interlocked.Increment(ref _rpcFailures);
-            return SessionRpcResponse.Fail(request.Id, "missing-storage-target");
+            return SessionRpcResponse.Fail(request.Id, "invalid-route-nonce");
         }
 
-        var route = BuildStorageRoute(targetKey);
+        var route = BuildStorageRoute(routeNonce);
         if (route.Count == 0)
         {
             Interlocked.Increment(ref _pathSelectionFailures);
@@ -423,7 +447,7 @@ public sealed class RouterRuntime : IRouterRuntime
         Interlocked.Increment(ref _pathSelectionAttempts);
         return SessionRpcResponse.Ok(request.Id, new
         {
-            targetKey,
+            routeNonce,
             route = ToRouteDocument(route)
         });
     }
@@ -513,6 +537,12 @@ public sealed class RouterRuntime : IRouterRuntime
             return SessionRpcResponse.Fail(request.Id, $"onion-decrypt-failed:{e.Message}");
         }
 
+        if (GetJsonByteCount(layer) > _runtimeOptions.MaxOnionLayerBytes)
+        {
+            Interlocked.Increment(ref _rpcFailures);
+            return SessionRpcResponse.Fail(request.Id, "onion-layer-too-large");
+        }
+
         if (string.Equals(layer.Type, OnionCrypto.RelayLayerType, StringComparison.Ordinal))
         {
             return await ForwardOnionRelayLayerAsync(request, layer, cancellationToken).ConfigureAwait(false);
@@ -538,16 +568,23 @@ public sealed class RouterRuntime : IRouterRuntime
             return SessionRpcResponse.Fail(request.Id, "missing-onion-inner");
         }
 
-        if (string.IsNullOrWhiteSpace(layer.NextRpcEndpoint)
-            || !Uri.TryCreate(layer.NextRpcEndpoint, UriKind.Absolute, out var endpoint)
-            || (endpoint.Scheme != Uri.UriSchemeHttp && endpoint.Scheme != Uri.UriSchemeHttps))
+        if (!RouterId.TryParse(layer.NextRouterId, out var nextRouterId)
+            || !_nodeDb.IsRegistered(nextRouterId))
         {
             Interlocked.Increment(ref _rpcFailures);
-            return SessionRpcResponse.Fail(request.Id, "invalid-onion-next-endpoint");
+            return SessionRpcResponse.Fail(request.Id, "unauthorized-onion-next-router");
+        }
+
+        var nextContact = _nodeDb.GetContact(nextRouterId);
+        if (nextContact is null || !IsStorageRouteContact(nextContact, _clock.UtcNow))
+        {
+            Interlocked.Increment(ref _rpcFailures);
+            return SessionRpcResponse.Fail(request.Id, "unauthorized-onion-next-router");
         }
 
         var forwarded = await _onionPeerClient.ForwardAsync(
-            layer.NextRpcEndpoint,
+            nextRouterId,
+            nextContact.RpcEndpoint,
             new OnionRequest(layer.Inner),
             cancellationToken).ConfigureAwait(false);
 
@@ -569,6 +606,12 @@ public sealed class RouterRuntime : IRouterRuntime
         {
             Interlocked.Increment(ref _rpcFailures);
             return SessionRpcResponse.Fail(request.Id, "missing-onion-storage-body");
+        }
+
+        if (GetJsonByteCount(body) > _runtimeOptions.MaxStoragePayloadBytes)
+        {
+            Interlocked.Increment(ref _rpcFailures);
+            return SessionRpcResponse.Fail(request.Id, "onion-storage-body-too-large");
         }
 
         var storagePath = layer.StoragePath switch
@@ -621,62 +664,54 @@ public sealed class RouterRuntime : IRouterRuntime
         });
     }
 
-    private IReadOnlyList<RelayContact> BuildStorageRoute(string targetKey)
+    private IReadOnlyList<RelayContact> BuildStorageRoute(string routingEntropy)
     {
         var now = _clock.UtcNow;
         var localRouterId = _nodeOptions.GetRouterId();
-        var contacts = _nodeDb.Contacts
-            .Where(contact => !contact.IsExpired(now))
-            .Where(contact => contact.IsReachable)
-            .Where(IsOnionCapable)
+        var registered = _nodeDb.GetRegisteredRelays().ToHashSet();
+        var contacts = registered
+            .Select(_nodeDb.GetContact)
+            .Where(static contact => contact is not null)
+            .Select(static contact => contact!)
+            .Where(contact => IsStorageRouteContact(contact, now))
             .GroupBy(contact => contact.RouterId)
             .ToDictionary(group => group.Key, group => group.OrderByDescending(contact => contact.SignedAt).First());
 
-        if (contacts.Count == 0)
+        if (contacts.Count < StorageRouteHopCount
+            || !registered.Contains(localRouterId)
+            || !contacts.TryGetValue(localRouterId, out var localContact))
         {
             return [];
         }
 
-        var desiredHops = Math.Min(Math.Max(1, _pathOptions.ClientHops), contacts.Count);
-        var route = new List<RelayContact>(desiredHops);
-        var blocked = GetChurnBlockedRouters();
-
-        if (contacts.TryGetValue(localRouterId, out var localContact))
+        var route = new List<RelayContact>(StorageRouteHopCount) { localContact };
+        var onionKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { localContact.X25519PublicKey.Trim() };
+        var rpcEndpoints = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            route.Add(localContact);
-        }
+            NormalizeRpcEndpoint(localContact.RpcEndpoint)
+        };
+        var blocked = GetChurnBlockedRouters();
 
         foreach (var contact in contacts.Values
             .Where(contact => contact.RouterId != localRouterId)
-            .Where(contact => !blocked.Contains(contact.RouterId))
-            .OrderBy(contact => XorDistanceHex(contact.RouterId, targetKey), StringComparer.Ordinal)
+            .OrderBy(contact => blocked.Contains(contact.RouterId) ? 1 : 0)
+            .ThenBy(contact => XorDistanceHex(contact.RouterId, routingEntropy), StringComparer.Ordinal)
             .ThenBy(contact => contact.RouterId))
         {
-            if (route.Count >= desiredHops)
+            if (!onionKeys.Add(contact.X25519PublicKey.Trim())
+                || !rpcEndpoints.Add(NormalizeRpcEndpoint(contact.RpcEndpoint)))
             {
-                break;
+                continue;
             }
 
             route.Add(contact);
-        }
-
-        if (route.Count < desiredHops)
-        {
-            foreach (var contact in contacts.Values
-                .Where(contact => route.All(existing => existing.RouterId != contact.RouterId))
-                .OrderBy(contact => XorDistanceHex(contact.RouterId, targetKey), StringComparer.Ordinal)
-                .ThenBy(contact => contact.RouterId))
+            if (route.Count == StorageRouteHopCount)
             {
-                if (route.Count >= desiredHops)
-                {
-                    break;
-                }
-
-                route.Add(contact);
+                break;
             }
         }
 
-        return route;
+        return route.Count == StorageRouteHopCount ? route : [];
     }
 
     private void RecordPathResult(IReadOnlyList<RelayContact> route, bool success)
@@ -720,15 +755,22 @@ public sealed class RouterRuntime : IRouterRuntime
 
     private OnionKeyMaterial GetOnionKeys()
     {
-        return _onionKeys ??= OnionCrypto.DeriveNodeKeysFromEd25519Seed(_nodeOptions.GetEd25519PrivateKey());
+        return _onionKeys ??= OnionCrypto.DeriveNodeKeysFromEd25519Seed(GetIdentityPrivateKey());
     }
 
-    private static bool IsOnionCapable(RelayContact contact)
+    private string GetIdentityPrivateKey()
     {
-        if (string.IsNullOrWhiteSpace(contact.X25519PublicKey)
+        return _identityPrivateKey ??= _nodeOptions.GetEd25519PrivateKey();
+    }
+
+    private bool IsStorageRouteContact(RelayContact contact, DateTimeOffset now)
+    {
+        if (!contact.IsReachable
+            || !RelayContactSigner.VerifyFresh(contact, now)
+            || string.IsNullOrWhiteSpace(contact.X25519PublicKey)
             || string.IsNullOrWhiteSpace(contact.RpcEndpoint)
             || !Uri.TryCreate(contact.RpcEndpoint, UriKind.Absolute, out var endpoint)
-            || (endpoint.Scheme != Uri.UriSchemeHttp && endpoint.Scheme != Uri.UriSchemeHttps))
+            || !PeerEndpointPolicy.TryValidateUri(endpoint, _runtimeOptions.AllowLoopbackPeerEndpoints, out _))
         {
             return false;
         }
@@ -738,7 +780,48 @@ public sealed class RouterRuntime : IRouterRuntime
             return false;
         }
 
-        return contact.Capabilities.Any(static value => string.Equals(value, "onion-v1", StringComparison.OrdinalIgnoreCase));
+        return contact.Capabilities.Any(static value => string.Equals(value, "onion-v1", StringComparison.OrdinalIgnoreCase))
+            && contact.Capabilities.Any(static value => string.Equals(value, "session-rpc", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string NormalizeRpcEndpoint(string endpoint)
+    {
+        return new Uri(endpoint.Trim(), UriKind.Absolute).AbsoluteUri.TrimEnd('/');
+    }
+
+    private bool IsRequestWithinQuota(SessionRpcRequest request)
+    {
+        if (request.Id.Length > 128 || request.Method.Length > 64)
+        {
+            return false;
+        }
+
+        if (GetJsonByteCount(request.Payload) > _runtimeOptions.MaxRpcPayloadBytes)
+        {
+            return false;
+        }
+
+        if (!string.Equals(request.Method, "onion_request", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        try
+        {
+            var onionRequest = request.Payload.Deserialize<OnionRequest>(SessionRpc.JsonOptions);
+            return onionRequest?.Envelope is not null
+                && onionRequest.Envelope.Ciphertext.Length <= _runtimeOptions.MaxOnionEnvelopeBytes * 2
+                && GetJsonByteCount(onionRequest) <= _runtimeOptions.MaxOnionEnvelopeBytes;
+        }
+        catch (JsonException)
+        {
+            return true;
+        }
+    }
+
+    private static int GetJsonByteCount<T>(T value)
+    {
+        return JsonSerializer.SerializeToUtf8Bytes(value, SessionRpc.JsonOptions).Length;
     }
 
     private static string? GetStorageTargetKey(JsonElement payload)
@@ -768,10 +851,25 @@ public sealed class RouterRuntime : IRouterRuntime
         return null;
     }
 
-    private static string XorDistanceHex(RouterId routerId, string targetKey)
+    private static string? GetRouteNonce(JsonElement payload)
+    {
+        if (payload.ValueKind != JsonValueKind.Object
+            || !payload.TryGetProperty("routeNonce", out var nonceProperty)
+            || nonceProperty.ValueKind != JsonValueKind.String)
+        {
+            return null;
+        }
+
+        var nonce = nonceProperty.GetString()?.Trim().ToLowerInvariant();
+        return nonce is { Length: 64 } && nonce.All(Uri.IsHexDigit)
+            ? nonce
+            : null;
+    }
+
+    private static string XorDistanceHex(RouterId routerId, string routingEntropy)
     {
         var left = routerId.ToBytes();
-        var right = SHA256.HashData(Encoding.UTF8.GetBytes(targetKey.Trim().ToLowerInvariant()));
+        var right = SHA256.HashData(Encoding.UTF8.GetBytes(routingEntropy.Trim().ToLowerInvariant()));
         Span<byte> xor = stackalloc byte[RouterId.ByteLength];
         for (var i = 0; i < RouterId.ByteLength; i++)
         {
@@ -828,13 +926,9 @@ public sealed class RouterRuntime : IRouterRuntime
                 }
             }
 
-            if (contacts.Count > 0)
-            {
-                _nodeDb.SetRegisteredRelays(contacts.Select(contact => contact.RouterId));
-            }
+            _nodeDb.SetRegisteredRelays(contacts.Select(contact => contact.RouterId));
 
             await _nodeDb.PurgeExpiredAsync(cancellationToken).ConfigureAwait(false);
-            _nodeDb.LoadRegisteredRelaysFallback();
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
@@ -862,8 +956,6 @@ public sealed class RouterRuntime : IRouterRuntime
             {
                 Interlocked.Increment(ref _relayContactsRejected);
             }
-
-            _nodeDb.SetRegisteredRelays(_nodeDb.Contacts.Select(static item => item.RouterId));
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {

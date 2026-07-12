@@ -30,7 +30,7 @@ public sealed class RouterRuntimeIntegrationTests
             await recovered.StartAsync(CancellationToken.None);
 
             Assert.Equal(1, recovered.Status.NodeDb.KnownRelayContacts);
-            Assert.Equal(1, recovered.Status.NodeDb.RegisteredRelays);
+            Assert.Equal(0, recovered.Status.NodeDb.RegisteredRelays);
         }
         finally
         {
@@ -207,18 +207,20 @@ public sealed class RouterRuntimeIntegrationTests
         try
         {
             var local = NodeOptions(root);
+            var remoteOne = NodeOptionsFromSeed(root, Seed(21), "http://xnode-21:8080");
+            var remoteTwo = NodeOptionsFromSeed(root, Seed(42), "http://xnode-42:8080");
             var storageRpc = new FakeSessionStorageRpcBackend();
             var runtime = CreateRuntime(
                 root,
                 local,
                 new FakeStorageBackend(
-                    Contact(254, "10.35.254.1"),
-                    Contact(1, "10.35.1.1"),
-                    Contact(2, "10.35.2.1")),
+                    SignedContact(local),
+                    SignedContact(remoteOne),
+                    SignedContact(remoteTwo)),
                 new RouterRuntimeOptions
                 {
                     BootstrapFromStorage = true,
-                    RequireSignedRelayContacts = false
+                    RequireSignedRelayContacts = true
                 },
                 new PathSelectionOptions { ClientHops = 3 },
                 storageRpc);
@@ -296,7 +298,7 @@ public sealed class RouterRuntimeIntegrationTests
                 new SessionRpcRequest(
                     "route",
                     "storage_route",
-                    JsonSerializer.SerializeToElement(new { targetKey = "05recipient" }, SessionRpc.JsonOptions)),
+                    JsonSerializer.SerializeToElement(new { routeNonce = new string('1', 64) }, SessionRpc.JsonOptions)),
                 CancellationToken.None);
             Assert.True(routeResponse.Success);
 
@@ -320,10 +322,15 @@ public sealed class RouterRuntimeIntegrationTests
                 CancellationToken.None);
 
             Assert.True(onionResponse.Success);
-            Assert.Empty(storageBackends[0].Requests);
-            Assert.Empty(storageBackends[1].Requests);
-            Assert.Single(storageBackends[2].Requests);
-            Assert.Equal("/storage/store", storageBackends[2].Requests[0].Path);
+            var exitIndex = Array.FindIndex(
+                nodes,
+                node => string.Equals(node.RouterId, route[^1].RouterId, StringComparison.OrdinalIgnoreCase));
+            Assert.InRange(exitIndex, 0, storageBackends.Length - 1);
+            Assert.All(
+                storageBackends.Where((_, index) => index != exitIndex),
+                backend => Assert.Empty(backend.Requests));
+            Assert.Single(storageBackends[exitIndex].Requests);
+            Assert.Equal("/storage/store", storageBackends[exitIndex].Requests[0].Path);
 
             using var responseDocument = JsonDocument.Parse(JsonSerializer.Serialize(onionResponse.Result, SessionRpc.JsonOptions));
             var encryptedResponse = responseDocument.RootElement
@@ -415,13 +422,132 @@ public sealed class RouterRuntimeIntegrationTests
 
     private static RouterNodeOptions NodeOptions(string root)
     {
-        return new RouterNodeOptions
+        return NodeOptionsFromSeed(root, Seed(200), "http://xnode-local:8080");
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task Runtime_StorageRouteFailsWhenRegisteredCatalogHasFewerThanThreeRelays(int registeredCount)
+    {
+        var root = NewTempDirectory();
+        try
         {
-            DataDirectory = root,
-            RouterId = TestData.Id(254).Value,
-            IsRelay = true,
-            Network = "testnet"
-        };
+            var nodes = new[]
+            {
+                NodeOptions(root),
+                NodeOptionsFromSeed(root, Seed(21), "http://xnode-21:8080")
+            };
+            var runtime = CreateRuntime(
+                root,
+                nodes[0],
+                new FakeStorageBackend(nodes.Take(registeredCount).Select(SignedContact).ToArray()),
+                new RouterRuntimeOptions { BootstrapFromStorage = true, RequireSignedRelayContacts = true },
+                new PathSelectionOptions { ClientHops = 3 });
+
+            await runtime.StartAsync(CancellationToken.None);
+            var request = new SessionRpcRequest(
+                $"route-{registeredCount}",
+                "storage_route",
+                JsonSerializer.SerializeToElement(new { routeNonce = new string('2', 64) }, SessionRpc.JsonOptions),
+                "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff");
+            var response = await runtime.HandleRpcAsync(request, CancellationToken.None);
+
+            Assert.False(response.Success);
+            Assert.Equal("path-not-found", response.Error);
+            Assert.True(SessionRpcResponseAuthenticator.Verify(request, response, TestData.Now));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Runtime_RejectsOversizedRpcPayloadBeforeDispatch()
+    {
+        var root = NewTempDirectory();
+        try
+        {
+            var runtime = CreateRuntime(
+                root,
+                NodeOptions(root),
+                new FakeStorageBackend(),
+                new RouterRuntimeOptions
+                {
+                    BootstrapFromStorage = false,
+                    RequireSignedRelayContacts = false,
+                    MaxRpcPayloadBytes = 64
+                });
+            await runtime.StartAsync(CancellationToken.None);
+
+            var response = await runtime.HandleRpcAsync(
+                new SessionRpcRequest(
+                    "oversized",
+                    "status",
+                    JsonSerializer.SerializeToElement(new { data = new string('x', 512) }, SessionRpc.JsonOptions)),
+                CancellationToken.None);
+
+            Assert.False(response.Success);
+            Assert.Equal("rpc-request-too-large", response.Error);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Runtime_StorageRouteExcludesSelfSignedContactOutsideRegisteredCatalog()
+    {
+        var root = NewTempDirectory();
+        try
+        {
+            var local = NodeOptions(root);
+            var registeredOne = NodeOptionsFromSeed(root, Seed(21), "http://xnode-21:8080");
+            var registeredTwo = NodeOptionsFromSeed(root, Seed(42), "http://xnode-42:8080");
+            var unregistered = NodeOptionsFromSeed(root, Seed(63), "http://xnode-63:8080");
+            var runtime = CreateRuntime(
+                root,
+                local,
+                new FakeStorageBackend(
+                    SignedContact(local),
+                    SignedContact(registeredOne),
+                    SignedContact(registeredTwo)),
+                new RouterRuntimeOptions { BootstrapFromStorage = true, RequireSignedRelayContacts = true },
+                new PathSelectionOptions { ClientHops = 3 });
+
+            await runtime.StartAsync(CancellationToken.None);
+            var stored = await runtime.HandleRpcAsync(
+                new SessionRpcRequest(
+                    "store-unregistered",
+                    "store_rc",
+                    JsonSerializer.SerializeToElement(SignedContact(unregistered), SessionRpc.JsonOptions)),
+                CancellationToken.None);
+            Assert.True(stored.Success);
+
+            var routeRequest = new SessionRpcRequest(
+                "route-registered-only",
+                "storage_route",
+                JsonSerializer.SerializeToElement(new { routeNonce = new string('3', 64) }, SessionRpc.JsonOptions),
+                "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd");
+            var response = await runtime.HandleRpcAsync(routeRequest, CancellationToken.None);
+
+            Assert.True(response.Success);
+            Assert.True(SessionRpcResponseAuthenticator.Verify(routeRequest, response, TestData.Now));
+            var route = ParseRoute(response.Result);
+            Assert.Equal(3, route.Count);
+            Assert.DoesNotContain(route, node => string.Equals(
+                node.RouterId,
+                unregistered.RouterId,
+                StringComparison.OrdinalIgnoreCase));
+            Assert.Equal(4, runtime.Status.NodeDb.KnownRelayContacts);
+            Assert.Equal(3, runtime.Status.NodeDb.RegisteredRelays);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
     }
 
     private static RouterNodeOptions NodeOptionsFromSeed(string root, string seed, string rpcEndpoint)
@@ -525,7 +651,7 @@ public sealed class RouterRuntimeIntegrationTests
                 : new OnionLayer(
                     OnionCrypto.RelayLayerType,
                     route[index + 1].RouterId,
-                    route[index + 1].RpcEndpoint,
+                    "http://untrusted-layer.invalid/api/peer/onion",
                     envelope,
                     null,
                     null,
@@ -616,6 +742,7 @@ public sealed class RouterRuntimeIntegrationTests
         }
 
         public Task<SessionRpcResponse> ForwardAsync(
+            RouterId recipientRouterId,
             string rpcEndpoint,
             OnionRequest request,
             CancellationToken cancellationToken)
@@ -623,6 +750,11 @@ public sealed class RouterRuntimeIntegrationTests
             if (!Runtimes.TryGetValue(rpcEndpoint.TrimEnd('/'), out var runtime))
             {
                 return Task.FromResult(SessionRpcResponse.Fail("onion-forward", "unknown-peer"));
+            }
+
+            if (!string.Equals(runtime.Status.RouterId, recipientRouterId.Value, StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(SessionRpcResponse.Fail("onion-forward", "wrong-recipient"));
             }
 
             return runtime.HandleRpcAsync(

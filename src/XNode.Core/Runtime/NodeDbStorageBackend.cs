@@ -23,7 +23,12 @@ public sealed class NodeDbStorageBackend : IStorageBackend
 
     public Task<IReadOnlyList<RelayContact>> GetBootstrapRelayContactsAsync(CancellationToken cancellationToken)
     {
-        return Task.FromResult<IReadOnlyList<RelayContact>>(_nodeDb.Contacts.ToArray());
+        var registeredContacts = _nodeDb.GetRegisteredRelays()
+            .Select(_nodeDb.GetContact)
+            .Where(static contact => contact is not null)
+            .Select(static contact => contact!)
+            .ToArray();
+        return Task.FromResult<IReadOnlyList<RelayContact>>(registeredContacts);
     }
 
     public async Task SubmitHeartbeatAsync(RouterStatusSnapshot snapshot, CancellationToken cancellationToken)

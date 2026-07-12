@@ -6,6 +6,7 @@ namespace XNode.Core.Runtime;
 public interface IOnionPeerClient
 {
     Task<SessionRpcResponse> ForwardAsync(
+        RouterId recipientRouterId,
         string rpcEndpoint,
         OnionRequest request,
         CancellationToken cancellationToken);
@@ -14,6 +15,7 @@ public interface IOnionPeerClient
 public sealed class DisabledOnionPeerClient : IOnionPeerClient
 {
     public Task<SessionRpcResponse> ForwardAsync(
+        RouterId recipientRouterId,
         string rpcEndpoint,
         OnionRequest request,
         CancellationToken cancellationToken)

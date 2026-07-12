@@ -11,9 +11,11 @@ public sealed class SignedOnionPeerRequestTests
     public void SignAndVerify_AcceptsValidRequest()
     {
         var (routerId, privateSeed) = CreateIdentity();
+        var (recipientId, _) = CreateIdentity();
         var now = DateTimeOffset.UtcNow;
         var request = SignedOnionPeerRequestAuthenticator.Sign(
             routerId,
+            recipientId,
             privateSeed,
             Onion(),
             now,
@@ -26,8 +28,9 @@ public sealed class SignedOnionPeerRequestTests
     public void Verify_RejectsTamperedCiphertext()
     {
         var (routerId, privateSeed) = CreateIdentity();
+        var (recipientId, _) = CreateIdentity();
         var now = DateTimeOffset.UtcNow;
-        var request = SignedOnionPeerRequestAuthenticator.Sign(routerId, privateSeed, Onion(), now);
+        var request = SignedOnionPeerRequestAuthenticator.Sign(routerId, recipientId, privateSeed, Onion(), now);
         var tampered = request with
         {
             Request = new OnionRequest(request.Request.Envelope with { Ciphertext = "tampered" })
@@ -37,11 +40,26 @@ public sealed class SignedOnionPeerRequestTests
     }
 
     [Fact]
+    public void Verify_RejectsTamperedRecipient()
+    {
+        var (routerId, privateSeed) = CreateIdentity();
+        var (recipientId, _) = CreateIdentity();
+        var (otherRecipientId, _) = CreateIdentity();
+        var now = DateTimeOffset.UtcNow;
+        var request = SignedOnionPeerRequestAuthenticator.Sign(routerId, recipientId, privateSeed, Onion(), now);
+
+        Assert.False(SignedOnionPeerRequestAuthenticator.Verify(
+            request with { RecipientRouterId = otherRecipientId.Value },
+            now));
+    }
+
+    [Fact]
     public void Verify_RejectsExpiredTimestamp()
     {
         var (routerId, privateSeed) = CreateIdentity();
+        var (recipientId, _) = CreateIdentity();
         var signedAt = DateTimeOffset.UtcNow.Subtract(TimeSpan.FromMinutes(3));
-        var request = SignedOnionPeerRequestAuthenticator.Sign(routerId, privateSeed, Onion(), signedAt);
+        var request = SignedOnionPeerRequestAuthenticator.Sign(routerId, recipientId, privateSeed, Onion(), signedAt);
 
         Assert.False(SignedOnionPeerRequestAuthenticator.Verify(request, DateTimeOffset.UtcNow));
     }

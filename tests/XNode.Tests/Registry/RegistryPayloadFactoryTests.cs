@@ -42,6 +42,37 @@ public sealed class RegistryPayloadFactoryTests
         Assert.Equal("xray-exited:1", payload.Transport.LastExitReason);
     }
 
+    [Fact]
+    public void Create_ExposesOnlyPublicRealityMetadata()
+    {
+        const string privateKey = "test-private-key-must-never-be-serialized";
+        var options = new VlessTransportOptions
+        {
+            Enabled = true,
+            PublicHost = "node.example.org",
+            PublicPort = 443,
+            TransportMode = VlessTransportMode.Reality,
+            Reality = new RealityMetadata
+            {
+                ServerName = "www.example.org",
+                PublicKey = "public-key",
+                PrivateKey = privateKey,
+                ShortId = "0011223344556677",
+                Fingerprint = "chrome",
+                SpiderX = "/"
+            }
+        };
+
+        var payload = new RegistryPayloadFactory(
+            new RouterNodeOptions { RouterId = TestData.Id(1).Value },
+            options).Create();
+        var json = System.Text.Json.JsonSerializer.Serialize(payload);
+
+        Assert.Equal("public-key", payload.Reality?.PublicKey);
+        Assert.DoesNotContain("privateKey", json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(privateKey, json, StringComparison.Ordinal);
+    }
+
     private sealed class StubSupervisor : IXraySupervisor
     {
         public StubSupervisor(XraySupervisorStatus status)

@@ -7,6 +7,7 @@ public static class RelayContactSigner
 {
     public const string Algorithm = "ed25519";
     public const string PayloadVersion = "deep-relay-contact-v1";
+    public static readonly TimeSpan MaximumFutureClockSkew = TimeSpan.FromMinutes(5);
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -70,6 +71,16 @@ public static class RelayContactSigner
         {
             return false;
         }
+    }
+
+    public static bool VerifyFresh(RelayContact contact, DateTimeOffset now)
+    {
+        return contact.SignedAt != default
+            && contact.ExpiresAt > contact.SignedAt
+            && contact.ExpiresAt > now
+            && contact.SignedAt <= now.Add(MaximumFutureClockSkew)
+            && now - contact.SignedAt < RelayContact.OutdatedAge
+            && Verify(contact);
     }
 
     public static RouterId DeriveRouterId(string privateKeySeedHex)

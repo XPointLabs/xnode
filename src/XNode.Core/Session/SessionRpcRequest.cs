@@ -5,4 +5,5 @@ namespace XNode.Core.Session;
 public sealed record SessionRpcRequest(
     string Id,
     string Method,
-    JsonElement Payload);
+    JsonElement Payload,
+    string? Nonce = null);

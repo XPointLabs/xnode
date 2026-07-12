@@ -1,11 +1,23 @@
 ARG SDK_IMAGE=mcr.microsoft.com/dotnet/sdk:10.0.100
 ARG RUNTIME_IMAGE=mcr.microsoft.com/dotnet/aspnet:10.0.0
+ARG BUILDPLATFORM
 
-FROM ${SDK_IMAGE} AS build
+FROM --platform=${BUILDPLATFORM} ${SDK_IMAGE} AS build
+ARG TARGETARCH
 WORKDIR /src
 COPY . .
-RUN dotnet restore src/XNode/XNode.csproj
-RUN dotnet publish src/XNode/XNode.csproj --configuration Release --output /app --no-restore
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+      amd64) dotnet_arch="x64" ;; \
+      arm64) dotnet_arch="arm64" ;; \
+      *) echo "Unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    dotnet restore src/XNode/XNode.csproj --arch "${dotnet_arch}"; \
+    dotnet publish src/XNode/XNode.csproj \
+      --configuration Release \
+      --output /app \
+      --no-restore \
+      --arch "${dotnet_arch}"
 
 FROM ${RUNTIME_IMAGE} AS runtime
 ARG TARGETARCH

@@ -47,6 +47,14 @@ For each ported behavior:
 - Local tests may use fake storage/runtime dependencies.
 - Multi-node rehearsal uses deterministic local nodes, not production network discovery.
 
+## Route Trust V1
+
+- `storage_route` returns exactly three unique, reachable relay contacts. The responding local router must be registered and is always hop 0.
+- Dynamic relay membership authorization comes from the exact registered catalog currently loaded into `NodeDb`. Locally stored or gossiped contacts outside that catalog are not eligible, and an unavailable or undersized catalog fails with `path-not-found`.
+- Relay contact self-signatures prove contact integrity, key possession, and freshness only. They are never registry or membership authorization.
+- Session RPC responses add `xpoint-rpc-response-v1` metadata signed by the responder Ed25519 identity. The signature binds the pinned responder, request id/method/nonce/payload digest, issuance time, success state, and result/error digest.
+- A future quorum-backed catalog checkpoint may replace the current registered-catalog authorization source. Route trust v1 does not implement a Merkle or on-chain catalog checkpoint.
+
 ## Stop-The-Line Conditions
 
 - A release build or rehearsal can pass with mocked transport.

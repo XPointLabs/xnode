@@ -40,11 +40,27 @@ public sealed class RegistryPayloadFactory
             _transportOptions.TransportMode,
             _transportOptions.PublicHost,
             _transportOptions.PublicPort,
-            _transportOptions.TransportMode == VlessTransportMode.Reality ? _transportOptions.Reality : null,
+            CreatePublicRealityMetadata(),
             _transportOptions.TransportMode == VlessTransportMode.Tls ? _transportOptions.Tls : null,
             _transportOptions.Capabilities,
             _transportOptions.ConfigVersion,
             DateTimeOffset.UtcNow,
             transport);
+    }
+
+    private RealityPublicMetadata? CreatePublicRealityMetadata()
+    {
+        if (_transportOptions.TransportMode != VlessTransportMode.Reality)
+        {
+            return null;
+        }
+
+        var reality = _transportOptions.Reality;
+        return new RealityPublicMetadata(
+            reality.ServerName,
+            reality.PublicKey,
+            reality.ShortId,
+            reality.Fingerprint,
+            reality.SpiderX);
     }
 }

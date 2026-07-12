@@ -11,4 +11,22 @@ public sealed class RouterRuntimeOptions
     public int PathFailureThreshold { get; set; } = 3;
 
     public TimeSpan PathFailureDecayInterval { get; set; } = TimeSpan.FromMinutes(2);
+
+    public int MaxPeerRequestBodyBytes { get; set; } = 256 * 1024;
+
+    public int MaxRpcPayloadBytes { get; set; } = 128 * 1024;
+
+    public int MaxOnionEnvelopeBytes { get; set; } = 96 * 1024;
+
+    public int MaxOnionLayerBytes { get; set; } = 96 * 1024;
+
+    public int MaxStoragePayloadBytes { get; set; } = 80 * 1024;
+
+    public int MaxRelayContactsPerResponse { get; set; } = 500;
+
+    public int PublicApiPermitLimit { get; set; } = 240;
+
+    public TimeSpan PublicApiRateLimitWindow { get; set; } = TimeSpan.FromMinutes(1);
+
+    public bool AllowLoopbackPeerEndpoints { get; set; }
 }

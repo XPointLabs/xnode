@@ -5,6 +5,7 @@ namespace XNode.Core.Onion;
 
 public sealed record SignedOnionPeerRequest(
     string SenderRouterId,
+    string RecipientRouterId,
     long TimestampUnixMs,
     string Nonce,
     OnionRequest Request,
@@ -19,6 +20,7 @@ public static class SignedOnionPeerRequestAuthenticator
 
     public static SignedOnionPeerRequest Sign(
         RouterId sender,
+        RouterId recipient,
         string privateKeySeedHex,
         OnionRequest request,
         DateTimeOffset timestamp,
@@ -29,6 +31,7 @@ public static class SignedOnionPeerRequestAuthenticator
             : NormalizeNonce(nonce);
         var unsigned = new SignedOnionPeerRequest(
             sender.Value,
+            recipient.Value,
             timestamp.ToUnixTimeMilliseconds(),
             normalizedNonce,
             request,
@@ -73,6 +76,7 @@ public static class SignedOnionPeerRequestAuthenticator
     {
         sender = default;
         if (!RouterId.TryParse(request.SenderRouterId, out sender)
+            || !RouterId.TryParse(request.RecipientRouterId, out _)
             || request.Request?.Envelope is null
             || string.IsNullOrWhiteSpace(request.Signature))
         {
@@ -97,6 +101,7 @@ public static class SignedOnionPeerRequestAuthenticator
         var payload = new SigningPayload(
             PayloadVersion,
             request.SenderRouterId,
+            request.RecipientRouterId,
             request.TimestampUnixMs,
             request.Nonce,
             envelope.Version,
@@ -136,6 +141,7 @@ public static class SignedOnionPeerRequestAuthenticator
     private sealed record SigningPayload(
         string Version,
         string SenderRouterId,
+        string RecipientRouterId,
         long TimestampUnixMs,
         string Nonce,
         string EnvelopeVersion,

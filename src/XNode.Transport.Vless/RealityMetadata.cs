@@ -6,6 +6,7 @@ public sealed class RealityMetadata
 
     public string PublicKey { get; set; } = "";
 
+    [System.Text.Json.Serialization.JsonIgnore]
     public string PrivateKey { get; set; } = "";
 
     public string ShortId { get; set; } = "";

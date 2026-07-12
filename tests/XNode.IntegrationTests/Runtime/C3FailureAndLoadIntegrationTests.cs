@@ -388,11 +388,13 @@ public sealed class C3FailureAndLoadIntegrationTests
 
     private static RouterRuntime CreateRuntime(string root)
     {
-        var localRouterId = TestData.Id(250);
+        const string identitySeed = "f0e0d0c0b0a090807060504030201000102030405060708090a0b0c0d0e0f001";
+        var localRouterId = RelayContactSigner.DeriveRouterId(identitySeed);
         var node = new RouterNodeOptions
         {
             DataDirectory = root,
             RouterId = localRouterId.Value,
+            Ed25519PrivateKey = identitySeed,
             IsRelay = true,
             Network = "testnet"
         };

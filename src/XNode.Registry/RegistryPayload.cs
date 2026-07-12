@@ -8,7 +8,7 @@ public sealed record RegistryPayload(
     VlessTransportMode TransportMode,
     string PublicHost,
     int PublicPort,
-    RealityMetadata? Reality,
+    RealityPublicMetadata? Reality,
     TlsMetadata? Tls,
     string[] Capabilities,
     int ConfigVersion,

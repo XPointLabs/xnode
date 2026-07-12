@@ -70,11 +70,44 @@ public sealed class NodeDbPersistenceTests
             await db.UpsertAsync(TestData.Contact(1, "10.1.1.1"));
             await db.UpsertAsync(TestData.Contact(2, "10.1.2.1"));
             await db.UpsertAsync(TestData.Contact(3, "10.1.3.1"));
-            db.LoadRegisteredRelaysFallback();
+            db.SetRegisteredRelays([TestData.Id(1), TestData.Id(2), TestData.Id(3)]);
 
             var closest = db.FindManyClosestTo(TestData.Id(0), 2);
 
             Assert.Equal(new[] { TestData.Id(1), TestData.Id(2) }, closest);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task NodeDb_ConcurrentUpdatesPersistTheNewestContactWithoutTempCollisions()
+    {
+        var root = NewTempDirectory();
+        try
+        {
+            var options = Options(root);
+            var db = new XNode.Core.NodeDb.NodeDb(options, new FixedClock(TestData.Now));
+            await db.InitializeAsync();
+
+            var updates = Enumerable.Range(0, 12)
+                .Select(index => TestData.Contact(1, $"10.2.0.{index + 1}", 1200 + index, signedMinutes: index * 2))
+                .ToArray();
+            await Task.WhenAll(updates.Select(contact => db.UpsertAsync(contact)));
+
+            var expected = db.GetContact(TestData.Id(1));
+            Assert.NotNull(expected);
+
+            var recovered = new XNode.Core.NodeDb.NodeDb(options, new FixedClock(TestData.Now));
+            await recovered.InitializeAsync();
+            var persisted = recovered.GetContact(TestData.Id(1));
+
+            Assert.NotNull(persisted);
+            Assert.Equal(expected.SignedAt, persisted.SignedAt);
+            Assert.Equal(expected.PublicHost, persisted.PublicHost);
+            Assert.Empty(Directory.EnumerateFiles(Path.Combine(root, "nodedb"), "*.tmp"));
         }
         finally
         {

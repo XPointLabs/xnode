@@ -3,6 +3,7 @@ using XNode.Core;
 using XNode.Core.Onion;
 using System.Text.Json;
 using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.RateLimiting;
 using XNode.Core.NodeDb;
 using XNode.Core.Paths;
@@ -73,7 +74,8 @@ builder.Services.AddSingleton<ISessionStorageRpcBackend>(_ =>
     string.IsNullOrWhiteSpace(storageRpcOptions.BaseUrl)
         ? new DisabledSessionStorageRpcBackend()
         : new HttpSessionStorageRpcBackend(new HttpClient(), storageRpcOptions));
-builder.Services.AddHttpClient<IOnionPeerClient, HttpOnionPeerClient>();
+builder.Services.AddHttpClient<IOnionPeerClient, HttpOnionPeerClient>()
+    .ConfigurePrimaryHttpMessageHandler(() => OnionPeerHttpHandler.Create(runtimeOptions));
 builder.Services.AddSingleton<ILocalRelayContactProvider, LocalRelayContactProvider>();
 builder.Services.AddSingleton<RouterRuntime>();
 builder.Services.AddSingleton<IRouterRuntime>(provider => provider.GetRequiredService<RouterRuntime>());
@@ -97,10 +99,12 @@ builder.Services.AddRateLimiter(options =>
         context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
         _ => new FixedWindowRateLimiterOptions
         {
-            PermitLimit = 240,
-            Window = TimeSpan.FromMinutes(1),
-            QueueLimit = 16,
-            QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+            PermitLimit = Math.Max(1, runtimeOptions.PublicApiPermitLimit),
+            Window = runtimeOptions.PublicApiRateLimitWindow <= TimeSpan.Zero
+                ? TimeSpan.FromMinutes(1)
+                : runtimeOptions.PublicApiRateLimitWindow,
+            QueueLimit = 0,
+            QueueProcessingOrder = QueueProcessingOrder.NewestFirst,
             AutoReplenishment = true
         }));
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
@@ -128,6 +132,27 @@ app.Use(async (context, next) =>
     {
         context.Response.StatusCode = StatusCodes.Status404NotFound;
         return;
+    }
+
+    await next(context);
+});
+app.Use(async (context, next) =>
+{
+    var path = context.Request.Path;
+    if (path.Equals("/api/session/rpc") || path.Equals("/api/peer/onion"))
+    {
+        var maxBodyBytes = Math.Max(1, runtimeOptions.MaxPeerRequestBodyBytes);
+        if (context.Request.ContentLength is > 0 and var contentLength && contentLength > maxBodyBytes)
+        {
+            context.Response.StatusCode = StatusCodes.Status413PayloadTooLarge;
+            return;
+        }
+
+        var feature = context.Features.Get<IHttpMaxRequestBodySizeFeature>();
+        if (feature is { IsReadOnly: false })
+        {
+            feature.MaxRequestBodySize = maxBodyBytes;
+        }
     }
 
     await next(context);
@@ -215,11 +240,12 @@ app.MapPost("/api/session/rpc", async (
 {
     var response = await runtime.HandleRpcAsync(request, cancellationToken);
     return response.Success ? Results.Ok(response) : Results.BadRequest(response);
-});
+}).RequireRateLimiting("peer-onion");
 
 app.MapPost("/api/peer/onion", async (
     SignedOnionPeerRequest request,
     NodeDb nodeDb,
+    RouterNodeOptions node,
     IClock clock,
     OnionPeerReplayGuard replayGuard,
     IRouterRuntime runtime,
@@ -227,15 +253,17 @@ app.MapPost("/api/peer/onion", async (
 {
     var now = clock.UtcNow;
     if (!RouterId.TryParse(request.SenderRouterId, out var senderId)
+        || !RouterId.TryParse(request.RecipientRouterId, out var recipientId)
+        || recipientId != node.GetRouterId()
         || !SignedOnionPeerRequestAuthenticator.Verify(request, now))
     {
         return Results.Unauthorized();
     }
 
     var senderContact = nodeDb.GetContact(senderId);
-    if (senderContact is null
-        || senderContact.IsExpired(now)
-        || !RelayContactSigner.Verify(senderContact))
+    if (!nodeDb.IsRegistered(senderId)
+        || senderContact is null
+        || !RelayContactSigner.VerifyFresh(senderContact, now))
     {
         return Results.Unauthorized();
     }
