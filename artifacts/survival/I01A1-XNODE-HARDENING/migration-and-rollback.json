@@ -4,7 +4,8 @@
   "migration": [
     "Set Runtime:ProductionPublicPeerPorts to the minimal HTTPS port set.",
     "Implement and inject a registry-backed endpoint ownership authorizer before production routing is enabled.",
-    "Keep the current deny-all production authorizer while ownership proof is unavailable."
+    "Keep the current deny-all production authorizer while ownership proof is unavailable.",
+    "For private-only UAT, set Runtime:AllowPublicPeerEndpoints=false and enforce network-layer public-egress denial."
   ],
   "dataMigration": "none",
   "rollback": [
