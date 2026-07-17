@@ -123,14 +123,15 @@ Until those items are closed, the correct answer to “is the router fully produ
 ## Health
 
 - `GET /health/live`: process liveness.
-- `GET /health/ready`: runtime plus Xray readiness.
+- `GET /health/ready`: runtime, Xray, and production public-peer authorization readiness.
 - `GET /status`: runtime status, Xray supervisor status, and current registry payload.
 
 Readiness semantics for transport failover:
 
-- `ready=true` when runtime is `running` and transport is either `running` or `degraded`.
+- `ready=true` when runtime is `running`, transport is either `running` or `degraded`, and Production public-peer authorization is in verified-ticket mode.
 - `degraded` means Xray hit restart limit inside `failureWindow` and entered cooldown before next retry.
 - `transportMode` in readiness payload exposes current supervisor mode (`running`, `restarting`, `degraded`, and related states).
+- `publicPeerAuthorizationMode` exposes `DenyAll`, `UnverifiedNonProduction`, or the future `VerifiedTickets` mode. Production `DenyAll` deliberately returns `503`.
 
 ## Session RPC Ingress
 
@@ -232,7 +233,8 @@ Default profile values are defined in `appsettings.json` and can be overridden p
 
 4. Verify readiness/registry behavior during degraded state:
 
-  - `GET /health/ready` stays `200` with `degraded=true` and `transportMode="degraded"`.
+  - In non-Production, `GET /health/ready` stays `200` with `degraded=true` and `transportMode="degraded"`.
+  - In Production, `DenyAll` public-peer authorization overrides transport health and keeps readiness at `503`.
   - `registry.transport` in `GET /status` mirrors supervisor metadata (`mode`, `degraded`, `restartCount`, `lastExitReason`).
 
 ## Registry Heartbeat

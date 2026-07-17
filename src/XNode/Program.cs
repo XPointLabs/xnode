@@ -28,7 +28,8 @@ var heartbeatOptions = builder.Configuration.GetSection("RegistryHeartbeat").Get
     ?? new RegistrationHeartbeatOptions();
 var registrationOptions = builder.Configuration.GetSection("RegistryRegistration").Get<RegistryRegistrationOptions>()
     ?? new RegistryRegistrationOptions();
-IPublicPeerEndpointAuthorizer publicPeerEndpointAuthorizer = builder.Environment.IsProduction()
+IPublicPeerEndpointAuthorizer publicPeerEndpointAuthorizer =
+    builder.Environment.IsProduction() || !runtimeOptions.AllowPublicPeerEndpoints
     ? DenyAllPublicPeerEndpointAuthorizer.Instance
     : AllowAllPublicPeerEndpointAuthorizer.Instance;
 var peerEndpointPolicy = PeerEndpointPolicy.Create(

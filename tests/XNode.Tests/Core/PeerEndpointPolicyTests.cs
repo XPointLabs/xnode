@@ -169,6 +169,28 @@ public sealed class PeerEndpointPolicyTests
         Assert.Equal("blocked-onion-peer-endpoint", wrongRouterError);
     }
 
+    [Fact]
+    public void PrivateOnlyUatPolicy_AllowsExactTupleAndRejectsPublicPeers()
+    {
+        var recipient = Id(2);
+        var policy = PeerEndpointPolicy.Create(
+            UatOptions(recipient, "10.20.30.40", 8081),
+            new RouterNodeOptions { Network = "uat" },
+            "UAT",
+            DenyAllPublicPeerEndpointAuthorizer.Instance);
+
+        Assert.True(policy.TryValidatePeerEndpoint(
+            recipient,
+            new Uri("http://10.20.30.40:8081/api/peer/onion"),
+            out _));
+        Assert.False(policy.TryValidatePeerEndpoint(
+            Id(3),
+            new Uri("https://8.8.8.8/api/peer/onion"),
+            out var publicError));
+        Assert.Equal("unverified-onion-peer-endpoint", publicError);
+        Assert.Equal(PublicPeerAuthorizationMode.DenyAll, policy.PublicAuthorizationMode);
+    }
+
     [Theory]
     [InlineData("http://10.20.30.41:8081/api/peer/onion")]
     [InlineData("http://10.20.30.40:8082/api/peer/onion")]

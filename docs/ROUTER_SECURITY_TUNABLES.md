@@ -15,6 +15,7 @@
 | `AllowLoopbackPeerEndpoints` | false | Legacy setting. Any `true` value now fails startup; loopback onion peers are always blocked. |
 | `EnablePrivatePeerEndpoints` | false | Enables exact RFC1918 peer tuples only after all non-production guards pass. |
 | `ProductionPublicPeerPorts` | `[443]` | Exact HTTPS ports eligible for production public peer RPC after endpoint-ownership proof. |
+| `AllowPublicPeerEndpoints` | true | Non-production composition switch. Set false for an isolated private-only UAT; Production ignores true and remains fail-closed. |
 | `PrivatePeerNetworkIdentity` | empty | Must exactly match `Node:Network`, which must be one of `uat`, `testnet`, `local`, `development`, or `ci`. |
 | `PrivatePeerEndpointAllowlist` | empty | Exact tuples of `routerId`, literal RFC1918 IPv4 `/32`, port, and `/api/peer/onion` path. |
 
@@ -52,6 +53,11 @@ until the UAT environment identity is explicit.
 Each router needs one tuple for every private recipient it may contact. The advertised relay contact must use that same literal address, port, path, and router identity. Neighboring addresses, a different port/path/router, loopback, IPv6 ULA, and non-RFC1918 addresses do not match.
 
 The process fails startup when this feature is enabled under `Production`, when `Node:Network` is `mainnet`, when the two network identities do not match, or when any tuple is malformed. The default is empty and disabled. Do not set these values in a production configuration overlay.
+
+For a private-only UAT, also set `Runtime:AllowPublicPeerEndpoints=false`.
+This installs the deny-all public authorizer while retaining exact RFC1918
+tuples. Network policy must additionally deny public egress as defense in
+depth.
 
 ## Production public peer proof
 
