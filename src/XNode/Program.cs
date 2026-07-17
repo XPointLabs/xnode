@@ -182,10 +182,24 @@ app.MapGet("/health/ready", (IRouterRuntime runtime, IXraySupervisor xray) =>
         concreteRuntime.SetXrayReady(transportReady);
     }
 
-    var ready = status.State == "running" && transportReady;
+    var publicPeerRoutingReady = peerEndpointPolicy.IsProductionPublicRoutingReady;
+    var ready = status.State == "running" && transportReady && publicPeerRoutingReady;
     return ready
-        ? Results.Ok(new { ready = true, degraded = xrayStatus.Degraded, transportMode = xrayStatus.Mode })
-        : Results.Json(new { ready = false, status, xray = xrayStatus }, statusCode: StatusCodes.Status503ServiceUnavailable);
+        ? Results.Ok(new
+        {
+            ready = true,
+            degraded = xrayStatus.Degraded,
+            transportMode = xrayStatus.Mode,
+            publicPeerAuthorizationMode = peerEndpointPolicy.PublicAuthorizationMode.ToString()
+        })
+        : Results.Json(new
+        {
+            ready = false,
+            status,
+            xray = xrayStatus,
+            publicPeerRoutingReady,
+            publicPeerAuthorizationMode = peerEndpointPolicy.PublicAuthorizationMode.ToString()
+        }, statusCode: StatusCodes.Status503ServiceUnavailable);
 });
 
 app.MapGet("/status", (IRouterRuntime runtime, IXraySupervisor xray, RegistryPayloadFactory registryPayloadFactory) =>
@@ -194,6 +208,8 @@ app.MapGet("/status", (IRouterRuntime runtime, IXraySupervisor xray, RegistryPay
     {
         router = runtime.Status,
         xray = xray.Status,
+        publicPeerAuthorizationMode = peerEndpointPolicy.PublicAuthorizationMode.ToString(),
+        productionPublicRoutingReady = peerEndpointPolicy.IsProductionPublicRoutingReady,
         registryPayload = registryPayloadFactory.Create()
     });
 });

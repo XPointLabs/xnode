@@ -71,6 +71,11 @@ Production construction also requires an
 allow-all implementation does not implement that capability and is rejected
 at startup.
 
+`/health/ready` and `/status` expose the effective public-peer authorization
+mode. A Production process using the safe `DenyAll` fallback is deliberately
+not ready (HTTP 503), because it cannot forward public peer traffic. Only the
+future `VerifiedTickets` mode can make Production public routing ready.
+
 IPv6 peer resolution accepts only assigned global-unicast space and rejects
 NAT64, Teredo, 6to4, ORCHID, benchmarking, documentation, ULA, link-local and
 other special-purpose ranges. This validation is repeated immediately before

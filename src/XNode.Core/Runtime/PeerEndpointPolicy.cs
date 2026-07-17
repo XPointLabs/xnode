@@ -21,6 +21,13 @@ public sealed class PeerEndpointPolicy
     private readonly IPublicPeerEndpointAuthorizer _publicPeerEndpointAuthorizer;
     private readonly bool _isProduction;
 
+    public PublicPeerAuthorizationMode PublicAuthorizationMode =>
+        _publicPeerEndpointAuthorizer.Mode;
+
+    public bool IsProductionPublicRoutingReady =>
+        !_isProduction
+        || PublicAuthorizationMode == PublicPeerAuthorizationMode.VerifiedTickets;
+
     private PeerEndpointPolicy(
         IEnumerable<PrivatePeerEndpointTuple> privatePeerEndpoints,
         IEnumerable<int> productionPublicPeerPorts,
@@ -358,6 +365,8 @@ public sealed class PeerEndpointPolicy
 
 public interface IPublicPeerEndpointAuthorizer
 {
+    PublicPeerAuthorizationMode Mode { get; }
+
     bool IsAuthorized(RouterId routerId, Uri endpoint);
 
     bool IsResolvedAddressAuthorized(RouterId routerId, Uri endpoint, IPAddress resolvedAddress);
@@ -367,6 +376,13 @@ public interface IProductionPublicPeerEndpointAuthorizer : IPublicPeerEndpointAu
 {
 }
 
+public enum PublicPeerAuthorizationMode
+{
+    UnverifiedNonProduction,
+    DenyAll,
+    VerifiedTickets
+}
+
 public sealed class AllowAllPublicPeerEndpointAuthorizer : IPublicPeerEndpointAuthorizer
 {
     public static AllowAllPublicPeerEndpointAuthorizer Instance { get; } = new();
@@ -374,6 +390,9 @@ public sealed class AllowAllPublicPeerEndpointAuthorizer : IPublicPeerEndpointAu
     private AllowAllPublicPeerEndpointAuthorizer()
     {
     }
+
+    public PublicPeerAuthorizationMode Mode =>
+        PublicPeerAuthorizationMode.UnverifiedNonProduction;
 
     public bool IsAuthorized(RouterId routerId, Uri endpoint) => true;
 
@@ -390,6 +409,9 @@ public sealed class DenyAllPublicPeerEndpointAuthorizer : IProductionPublicPeerE
     private DenyAllPublicPeerEndpointAuthorizer()
     {
     }
+
+    public PublicPeerAuthorizationMode Mode =>
+        PublicPeerAuthorizationMode.DenyAll;
 
     public bool IsAuthorized(RouterId routerId, Uri endpoint) => false;
 

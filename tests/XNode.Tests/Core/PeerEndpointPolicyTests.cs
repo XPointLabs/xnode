@@ -92,6 +92,8 @@ public sealed class PeerEndpointPolicyTests
             new Uri("https://8.8.8.8/api/peer/onion"),
             out var proofError));
         Assert.Equal("unverified-onion-peer-endpoint", proofError);
+        Assert.Equal(PublicPeerAuthorizationMode.DenyAll, denied.PublicAuthorizationMode);
+        Assert.False(denied.IsProductionPublicRoutingReady);
         Assert.False(denied.IsResolvedAddressAllowed(
             router,
             new Uri("https://peer.example/api/peer/onion"),
@@ -100,6 +102,8 @@ public sealed class PeerEndpointPolicyTests
             router,
             new Uri("https://8.8.8.8/api/peer/onion"),
             out _));
+        Assert.Equal(PublicPeerAuthorizationMode.VerifiedTickets, allowed.PublicAuthorizationMode);
+        Assert.True(allowed.IsProductionPublicRoutingReady);
         Assert.True(allowed.IsResolvedAddressAllowed(
             router,
             new Uri("https://peer.example/api/peer/onion"),
@@ -299,6 +303,9 @@ public sealed class PeerEndpointPolicyTests
         : IProductionPublicPeerEndpointAuthorizer
     {
         public static TestProductionPublicPeerEndpointAuthorizer Instance { get; } = new();
+
+        public PublicPeerAuthorizationMode Mode =>
+            PublicPeerAuthorizationMode.VerifiedTickets;
 
         public bool IsAuthorized(RouterId routerId, Uri endpoint) => true;
 
