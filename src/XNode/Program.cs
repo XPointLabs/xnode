@@ -1,11 +1,11 @@
-﻿using XNode;
-using XNode.Core;
-using XNode.Core.Onion;
 using System.Text.Json;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.RateLimiting;
+using XNode;
+using XNode.Core;
 using XNode.Core.NodeDb;
+using XNode.Core.Onion;
 using XNode.Core.Paths;
 using XNode.Core.Runtime;
 using XNode.Core.Session;
@@ -28,6 +28,10 @@ var heartbeatOptions = builder.Configuration.GetSection("RegistryHeartbeat").Get
     ?? new RegistrationHeartbeatOptions();
 var registrationOptions = builder.Configuration.GetSection("RegistryRegistration").Get<RegistryRegistrationOptions>()
     ?? new RegistryRegistrationOptions();
+var peerEndpointPolicy = PeerEndpointPolicy.Create(
+    runtimeOptions,
+    nodeOptions,
+    builder.Environment.EnvironmentName);
 
 VlessProfileGuard.Validate(vlessOptions, builder.Environment.IsDevelopment());
 
@@ -49,6 +53,7 @@ builder.Services.AddSingleton<OnionPeerReplayGuard>();
 builder.Services.AddSingleton(nodeOptions);
 builder.Services.AddSingleton(pathOptions);
 builder.Services.AddSingleton(runtimeOptions);
+builder.Services.AddSingleton(peerEndpointPolicy);
 builder.Services.AddSingleton(vlessOptions);
 builder.Services.AddSingleton(registryBootstrapOptions);
 builder.Services.AddSingleton(storageRpcOptions);
@@ -75,7 +80,7 @@ builder.Services.AddSingleton<ISessionStorageRpcBackend>(_ =>
         ? new DisabledSessionStorageRpcBackend()
         : new HttpSessionStorageRpcBackend(new HttpClient(), storageRpcOptions));
 builder.Services.AddHttpClient<IOnionPeerClient, HttpOnionPeerClient>()
-    .ConfigurePrimaryHttpMessageHandler(() => OnionPeerHttpHandler.Create(runtimeOptions));
+    .ConfigurePrimaryHttpMessageHandler(() => OnionPeerHttpHandler.Create(peerEndpointPolicy));
 builder.Services.AddSingleton<ILocalRelayContactProvider, LocalRelayContactProvider>();
 builder.Services.AddSingleton<RouterRuntime>();
 builder.Services.AddSingleton<IRouterRuntime>(provider => provider.GetRequiredService<RouterRuntime>());

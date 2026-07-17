@@ -148,6 +148,25 @@ Supported first-pass methods are `status`, `path_ping`, `fetch_rids`, `fetch_rcs
 
 Runtime now also accepts `report_path_result` to feed churn/failure outcomes back into path repair.
 
+## Private Peer Endpoints for UAT
+
+Public/mainnet nodes must advertise a publicly routable peer RPC URL with the exact
+`/api/peer/onion` path. A local Docker UAT may instead enable the exact private-peer
+policy documented in `docs/ROUTER_SECURITY_TUNABLES.md`.
+
+The exception is deliberately narrow:
+
+- it binds the recipient router ID to one literal RFC1918 IPv4 `/32`, port, and exact path;
+- the same immutable policy filters route contacts and the socket address used for the connection;
+- it is disabled by default and fails startup in `Production`, on `mainnet`, or when the explicit test network identities differ;
+- loopback, private DNS names, DNS rebinding, link-local/cloud metadata, multicast, unspecified addresses, redirects, and proxies remain blocked.
+
+For UAT, set `DOTNET_ENVIRONMENT=UAT`, then set `Node:Network` and
+`Runtime:PrivatePeerNetworkIdentity` to the same explicit test identity (normally `uat`)
+and supply the complete per-recipient allowlist. Mr. X
+owns approval of that UAT inventory. Remove the entire allowlist and disable the feature
+before promoting a configuration to production.
+
 ## Runtime Metrics
 
 `GET /status` now includes `router.metrics` counters for key runtime flows:

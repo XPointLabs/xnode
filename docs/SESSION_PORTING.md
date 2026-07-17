@@ -54,6 +54,7 @@ For each ported behavior:
 - Relay contact self-signatures prove contact integrity, key possession, and freshness only. They are never registry or membership authorization.
 - Session RPC responses add `xpoint-rpc-response-v1` metadata signed by the responder Ed25519 identity. The signature binds the pinned responder, request id/method/nonce/payload digest, issuance time, success state, and result/error digest.
 - A future quorum-backed catalog checkpoint may replace the current registered-catalog authorization source. Route trust v1 does not implement a Merkle or on-chain catalog checkpoint.
+- Route contacts and the actual peer socket share one endpoint policy. Public endpoints remain the default. A non-production UAT/test network may explicitly bind a recipient router ID to one literal RFC1918 IPv4 `/32`, port, and exact `/api/peer/onion` path. The exception is unavailable in `Production` and on `mainnet`; hostnames never inherit it after private DNS resolution or rebinding.
 
 ## Stop-The-Line Conditions
 

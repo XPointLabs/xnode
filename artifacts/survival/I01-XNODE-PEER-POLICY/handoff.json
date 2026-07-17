@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "survival-handoff-v1",
+  "programRevisionSha": "ca5ad9f0c9d4dfb509dedcbf8133524c15867fce5534816da21ff86a07057383",
+  "workPackage": "I01-XNODE-PEER-POLICY",
+  "repository": "xnode",
+  "baseSha": "2980c15c1901d7569f5ba025912ab019c1058407",
+  "resultCommit": "the single local commit containing this handoff",
+  "dependencyHashes": {},
+  "featureFlag": "Runtime:EnablePrivatePeerEndpoints",
+  "migrationPhase": "UAT configuration integration pending in deep-devops",
+  "tests": {
+    "focusedPassed": 28,
+    "fullPassed": 82,
+    "failed": 0
+  },
+  "rollback": "Disable and clear the UAT-only configuration, restore public endpoints, or revert the single local commit.",
+  "blockers": [],
+  "nextConsumerTask": "Update deep-devops UAT compose generation with stable private IPs, exact router-bound allowlists, matching uat identities, and a three-node onion smoke test."
+}

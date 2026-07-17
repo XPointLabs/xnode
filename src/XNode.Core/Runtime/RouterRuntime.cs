@@ -1,12 +1,12 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using XNode.Core.NodeDb;
 using XNode.Core.Onion;
 using XNode.Core.Paths;
 using XNode.Core.Session;
-using Microsoft.Extensions.Logging;
 using NodeDatabase = XNode.Core.NodeDb.NodeDb;
 
 namespace XNode.Core.Runtime;
@@ -21,6 +21,7 @@ public sealed class RouterRuntime : IRouterRuntime
     private readonly IStorageBackend _storageBackend;
     private readonly ISessionStorageRpcBackend _sessionStorageRpcBackend;
     private readonly IOnionPeerClient _onionPeerClient;
+    private readonly PeerEndpointPolicy _peerEndpointPolicy;
     private readonly ILocalRelayContactProvider? _localRelayContactProvider;
     private readonly PathSelector _pathSelector;
     private readonly IClock _clock;
@@ -60,7 +61,8 @@ public sealed class RouterRuntime : IRouterRuntime
         PathSelector pathSelector,
         IClock? clock = null,
         ILogger<RouterRuntime>? logger = null,
-        ILocalRelayContactProvider? localRelayContactProvider = null)
+        ILocalRelayContactProvider? localRelayContactProvider = null,
+        PeerEndpointPolicy? peerEndpointPolicy = null)
     {
         _nodeOptions = nodeOptions;
         _runtimeOptions = runtimeOptions;
@@ -69,6 +71,7 @@ public sealed class RouterRuntime : IRouterRuntime
         _storageBackend = storageBackend;
         _sessionStorageRpcBackend = sessionStorageRpcBackend ?? new DisabledSessionStorageRpcBackend();
         _onionPeerClient = onionPeerClient ?? new DisabledOnionPeerClient();
+        _peerEndpointPolicy = peerEndpointPolicy ?? PeerEndpointPolicy.PublicOnly();
         _localRelayContactProvider = localRelayContactProvider;
         _pathSelector = pathSelector;
         _clock = clock ?? new SystemClock();
@@ -770,7 +773,7 @@ public sealed class RouterRuntime : IRouterRuntime
             || string.IsNullOrWhiteSpace(contact.X25519PublicKey)
             || string.IsNullOrWhiteSpace(contact.RpcEndpoint)
             || !Uri.TryCreate(contact.RpcEndpoint, UriKind.Absolute, out var endpoint)
-            || !PeerEndpointPolicy.TryValidateUri(endpoint, _runtimeOptions.AllowLoopbackPeerEndpoints, out _))
+            || !_peerEndpointPolicy.TryValidatePeerEndpoint(contact.RouterId, endpoint, out _))
         {
             return false;
         }

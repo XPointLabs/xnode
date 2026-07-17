@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Json;
 using System.Text.Json;
 using XNode;
 using XNode.Core;
@@ -30,7 +31,7 @@ public sealed class HttpOnionPeerClientSecurityTests
 
         var response = await peer.ForwardAsync(
             Id(2),
-            "http://169.254.169.254/latest/meta-data",
+            "http://169.254.169.254/api/peer/onion",
             Request(),
             CancellationToken.None);
 
@@ -60,7 +61,57 @@ public sealed class HttpOnionPeerClientSecurityTests
         Assert.Equal(1, handler.Requests);
     }
 
-    private static HttpOnionPeerClient CreatePeer(HttpClient client)
+    [Fact]
+    public async Task ForwardAsync_AllowsOnlyTheExactPrivateTupleBoundToRecipient()
+    {
+        var recipient = Id(2);
+        var handler = new CountingHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = JsonContent.Create(SessionRpcResponse.Ok("onion-forward", new { accepted = true }))
+        });
+        using var client = new HttpClient(handler);
+        var peer = CreatePeer(client, CreateUatPolicy(recipient));
+
+        var allowed = await peer.ForwardAsync(
+            recipient,
+            "http://10.20.30.40:8081/api/peer/onion",
+            Request(),
+            CancellationToken.None);
+        var wrongRecipient = await peer.ForwardAsync(
+            Id(3),
+            "http://10.20.30.40:8081/api/peer/onion",
+            Request(),
+            CancellationToken.None);
+
+        Assert.True(allowed.Success);
+        Assert.False(wrongRecipient.Success);
+        Assert.Equal("blocked-onion-peer-endpoint", wrongRecipient.Error);
+        Assert.Equal(1, handler.Requests);
+    }
+
+    [Fact]
+    public async Task Handler_BlocksHostnameThatResolvesToPrivateAtConnectTime()
+    {
+        var policy = PeerEndpointPolicy.PublicOnly();
+        using var client = new HttpClient(OnionPeerHttpHandler.Create(policy))
+        {
+            Timeout = TimeSpan.FromSeconds(5)
+        };
+        var peer = CreatePeer(client, policy);
+
+        var response = await peer.ForwardAsync(
+            Id(2),
+            "http://localhost:65534/api/peer/onion",
+            Request(),
+            CancellationToken.None);
+
+        Assert.False(response.Success);
+        Assert.Equal("onion-peer-transport-failed", response.Error);
+    }
+
+    private static HttpOnionPeerClient CreatePeer(
+        HttpClient client,
+        PeerEndpointPolicy? peerEndpointPolicy = null)
     {
         const string seed = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
         return new HttpOnionPeerClient(
@@ -71,8 +122,28 @@ public sealed class HttpOnionPeerClientSecurityTests
                 Ed25519PrivateKey = seed
             },
             new RouterRuntimeOptions(),
+            peerEndpointPolicy ?? PeerEndpointPolicy.PublicOnly(),
             new FixedClock(new DateTimeOffset(2026, 5, 28, 12, 0, 0, TimeSpan.Zero)));
     }
+
+    private static PeerEndpointPolicy CreateUatPolicy(RouterId recipient) =>
+        PeerEndpointPolicy.Create(
+            new RouterRuntimeOptions
+            {
+                EnablePrivatePeerEndpoints = true,
+                PrivatePeerNetworkIdentity = "uat",
+                PrivatePeerEndpointAllowlist =
+                [
+                    new PrivatePeerEndpointAllowlistEntry
+                    {
+                        RouterId = recipient.Value,
+                        IpAddress = "10.20.30.40",
+                        Port = 8081
+                    }
+                ]
+            },
+            new RouterNodeOptions { Network = "uat" },
+            "UAT");
 
     private static OnionRequest Request() => new(new OnionEnvelope(
         "xpoint-onion-v1",

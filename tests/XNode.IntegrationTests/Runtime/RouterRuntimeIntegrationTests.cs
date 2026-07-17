@@ -1,12 +1,12 @@
-﻿using System.Text.Json;
+using System.Text.Json;
+using Microsoft.Extensions.Logging.Abstractions;
+using Sodium;
 using XNode.Core;
 using XNode.Core.NodeDb;
 using XNode.Core.Onion;
 using XNode.Core.Paths;
 using XNode.Core.Runtime;
 using XNode.Core.Session;
-using Microsoft.Extensions.Logging.Abstractions;
-using Sodium;
 
 namespace XNode.IntegrationTests.Runtime;
 
@@ -396,7 +396,8 @@ public sealed class RouterRuntimeIntegrationTests
         RouterRuntimeOptions? runtimeOptions = null,
         PathSelectionOptions? pathOptions = null,
         ISessionStorageRpcBackend? sessionStorageRpc = null,
-        IOnionPeerClient? onionPeerClient = null)
+        IOnionPeerClient? onionPeerClient = null,
+        PeerEndpointPolicy? peerEndpointPolicy = null)
     {
         var nodeDb = new XNode.Core.NodeDb.NodeDb(
             new NodeDbOptions
@@ -417,7 +418,9 @@ public sealed class RouterRuntimeIntegrationTests
             onionPeerClient,
             new PathSelector(),
             new FixedClock(TestData.Now),
-            NullLogger<RouterRuntime>.Instance);
+            NullLogger<RouterRuntime>.Instance,
+            localRelayContactProvider: null,
+            peerEndpointPolicy: peerEndpointPolicy);
     }
 
     private static RouterNodeOptions NodeOptions(string root)
@@ -550,8 +553,80 @@ public sealed class RouterRuntimeIntegrationTests
         }
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Runtime_StorageRouteUsesTheSameExactPrivatePeerPolicyAsConnect(bool exactSecondTuple)
+    {
+        var root = NewTempDirectory();
+        try
+        {
+            var local = NodeOptions(root);
+            var privateOne = NodeOptionsFromSeed(
+                root,
+                Seed(21),
+                "http://10.20.30.41:8081/api/peer/onion");
+            var privateTwo = NodeOptionsFromSeed(
+                root,
+                Seed(42),
+                "http://10.20.30.42:8082/api/peer/onion");
+            var runtimeOptions = new RouterRuntimeOptions
+            {
+                BootstrapFromStorage = true,
+                RequireSignedRelayContacts = true,
+                EnablePrivatePeerEndpoints = true,
+                PrivatePeerNetworkIdentity = "testnet",
+                PrivatePeerEndpointAllowlist =
+                [
+                    new PrivatePeerEndpointAllowlistEntry
+                    {
+                        RouterId = privateOne.RouterId,
+                        IpAddress = "10.20.30.41",
+                        Port = 8081
+                    },
+                    new PrivatePeerEndpointAllowlistEntry
+                    {
+                        RouterId = privateTwo.RouterId,
+                        IpAddress = "10.20.30.42",
+                        Port = exactSecondTuple ? 8082 : 8081
+                    }
+                ]
+            };
+            var policy = PeerEndpointPolicy.Create(runtimeOptions, local, "Staging");
+            var runtime = CreateRuntime(
+                root,
+                local,
+                new FakeStorageBackend(
+                    SignedContact(local),
+                    SignedContact(privateOne),
+                    SignedContact(privateTwo)),
+                runtimeOptions,
+                new PathSelectionOptions { ClientHops = 3 },
+                peerEndpointPolicy: policy);
+
+            await runtime.StartAsync(CancellationToken.None);
+            var request = new SessionRpcRequest(
+                $"private-route-{exactSecondTuple}",
+                "storage_route",
+                JsonSerializer.SerializeToElement(new { routeNonce = new string('4', 64) }, SessionRpc.JsonOptions),
+                "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd");
+            var response = await runtime.HandleRpcAsync(request, CancellationToken.None);
+
+            Assert.Equal(exactSecondTuple, response.Success);
+            Assert.Equal(exactSecondTuple ? null : "path-not-found", response.Error);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     private static RouterNodeOptions NodeOptionsFromSeed(string root, string seed, string rpcEndpoint)
     {
+        var parsedEndpoint = new Uri(rpcEndpoint);
+        var normalizedEndpoint = parsedEndpoint.AbsolutePath == "/"
+            ? new UriBuilder(parsedEndpoint) { Path = PeerEndpointPolicy.OnionPeerPath }.Uri.AbsoluteUri
+            : parsedEndpoint.AbsoluteUri;
         return new RouterNodeOptions
         {
             DataDirectory = root,
@@ -559,9 +634,9 @@ public sealed class RouterRuntimeIntegrationTests
             Ed25519PrivateKey = seed,
             IsRelay = true,
             Network = "testnet",
-            PublicHost = new Uri(rpcEndpoint).Host,
+            PublicHost = parsedEndpoint.Host,
             PublicPort = 443,
-            PublicPeerRpcEndpoint = rpcEndpoint
+            PublicPeerRpcEndpoint = normalizedEndpoint
         };
     }
 
@@ -583,7 +658,7 @@ public sealed class RouterRuntimeIntegrationTests
             PublicIp = ip,
             PublicPort = 1190,
             X25519PublicKey = Convert.ToHexString(onionKeyBytes).ToLowerInvariant(),
-            RpcEndpoint = $"http://router-{id}:8080",
+            RpcEndpoint = $"http://router-{id}:8080{PeerEndpointPolicy.OnionPeerPath}",
             SignedAt = TestData.Now,
             ExpiresAt = TestData.Now.AddDays(1),
             Capabilities = ["session-rpc", "onion-v1"]

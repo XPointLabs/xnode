@@ -12,21 +12,26 @@ namespace XNode;
 public sealed class HttpOnionPeerClient : IOnionPeerClient
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    internal static readonly HttpRequestOptionsKey<string> RecipientRouterIdOption =
+        new("XNode.OnionPeer.RecipientRouterId");
 
     private readonly HttpClient _httpClient;
     private readonly RouterNodeOptions _nodeOptions;
     private readonly RouterRuntimeOptions _runtimeOptions;
+    private readonly PeerEndpointPolicy _peerEndpointPolicy;
     private readonly IClock _clock;
 
     public HttpOnionPeerClient(
         HttpClient httpClient,
         RouterNodeOptions nodeOptions,
         RouterRuntimeOptions runtimeOptions,
+        PeerEndpointPolicy peerEndpointPolicy,
         IClock clock)
     {
         _httpClient = httpClient;
         _nodeOptions = nodeOptions;
         _runtimeOptions = runtimeOptions;
+        _peerEndpointPolicy = peerEndpointPolicy;
         _clock = clock;
     }
 
@@ -38,9 +43,7 @@ public sealed class HttpOnionPeerClient : IOnionPeerClient
     {
         var endpointError = "invalid-onion-peer-endpoint";
         if (!Uri.TryCreate(rpcEndpoint.Trim(), UriKind.Absolute, out var uri)
-            || !PeerEndpointPolicy.TryValidateUri(uri, _runtimeOptions.AllowLoopbackPeerEndpoints, out endpointError)
-            || !string.Equals(uri.AbsolutePath, "/api/peer/onion", StringComparison.Ordinal)
-            || !string.IsNullOrEmpty(uri.Query))
+            || !_peerEndpointPolicy.TryValidatePeerEndpoint(recipientRouterId, uri, out endpointError))
         {
             return SessionRpcResponse.Fail("onion-forward", endpointError);
         }
@@ -56,6 +59,7 @@ public sealed class HttpOnionPeerClient : IOnionPeerClient
         {
             using var content = JsonContent.Create(signed, options: JsonOptions);
             using var message = new HttpRequestMessage(HttpMethod.Post, uri) { Content = content };
+            message.Options.Set(RecipientRouterIdOption, recipientRouterId.Value);
             using var response = await _httpClient.SendAsync(
                 message,
                 HttpCompletionOption.ResponseHeadersRead,
@@ -120,7 +124,7 @@ public sealed class HttpOnionPeerClient : IOnionPeerClient
 
 public static class OnionPeerHttpHandler
 {
-    public static SocketsHttpHandler Create(RouterRuntimeOptions runtimeOptions)
+    public static SocketsHttpHandler Create(PeerEndpointPolicy peerEndpointPolicy)
     {
         return new SocketsHttpHandler
         {
@@ -128,19 +132,32 @@ public static class OnionPeerHttpHandler
             UseProxy = false,
             ConnectCallback = (context, cancellationToken) => ConnectAsync(
                 context.DnsEndPoint,
-                runtimeOptions.AllowLoopbackPeerEndpoints,
+                context.InitialRequestMessage,
+                peerEndpointPolicy,
                 cancellationToken)
         };
     }
 
     private static async ValueTask<Stream> ConnectAsync(
         DnsEndPoint endpoint,
-        bool allowLoopback,
+        HttpRequestMessage request,
+        PeerEndpointPolicy peerEndpointPolicy,
         CancellationToken cancellationToken)
     {
+        if (request.RequestUri is null
+            || !request.Options.TryGetValue(HttpOnionPeerClient.RecipientRouterIdOption, out var recipientValue)
+            || !RouterId.TryParse(recipientValue, out var recipientRouterId)
+            || !peerEndpointPolicy.TryValidatePeerEndpoint(recipientRouterId, request.RequestUri, out _))
+        {
+            throw new HttpRequestException("Onion peer request is missing a permitted endpoint binding.");
+        }
+
         var addresses = await Dns.GetHostAddressesAsync(endpoint.Host, cancellationToken).ConfigureAwait(false);
         var permitted = addresses
-            .Where(address => PeerEndpointPolicy.IsPubliclyRoutable(address, allowLoopback))
+            .Where(address => peerEndpointPolicy.IsResolvedAddressAllowed(
+                recipientRouterId,
+                request.RequestUri,
+                address))
             .ToArray();
         if (permitted.Length == 0)
         {

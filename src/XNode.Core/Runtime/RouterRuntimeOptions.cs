@@ -1,4 +1,4 @@
-﻿namespace XNode.Core.Runtime;
+namespace XNode.Core.Runtime;
 
 public sealed class RouterRuntimeOptions
 {
@@ -29,4 +29,21 @@ public sealed class RouterRuntimeOptions
     public TimeSpan PublicApiRateLimitWindow { get; set; } = TimeSpan.FromMinutes(1);
 
     public bool AllowLoopbackPeerEndpoints { get; set; }
+
+    public bool EnablePrivatePeerEndpoints { get; set; }
+
+    public string PrivatePeerNetworkIdentity { get; set; } = "";
+
+    public List<PrivatePeerEndpointAllowlistEntry> PrivatePeerEndpointAllowlist { get; set; } = [];
+}
+
+public sealed class PrivatePeerEndpointAllowlistEntry
+{
+    public string RouterId { get; set; } = "";
+
+    public string IpAddress { get; set; } = "";
+
+    public int Port { get; set; }
+
+    public string Path { get; set; } = "/api/peer/onion";
 }
