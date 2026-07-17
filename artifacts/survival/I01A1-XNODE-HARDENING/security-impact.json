@@ -6,12 +6,13 @@
     "Production public endpoints require HTTPS and an explicitly configured port.",
     "The production executable uses deny-all authorization until registry proof is implemented.",
     "Production construction rejects the generic allow-all authorizer capability.",
+    "Production DenyAll mode is exposed in status and forces readiness to HTTP 503.",
     "Only IPv6 2000::/3 global unicast is considered, with explicit rejection of protocol-assignment, benchmark, ORCHID, documentation, 6to4, and other reviewed special ranges.",
     "NAT64 and local-use translation prefixes outside 2000::/3 are rejected.",
     "RouterRuntime cannot silently construct a permissive fallback policy."
   ],
   "residualRisks": [
-    "Registry-backed ownership challenge and periodic revalidation are not yet implemented; production routing therefore remains fail-closed.",
+    "Immutable registry-backed ownership tickets and periodic revalidation are not yet implemented; production routing therefore remains fail-closed and not ready.",
     "The IANA IPv6 special-purpose registry must be tracked and this strict filter updated when allocations change.",
     "Endpoint ownership proves control, not operator trust or benign behavior."
   ],

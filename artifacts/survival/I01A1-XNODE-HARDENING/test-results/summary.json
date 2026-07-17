@@ -1,5 +1,7 @@
 {
   "schemaVersion": "survival-test-results-v1",
+  "subjectCommit": "307c62350314e58be5928fa7b5a5c529e0dd5fb5",
+  "subjectTree": "924e794fc83709e6e296399070ea82eb7322bff2",
   "commands": [
     {
       "command": "dotnet test XNode.slnx --no-restore",

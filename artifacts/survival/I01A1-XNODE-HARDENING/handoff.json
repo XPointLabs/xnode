@@ -4,14 +4,19 @@
   "workPackage": "I01A1-XNODE-HARDENING",
   "repository": "xnode",
   "baseSha": "52c30461bca29e89ae4dd1f30ffbf0f3e4fa89b2",
-  "subjectCommit": "8d958aaa7c3ea7e4aa2e7808beb85c6343eaecba",
-  "subjectTree": "9a8d38118677317812125a0ba892fa29bd77a523",
+  "subjectCommit": "307c62350314e58be5928fa7b5a5c529e0dd5fb5",
+  "subjectTree": "924e794fc83709e6e296399070ea82eb7322bff2",
+  "orderedCommitRange": [
+    "8d958aaa7c3ea7e4aa2e7808beb85c6343eaecba",
+    "a083b1b001304c65c16c635529284fc457bf230d",
+    "307c62350314e58be5928fa7b5a5c529e0dd5fb5"
+  ],
   "dependencyHashes": {
     "baseCommit": "52c30461bca29e89ae4dd1f30ffbf0f3e4fa89b2",
     "baseTree": "9c267868c8b423af7c46fc5360cdf5fa6e4f354a"
   },
   "productionReady": false,
-  "migrationPhase": "production routing intentionally fail-closed pending endpoint ownership proof",
+  "migrationPhase": "production routing intentionally fail-closed and readiness=503 pending immutable endpoint ownership tickets",
   "tests": {
     "fullPassed": 96,
     "failed": 0,
