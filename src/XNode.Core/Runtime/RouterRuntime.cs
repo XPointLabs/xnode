@@ -59,10 +59,10 @@ public sealed class RouterRuntime : IRouterRuntime
         ISessionStorageRpcBackend? sessionStorageRpcBackend,
         IOnionPeerClient? onionPeerClient,
         PathSelector pathSelector,
+        PeerEndpointPolicy peerEndpointPolicy,
         IClock? clock = null,
         ILogger<RouterRuntime>? logger = null,
-        ILocalRelayContactProvider? localRelayContactProvider = null,
-        PeerEndpointPolicy? peerEndpointPolicy = null)
+        ILocalRelayContactProvider? localRelayContactProvider = null)
     {
         _nodeOptions = nodeOptions;
         _runtimeOptions = runtimeOptions;
@@ -71,7 +71,7 @@ public sealed class RouterRuntime : IRouterRuntime
         _storageBackend = storageBackend;
         _sessionStorageRpcBackend = sessionStorageRpcBackend ?? new DisabledSessionStorageRpcBackend();
         _onionPeerClient = onionPeerClient ?? new DisabledOnionPeerClient();
-        _peerEndpointPolicy = peerEndpointPolicy ?? PeerEndpointPolicy.PublicOnly();
+        _peerEndpointPolicy = peerEndpointPolicy ?? throw new ArgumentNullException(nameof(peerEndpointPolicy));
         _localRelayContactProvider = localRelayContactProvider;
         _pathSelector = pathSelector;
         _clock = clock ?? new SystemClock();
@@ -86,6 +86,7 @@ public sealed class RouterRuntime : IRouterRuntime
         IStorageBackend storageBackend,
         ISessionStorageRpcBackend? sessionStorageRpcBackend,
         PathSelector pathSelector,
+        PeerEndpointPolicy peerEndpointPolicy,
         IClock? clock = null,
         ILogger<RouterRuntime>? logger = null,
         ILocalRelayContactProvider? localRelayContactProvider = null)
@@ -98,6 +99,7 @@ public sealed class RouterRuntime : IRouterRuntime
             sessionStorageRpcBackend,
             null,
             pathSelector,
+            peerEndpointPolicy,
             clock,
             logger,
             localRelayContactProvider)
@@ -111,6 +113,7 @@ public sealed class RouterRuntime : IRouterRuntime
         NodeDatabase nodeDb,
         IStorageBackend storageBackend,
         PathSelector pathSelector,
+        PeerEndpointPolicy peerEndpointPolicy,
         IClock? clock = null,
         ILogger<RouterRuntime>? logger = null,
         ILocalRelayContactProvider? localRelayContactProvider = null)
@@ -123,6 +126,7 @@ public sealed class RouterRuntime : IRouterRuntime
             null,
             null,
             pathSelector,
+            peerEndpointPolicy,
             clock,
             logger,
             localRelayContactProvider)

@@ -14,6 +14,7 @@
 | `PublicApiRateLimitWindow` | 00:01:00 | Ingress rate-limit window. Requests are rejected immediately; they are never queued. |
 | `AllowLoopbackPeerEndpoints` | false | Legacy setting. Any `true` value now fails startup; loopback onion peers are always blocked. |
 | `EnablePrivatePeerEndpoints` | false | Enables exact RFC1918 peer tuples only after all non-production guards pass. |
+| `ProductionPublicPeerPorts` | `[443]` | Exact HTTPS ports eligible for production public peer RPC after endpoint-ownership proof. |
 | `PrivatePeerNetworkIdentity` | empty | Must exactly match `Node:Network`, which must be one of `uat`, `testnet`, `local`, `development`, or `ci`. |
 | `PrivatePeerEndpointAllowlist` | empty | Exact tuples of `routerId`, literal RFC1918 IPv4 `/32`, port, and `/api/peer/onion` path. |
 
@@ -51,3 +52,21 @@ until the UAT environment identity is explicit.
 Each router needs one tuple for every private recipient it may contact. The advertised relay contact must use that same literal address, port, path, and router identity. Neighboring addresses, a different port/path/router, loopback, IPv6 ULA, and non-RFC1918 addresses do not match.
 
 The process fails startup when this feature is enabled under `Production`, when `Node:Network` is `mainnet`, when the two network identities do not match, or when any tuple is malformed. The default is empty and disabled. Do not set these values in a production configuration overlay.
+
+## Production public peer proof
+
+Production public peer RPC is fail-closed. A public contact must use HTTPS, use
+an explicitly configured `ProductionPublicPeerPorts` value (443 by default),
+and pass an `IPublicPeerEndpointAuthorizer` decision bound to the router ID and
+endpoint. The executable currently installs the deny-all authorizer in
+Production. A registry consumer must provide a reviewed challenge/receipt that
+proves control of the endpoint with the same router identity and binds the
+resolved public address before public peer forwarding can be enabled. The
+resolved-address decision is repeated immediately before socket connection.
+A signed relay contact alone is not proof that the signer controls the
+advertised public host.
+
+IPv6 peer resolution accepts only assigned global-unicast space and rejects
+NAT64, Teredo, 6to4, ORCHID, benchmarking, documentation, ULA, link-local and
+other special-purpose ranges. This validation is repeated immediately before
+the socket connection.

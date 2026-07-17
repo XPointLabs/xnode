@@ -28,10 +28,14 @@ var heartbeatOptions = builder.Configuration.GetSection("RegistryHeartbeat").Get
     ?? new RegistrationHeartbeatOptions();
 var registrationOptions = builder.Configuration.GetSection("RegistryRegistration").Get<RegistryRegistrationOptions>()
     ?? new RegistryRegistrationOptions();
+IPublicPeerEndpointAuthorizer publicPeerEndpointAuthorizer = builder.Environment.IsProduction()
+    ? DenyAllPublicPeerEndpointAuthorizer.Instance
+    : AllowAllPublicPeerEndpointAuthorizer.Instance;
 var peerEndpointPolicy = PeerEndpointPolicy.Create(
     runtimeOptions,
     nodeOptions,
-    builder.Environment.EnvironmentName);
+    builder.Environment.EnvironmentName,
+    publicPeerEndpointAuthorizer);
 
 VlessProfileGuard.Validate(vlessOptions, builder.Environment.IsDevelopment());
 

@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "survival-handoff-v1",
+  "programRevisionSha": "ca5ad9f0c9d4dfb509dedcbf8133524c15867fce5534816da21ff86a07057383",
+  "workPackage": "I01A1-XNODE-HARDENING",
+  "repository": "xnode",
+  "baseSha": "52c30461bca29e89ae4dd1f30ffbf0f3e4fa89b2",
+  "resultCommit": "the single local commit containing this handoff",
+  "dependencyHashes": {},
+  "migrationPhase": "production routing intentionally fail-closed pending endpoint ownership proof",
+  "tests": {
+    "fullPassed": 95,
+    "failed": 0,
+    "skipped": 0
+  },
+  "rollback": "Revert the single local commit; never use an allow-all authorizer in production.",
+  "blockers": [
+    "Registry-backed endpoint ownership challenge and periodic revalidation are required before production public routing."
+  ],
+  "nextConsumerTask": "Implement router-key endpoint ownership proofs in the registry/client boundary, then replace the executable's production deny-all authorizer with the verified registry projection."
+}

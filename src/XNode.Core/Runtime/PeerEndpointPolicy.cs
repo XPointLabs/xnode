@@ -17,21 +17,47 @@ public sealed class PeerEndpointPolicy
     };
 
     private readonly HashSet<PrivatePeerEndpointTuple> _privatePeerEndpoints;
+    private readonly HashSet<int> _productionPublicPeerPorts;
+    private readonly IPublicPeerEndpointAuthorizer _publicPeerEndpointAuthorizer;
+    private readonly bool _isProduction;
 
-    private PeerEndpointPolicy(IEnumerable<PrivatePeerEndpointTuple> privatePeerEndpoints)
+    private PeerEndpointPolicy(
+        IEnumerable<PrivatePeerEndpointTuple> privatePeerEndpoints,
+        IEnumerable<int> productionPublicPeerPorts,
+        IPublicPeerEndpointAuthorizer publicPeerEndpointAuthorizer,
+        bool isProduction)
     {
         _privatePeerEndpoints = privatePeerEndpoints.ToHashSet();
+        _productionPublicPeerPorts = productionPublicPeerPorts.ToHashSet();
+        _publicPeerEndpointAuthorizer = publicPeerEndpointAuthorizer;
+        _isProduction = isProduction;
     }
 
-    public static PeerEndpointPolicy PublicOnly() => new([]);
+    public static PeerEndpointPolicy PublicOnly() => new(
+        [],
+        [443],
+        AllowAllPublicPeerEndpointAuthorizer.Instance,
+        isProduction: false);
 
     public static PeerEndpointPolicy Create(
         RouterRuntimeOptions runtimeOptions,
         RouterNodeOptions nodeOptions,
-        string environmentName)
+        string environmentName,
+        IPublicPeerEndpointAuthorizer publicPeerEndpointAuthorizer)
     {
         ArgumentNullException.ThrowIfNull(runtimeOptions);
         ArgumentNullException.ThrowIfNull(nodeOptions);
+        ArgumentNullException.ThrowIfNull(publicPeerEndpointAuthorizer);
+
+        var isProduction = string.Equals(environmentName, "Production", StringComparison.OrdinalIgnoreCase);
+        var publicPorts = runtimeOptions.ProductionPublicPeerPorts ?? [];
+        if (publicPorts.Count == 0
+            || publicPorts.Any(static port => port is < 1 or > 65535)
+            || publicPorts.Distinct().Count() != publicPorts.Count)
+        {
+            throw new InvalidOperationException(
+                "Runtime:ProductionPublicPeerPorts must contain unique valid ports.");
+        }
 
         if (runtimeOptions.AllowLoopbackPeerEndpoints)
         {
@@ -48,10 +74,10 @@ public sealed class PeerEndpointPolicy
                     "Runtime:PrivatePeerEndpointAllowlist must be empty when private peer endpoints are disabled.");
             }
 
-            return PublicOnly();
+            return new PeerEndpointPolicy([], publicPorts, publicPeerEndpointAuthorizer, isProduction);
         }
 
-        if (string.Equals(environmentName, "Production", StringComparison.OrdinalIgnoreCase))
+        if (isProduction)
         {
             throw new InvalidOperationException("Private peer endpoints are forbidden in the Production environment.");
         }
@@ -106,7 +132,7 @@ public sealed class PeerEndpointPolicy
             throw new InvalidOperationException("Private peer allowlist entries must be unique.");
         }
 
-        return new PeerEndpointPolicy(tuples);
+        return new PeerEndpointPolicy(tuples, publicPorts, publicPeerEndpointAuthorizer, isProduction);
     }
 
     public bool TryValidatePeerEndpoint(RouterId recipientRouterId, Uri uri, out string error)
@@ -125,12 +151,12 @@ public sealed class PeerEndpointPolicy
 
         if (!IPAddress.TryParse(uri.Host, out var address))
         {
-            return true;
+            return TryAuthorizePublicEndpoint(recipientRouterId, uri, out error);
         }
 
         if (IsPubliclyRoutable(address, allowLoopback: false))
         {
-            return true;
+            return TryAuthorizePublicEndpoint(recipientRouterId, uri, out error);
         }
 
         if (IsPrivateTupleAllowed(recipientRouterId, uri, address))
@@ -154,7 +180,10 @@ public sealed class PeerEndpointPolicy
 
         if (IsPubliclyRoutable(resolvedAddress, allowLoopback: false))
         {
-            return true;
+            return _publicPeerEndpointAuthorizer.IsResolvedAddressAuthorized(
+                recipientRouterId,
+                requestUri,
+                resolvedAddress);
         }
 
         // A hostname can never claim a private exception. This pins the connect
@@ -162,23 +191,6 @@ public sealed class PeerEndpointPolicy
         return IPAddress.TryParse(requestUri.Host, out var literalAddress)
             && literalAddress.Equals(resolvedAddress)
             && IsPrivateTupleAllowed(recipientRouterId, requestUri, resolvedAddress);
-    }
-
-    public static bool TryValidateUri(Uri uri, bool allowLoopback, out string error)
-    {
-        if (!TryValidateUriShape(uri, out error))
-        {
-            return false;
-        }
-
-        if (IPAddress.TryParse(uri.Host, out var address)
-            && !IsPubliclyRoutable(address, allowLoopback))
-        {
-            error = "blocked-onion-peer-endpoint";
-            return false;
-        }
-
-        return true;
     }
 
     private static bool TryValidateUriShape(Uri uri, out string error)
@@ -211,6 +223,25 @@ public sealed class PeerEndpointPolicy
                 address.ToString(),
                 uri.Port,
                 uri.AbsolutePath));
+    }
+
+    private bool TryAuthorizePublicEndpoint(RouterId recipientRouterId, Uri uri, out string error)
+    {
+        if (_isProduction
+            && (uri.Scheme != Uri.UriSchemeHttps || !_productionPublicPeerPorts.Contains(uri.Port)))
+        {
+            error = "blocked-onion-peer-endpoint";
+            return false;
+        }
+
+        if (!_publicPeerEndpointAuthorizer.IsAuthorized(recipientRouterId, uri))
+        {
+            error = "unverified-onion-peer-endpoint";
+            return false;
+        }
+
+        error = string.Empty;
+        return true;
     }
 
     private static bool IsRfc1918(IPAddress address)
@@ -272,9 +303,16 @@ public sealed class PeerEndpointPolicy
             return false;
         }
 
-        // fc00::/7 is unique-local; 2001:db8::/32 is documentation-only.
-        if ((bytes[0] & 0xfe) == 0xfc
-            || (bytes[0] == 0x20 && bytes[1] == 0x01 && bytes[2] == 0x0d && bytes[3] == 0xb8))
+        // Only 2000::/3 is globally assigned unicast. Explicitly reject
+        // special-purpose ranges inside it; ranges outside it include NAT64.
+        if ((bytes[0] & 0xe0) != 0x20
+            || HasPrefix(bytes, "2001::", 32)             // Teredo and IETF protocol assignments.
+            || HasPrefix(bytes, "2001:2::", 48)           // Benchmarking.
+            || HasPrefix(bytes, "2001:10::", 28)          // ORCHID.
+            || HasPrefix(bytes, "2001:20::", 28)          // ORCHIDv2.
+            || HasPrefix(bytes, "2001:db8::", 32)         // Documentation.
+            || HasPrefix(bytes, "2002::", 16)             // 6to4.
+            || HasPrefix(bytes, "3fff::", 20))             // Documentation.
         {
             return false;
         }
@@ -282,9 +320,70 @@ public sealed class PeerEndpointPolicy
         return true;
     }
 
+    private static bool HasPrefix(byte[] addressBytes, string prefix, int prefixLength)
+    {
+        var prefixBytes = IPAddress.Parse(prefix).GetAddressBytes();
+        var wholeBytes = prefixLength / 8;
+        var remainingBits = prefixLength % 8;
+        for (var index = 0; index < wholeBytes; index++)
+        {
+            if (addressBytes[index] != prefixBytes[index])
+            {
+                return false;
+            }
+        }
+
+        if (remainingBits == 0)
+        {
+            return true;
+        }
+
+        var mask = (byte)(0xff << (8 - remainingBits));
+        return (addressBytes[wholeBytes] & mask) == (prefixBytes[wholeBytes] & mask);
+    }
+
     private readonly record struct PrivatePeerEndpointTuple(
         RouterId RouterId,
         string IpAddress,
         int Port,
         string Path);
+}
+
+public interface IPublicPeerEndpointAuthorizer
+{
+    bool IsAuthorized(RouterId routerId, Uri endpoint);
+
+    bool IsResolvedAddressAuthorized(RouterId routerId, Uri endpoint, IPAddress resolvedAddress);
+}
+
+public sealed class AllowAllPublicPeerEndpointAuthorizer : IPublicPeerEndpointAuthorizer
+{
+    public static AllowAllPublicPeerEndpointAuthorizer Instance { get; } = new();
+
+    private AllowAllPublicPeerEndpointAuthorizer()
+    {
+    }
+
+    public bool IsAuthorized(RouterId routerId, Uri endpoint) => true;
+
+    public bool IsResolvedAddressAuthorized(
+        RouterId routerId,
+        Uri endpoint,
+        IPAddress resolvedAddress) => true;
+}
+
+public sealed class DenyAllPublicPeerEndpointAuthorizer : IPublicPeerEndpointAuthorizer
+{
+    public static DenyAllPublicPeerEndpointAuthorizer Instance { get; } = new();
+
+    private DenyAllPublicPeerEndpointAuthorizer()
+    {
+    }
+
+    public bool IsAuthorized(RouterId routerId, Uri endpoint) => false;
+
+    public bool IsResolvedAddressAuthorized(
+        RouterId routerId,
+        Uri endpoint,
+        IPAddress resolvedAddress) => false;
 }

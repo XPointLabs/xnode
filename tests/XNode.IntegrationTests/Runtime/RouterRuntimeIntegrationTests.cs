@@ -90,6 +90,7 @@ public sealed class RouterRuntimeIntegrationTests
                 nodeDb,
                 new NodeDbStorageBackend(nodeDb, node),
                 new PathSelector(),
+                PeerEndpointPolicy.PublicOnly(),
                 new FixedClock(TestData.Now),
                 NullLogger<RouterRuntime>.Instance);
 
@@ -417,10 +418,10 @@ public sealed class RouterRuntimeIntegrationTests
             sessionStorageRpc,
             onionPeerClient,
             new PathSelector(),
+            peerEndpointPolicy ?? PeerEndpointPolicy.PublicOnly(),
             new FixedClock(TestData.Now),
             NullLogger<RouterRuntime>.Instance,
-            localRelayContactProvider: null,
-            peerEndpointPolicy: peerEndpointPolicy);
+            localRelayContactProvider: null);
     }
 
     private static RouterNodeOptions NodeOptions(string root)
@@ -592,7 +593,11 @@ public sealed class RouterRuntimeIntegrationTests
                     }
                 ]
             };
-            var policy = PeerEndpointPolicy.Create(runtimeOptions, local, "Staging");
+            var policy = PeerEndpointPolicy.Create(
+                runtimeOptions,
+                local,
+                "Staging",
+                AllowAllPublicPeerEndpointAuthorizer.Instance);
             var runtime = CreateRuntime(
                 root,
                 local,

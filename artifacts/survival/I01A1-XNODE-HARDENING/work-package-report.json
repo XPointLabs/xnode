@@ -1,0 +1,37 @@
+{
+  "schemaVersion": "survival-work-package-v1",
+  "workPackage": "I01A1-XNODE-HARDENING",
+  "programRevisionSha": "ca5ad9f0c9d4dfb509dedcbf8133524c15867fce5534816da21ff86a07057383",
+  "repository": "xnode",
+  "baseSha": "52c30461bca29e89ae4dd1f30ffbf0f3e4fa89b2",
+  "result": "the single local commit containing this report",
+  "status": "passed",
+  "summary": "Makes peer policy mandatory, fail-closes production public endpoints without ownership authorization, restricts production to HTTPS on configured ports, and rejects IPv6 special-purpose and transition ranges.",
+  "testTotals": {
+    "fullPassed": 95,
+    "failed": 0,
+    "skipped": 0
+  },
+  "changedFiles": [
+    "src/XNode.Core/Runtime/PeerEndpointPolicy.cs",
+    "src/XNode.Core/Runtime/RouterRuntime.cs",
+    "src/XNode.Core/Runtime/RouterRuntimeOptions.cs",
+    "src/XNode/Program.cs",
+    "src/XNode/appsettings.json",
+    "tests/XNode.Tests/Core/PeerEndpointPolicyTests.cs",
+    "tests/XNode.IntegrationTests/Runtime/HttpOnionPeerClientSecurityTests.cs",
+    "tests/XNode.IntegrationTests/Runtime/RouterRuntimeIntegrationTests.cs",
+    "tests/XNode.IntegrationTests/Runtime/C3FailureAndLoadIntegrationTests.cs",
+    "docs/ROUTER_SECURITY_TUNABLES.md",
+    "docs/SESSION_PORTING.md",
+    "artifacts/survival/I01A1-XNODE-HARDENING/work-package-report.json",
+    "artifacts/survival/I01A1-XNODE-HARDENING/test-results/summary.json",
+    "artifacts/survival/I01A1-XNODE-HARDENING/compatibility-impact.json",
+    "artifacts/survival/I01A1-XNODE-HARDENING/migration-and-rollback.json",
+    "artifacts/survival/I01A1-XNODE-HARDENING/security-impact.json",
+    "artifacts/survival/I01A1-XNODE-HARDENING/handoff.json"
+  ],
+  "blockers": [
+    "Production public routing remains intentionally unavailable until registry-backed endpoint ownership proof is implemented."
+  ]
+}

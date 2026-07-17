@@ -143,7 +143,8 @@ public sealed class HttpOnionPeerClientSecurityTests
                 ]
             },
             new RouterNodeOptions { Network = "uat" },
-            "UAT");
+            "UAT",
+            AllowAllPublicPeerEndpointAuthorizer.Instance);
 
     private static OnionRequest Request() => new(new OnionEnvelope(
         "xpoint-onion-v1",

@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "survival-migration-rollback-v1",
+  "migrationRequired": true,
+  "migration": [
+    "Set Runtime:ProductionPublicPeerPorts to the minimal HTTPS port set.",
+    "Implement and inject a registry-backed endpoint ownership authorizer before production routing is enabled.",
+    "Keep the current deny-all production authorizer while ownership proof is unavailable."
+  ],
+  "dataMigration": "none",
+  "rollback": [
+    "Revert the single local I01A1 XNode hardening commit.",
+    "Do not replace the deny-all production authorizer with allow-all as a rollback mechanism."
+  ],
+  "rollbackRisk": "Reverting restores acceptance of any registered router's signed public victim endpoint and the earlier IPv6 special-range exposure."
+}

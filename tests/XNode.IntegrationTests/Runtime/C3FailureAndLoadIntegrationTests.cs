@@ -1,14 +1,14 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.Logging.Abstractions;
 using XNode.Core;
 using XNode.Core.NodeDb;
 using XNode.Core.Paths;
 using XNode.Core.Runtime;
 using XNode.Core.Session;
 using XNode.Transport.Vless;
-using Microsoft.Extensions.Logging.Abstractions;
 
 namespace XNode.IntegrationTests.Runtime;
 
@@ -438,6 +438,7 @@ public sealed class C3FailureAndLoadIntegrationTests
             nodeDb,
             new FakeStorageBackend(contacts),
             new PathSelector(),
+            PeerEndpointPolicy.PublicOnly(),
             logger: NullLogger<RouterRuntime>.Instance);
     }
 

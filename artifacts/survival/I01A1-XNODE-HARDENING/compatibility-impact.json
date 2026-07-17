@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "survival-compatibility-v1",
+  "configurationAdditions": [
+    "Runtime:ProductionPublicPeerPorts"
+  ],
+  "intentionalBreakingChanges": [
+    "RouterRuntime now requires a non-null PeerEndpointPolicy.",
+    "Production public peer endpoints require HTTPS, an explicitly allowed port, and endpoint ownership authorization.",
+    "The executable currently denies all production public peer endpoints until a registry-backed authorizer is wired."
+  ],
+  "wireFormatChanges": [],
+  "storageChanges": [],
+  "contractPackageChanges": [],
+  "consumerActions": [
+    "Implement a registry-backed IPublicPeerEndpointAuthorizer using a challenge signed by the advertised router key and bind the allowed resolved address set.",
+    "Keep production deployment blocked until the authorizer and periodic revalidation exist.",
+    "Configure only required production peer ports; the default is 443.",
+    "Continue using exact router-bound RFC1918 tuples only in the isolated UAT profile."
+  ]
+}

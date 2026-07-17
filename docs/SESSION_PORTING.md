@@ -55,6 +55,7 @@ For each ported behavior:
 - Session RPC responses add `xpoint-rpc-response-v1` metadata signed by the responder Ed25519 identity. The signature binds the pinned responder, request id/method/nonce/payload digest, issuance time, success state, and result/error digest.
 - A future quorum-backed catalog checkpoint may replace the current registered-catalog authorization source. Route trust v1 does not implement a Merkle or on-chain catalog checkpoint.
 - Route contacts and the actual peer socket share one endpoint policy. Public endpoints remain the default. A non-production UAT/test network may explicitly bind a recipient router ID to one literal RFC1918 IPv4 `/32`, port, and exact `/api/peer/onion` path. The exception is unavailable in `Production` and on `mainnet`; hostnames never inherit it after private DNS resolution or rebinding.
+- Production public peer forwarding additionally requires HTTPS on an explicitly allowed port and a registry-provided endpoint-ownership authorization bound to the router ID. The current executable denies production public peers until that producer contract exists. IPv6 resolution is limited to non-special global-unicast space; NAT64 and transition ranges never bypass the IPv4 SSRF policy.
 
 ## Stop-The-Line Conditions
 
