@@ -66,6 +66,11 @@ resolved-address decision is repeated immediately before socket connection.
 A signed relay contact alone is not proof that the signer controls the
 advertised public host.
 
+Production construction also requires an
+`IProductionPublicPeerEndpointAuthorizer`. The generic non-production
+allow-all implementation does not implement that capability and is rejected
+at startup.
+
 IPv6 peer resolution accepts only assigned global-unicast space and rejects
 NAT64, Teredo, 6to4, ORCHID, benchmarking, documentation, ULA, link-local and
 other special-purpose ranges. This validation is repeated immediately before

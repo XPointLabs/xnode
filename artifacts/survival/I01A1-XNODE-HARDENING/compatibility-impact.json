@@ -6,6 +6,7 @@
   "intentionalBreakingChanges": [
     "RouterRuntime now requires a non-null PeerEndpointPolicy.",
     "Production public peer endpoints require HTTPS, an explicitly allowed port, and endpoint ownership authorization.",
+    "Production rejects an authorizer that does not implement the production capability marker.",
     "The executable currently denies all production public peer endpoints until a registry-backed authorizer is wired."
   ],
   "wireFormatChanges": [],

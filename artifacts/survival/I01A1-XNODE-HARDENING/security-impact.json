@@ -5,6 +5,7 @@
     "Production public endpoints and their resolved addresses require router-bound ownership authorization decisions.",
     "Production public endpoints require HTTPS and an explicitly configured port.",
     "The production executable uses deny-all authorization until registry proof is implemented.",
+    "Production construction rejects the generic allow-all authorizer capability.",
     "Only IPv6 2000::/3 global unicast is considered, with explicit rejection of protocol-assignment, benchmark, ORCHID, documentation, 6to4, and other reviewed special ranges.",
     "NAT64 and local-use translation prefixes outside 2000::/3 are rejected.",
     "RouterRuntime cannot silently construct a permissive fallback policy."

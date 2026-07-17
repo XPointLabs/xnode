@@ -84,7 +84,7 @@ public sealed class PeerEndpointPolicyTests
             options,
             node,
             "Production",
-            AllowAllPublicPeerEndpointAuthorizer.Instance);
+            TestProductionPublicPeerEndpointAuthorizer.Instance);
         var router = Id(9);
 
         Assert.False(denied.TryValidatePeerEndpoint(
@@ -115,6 +115,16 @@ public sealed class PeerEndpointPolicyTests
     }
 
     [Fact]
+    public void ProductionPublicEndpoint_RejectsGenericAllowAllAuthorizer()
+    {
+        Assert.Throws<InvalidOperationException>(() => PeerEndpointPolicy.Create(
+            new RouterRuntimeOptions(),
+            new RouterNodeOptions { Network = "mainnet" },
+            "Production",
+            AllowAllPublicPeerEndpointAuthorizer.Instance));
+    }
+
+    [Fact]
     public void ProductionPublicEndpoint_UsesExplicitAllowedPortSet()
     {
         var options = new RouterRuntimeOptions { ProductionPublicPeerPorts = [443, 8443] };
@@ -122,7 +132,7 @@ public sealed class PeerEndpointPolicyTests
             options,
             new RouterNodeOptions { Network = "mainnet" },
             "Production",
-            AllowAllPublicPeerEndpointAuthorizer.Instance);
+            TestProductionPublicPeerEndpointAuthorizer.Instance);
 
         Assert.True(policy.TryValidatePeerEndpoint(
             Id(9),
@@ -139,7 +149,7 @@ public sealed class PeerEndpointPolicyTests
             options,
             new RouterNodeOptions { Network = "mainnet" },
             "Production",
-            AllowAllPublicPeerEndpointAuthorizer.Instance));
+            TestProductionPublicPeerEndpointAuthorizer.Instance));
     }
 
     [Fact]
@@ -283,5 +293,18 @@ public sealed class PeerEndpointPolicyTests
         var bytes = new byte[RouterId.ByteLength];
         bytes[^1] = value;
         return RouterId.FromBytes(bytes);
+    }
+
+    private sealed class TestProductionPublicPeerEndpointAuthorizer
+        : IProductionPublicPeerEndpointAuthorizer
+    {
+        public static TestProductionPublicPeerEndpointAuthorizer Instance { get; } = new();
+
+        public bool IsAuthorized(RouterId routerId, Uri endpoint) => true;
+
+        public bool IsResolvedAddressAuthorized(
+            RouterId routerId,
+            Uri endpoint,
+            IPAddress resolvedAddress) => true;
     }
 }

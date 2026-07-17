@@ -4,11 +4,11 @@
     {
       "command": "dotnet test XNode.slnx --no-restore",
       "exitCode": 0,
-      "passed": 95,
+      "passed": 96,
       "failed": 0,
       "skipped": 0,
       "projects": {
-        "XNode.Tests": 74,
+        "XNode.Tests": 75,
         "XNode.IntegrationTests": 21
       }
     },

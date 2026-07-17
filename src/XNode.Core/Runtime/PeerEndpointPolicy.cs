@@ -50,6 +50,13 @@ public sealed class PeerEndpointPolicy
         ArgumentNullException.ThrowIfNull(publicPeerEndpointAuthorizer);
 
         var isProduction = string.Equals(environmentName, "Production", StringComparison.OrdinalIgnoreCase);
+        if (isProduction
+            && publicPeerEndpointAuthorizer is not IProductionPublicPeerEndpointAuthorizer)
+        {
+            throw new InvalidOperationException(
+                "Production requires a fail-closed or proof-capable public peer endpoint authorizer.");
+        }
+
         var publicPorts = runtimeOptions.ProductionPublicPeerPorts ?? [];
         if (publicPorts.Count == 0
             || publicPorts.Any(static port => port is < 1 or > 65535)
@@ -356,6 +363,10 @@ public interface IPublicPeerEndpointAuthorizer
     bool IsResolvedAddressAuthorized(RouterId routerId, Uri endpoint, IPAddress resolvedAddress);
 }
 
+public interface IProductionPublicPeerEndpointAuthorizer : IPublicPeerEndpointAuthorizer
+{
+}
+
 public sealed class AllowAllPublicPeerEndpointAuthorizer : IPublicPeerEndpointAuthorizer
 {
     public static AllowAllPublicPeerEndpointAuthorizer Instance { get; } = new();
@@ -372,7 +383,7 @@ public sealed class AllowAllPublicPeerEndpointAuthorizer : IPublicPeerEndpointAu
         IPAddress resolvedAddress) => true;
 }
 
-public sealed class DenyAllPublicPeerEndpointAuthorizer : IPublicPeerEndpointAuthorizer
+public sealed class DenyAllPublicPeerEndpointAuthorizer : IProductionPublicPeerEndpointAuthorizer
 {
     public static DenyAllPublicPeerEndpointAuthorizer Instance { get; } = new();
 

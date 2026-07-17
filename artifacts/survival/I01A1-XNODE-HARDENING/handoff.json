@@ -4,17 +4,22 @@
   "workPackage": "I01A1-XNODE-HARDENING",
   "repository": "xnode",
   "baseSha": "52c30461bca29e89ae4dd1f30ffbf0f3e4fa89b2",
-  "resultCommit": "the single local commit containing this handoff",
-  "dependencyHashes": {},
+  "subjectCommit": "8d958aaa7c3ea7e4aa2e7808beb85c6343eaecba",
+  "subjectTree": "9a8d38118677317812125a0ba892fa29bd77a523",
+  "dependencyHashes": {
+    "baseCommit": "52c30461bca29e89ae4dd1f30ffbf0f3e4fa89b2",
+    "baseTree": "9c267868c8b423af7c46fc5360cdf5fa6e4f354a"
+  },
+  "productionReady": false,
   "migrationPhase": "production routing intentionally fail-closed pending endpoint ownership proof",
   "tests": {
-    "fullPassed": 95,
+    "fullPassed": 96,
     "failed": 0,
     "skipped": 0
   },
-  "rollback": "Revert the single local commit; never use an allow-all authorizer in production.",
+  "rollback": "Keep production routing stopped or on the deny-all authorizer and deliver a forward corrective commit. Never operationally revert to the vulnerable public-endpoint behavior.",
   "blockers": [
-    "Registry-backed endpoint ownership challenge and periodic revalidation are required before production public routing."
+    "A short-lived registry-backed endpoint ownership ticket with periodic revalidation is required before production public routing."
   ],
   "nextConsumerTask": "Implement router-key endpoint ownership proofs in the registry/client boundary, then replace the executable's production deny-all authorizer with the verified registry projection."
 }
