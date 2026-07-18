@@ -93,6 +93,8 @@ public sealed class PeerEndpointPolicyTests
             out var proofError));
         Assert.Equal("unverified-onion-peer-endpoint", proofError);
         Assert.Equal(PublicPeerAuthorizationMode.DenyAll, denied.PublicAuthorizationMode);
+        Assert.False(denied.PrivateAllowlistActsAsMembership);
+        Assert.Empty(denied.PrivateMembershipRouterIds);
         Assert.False(denied.IsProductionPublicRoutingReady);
         Assert.False(denied.IsResolvedAddressAllowed(
             router,
@@ -290,6 +292,101 @@ public sealed class PeerEndpointPolicyTests
             AllowAllPublicPeerEndpointAuthorizer.Instance));
     }
 
+    [Fact]
+    public void PrivateMembership_RequiresPrivateOnlySignedDenyAllComposition()
+    {
+        var recipient = Id(2);
+        var node = new RouterNodeOptions { Network = "uat", RouterId = recipient.Value };
+
+        var privateDisabled = PrivateMembershipOptions(recipient);
+        privateDisabled.EnablePrivatePeerEndpoints = false;
+        Assert.Throws<InvalidOperationException>(() => PeerEndpointPolicy.Create(
+            privateDisabled,
+            node,
+            "UAT",
+            DenyAllPublicPeerEndpointAuthorizer.Instance));
+
+        var publicEnabled = PrivateMembershipOptions(recipient);
+        publicEnabled.AllowPublicPeerEndpoints = true;
+        Assert.Throws<InvalidOperationException>(() => PeerEndpointPolicy.Create(
+            publicEnabled,
+            node,
+            "UAT",
+            DenyAllPublicPeerEndpointAuthorizer.Instance));
+
+        var unsigned = PrivateMembershipOptions(recipient);
+        unsigned.RequireSignedRelayContacts = false;
+        Assert.Throws<InvalidOperationException>(() => PeerEndpointPolicy.Create(
+            unsigned,
+            node,
+            "UAT",
+            DenyAllPublicPeerEndpointAuthorizer.Instance));
+
+        Assert.Throws<InvalidOperationException>(() => PeerEndpointPolicy.Create(
+            PrivateMembershipOptions(recipient),
+            node,
+            "UAT",
+            AllowAllPublicPeerEndpointAuthorizer.Instance));
+    }
+
+    [Fact]
+    public void PrivateMembership_RequiresMatchingNonProductionIdentityAndLocalTuple()
+    {
+        var local = Id(2);
+        var options = PrivateMembershipOptions(local);
+
+        Assert.Throws<InvalidOperationException>(() => PeerEndpointPolicy.Create(
+            options,
+            new RouterNodeOptions { Network = "uat", RouterId = local.Value },
+            "Production",
+            DenyAllPublicPeerEndpointAuthorizer.Instance));
+
+        var wrongNetwork = PrivateMembershipOptions(local);
+        wrongNetwork.PrivatePeerNetworkIdentity = "testnet";
+        Assert.Throws<InvalidOperationException>(() => PeerEndpointPolicy.Create(
+            wrongNetwork,
+            new RouterNodeOptions { Network = "uat", RouterId = local.Value },
+            "UAT",
+            DenyAllPublicPeerEndpointAuthorizer.Instance));
+
+        Assert.Throws<InvalidOperationException>(() => PeerEndpointPolicy.Create(
+            PrivateMembershipOptions(Id(3)),
+            new RouterNodeOptions { Network = "uat", RouterId = local.Value },
+            "UAT",
+            DenyAllPublicPeerEndpointAuthorizer.Instance));
+    }
+
+    [Fact]
+    public void PrivateMembership_RequiresOneUniqueEndpointPerRouter()
+    {
+        var local = Id(2);
+        var duplicateRouter = PrivateMembershipOptions(local);
+        duplicateRouter.PrivatePeerEndpointAllowlist.Add(new PrivatePeerEndpointAllowlistEntry
+        {
+            RouterId = local.Value,
+            IpAddress = "10.20.30.41",
+            Port = 8082
+        });
+        Assert.Throws<InvalidOperationException>(() => PeerEndpointPolicy.Create(
+            duplicateRouter,
+            new RouterNodeOptions { Network = "uat", RouterId = local.Value },
+            "UAT",
+            DenyAllPublicPeerEndpointAuthorizer.Instance));
+
+        var duplicateEndpoint = PrivateMembershipOptions(local);
+        duplicateEndpoint.PrivatePeerEndpointAllowlist.Add(new PrivatePeerEndpointAllowlistEntry
+        {
+            RouterId = Id(3).Value,
+            IpAddress = "10.20.30.40",
+            Port = 8081
+        });
+        Assert.Throws<InvalidOperationException>(() => PeerEndpointPolicy.Create(
+            duplicateEndpoint,
+            new RouterNodeOptions { Network = "uat", RouterId = local.Value },
+            "UAT",
+            DenyAllPublicPeerEndpointAuthorizer.Instance));
+    }
+
     private static PeerEndpointPolicy CreateUatPolicy(RouterId recipient, string ipAddress, int port) =>
         PeerEndpointPolicy.Create(
             UatOptions(recipient, ipAddress, port),
@@ -309,6 +406,26 @@ public sealed class PeerEndpointPolicyTests
                     RouterId = recipient.Value,
                     IpAddress = ipAddress,
                     Port = port,
+                    Path = PeerEndpointPolicy.OnionPeerPath
+                }
+            ]
+        };
+
+    private static RouterRuntimeOptions PrivateMembershipOptions(RouterId local) =>
+        new()
+        {
+            EnablePrivatePeerEndpoints = true,
+            EnablePrivateAllowlistMembership = true,
+            PrivatePeerNetworkIdentity = "uat",
+            AllowPublicPeerEndpoints = false,
+            RequireSignedRelayContacts = true,
+            PrivatePeerEndpointAllowlist =
+            [
+                new PrivatePeerEndpointAllowlistEntry
+                {
+                    RouterId = local.Value,
+                    IpAddress = "10.20.30.40",
+                    Port = 8081,
                     Path = PeerEndpointPolicy.OnionPeerPath
                 }
             ]

@@ -118,6 +118,17 @@ public sealed class NodeDb
 
     public async Task<NodeDbPutResult> UpsertAsync(
         RelayContact contact,
+        CancellationToken cancellationToken = default) =>
+        await UpsertCoreAsync(contact, registerRelay: false, cancellationToken).ConfigureAwait(false);
+
+    public async Task<NodeDbPutResult> UpsertAndRegisterAsync(
+        RelayContact contact,
+        CancellationToken cancellationToken = default) =>
+        await UpsertCoreAsync(contact, registerRelay: true, cancellationToken).ConfigureAwait(false);
+
+    private async Task<NodeDbPutResult> UpsertCoreAsync(
+        RelayContact contact,
+        bool registerRelay,
         CancellationToken cancellationToken = default)
     {
         Directory.CreateDirectory(RootDirectory);
@@ -163,6 +174,11 @@ public sealed class NodeDb
                 // Persist while holding the state gate so a slower older write cannot
                 // replace a newer contact after this method has returned.
                 await PersistAsync(toPersist, cancellationToken).ConfigureAwait(false);
+            }
+
+            if (registerRelay)
+            {
+                _registeredRelays.Add(contact.RouterId);
             }
         }
         finally

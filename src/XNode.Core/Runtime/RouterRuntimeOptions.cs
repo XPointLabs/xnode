@@ -36,6 +36,8 @@ public sealed class RouterRuntimeOptions
 
     public List<PrivatePeerEndpointAllowlistEntry> PrivatePeerEndpointAllowlist { get; set; } = [];
 
+    public bool EnablePrivateAllowlistMembership { get; set; }
+
     public List<int> ProductionPublicPeerPorts { get; set; } = [443];
 
     public bool AllowPublicPeerEndpoints { get; set; } = true;

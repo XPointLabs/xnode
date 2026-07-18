@@ -11,4 +11,11 @@ public sealed record RouterStatusSnapshot(
     NodeDbSnapshot NodeDb,
     int ActiveSessions,
     bool XrayReady,
-    RouterRuntimeMetricsSnapshot Metrics);
+    RouterRuntimeMetricsSnapshot Metrics,
+    PrivateAllowlistMembershipStatusSnapshot PrivateMembership);
+
+public sealed record PrivateAllowlistMembershipStatusSnapshot(
+    bool Enabled,
+    int ExpectedRelays,
+    int RegisteredRelays,
+    bool Ready);

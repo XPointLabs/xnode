@@ -18,6 +18,7 @@
 | `AllowPublicPeerEndpoints` | true | Non-production composition switch. Set false for an isolated private-only UAT; Production ignores true and remains fail-closed. |
 | `PrivatePeerNetworkIdentity` | empty | Must exactly match `Node:Network`, which must be one of `uat`, `testnet`, `local`, `development`, or `ci`. |
 | `PrivatePeerEndpointAllowlist` | empty | Exact tuples of `routerId`, literal RFC1918 IPv4 `/32`, port, and `/api/peer/onion` path. |
+| `EnablePrivateAllowlistMembership` | false | Non-production private-only mode in which a fresh signed contact matching an exact allowlist tuple may become registered membership. Configuration alone never creates a member. |
 
 Outbound peer HTTP accepts only HTTP(S) endpoints bound to a fresh, signed, registered relay contact. Literal loopback, shared-address, link-local, documentation, multicast, unspecified, and metadata ranges are rejected. DNS is checked at connection time and only a publicly routable resolved address is dialed; proxy use and redirect following are disabled.
 
@@ -32,7 +33,9 @@ For a Docker/UAT topology that cannot advertise public addresses, configure exac
   },
   "Runtime": {
     "enablePrivatePeerEndpoints": true,
+    "enablePrivateAllowlistMembership": true,
     "privatePeerNetworkIdentity": "uat",
+    "allowPublicPeerEndpoints": false,
     "privatePeerEndpointAllowlist": [
       {
         "routerId": "1111111111111111111111111111111111111111111111111111111111111111",
@@ -77,6 +80,42 @@ replace the missing private hop because the effective public authorizer is
 `DenyAll`. This is intentional fail-closed behavior and must not be worked
 around by enabling public peers.
 
+### Signed private membership bootstrap
+
+`EnablePrivateAllowlistMembership=true` is the chain-free bootstrap contract
+for an isolated UAT. It is disabled by default and fails startup unless private
+endpoints are enabled, public peers are disabled, signed contacts are required,
+the explicit non-production network identities match, the public authorizer is
+`DenyAll`, and the allowlist has one unique endpoint per unique router ID,
+including the local router.
+
+The allowlist is only an authorization boundary. It does not create contacts
+or membership. On startup the router derives its public ID from the configured
+Ed25519 seed; a mismatch with `Node:RouterId` is fatal. The router then creates,
+signs, validates, and registers its own exact contact.
+
+An operator-controlled host bootstrap must:
+
+1. fetch `/api/network/contact` from each of the three loopback router APIs;
+2. verify every contact signature, freshness, router ID, and exact RPC endpoint;
+3. submit all three contacts to every router with `/api/session/rpc`, method
+   `store_rc`, using the signed contact as the request payload;
+4. require each signed RPC response to succeed;
+5. confirm `/status` reports
+   `router.privateMembership.enabled=true`,
+   `expectedRelays=3`, `registeredRelays=3`, and `ready=true`;
+6. request `storage_route` and verify exactly the three expected unique IDs.
+
+`store_rc` verifies signature and freshness before checking the exact private
+tuple. Unsigned, expired, public, neighboring, wrong-port, wrong-path, or
+wrong-router contacts are not stored as membership. Membership insertion and
+contact storage occur under the same NodeDb state gate.
+
+While the membership is incomplete, `/health/ready` returns `503` and
+`storage_route` returns `path-not-found`. Once all configured IDs have fresh,
+valid, exact signed contacts, the registered set equals that configured set,
+Xray is ready, and authorization remains `DenyAll`, readiness returns `200`.
+
 The process fails startup when this feature is enabled under `Production`, when `Node:Network` is `mainnet`, when the two network identities do not match, or when any tuple is malformed. The default is empty and disabled. Do not set these values in a production configuration overlay.
 
 For a private-only UAT, also set `Runtime:AllowPublicPeerEndpoints=false`.
@@ -89,7 +128,8 @@ transport themselves are healthy:
 
 | Deployment mode | `/status` authorization fields | `/health/ready` |
 | --- | --- | --- |
-| Non-production private-only UAT (`AllowPublicPeerEndpoints=false`) | `publicPeerAuthorizationMode="DenyAll"`, `productionPublicRoutingReady=true` | `200`; exact private tuples remain usable |
+| Non-production private-only UAT without membership mode | `publicPeerAuthorizationMode="DenyAll"`, `productionPublicRoutingReady=true` | `200` when runtime and transport are healthy; route availability is a separate signal |
+| Non-production private membership UAT | Above fields plus `router.privateMembership.ready` | `503` until exact signed membership is complete, then `200` |
 | Non-production public-enabled test (`AllowPublicPeerEndpoints=true`) | `publicPeerAuthorizationMode="UnverifiedNonProduction"`, `productionPublicRoutingReady=true` | `200`; not a production security posture |
 | Production safe fallback | `publicPeerAuthorizationMode="DenyAll"`, `productionPublicRoutingReady=false` | `503`; public routing is intentionally unavailable |
 

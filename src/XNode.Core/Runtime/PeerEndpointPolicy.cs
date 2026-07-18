@@ -20,9 +20,15 @@ public sealed class PeerEndpointPolicy
     private readonly HashSet<int> _productionPublicPeerPorts;
     private readonly IPublicPeerEndpointAuthorizer _publicPeerEndpointAuthorizer;
     private readonly bool _isProduction;
+    private readonly HashSet<RouterId> _privateMembershipRouterIds;
 
     public PublicPeerAuthorizationMode PublicAuthorizationMode =>
         _publicPeerEndpointAuthorizer.Mode;
+
+    public bool PrivateAllowlistActsAsMembership { get; }
+
+    public IReadOnlySet<RouterId> PrivateMembershipRouterIds =>
+        _privateMembershipRouterIds;
 
     public bool IsProductionPublicRoutingReady =>
         !_isProduction
@@ -32,12 +38,17 @@ public sealed class PeerEndpointPolicy
         IEnumerable<PrivatePeerEndpointTuple> privatePeerEndpoints,
         IEnumerable<int> productionPublicPeerPorts,
         IPublicPeerEndpointAuthorizer publicPeerEndpointAuthorizer,
-        bool isProduction)
+        bool isProduction,
+        bool privateAllowlistActsAsMembership = false)
     {
         _privatePeerEndpoints = privatePeerEndpoints.ToHashSet();
         _productionPublicPeerPorts = productionPublicPeerPorts.ToHashSet();
         _publicPeerEndpointAuthorizer = publicPeerEndpointAuthorizer;
         _isProduction = isProduction;
+        PrivateAllowlistActsAsMembership = privateAllowlistActsAsMembership;
+        _privateMembershipRouterIds = privateAllowlistActsAsMembership
+            ? _privatePeerEndpoints.Select(static tuple => tuple.RouterId).ToHashSet()
+            : [];
     }
 
     public static PeerEndpointPolicy PublicOnly() => new(
@@ -57,6 +68,33 @@ public sealed class PeerEndpointPolicy
         ArgumentNullException.ThrowIfNull(publicPeerEndpointAuthorizer);
 
         var isProduction = string.Equals(environmentName, "Production", StringComparison.OrdinalIgnoreCase);
+        if (runtimeOptions.EnablePrivateAllowlistMembership)
+        {
+            if (!runtimeOptions.EnablePrivatePeerEndpoints)
+            {
+                throw new InvalidOperationException(
+                    "Private allowlist membership requires Runtime:EnablePrivatePeerEndpoints=true.");
+            }
+
+            if (runtimeOptions.AllowPublicPeerEndpoints)
+            {
+                throw new InvalidOperationException(
+                    "Private allowlist membership requires Runtime:AllowPublicPeerEndpoints=false.");
+            }
+
+            if (!runtimeOptions.RequireSignedRelayContacts)
+            {
+                throw new InvalidOperationException(
+                    "Private allowlist membership requires Runtime:RequireSignedRelayContacts=true.");
+            }
+
+            if (publicPeerEndpointAuthorizer.Mode != PublicPeerAuthorizationMode.DenyAll)
+            {
+                throw new InvalidOperationException(
+                    "Private allowlist membership requires the DenyAll public peer authorizer.");
+            }
+        }
+
         if (isProduction
             && publicPeerEndpointAuthorizer is not IProductionPublicPeerEndpointAuthorizer)
         {
@@ -146,7 +184,43 @@ public sealed class PeerEndpointPolicy
             throw new InvalidOperationException("Private peer allowlist entries must be unique.");
         }
 
-        return new PeerEndpointPolicy(tuples, publicPorts, publicPeerEndpointAuthorizer, isProduction);
+        if (runtimeOptions.EnablePrivateAllowlistMembership)
+        {
+            if (tuples.Select(static tuple => tuple.RouterId).Distinct().Count() != tuples.Count)
+            {
+                throw new InvalidOperationException(
+                    "Private allowlist membership requires one exact endpoint per routerId.");
+            }
+
+            if (tuples
+                .Select(static tuple => (tuple.IpAddress, tuple.Port, tuple.Path))
+                .Distinct()
+                .Count() != tuples.Count)
+            {
+                throw new InvalidOperationException(
+                    "Private allowlist membership requires each router to have a unique endpoint.");
+            }
+
+            if (!tuples.Any(tuple => tuple.RouterId == nodeOptions.GetRouterId()))
+            {
+                throw new InvalidOperationException(
+                    "Private allowlist membership must include the local router identity.");
+            }
+        }
+
+        return new PeerEndpointPolicy(
+            tuples,
+            publicPorts,
+            publicPeerEndpointAuthorizer,
+            isProduction,
+            runtimeOptions.EnablePrivateAllowlistMembership);
+    }
+
+    public bool IsExactPrivateMembershipEndpoint(RouterId routerId, Uri endpoint)
+    {
+        return PrivateAllowlistActsAsMembership
+            && _privateMembershipRouterIds.Contains(routerId)
+            && TryValidatePeerEndpoint(routerId, endpoint, out _);
     }
 
     public bool TryValidatePeerEndpoint(RouterId recipientRouterId, Uri uri, out string error)

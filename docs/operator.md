@@ -186,21 +186,49 @@ tuples have the same result: a three-hop storage route fails with
 
 Validate the mode before accepting the UAT:
 
-1. Set `Runtime:AllowPublicPeerEndpoints=false` on all three routers and deny
-   public egress at the network layer.
-2. Confirm `/status` reports
+1. Set `Runtime:AllowPublicPeerEndpoints=false` and
+   `Runtime:EnablePrivateAllowlistMembership=true` on all three routers, and
+   deny public egress at the network layer.
+2. Fetch each router's fresh signed contact from `/api/network/contact`.
+   Mr. X must verify its signature, derived router identity, freshness, and
+   exact advertised tuple before distributing it.
+3. Submit all three contacts to every router through `/api/session/rpc` with
+   method `store_rc`. The payload is the complete signed contact returned by
+   `/api/network/contact`; no unsigned contact may be synthesized from config.
+4. Confirm `/status` reports
    `publicPeerAuthorizationMode="DenyAll"` and
-   `productionPublicRoutingReady=true`.
-3. With runtime and transport healthy, confirm `/health/ready` returns `200`.
-4. Request a storage route and confirm it contains exactly the three expected,
+   `productionPublicRoutingReady=true`, plus:
+
+   ```json
+   {
+     "router": {
+       "privateMembership": {
+         "enabled": true,
+         "expectedRelays": 3,
+         "registeredRelays": 3,
+         "ready": true
+       }
+     }
+   }
+   ```
+
+5. With runtime and transport healthy, confirm `/health/ready` returns `200`.
+   Before all three signed contacts are registered it must return `503`.
+6. Request a storage route and confirm it contains exactly the three expected,
    unique router IDs, with the contacted local router as entry hop.
-5. In a disposable negative test, remove or alter each of the A, B, and C
+7. In a disposable negative test, remove or alter each of the A, B, and C
    tuples in turn and confirm `path-not-found`; restore the approved inventory
    after every check.
 
+The private allowlist is a trust anchor, not membership data. A contact becomes
+registered only after `store_rc` validates its fresh Ed25519 self-signature and
+its exact allowlisted router-ID/RPC-endpoint tuple. A seed whose derived public
+ID differs from `Node:RouterId` fails startup in this mode.
+
 `DenyAll` has different readiness meaning across environments: in
 non-production private-only UAT it denies public peers while exact private
-tuples remain operational, so healthy readiness is `200`; in Production it
+tuples remain operational. With private membership mode enabled, healthy
+readiness is `200` only after all expected signed contacts are registered; in Production it
 means no proof-capable public routing is available, so readiness is
 intentionally `503` and `productionPublicRoutingReady=false`.
 

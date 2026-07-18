@@ -142,7 +142,8 @@ public sealed class RouterRuntime : IRouterRuntime
         _nodeDb.Snapshot(),
         ActiveSessions: 0,
         XrayReady: _xrayReady,
-        Metrics: MetricsSnapshot());
+        Metrics: MetricsSnapshot(),
+        PrivateMembership: PrivateMembershipStatus());
 
     public void SetXrayReady(bool ready) => _xrayReady = ready;
 
@@ -156,6 +157,7 @@ public sealed class RouterRuntime : IRouterRuntime
                 return;
             }
 
+            ValidatePrivateMembershipIdentity();
             await _nodeDb.InitializeAsync(cancellationToken).ConfigureAwait(false);
             await PublishLocalRelayContactAsync(cancellationToken).ConfigureAwait(false);
 
@@ -375,14 +377,32 @@ public sealed class RouterRuntime : IRouterRuntime
             return SessionRpcResponse.Fail(request.Id, "invalid-relay-contact");
         }
 
-        if (!IsRelayContactAccepted(contact, "rpc"))
+        if (_peerEndpointPolicy.PrivateAllowlistActsAsMembership)
+        {
+            if (!RelayContactSigner.VerifyFresh(contact, _clock.UtcNow))
+            {
+                Interlocked.Increment(ref _relayContactsRejected);
+                Interlocked.Increment(ref _rpcFailures);
+                return SessionRpcResponse.Fail(request.Id, "invalid-relay-contact-signature");
+            }
+
+            if (!IsExactPrivateMembershipContact(contact))
+            {
+                Interlocked.Increment(ref _relayContactsRejected);
+                Interlocked.Increment(ref _rpcFailures);
+                return SessionRpcResponse.Fail(request.Id, "relay-contact-not-in-private-membership");
+            }
+        }
+        else if (!IsRelayContactAccepted(contact, "rpc"))
         {
             Interlocked.Increment(ref _relayContactsRejected);
             Interlocked.Increment(ref _rpcFailures);
             return SessionRpcResponse.Fail(request.Id, "invalid-relay-contact-signature");
         }
 
-        var result = await _nodeDb.UpsertAsync(contact, cancellationToken).ConfigureAwait(false);
+        var result = _peerEndpointPolicy.PrivateAllowlistActsAsMembership
+            ? await _nodeDb.UpsertAndRegisterAsync(contact, cancellationToken).ConfigureAwait(false)
+            : await _nodeDb.UpsertAsync(contact, cancellationToken).ConfigureAwait(false);
         if (!result.Stored)
         {
             Interlocked.Increment(ref _relayContactsRejected);
@@ -916,13 +936,24 @@ public sealed class RouterRuntime : IRouterRuntime
             var contacts = await _storageBackend.GetBootstrapRelayContactsAsync(cancellationToken).ConfigureAwait(false);
             foreach (var contact in contacts)
             {
-                if (!IsRelayContactAccepted(contact, "bootstrap"))
+                if (_peerEndpointPolicy.PrivateAllowlistActsAsMembership
+                    && (!RelayContactSigner.VerifyFresh(contact, _clock.UtcNow)
+                        || !IsExactPrivateMembershipContact(contact)))
                 {
                     Interlocked.Increment(ref _relayContactsRejected);
                     continue;
                 }
 
-                var result = await _nodeDb.UpsertAsync(contact, cancellationToken).ConfigureAwait(false);
+                if (!_peerEndpointPolicy.PrivateAllowlistActsAsMembership
+                    && !IsRelayContactAccepted(contact, "bootstrap"))
+                {
+                    Interlocked.Increment(ref _relayContactsRejected);
+                    continue;
+                }
+
+                var result = _peerEndpointPolicy.PrivateAllowlistActsAsMembership
+                    ? await _nodeDb.UpsertAndRegisterAsync(contact, cancellationToken).ConfigureAwait(false)
+                    : await _nodeDb.UpsertAsync(contact, cancellationToken).ConfigureAwait(false);
                 if (result.Stored)
                 {
                     Interlocked.Increment(ref _relayContactsMerged);
@@ -933,7 +964,10 @@ public sealed class RouterRuntime : IRouterRuntime
                 }
             }
 
-            _nodeDb.SetRegisteredRelays(contacts.Select(contact => contact.RouterId));
+            if (!_peerEndpointPolicy.PrivateAllowlistActsAsMembership)
+            {
+                _nodeDb.SetRegisteredRelays(contacts.Select(contact => contact.RouterId));
+            }
 
             await _nodeDb.PurgeExpiredAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -948,6 +982,37 @@ public sealed class RouterRuntime : IRouterRuntime
     {
         if (_localRelayContactProvider is null)
         {
+            if (_peerEndpointPolicy.PrivateAllowlistActsAsMembership)
+            {
+                throw new InvalidOperationException(
+                    "Private allowlist membership requires a local signed relay contact provider.");
+            }
+
+            return;
+        }
+
+        if (_peerEndpointPolicy.PrivateAllowlistActsAsMembership)
+        {
+            var privateContact = _localRelayContactProvider.Create();
+            if (!RelayContactSigner.VerifyFresh(privateContact, _clock.UtcNow)
+                || !IsExactPrivateMembershipContact(privateContact))
+            {
+                throw new InvalidOperationException(
+                    "The local signed relay contact does not match its exact private membership tuple.");
+            }
+
+            var privateResult = await _nodeDb
+                .UpsertAndRegisterAsync(privateContact, cancellationToken)
+                .ConfigureAwait(false);
+            if (privateResult.Stored)
+            {
+                Interlocked.Increment(ref _relayContactsMerged);
+            }
+            else
+            {
+                Interlocked.Increment(ref _relayContactsRejected);
+            }
+
             return;
         }
 
@@ -968,6 +1033,54 @@ public sealed class RouterRuntime : IRouterRuntime
         {
             _logger.LogWarning(e, "Failed to publish local relay contact.");
         }
+    }
+
+    private void ValidatePrivateMembershipIdentity()
+    {
+        if (!_peerEndpointPolicy.PrivateAllowlistActsAsMembership)
+        {
+            return;
+        }
+
+        var configured = _nodeOptions.GetRouterId();
+        var derived = RelayContactSigner.DeriveRouterId(GetIdentityPrivateKey());
+        if (configured != derived)
+        {
+            throw new InvalidOperationException(
+                "Node:RouterId must match the Ed25519 private key in private allowlist membership mode.");
+        }
+    }
+
+    private bool IsExactPrivateMembershipContact(RelayContact contact)
+    {
+        return Uri.TryCreate(contact.RpcEndpoint, UriKind.Absolute, out var endpoint)
+            && _peerEndpointPolicy.IsExactPrivateMembershipEndpoint(contact.RouterId, endpoint);
+    }
+
+    private PrivateAllowlistMembershipStatusSnapshot PrivateMembershipStatus()
+    {
+        if (!_peerEndpointPolicy.PrivateAllowlistActsAsMembership)
+        {
+            return new PrivateAllowlistMembershipStatusSnapshot(
+                Enabled: false,
+                ExpectedRelays: 0,
+                RegisteredRelays: 0,
+                Ready: true);
+        }
+
+        var expected = _peerEndpointPolicy.PrivateMembershipRouterIds;
+        var registered = _nodeDb.GetRegisteredRelays().ToHashSet();
+        var now = _clock.UtcNow;
+        var ready = registered.SetEquals(expected)
+            && expected.All(routerId =>
+                _nodeDb.GetContact(routerId) is { } contact
+                && IsStorageRouteContact(contact, now));
+
+        return new PrivateAllowlistMembershipStatusSnapshot(
+            Enabled: true,
+            ExpectedRelays: expected.Count,
+            RegisteredRelays: registered.Count,
+            Ready: ready);
     }
 
     private bool IsRelayContactAccepted(RelayContact contact, string source)

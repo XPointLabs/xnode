@@ -83,6 +83,29 @@ public sealed class NodeDbPersistenceTests
     }
 
     [Fact]
+    public async Task UpsertAndRegisterAsync_StoresContactAndMembershipUnderOneGate()
+    {
+        var root = NewTempDirectory();
+        try
+        {
+            var db = new XNode.Core.NodeDb.NodeDb(Options(root), new FixedClock(TestData.Now));
+            await db.InitializeAsync();
+            var contact = TestData.Contact(1, "10.1.1.1");
+
+            var result = await db.UpsertAndRegisterAsync(contact);
+
+            Assert.True(result.Stored);
+            Assert.Equal(contact, db.GetContact(contact.RouterId));
+            Assert.True(db.IsRegistered(contact.RouterId));
+            Assert.Equal(1, db.Snapshot().RegisteredRelays);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task NodeDb_ConcurrentUpdatesPersistTheNewestContactWithoutTempCollisions()
     {
         var root = NewTempDirectory();

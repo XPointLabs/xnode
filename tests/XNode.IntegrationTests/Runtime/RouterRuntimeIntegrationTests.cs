@@ -398,7 +398,8 @@ public sealed class RouterRuntimeIntegrationTests
         PathSelectionOptions? pathOptions = null,
         ISessionStorageRpcBackend? sessionStorageRpc = null,
         IOnionPeerClient? onionPeerClient = null,
-        PeerEndpointPolicy? peerEndpointPolicy = null)
+        PeerEndpointPolicy? peerEndpointPolicy = null,
+        ILocalRelayContactProvider? localRelayContactProvider = null)
     {
         var nodeDb = new XNode.Core.NodeDb.NodeDb(
             new NodeDbOptions
@@ -421,7 +422,7 @@ public sealed class RouterRuntimeIntegrationTests
             peerEndpointPolicy ?? PeerEndpointPolicy.PublicOnly(),
             new FixedClock(TestData.Now),
             NullLogger<RouterRuntime>.Instance,
-            localRelayContactProvider: null);
+            localRelayContactProvider);
     }
 
     private static RouterNodeOptions NodeOptions(string root)
@@ -703,6 +704,158 @@ public sealed class RouterRuntimeIntegrationTests
         }
     }
 
+    [Fact]
+    public async Task Runtime_PrivateMembershipRequiresThreeFreshExactSignedContactsBeforeReadyRoute()
+    {
+        var root = NewTempDirectory();
+        try
+        {
+            var nodes = PrivateRelayNodes(root);
+            var runtimeOptions = PrivateMembershipRuntimeOptions(nodes);
+            var policy = PeerEndpointPolicy.Create(
+                runtimeOptions,
+                nodes[0],
+                "UAT",
+                DenyAllPublicPeerEndpointAuthorizer.Instance);
+            var runtime = CreateRuntime(
+                root,
+                nodes[0],
+                new FakeStorageBackend(),
+                runtimeOptions,
+                new PathSelectionOptions { ClientHops = 3 },
+                peerEndpointPolicy: policy,
+                localRelayContactProvider: new FixedLocalRelayContactProvider(SignedContact(nodes[0])));
+
+            await runtime.StartAsync(CancellationToken.None);
+
+            Assert.Equal(
+                new PrivateAllowlistMembershipStatusSnapshot(true, 3, 1, false),
+                runtime.Status.PrivateMembership);
+            Assert.Equal(
+                503,
+                RouterReadinessEvaluator
+                    .Evaluate(runtime.Status, transportReady: true, policy.IsProductionPublicRoutingReady)
+                    .StatusCode);
+            Assert.False((await RequestStorageRouteAsync(runtime, "membership-missing-two")).Success);
+
+            var mismatchedNode = NodeOptionsFromSeed(
+                root,
+                Seed(21),
+                "http://10.20.30.41:8181/api/peer/onion");
+            var mismatch = await StoreRelayContactAsync(
+                runtime,
+                SignedContact(mismatchedNode),
+                "membership-mismatch");
+            Assert.False(mismatch.Success);
+            Assert.Equal("relay-contact-not-in-private-membership", mismatch.Error);
+
+            var expired = await StoreRelayContactAsync(
+                runtime,
+                SignedContactAt(
+                    nodes[1],
+                    TestData.Now.AddDays(-2),
+                    TestData.Now.AddMinutes(-1)),
+                "membership-expired");
+            Assert.False(expired.Success);
+            Assert.Equal("invalid-relay-contact-signature", expired.Error);
+
+            var publicNode = NodeOptionsFromSeed(
+                root,
+                Seed(63),
+                "https://8.8.8.8/api/peer/onion");
+            var publicContact = await StoreRelayContactAsync(
+                runtime,
+                SignedContact(publicNode),
+                "membership-public");
+            Assert.False(publicContact.Success);
+            Assert.Equal("relay-contact-not-in-private-membership", publicContact.Error);
+            Assert.Equal(1, runtime.Status.NodeDb.RegisteredRelays);
+
+            Assert.True((await StoreRelayContactAsync(
+                runtime,
+                SignedContact(nodes[1]),
+                "membership-node-two")).Success);
+            Assert.Equal(
+                new PrivateAllowlistMembershipStatusSnapshot(true, 3, 2, false),
+                runtime.Status.PrivateMembership);
+            Assert.Equal(
+                503,
+                RouterReadinessEvaluator
+                    .Evaluate(runtime.Status, transportReady: true, policy.IsProductionPublicRoutingReady)
+                    .StatusCode);
+            var missingOne = await RequestStorageRouteAsync(runtime, "membership-missing-one");
+            Assert.False(missingOne.Success);
+            Assert.Equal("path-not-found", missingOne.Error);
+
+            Assert.True((await StoreRelayContactAsync(
+                runtime,
+                SignedContact(nodes[2]),
+                "membership-node-three")).Success);
+
+            var status = runtime.Status;
+            Assert.Equal(
+                new PrivateAllowlistMembershipStatusSnapshot(true, 3, 3, true),
+                status.PrivateMembership);
+            Assert.Equal(3, status.NodeDb.RegisteredRelays);
+            Assert.Equal(
+                503,
+                RouterReadinessEvaluator
+                    .Evaluate(status, transportReady: false, policy.IsProductionPublicRoutingReady)
+                    .StatusCode);
+            Assert.Equal(
+                200,
+                RouterReadinessEvaluator
+                    .Evaluate(status, transportReady: true, policy.IsProductionPublicRoutingReady)
+                    .StatusCode);
+            var routeResponse = await RequestStorageRouteAsync(runtime, "membership-complete");
+            Assert.True(routeResponse.Success);
+            var route = ParseRoute(routeResponse.Result);
+            Assert.Equal(3, route.Count);
+            Assert.Equal(
+                nodes.Select(static node => node.RouterId).Order(StringComparer.Ordinal),
+                route.Select(static node => node.RouterId).Order(StringComparer.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Runtime_PrivateMembershipFailsStartupWhenLocalSeedDoesNotMatchRouterId()
+    {
+        var root = NewTempDirectory();
+        try
+        {
+            var nodes = PrivateRelayNodes(root);
+            var local = nodes[0];
+            local.Ed25519PrivateKey = Seed(21);
+            var runtimeOptions = PrivateMembershipRuntimeOptions(nodes);
+            var policy = PeerEndpointPolicy.Create(
+                runtimeOptions,
+                local,
+                "UAT",
+                DenyAllPublicPeerEndpointAuthorizer.Instance);
+            var runtime = CreateRuntime(
+                root,
+                local,
+                new FakeStorageBackend(),
+                runtimeOptions,
+                new PathSelectionOptions { ClientHops = 3 },
+                peerEndpointPolicy: policy,
+                localRelayContactProvider: new FixedLocalRelayContactProvider(SignedContact(nodes[1])));
+
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => runtime.StartAsync(CancellationToken.None));
+            Assert.Contains("must match the Ed25519 private key", error.Message);
+            Assert.Equal("stopped", runtime.Status.State);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     private static RouterNodeOptions[] PrivateRelayNodes(string root) =>
     [
         NodeOptionsFromSeed(root, Seed(200), "http://10.20.30.40:8080/api/peer/onion"),
@@ -734,6 +887,15 @@ public sealed class RouterRuntimeIntegrationTests
                 .ToList()
         };
 
+    private static RouterRuntimeOptions PrivateMembershipRuntimeOptions(
+        IEnumerable<RouterNodeOptions> nodes)
+    {
+        var options = PrivateOnlyRuntimeOptions(nodes);
+        options.BootstrapFromStorage = false;
+        options.EnablePrivateAllowlistMembership = true;
+        return options;
+    }
+
     private static Task<SessionRpcResponse> RequestStorageRouteAsync(
         RouterRuntime runtime,
         string requestId) =>
@@ -745,6 +907,17 @@ public sealed class RouterRuntimeIntegrationTests
                     new { routeNonce = new string('4', 64) },
                     SessionRpc.JsonOptions),
                 "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"),
+            CancellationToken.None);
+
+    private static Task<SessionRpcResponse> StoreRelayContactAsync(
+        RouterRuntime runtime,
+        RelayContact contact,
+        string requestId) =>
+        runtime.HandleRpcAsync(
+            new SessionRpcRequest(
+                requestId,
+                "store_rc",
+                JsonSerializer.SerializeToElement(contact, SessionRpc.JsonOptions)),
             CancellationToken.None);
 
     private static RouterNodeOptions NodeOptionsFromSeed(string root, string seed, string rpcEndpoint)
@@ -791,7 +964,13 @@ public sealed class RouterRuntimeIntegrationTests
         };
     }
 
-    private static RelayContact SignedContact(RouterNodeOptions node)
+    private static RelayContact SignedContact(RouterNodeOptions node) =>
+        SignedContactAt(node, TestData.Now, TestData.Now.AddDays(1));
+
+    private static RelayContact SignedContactAt(
+        RouterNodeOptions node,
+        DateTimeOffset signedAt,
+        DateTimeOffset expiresAt)
     {
         var seed = node.GetEd25519PrivateKey();
         var onion = OnionCrypto.DeriveNodeKeysFromEd25519Seed(seed);
@@ -803,8 +982,8 @@ public sealed class RouterRuntimeIntegrationTests
             PublicPort = node.PublicPort,
             X25519PublicKey = OnionCrypto.Hex(onion.PublicKey),
             RpcEndpoint = node.PublicPeerRpcEndpoint,
-            SignedAt = TestData.Now,
-            ExpiresAt = TestData.Now.AddDays(1),
+            SignedAt = signedAt,
+            ExpiresAt = expiresAt,
             IsReachable = true,
             Capabilities = ["session-rpc", "onion-v1"]
         };
@@ -870,6 +1049,12 @@ public sealed class RouterRuntimeIntegrationTests
         string RouterId,
         string X25519PublicKey,
         string RpcEndpoint);
+
+    private sealed class FixedLocalRelayContactProvider(RelayContact contact)
+        : ILocalRelayContactProvider
+    {
+        public RelayContact Create() => contact;
+    }
 
     private sealed class FakeStorageBackend : IStorageBackend
     {
