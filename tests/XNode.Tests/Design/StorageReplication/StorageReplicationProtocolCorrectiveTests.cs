@@ -76,9 +76,9 @@ public sealed class StorageReplicationProtocolCorrectiveTests(ITestOutputHelper 
         Assert.Equal(
             new[]
             {
-                "TO-BE-PINNED-1",
-                "TO-BE-PINNED-2",
-                "TO-BE-PINNED-3"
+                "7fde8eebf388fcff667a89be60430cc6",
+                "5085cb99dbe1e374ccd321e5b58182d2",
+                "14236fe421fe9ddb8377a19b60ce71dd"
             },
             result.Replicas.Select(static replica => replica.ToString()));
     }
@@ -127,7 +127,7 @@ public sealed class StorageReplicationProtocolCorrectiveTests(ITestOutputHelper 
     public void QuorumLog_AlternatingPairsPreserveCanonicalCursorAndPrefix()
     {
         var replicas = Members(3);
-        var log = new QuorumLogProtocolSimulator(replicas);
+        var log = new QuorumLogProtocolSimulator(Placement(replicas, 300), generation: 4);
 
         var first = log.TryAppend(Operation(1), expectedCommittedCursor: 0, [replicas[0], replicas[1]]);
         Assert.Equal(QuorumAppendStatus.Committed, first.Status);
@@ -163,7 +163,7 @@ public sealed class StorageReplicationProtocolCorrectiveTests(ITestOutputHelper 
     public void UnknownOutcomeRetryIsIdempotent_AndReadRequiresAuthenticatedCompletePrefix()
     {
         var replicas = Members(3);
-        var log = new QuorumLogProtocolSimulator(replicas);
+        var log = new QuorumLogProtocolSimulator(Placement(replicas, 301), generation: 4);
         var operation = Operation(11);
 
         var unknownToClient = log.TryAppend(operation, 0, [replicas[0], replicas[1]]);
@@ -180,6 +180,7 @@ public sealed class StorageReplicationProtocolCorrectiveTests(ITestOutputHelper 
         var complete = log.ReadAuthenticatedPage([replicas[1], replicas[2]], afterCursor: 0);
         Assert.Equal(AuthenticatedReadStatus.Complete, complete.Status);
         Assert.Equal<ulong>(1, complete.HighWaterCursor);
+        Assert.Equal(2, complete.HighWaterEvidence.Count);
         Assert.Single(complete.Records);
         Assert.All(complete.Records, static record => Assert.Equal(2, record.DurableOwnerReceipts.Count));
     }
@@ -188,7 +189,7 @@ public sealed class StorageReplicationProtocolCorrectiveTests(ITestOutputHelper 
     public void TombstoneTargetsImmutableObject_AndHigherCursorCannotResurrectIt()
     {
         var replicas = Members(3);
-        var log = new QuorumLogProtocolSimulator(replicas);
+        var log = new QuorumLogProtocolSimulator(Placement(replicas, 302), generation: 4);
         var original = Operation(21);
         var stored = log.TryAppend(original, 0, [replicas[0], replicas[1]]);
         log.CatchUp(replicas[2], replicas[1]);
@@ -253,6 +254,16 @@ public sealed class StorageReplicationProtocolCorrectiveTests(ITestOutputHelper 
 
     private static CanonicalStorageOperation TombstoneOperation(int value, byte[] target) =>
         new(Fixed16((byte)value), Fixed32((byte)(value + 1)), target);
+
+    private static CanonicalStoragePlacementResult Placement(
+        IReadOnlyList<StorageReplicaId> replicas,
+        ulong epoch) =>
+        CanonicalStoragePlacementSimulator.Assign(
+            Key(700),
+            epoch,
+            Nonce(700, 1),
+            Route(),
+            replicas);
 
     private static IReadOnlyList<StorageReplicaId> Members(int count) =>
         Enumerable.Range(0, count)
