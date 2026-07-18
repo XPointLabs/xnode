@@ -285,6 +285,43 @@ public sealed class StorageReplicationProtocolCorrectiveTests(ITestOutputHelper 
                 continuityJournalComplete: false));
     }
 
+    [Fact]
+    public void HighWater_IsLogScopedChallengeFreshAndClientLkgRejectsReplay()
+    {
+        var replicas = Members(3);
+        var context = new CanonicalMembershipContext(Fixed16(0x91), Fixed32(0x92));
+        var placement = CanonicalStoragePlacementSimulator.Assign(
+            Key(800), 500, Nonce(1, 1), Route(), replicas, context);
+        var log = new QuorumLogProtocolSimulator(placement, generation: 7);
+        var clientLkg = new ClientHighWaterLkg();
+
+        log.TryAppend(Operation(31), 0, [replicas[0], replicas[1]]);
+        log.CatchUp(replicas[2], replicas[1]);
+        var challengeOne = Nonce(900, 1);
+        var pageOne = log.ReadAuthenticatedPage([replicas[1], replicas[2]], 0, challengeOne);
+        Assert.True(AuthenticatedReadPageVerifier.Verify(
+            pageOne, placement, log.Generation, 0, new byte[32], challengeOne, clientLkg));
+
+        log.TryAppend(Operation(32), 1, [replicas[1], replicas[2]]);
+        log.CatchUp(replicas[0], replicas[2]);
+        var challengeTwo = Nonce(900, 2);
+        var pageTwo = log.ReadAuthenticatedPage([replicas[0], replicas[2]], 0, challengeTwo);
+        Assert.True(AuthenticatedReadPageVerifier.Verify(
+            pageTwo, placement, log.Generation, 0, new byte[32], challengeTwo, clientLkg));
+
+        Assert.False(AuthenticatedReadPageVerifier.Verify(
+            pageOne, placement, log.Generation, 0, new byte[32], challengeTwo, clientLkg));
+        Assert.False(AuthenticatedReadPageVerifier.Verify(
+            pageOne, placement, log.Generation, 0, new byte[32], challengeOne, clientLkg));
+
+        var otherNetwork = new CanonicalMembershipContext(Fixed16(0xA1), context.MembershipStatementHash);
+        var otherPlacement = CanonicalStoragePlacementSimulator.Assign(
+            Key(800), 500, Nonce(1, 1), Route(), replicas, otherNetwork);
+        Assert.False(AuthenticatedReadPageVerifier.Verify(
+            pageTwo, otherPlacement, log.Generation, 0, new byte[32], challengeTwo,
+            new ClientHighWaterLkg()));
+    }
+
     private static CanonicalStorageOperation Operation(int value) =>
         new(Fixed16((byte)value), Fixed32((byte)(value + 1)), null);
 
