@@ -1,0 +1,73 @@
+{
+  "schema": "deep-storage-placement-simulation.v1",
+  "workPackage": "P05",
+  "status": "design-evidence-only-not-production",
+  "algorithm": "unweighted-hrw-sha256-v1",
+  "replication": {
+    "n": 3,
+    "w": 2,
+    "r": 2
+  },
+  "keysPerMembership": 8192,
+  "matrix": [
+    {
+      "members": 4,
+      "assignments": 24576,
+      "minimum": 6120,
+      "maximum": 6159,
+      "mean": 6144.0,
+      "coefficientOfVariation": 0.0024,
+      "addOneRemapFraction": 0.603760,
+      "expectedAddOneRemapFraction": 0.600000
+    },
+    {
+      "members": 20,
+      "assignments": 24576,
+      "minimum": 1180,
+      "maximum": 1289,
+      "mean": 1228.8,
+      "coefficientOfVariation": 0.0256,
+      "addOneRemapFraction": 0.142456,
+      "expectedAddOneRemapFraction": 0.142857
+    },
+    {
+      "members": 100,
+      "assignments": 24576,
+      "minimum": 216,
+      "maximum": 282,
+      "mean": 245.76,
+      "coefficientOfVariation": 0.0607,
+      "addOneRemapFraction": 0.030029,
+      "expectedAddOneRemapFraction": 0.029703
+    },
+    {
+      "members": 1000,
+      "assignments": 24576,
+      "minimum": 9,
+      "maximum": 44,
+      "mean": 24.58,
+      "coefficientOfVariation": 0.2032,
+      "addOneRemapFraction": 0.002930,
+      "expectedAddOneRemapFraction": 0.002997
+    }
+  ],
+  "properties": {
+    "requestNonceIndependence": "pass-all-4-20-100-1000",
+    "threeDistinctOwners": "pass",
+    "routeAndReplicaInputsSeparate": "pass",
+    "addOneMinimalRemap": "pass-all-4-20-100-1000",
+    "removeOneUnaffectedKeysStable": "pass-100",
+    "oneReplicaLoss": "pass-w2-r2",
+    "staleRead": "pass-newer-r2-and-repair",
+    "splitMembership": "pass-no-cross-epoch-quorum",
+    "exactRetry": "pass-cached",
+    "conflictingRetry": "pass-rejected",
+    "tombstoneDominance": "pass"
+  },
+  "limitations": [
+    "Test-only simulator; no product project references it.",
+    "No disk, network, crypto, latency, battery, chaos or production durability claim.",
+    "The simulator models receipt decisions but does not implement P03B crypto.",
+    "P04D full-roster verification and P03B-to-P04 epoch operation binding remain prerequisites."
+  ]
+}
