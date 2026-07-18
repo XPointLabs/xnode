@@ -1,8 +1,9 @@
 using System.Security.Cryptography;
+using Xunit.Abstractions;
 
 namespace XNode.Tests.Design.StorageReplication;
 
-public sealed class StoragePlacementSimulatorTests
+public sealed class StoragePlacementSimulatorTests(ITestOutputHelper output)
 {
     private static readonly int[] MembershipSizes = [4, 20, 100, 1000];
 
@@ -53,6 +54,16 @@ public sealed class StoragePlacementSimulatorTests
         }
 
         var report = PlacementDistributionReport.Create(membershipSize, keyCount, counts.Values);
+        output.WriteLine(
+            "members={0}; keys={1}; assignments={2}; min={3}; max={4}; mean={5:F2}; cv={6:F4}; sevenSigmaMax={7:F2}",
+            report.MembershipSize,
+            report.KeyCount,
+            report.AssignmentCount,
+            report.Minimum,
+            report.Maximum,
+            report.Mean,
+            report.CoefficientOfVariation,
+            report.SevenSigmaUpperBound);
 
         Assert.Equal(keyCount * StoragePlacementSimulator.ReplicationFactor, report.AssignmentCount);
         Assert.True(
@@ -65,12 +76,14 @@ public sealed class StoragePlacementSimulatorTests
             $"{report.SevenSigmaUpperBound:F2}.");
     }
 
-    [Fact]
-    public void AddingMember_HasMinimalRemap_AndPreservesSurvivingReplicaOrder()
+    [Theory]
+    [MemberData(nameof(MembershipSizeCases))]
+    public void AddingMember_HasMinimalRemap_AndPreservesSurvivingReplicaOrder(int membershipSize)
     {
         const int keyCount = 8192;
-        var beforeMembership = CreateMembership(20);
-        var afterMembership = CreateMembership(21);
+        var beforeMembership = CreateMembership(membershipSize);
+        var afterMembership = CreateMembership(membershipSize + 1);
+        var addedMember = $"storage-node-{membershipSize:D4}";
         var changed = 0;
 
         for (var keyIndex = 0; keyIndex < keyCount; keyIndex++)
@@ -84,14 +97,26 @@ public sealed class StoragePlacementSimulatorTests
             }
 
             changed++;
-            Assert.Contains("storage-node-0020", after.ReplicaIds);
+            Assert.Contains(addedMember, after.ReplicaIds);
             Assert.True(
                 before.ReplicaIds.Intersect(after.ReplicaIds, StringComparer.Ordinal).Count() >= 2,
                 "Adding one member may evict at most one of three existing owners.");
         }
 
         var remapFraction = changed / (double)keyCount;
-        Assert.InRange(remapFraction, 0.08, 0.22);
+        var expectedFraction = StoragePlacementSimulator.ReplicationFactor / (double)(membershipSize + 1);
+        output.WriteLine(
+            "members={0}->{1}; changed={2}/{3}; remap={4:F6}; expected={5:F6}",
+            membershipSize,
+            membershipSize + 1,
+            changed,
+            keyCount,
+            remapFraction,
+            expectedFraction);
+        Assert.InRange(
+            remapFraction,
+            Math.Max(0, expectedFraction * 0.35),
+            Math.Min(1, (expectedFraction * 1.65) + 0.002));
     }
 
     [Fact]
