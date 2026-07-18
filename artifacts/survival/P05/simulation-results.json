@@ -13,61 +13,66 @@
     {
       "members": 4,
       "assignments": 24576,
-      "minimum": 6120,
-      "maximum": 6159,
+      "minimum": 6125,
+      "maximum": 6171,
       "mean": 6144.0,
-      "coefficientOfVariation": 0.0024,
-      "addOneRemapFraction": 0.603760,
+      "coefficientOfVariation": 0.0027,
+      "addOneRemapFraction": 0.603882,
       "expectedAddOneRemapFraction": 0.600000
     },
     {
       "members": 20,
       "assignments": 24576,
-      "minimum": 1180,
-      "maximum": 1289,
+      "minimum": 1187,
+      "maximum": 1265,
       "mean": 1228.8,
-      "coefficientOfVariation": 0.0256,
-      "addOneRemapFraction": 0.142456,
+      "coefficientOfVariation": 0.0163,
+      "addOneRemapFraction": 0.144775,
       "expectedAddOneRemapFraction": 0.142857
     },
     {
       "members": 100,
       "assignments": 24576,
-      "minimum": 216,
-      "maximum": 282,
+      "minimum": 209,
+      "maximum": 277,
       "mean": 245.76,
-      "coefficientOfVariation": 0.0607,
-      "addOneRemapFraction": 0.030029,
+      "coefficientOfVariation": 0.0600,
+      "addOneRemapFraction": 0.033325,
       "expectedAddOneRemapFraction": 0.029703
     },
     {
       "members": 1000,
       "assignments": 24576,
-      "minimum": 9,
-      "maximum": 44,
+      "minimum": 10,
+      "maximum": 39,
       "mean": 24.58,
-      "coefficientOfVariation": 0.2032,
-      "addOneRemapFraction": 0.002930,
+      "coefficientOfVariation": 0.2037,
+      "addOneRemapFraction": 0.003296,
       "expectedAddOneRemapFraction": 0.002997
     }
   ],
   "properties": {
+    "canonicalBinaryIds": "pass-separate-route32-replica16",
+    "goldenOwnerVector": "pass",
     "requestNonceIndependence": "pass-all-4-20-100-1000",
     "threeDistinctOwners": "pass",
     "routeAndReplicaInputsSeparate": "pass",
     "addOneMinimalRemap": "pass-all-4-20-100-1000",
-    "removeOneUnaffectedKeysStable": "pass-100",
-    "oneReplicaLoss": "pass-w2-r2",
-    "staleRead": "pass-newer-r2-and-repair",
-    "splitMembership": "pass-no-cross-epoch-quorum",
-    "exactRetry": "pass-cached",
-    "conflictingRetry": "pass-rejected",
-    "tombstoneDominance": "pass"
+    "exactOwnerEpochOperationGenerationCursorDigestBinding": "pass",
+    "alternatingAbBcAcPrefix": "pass",
+    "concurrentStaleHead": "pass-rejected",
+    "unknownOutcomeRetry": "pass-idempotent",
+    "authenticatedHighWater": "pass-two-exact-owners",
+    "perRecordContiguousCompleteness": "pass-omission-rejected",
+    "exactTombstoneTarget": "pass-higher-committed-cursor",
+    "epochOverlapContinuityGap": "pass-rollback-disabled",
+    "legacyMirrorGap": "pass-rollback-claim-disabled"
   },
   "limitations": [
     "Test-only simulator; no product project references it.",
     "No disk, network, crypto, latency, battery, chaos or production durability claim.",
-    "The simulator models receipt decisions but does not implement P03B crypto.",
-    "P04D full-roster verification and P03B-to-P04 epoch operation binding remain prerequisites."
+    "The model oracle is not a production ballot/consensus implementation.",
+    "The simulator models evidence fields but does not implement P03B/P05A crypto.",
+    "P05A and P04D remain mandatory predecessors."
   ]
 }

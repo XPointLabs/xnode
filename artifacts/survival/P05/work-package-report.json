@@ -2,7 +2,7 @@
   "schema": "deep-survival-work-package-report.v1",
   "workPackage": "P05",
   "title": "Storage ownership and replication ADR",
-  "status": "proposed-not-approved-independent-review-pending",
+  "status": "corrected-proposed-not-approved-independent-rereview-pending",
   "humanOwner": "Mr. X",
   "decisionOwner": "Mr. X",
   "decisionDeadline": "2026-07-21",
@@ -13,6 +13,10 @@
   "redCommit": "5feb95ff44e2f70e3e1b23307271ea968716e4c4",
   "simulatorCommit": "97281d55b32864c5c508abe7977a80d19b769d5f",
   "proposalCommit": "9f5e658d7f86272a041ca4ba0faa4327dd348353",
+  "initialEvidenceCommit": "ec8f5ac32429607ef8c0c36eb54144c5fae3bdcf",
+  "correctiveRedCommit": "8c2156bd37d551da6ef4f1776679c4399e429101",
+  "correctiveSimulatorCommit": "25cf55b26b7393b5abf654104fdc25fa790c5760",
+  "correctiveDesignCommit": "b131f853bf702d958d1552d3b6fa031837753c96",
   "recommendation": {
     "architecture": "xnode-core-storage-coordinator",
     "productRuntimeOwner": "xnode",
@@ -34,20 +38,21 @@
     "p04WorkPackageReportSha256": "fd9f78f88070a94450c2b07d14486a34508d852a6f66fa6b8368e7a59dfee04c"
   },
   "files": {
-    "adrSha256": "f020e75efe9916ebd5ac5aacdb34325831e02c6a2a613deb92d8f9bc731404d7",
-    "apiProposalSha256": "9cfebc502f9c1d3d2f5283b11cd9310ceb2da4efe39fc1f223ca933715dd1478",
-    "estimateAndLocksSha256": "b28de3d968ab4689180f909688740a9c56502a8a2c8f7e190629dce1f5f151ad",
-    "simulatorSha256": "f027701a56ad2441b621a171957c9946fba243e0e71c36a0a597f8ab0f7e021a",
-    "simulatorTestsSha256": "224faa7264af0b6777a5c9568be9ad1a23b15a604fe637843df00475d91fc791"
+    "adrSha256": "e6c48a153f1d08680aadf0d4e0c6f72051ebc2ba976bcd85ed78a97106df7b91",
+    "apiProposalSha256": "4fb49093df73e0870e9609de5a7264723068b4b5b07a9fc5458b70d2cc06d7e3",
+    "estimateAndLocksSha256": "647532611c80c5aad4d5ce8d7cfb3a33445923b07eb9ba5df89a94f2fc1a6e3d",
+    "p05aWorkPackageSha256": "f85ce6d53061e8ce1b8c7f5c5d4e2aca1b07b903c21557b791512d9afe58f7df",
+    "simulatorSha256": "c26eae834e0b2e36341662c7b260eebbaa4a0f36016b2b429a76aa72f1db250e",
+    "simulatorTestsSha256": "a394e2138871e7dfac81010de2ab3088139dcf2cba102f9eb297999c2b1287d3"
   },
   "tests": {
     "focusedRelease": {
-      "passed": 16,
+      "passed": 11,
       "failed": 0,
       "skipped": 0
     },
     "fullRelease": {
-      "unitPassed": 100,
+      "unitPassed": 95,
       "integrationPassed": 30,
       "failed": 0,
       "skipped": 0
@@ -62,22 +67,38 @@
     "nonceIndependence": "pass-4-20-100-1000",
     "minimalRemap": "pass-4-20-100-1000",
     "distributionReported": "pass",
-    "failureTable": "pass",
-    "epochOverlapRollback": "pass-design",
+    "binaryTypedGoldenPlacement": "pass",
+    "failureTable": "pass-corrected-design",
+    "quorumCursorAndPrefix": "pass-test-model-not-production-proof",
+    "authenticatedReadCompleteness": "pass-test-model-omission-rejected",
+    "epochOverlapRollback": "pass-separate-membership-state-machine-design",
+    "legacyRollbackMirror": "pass-separate-strict-state-machine-design",
     "logicalPhysicalQuota": "pass-design",
     "mixedVersionLegacyFlag": "pass-design",
     "apiDtoProposal": "pass-proposed",
     "p08p09EstimateFileLocks": "pass",
+    "p05aExplicitPredecessor": "pass-proposed-deep-protocol-owner-files-vectors-package-review",
     "productionReplication": "not-implemented-by-design",
     "humanApproval": "pending"
   },
   "blockersBeforeP08P09": [
     "Mr. X has not approved an immutable ADR SHA.",
-    "P04D verified immutable full storage roster and canonical member leaf are not pinned.",
-    "P03B OperationId to P04 epoch/roster/placement composition lacks accepted golden and cross-language vectors.",
+    "P04D verified immutable full storage roster is not pinned.",
+    "P05A deep-protocol source/package/hash and independent review do not exist yet.",
     "Production replica/coordinator crypto and key distribution are not approved.",
     "Durable atomic P04 LKG/revocation/equivocation state is not available."
   ],
+  "independentReview": {
+    "initialCommit": "ec8f5ac32429607ef8c0c36eb54144c5fae3bdcf",
+    "initialVerdict": "NO-GO",
+    "initialCounts": {
+      "p0": 0,
+      "p1": 3,
+      "p2": 1,
+      "p3": 0
+    },
+    "correctiveRereview": "pending"
+  },
   "publication": {
     "gitPush": false,
     "dockerChanged": false,
