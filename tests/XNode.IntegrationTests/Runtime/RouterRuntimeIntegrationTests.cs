@@ -870,11 +870,69 @@ public sealed class RouterRuntimeIntegrationTests
             Assert.False(duplicateRoute.Success);
             Assert.Equal("path-not-found", duplicateRoute.Error);
 
+            var oldStateObserved = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var middleStateApplied = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var middleStateObserved = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var finalStateApplied = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var localOnionKey = SignedContact(nodes[0]).X25519PublicKey;
+            var reader = Task.Run(async () =>
+            {
+                Assert.False(runtime.Status.PrivateMembership.Ready);
+                oldStateObserved.SetResult(true);
+
+                await middleStateApplied.Task;
+                Assert.False(runtime.Status.PrivateMembership.Ready);
+                Assert.False((await RequestStorageRouteAsync(
+                    runtime,
+                    "membership-duplicate-key-middle")).Success);
+                middleStateObserved.SetResult(true);
+
+                await finalStateApplied.Task;
+                Assert.False(runtime.Status.PrivateMembership.Ready);
+                Assert.False((await RequestStorageRouteAsync(
+                    runtime,
+                    "membership-duplicate-key-final")).Success);
+            });
+            var writer = Task.Run(async () =>
+            {
+                await oldStateObserved.Task;
+                Assert.True((await StoreRelayContactAsync(
+                    runtime,
+                    SignedContactWithX25519Key(
+                        nodes[2],
+                        localOnionKey,
+                        TestData.Now.AddMinutes(1)),
+                    "membership-middle-duplicate")).Success);
+                middleStateApplied.SetResult(true);
+
+                await middleStateObserved.Task;
+                Assert.True((await StoreRelayContactAsync(
+                    runtime,
+                    SignedContactWithX25519Key(
+                        nodes[1],
+                        localOnionKey.ToUpperInvariant(),
+                        TestData.Now.AddMinutes(1)),
+                    "membership-final-duplicate")).Success);
+                finalStateApplied.SetResult(true);
+            });
+            await Task.WhenAll(reader, writer);
+
+            Assert.True((await StoreRelayContactAsync(
+                runtime,
+                SignedContactAt(
+                    nodes[1],
+                    TestData.Now.AddMinutes(2),
+                    TestData.Now.AddDays(1)),
+                "membership-unique-key-node-two")).Success);
             Assert.True((await StoreRelayContactAsync(
                 runtime,
                 SignedContactAt(
                     nodes[2],
-                    TestData.Now.AddMinutes(1),
+                    TestData.Now.AddMinutes(2),
                     TestData.Now.AddDays(1)),
                 "membership-unique-key-node-three")).Success);
 

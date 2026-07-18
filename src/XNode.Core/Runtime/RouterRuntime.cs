@@ -695,11 +695,9 @@ public sealed class RouterRuntime : IRouterRuntime
     {
         var now = _clock.UtcNow;
         var localRouterId = _nodeOptions.GetRouterId();
-        var registered = _nodeDb.GetRegisteredRelays().ToHashSet();
-        var contacts = registered
-            .Select(_nodeDb.GetContact)
-            .Where(static contact => contact is not null)
-            .Select(static contact => contact!)
+        var catalog = _nodeDb.GetRegisteredRelayCatalogSnapshot();
+        var registered = catalog.RegisteredRelays.ToHashSet();
+        var contacts = catalog.GetContacts()
             .Where(contact => IsStorageRouteContact(contact, now))
             .GroupBy(contact => contact.RouterId)
             .ToDictionary(group => group.Key, group => group.OrderByDescending(contact => contact.SignedAt).First());
@@ -1081,10 +1079,11 @@ public sealed class RouterRuntime : IRouterRuntime
         }
 
         var expected = _peerEndpointPolicy.PrivateMembershipRouterIds;
-        var registered = _nodeDb.GetRegisteredRelays().ToHashSet();
+        var catalog = _nodeDb.GetRegisteredRelayCatalogSnapshot();
+        var registered = catalog.RegisteredRelays.ToHashSet();
         var now = _clock.UtcNow;
         var contacts = expected
-            .Select(_nodeDb.GetContact)
+            .Select(catalog.GetContact)
             .Where(static contact => contact is not null)
             .Select(static contact => contact!)
             .ToArray();

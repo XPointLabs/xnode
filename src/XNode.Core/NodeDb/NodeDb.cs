@@ -10,6 +10,7 @@ public sealed class NodeDb
     private readonly NodeDbOptions _options;
     private readonly IClock _clock;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly SemaphoreSlim _persistenceGate = new(1, 1);
     private readonly Dictionary<RouterId, RelayContact> _contacts = new();
     private readonly HashSet<RouterId> _knownRouterIds = new();
     private readonly HashSet<RouterId> _registeredRelays = new();
@@ -169,13 +170,6 @@ public sealed class NodeDb
                 result = new NodeDbPutResult(true, shouldGossip, shouldGossip ? "significant-update" : "stored-update");
             }
 
-            if (toPersist is not null)
-            {
-                // Persist while holding the state gate so a slower older write cannot
-                // replace a newer contact after this method has returned.
-                await PersistAsync(toPersist, cancellationToken).ConfigureAwait(false);
-            }
-
             if (registerRelay)
             {
                 _registeredRelays.Add(contact.RouterId);
@@ -184,6 +178,11 @@ public sealed class NodeDb
         finally
         {
             _gate.Release();
+        }
+
+        if (toPersist is not null)
+        {
+            await PersistIfCurrentAsync(toPersist, cancellationToken).ConfigureAwait(false);
         }
 
         return result;
@@ -278,6 +277,25 @@ public sealed class NodeDb
         try
         {
             return _registeredRelays.Order().ToArray();
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public RegisteredRelayCatalogSnapshot GetRegisteredRelayCatalogSnapshot()
+    {
+        _gate.Wait();
+        try
+        {
+            var registeredRelays = _registeredRelays.Order().ToArray();
+            var contacts = registeredRelays
+                .Where(_contacts.ContainsKey)
+                .ToDictionary(
+                    static routerId => routerId,
+                    routerId => _contacts[routerId]);
+            return new RegisteredRelayCatalogSnapshot(registeredRelays, contacts);
         }
         finally
         {
@@ -396,6 +414,38 @@ public sealed class NodeDb
             {
                 File.Delete(tempPath);
             }
+        }
+    }
+
+    private async Task PersistIfCurrentAsync(
+        RelayContact contact,
+        CancellationToken cancellationToken)
+    {
+        await _persistenceGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            _gate.Wait(cancellationToken);
+            try
+            {
+                if (!_contacts.TryGetValue(contact.RouterId, out var current)
+                    || current != contact)
+                {
+                    return;
+                }
+            }
+            finally
+            {
+                _gate.Release();
+            }
+
+            // The state gate is deliberately not held across file I/O. The
+            // persistence gate preserves write order; a newer update either
+            // skips this stale write or persists immediately after it.
+            await PersistAsync(contact, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _persistenceGate.Release();
         }
     }
 
