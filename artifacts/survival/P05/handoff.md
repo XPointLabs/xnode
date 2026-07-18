@@ -18,7 +18,9 @@ P05 is ready for independent architecture review, not implementation approval.
 - First corrective rereview: `NO-GO`, P0=0/P1=1/P2=2/P3=0
 - Second corrective red: `f95452ec1499cd9bdc5ec5812dd5b87e82552e43`
 - Second corrective log-freshness/pagination model: `86a4fd4fc9fe81d227c47b5266fd62628c7ac416`
-- Second corrective evidence: `PENDING`
+- Second corrective evidence and exact reviewed commit:
+  `3f967230a0411ff9d4ef475e9db847bcf01d4b66`
+- Final independent rereview: `GO`, P0=0/P1=0/P2=0/P3=0
 
 Recommendation: one client request to an XNode-owned core/storage coordinator, independent HRW
 storage placement, `N=3/W=2/R=2`, strict bounded E/E+1 rollback overlap and logical quota counted
@@ -43,4 +45,9 @@ Full Release is green: 96 unit plus 30 integration tests. Focused P05 is 12/12. 
 and local evidence changed. No Docker, network, production runtime, credential or Git remote was
 accessed.
 
-P08/P09 remain blocked until independent review and an explicit Mr. X decision record.
+The final rereview confirmed that every prior finding is closed: canonical log scoping and fresh
+high-water replay resistance, the corrected non-zero focused gate, and bounded multi-page
+continuation checks. This is design-review GO only, not production approval.
+
+P08/P09 remain blocked until P05A/P04D and the pinned crypto/durable-state prerequisites exist,
+and until Mr. X records an explicit decision against an immutable ADR SHA.

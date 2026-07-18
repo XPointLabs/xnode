@@ -2,7 +2,7 @@
   "schema": "deep-survival-work-package-report.v1",
   "workPackage": "P05",
   "title": "Storage ownership and replication ADR",
-  "status": "second-corrected-proposed-not-approved-independent-rereview-pending",
+  "status": "design-review-go-proposed-not-approved",
   "humanOwner": "Mr. X",
   "decisionOwner": "Mr. X",
   "decisionDeadline": "2026-07-21",
@@ -20,7 +20,7 @@
   "firstCorrectiveEvidenceCommit": "30dc69fdc02feba2c9543b89e01511b30bcf3437",
   "secondCorrectiveRedCommit": "f95452ec1499cd9bdc5ec5812dd5b87e82552e43",
   "secondCorrectiveDesignCommit": "86a4fd4fc9fe81d227c47b5266fd62628c7ac416",
-  "secondCorrectiveEvidenceCommit": "PENDING",
+  "secondCorrectiveEvidenceCommit": "3f967230a0411ff9d4ef475e9db847bcf01d4b66",
   "recommendation": {
     "architecture": "xnode-core-storage-coordinator",
     "productRuntimeOwner": "xnode",
@@ -111,7 +111,16 @@
       "p2": 2,
       "p3": 0
     },
-    "secondCorrectiveRereview": "pending"
+    "secondCorrectiveReviewedCommit": "3f967230a0411ff9d4ef475e9db847bcf01d4b66",
+    "secondCorrectiveVerdict": "GO",
+    "secondCorrectiveCounts": {
+      "p0": 0,
+      "p1": 0,
+      "p2": 0,
+      "p3": 0
+    },
+    "allPriorFindingsClosed": true,
+    "residualDisposition": "design-review-go-only-adr-remains-proposed-not-approved"
   },
   "publication": {
     "gitPush": false,

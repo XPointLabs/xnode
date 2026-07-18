@@ -9,7 +9,7 @@ Status: design/simulator green; ADR **PROPOSED / NOT-APPROVED**.
 | Production source delta | PASS, zero files under `src/` |
 | Docker/network | NOT RUN; not required and prohibited by P05 scope |
 | No-mock/multi-node rehearsal | NOT RUN; no release-path or product runtime change |
-| Independent architecture review | PENDING |
+| Independent architecture review | GO on `3f967230a0411ff9d4ef475e9db847bcf01d4b66`, P0/P1/P2/P3=0/0/0/0 |
 
 Focused command:
 
