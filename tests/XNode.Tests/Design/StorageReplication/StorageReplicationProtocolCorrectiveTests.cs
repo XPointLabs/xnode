@@ -157,6 +157,16 @@ public sealed class StorageReplicationProtocolCorrectiveTests(ITestOutputHelper 
 
         Assert.Equal(new ulong[] { 1, 2, 3 }, log.CommittedRecords.Select(static record => record.Cursor));
         Assert.All(log.CommittedRecords, static record => Assert.Equal(2, record.DurableOwnerReceipts.Count));
+
+        log.CatchUp(replicas[1], replicas[0]);
+        var page = log.ReadAuthenticatedPage([replicas[0], replicas[1]], 0);
+        Assert.True(AuthenticatedReadPageVerifier.Verify(page, log.Placement, log.Generation, 0, new byte[32]));
+        Assert.False(AuthenticatedReadPageVerifier.Verify(
+            page with { Records = page.Records.Where(record => record.Cursor != 2).ToArray() },
+            log.Placement,
+            log.Generation,
+            0,
+            new byte[32]));
     }
 
     [Fact]
@@ -247,6 +257,32 @@ public sealed class StorageReplicationProtocolCorrectiveTests(ITestOutputHelper 
             ],
             previousContinuityWasComplete: true);
         Assert.Equal(EpochOverlapStatus.DurableBothEpochs, continuous);
+    }
+
+    [Fact]
+    public void LegacyMirrorMigration_IsSeparateAndAnyGapRemovesRollbackClaim()
+    {
+        Assert.Equal(
+            LegacyMirrorStatus.RollbackSafe,
+            LegacyMirrorEvaluator.Evaluate(
+                v2FinalizedW2: true,
+                legacyDurableAck: true,
+                legacyReadBackMatches: true,
+                continuityJournalComplete: true));
+        Assert.Equal(
+            LegacyMirrorStatus.NotRollbackSafe,
+            LegacyMirrorEvaluator.Evaluate(
+                v2FinalizedW2: true,
+                legacyDurableAck: true,
+                legacyReadBackMatches: false,
+                continuityJournalComplete: true));
+        Assert.Equal(
+            LegacyMirrorStatus.NotRollbackSafe,
+            LegacyMirrorEvaluator.Evaluate(
+                v2FinalizedW2: true,
+                legacyDurableAck: true,
+                legacyReadBackMatches: true,
+                continuityJournalComplete: false));
     }
 
     private static CanonicalStorageOperation Operation(int value) =>

@@ -116,86 +116,120 @@ never part of ownership.
 V1 is unweighted. Capacity heterogeneity is handled by eligibility pools/capacity admission, not
 ambient per-request weights. Weighted placement requires a separate version and vectors.
 
-### Binding P03B receipts to P04 placement
+### Required predecessor: P05A storage replication binding contract
 
-P03B `MRR1` does not have a membership-epoch field, and P04 does not redefine receipts. P08/P09
-must not claim an epoch-bound quorum from JSON fields alone. Compose the accepted contracts through
-the existing P03B 16-byte `OperationId`:
+P03B `MRR1` has no membership epoch, previous-log commitment, ballot or signed high-water field.
+P04 commits membership but does not define the full storage roster leaf. Unsigned JSON cannot fill
+those gaps. Before P08, issue **P05A** in `deep-protocol`, owned by the protocol maintainer:
+
+- canonical storage-member leaf and exact P04 `memberCommitment` binding;
+- placement commitment and epoch-operation binding to P03B `OperationId`;
+- ballot/proposal, previous-commit hash and immutable logical-object/tombstone-target bytes;
+- replica-signed high-water evidence and per-record commit-envelope framing around P03B `MQR1`;
+- legacy mirror envelope/receipt framing;
+- golden, malformed, truncation and cross-language vectors;
+- package manifest/hash and independent protocol/security review.
+
+Proposed epoch operation binding:
 
 ```text
-placementCommitment32 =
-  SHA-256(ASCII("deep-storage-placement-commit-v1") || placementKey32)
-
 epochOperationId16 =
   first16(SHA-256(
-    ASCII("deep-storage-epoch-operation-v1") ||
-    networkId16 || u64be(membershipEpoch) || membershipStatementHash32 ||
-    placementCommitment32 || logicalOperationId16 || operationDomainByte
+    "deep-storage-epoch-operation-v1" ||
+    networkId16 || u64be(epoch) || membershipStatementHash32 ||
+    placementCommitment32 || u64be(generation) || u64be(cursor) ||
+    previousCommitHash32 || logicalObjectId16 || operationDigest32
   ))
 ```
 
-Each replica signs `epochOperationId16` inside `MRR1`. The client independently recomputes that
-expected ID, verifies `MQR1`, and confirms both distinct receipt IDs belong to the HRW owner set for
-the same verified membership snapshot. A dual E/E+1 write uses one logical operation ID but two
-different epoch operation IDs. Logical idempotency/quota remains keyed by the logical operation;
-replica deduplication is keyed by the epoch operation.
-
-This composition and its golden/cross-language vectors are a P08 prerequisite. If review rejects
-the 128-bit operation-ID binding, `deep-protocol` must add an explicit signed placement wrapper or
-new receipt version before P09; unsigned DTO fields are not an alternative.
+Each replica signs this ID inside P03B `MRR1`. The client recomputes it, verifies `MQR1`, checks the
+two receipt IDs against the HRW owners, and verifies the P05A chain/high-water evidence. E and E+1
+use different epoch IDs for one logical object. If independent protocol review rejects the
+16-byte composition, P05A must introduce a replica-signed wrapper/new receipt version. P08 is only
+a pinned XNode consumer; it does not own these protocol bytes.
 
 ## Write semantics: `N=3/W=2`
 
-1. The coordinator verifies the P03B domain presentation, generation, validity, lifecycle,
-   idempotency scope and P04 epoch/roster.
-2. It computes the three owners and fans one canonical append operation to those exact owners.
-3. A replica atomically deduplicates `(domain, generation, epochOperationId/idempotencyKey)`, advances
-   its monotonic cursor, persists ciphertext/TTL/tombstone and only then signs a durable `MRR1`.
-4. Accepted-but-not-durable receipts do not count.
-5. The coordinator acknowledges durable success only after two distinct HRW owner IDs sign the
-   same epoch operation, generation, cursor, tombstone state and payload digest. It returns a
-   signed `MQR1`.
-6. An exact retry returns the bounded cached outcome. Reusing the idempotency key with different
-   canonical bytes is a conflict. The retry nonce cannot move ownership or create a second quota
-   event.
+The three owners implement one quorum log per `(placement commitment, epoch, generation)`. Cursor
+is a canonical log slot allocated by a quorum protocol; replicas never independently invent it.
 
-The append log orders records by `(generation, cursor, operationId)`. Cursor zero is invalid.
-Generation never rolls back. A tombstone is an append and is never an in-place delete.
+1. A coordinator verifies P03B capability/replay state and the pinned P04/P05A roster.
+2. It reads signed committed-head and accepted-slot state from a quorum of two exact owners.
+3. It runs a per-slot ballot `(counter, coordinatorId16)`. A higher-ballot coordinator must adopt
+   an already accepted value according to quorum-intersection rules; it cannot replace it.
+4. For a new value, `cursor = committedHead + 1` and `previousCommitHash` is the authenticated head.
+   Concurrent coordinators proposing different values for that slot cannot both obtain W2 because
+   their write quorums intersect and every replica atomically promises/accepts one ballot/value.
+5. Each accepting replica atomically persists proposal, ciphertext/tombstone and dedup state, then
+   signs an exact P03B `MRR1` over the P05A-derived operation ID and common cursor.
+6. After two distinct exact owners agree, the coordinator creates `MQR1` and finalizes the same
+   commit envelope on W2. **Client durable acknowledgement occurs only after W2 stores that final
+   certificate**, not merely after two prepare receipts.
+7. A later coordinator can complete an accepted W2 value, repair an incomplete owner, or advance a
+   higher ballot. A single-owner orphan cannot become a conflicting committed value.
+8. Exact retry after an unknown result finds the logical object/operation and returns the original
+   certificate. Same idempotency key with different canonical operation bytes is a conflict.
+
+Committed slots form a contiguous hash chain. Cursor zero is invalid; generation never rolls back.
+Alternating AB, BC and AC quorums therefore converge on cursors 1, 2 and 3 rather than advancing
+three unrelated local cursors.
+
+A tombstone is a new committed slot. Its signed canonical body names exact
+`targetLogicalObjectId16`, target generation, target epoch-operation ID and target payload digest.
+Its cursor must be greater than the target. Same-slot payload/tombstone disagreement is a fork, not
+a dominance tie. TTL expiry is hidden at its signed deadline and is garbage-collected only after a
+quorum tombstone/retention checkpoint prevents resurrection.
 
 ## Read semantics: `R=2/available-union`
 
-- Request the exact three owners, stop only after two verified matching receipts for a state or
-  after the bounded available-union deadline.
-- Never combine receipts from different membership epochs to manufacture `R=2`.
-- Prefer the highest verified cursor. At the same generation/cursor, any observed tombstone blocks
-  returning a payload; two matching tombstone receipts are required for a tombstone quorum.
-- One stale plus two matching newer responses returns the newer state and schedules bounded repair.
-- One newer plus one stale response is not a quorum and must return a retryable P03B error.
-- Read repair is idempotent, rate-limited and cannot reduce generation/cursor or replace a
-  tombstone with payload.
+- Query the three owners up to a bound and obtain at least two replica-signed P05A high-water
+  statements for one epoch/generation.
+- If heads differ, accept a higher head only with a contiguous, per-record certified chain from the
+  lower head; repair the stale owner, then obtain two matching high-water statements. With no
+  verifiable chain or repair quorum, return `quorum-unavailable`.
+- A page carries `pageStart/pageEnd`, two signed high-water statements and one record envelope per
+  contiguous cursor. Every record includes ciphertext or canonical tombstone, P03B `MQR1`, exact
+  membership/placement binding and previous/current commit hashes.
+- The client verifies every record, every chain edge and that successive pages reach the signed
+  high-water cursor. One `MQR1` never authenticates an array of unrelated ciphertexts.
+- A higher-cursor valid tombstone hides only its signed target. Repair copies commit envelopes and
+  cannot reduce a head, alter a target or replace a tombstone with payload.
+- Receipts and high-water statements from different epochs never combine to make R2.
 
-## E/E+1 overlap, migration and rollback
+## Membership rotation E/E+1
 
-Only adjacent epochs may overlap, for a precommitted finite deadline.
+This state machine exists only inside ReplicatedV2. It is not the legacy rollback mechanism.
 
-1. **New readers**: understand P03B receipts but legacy remains primary.
-2. **Dual read**: query E+1 first and E as fallback/reconciliation; quorum is evaluated separately
-   per epoch.
-3. **Bounded dual write**: write to both E and E+1 owner sets, at most six distinct physical
-   replicas. A rollback-capable acknowledgement requires `W=2` independently in both epochs.
-4. **Replicated primary**: E+1 is primary after migration evidence; E remains a bounded mirror.
-5. **Mirror rollback window**: rollback is permitted only while the E mirror has continuous
-   durable-quorum evidence. A gap makes rollback `NO-GO`.
-6. **Legacy retirement**: after the signed deadline and Mr. X approval, E writes stop. Receipts,
-   tombstones and equivocation evidence remain.
+1. Only adjacent signed epochs overlap, with a finite deadline and at most six physical owners.
+2. Dual-read evaluates each epoch independently.
+3. A rotation-safe acknowledgement requires independent W2 finalized commit envelopes in both E
+   and E+1 and continuous prefixes in both. Any gap marks rotation rollback `NO-GO`.
+4. After Mr. X approves E+1 primary and the deadline expires, E writes stop; certificates,
+   tombstones and fork evidence remain.
 
-Reads compare verified epoch results by generation/cursor. A higher/equal tombstone dominates a
-payload across E/E+1. Rollback cannot reset cursor/generation, delete receipts or resurrect a
-payload. Split membership returns a retryable `epoch-mismatch`; receipts from E and E+1 never add
-together.
+## Product migration LegacySingleExit -> ReplicatedV2
 
-This strict dual-`W=2` rule trades overlap availability for an honest rollback guarantee. A future
-policy may make the old mirror best-effort only if it also removes any rollback-safety claim.
+This is a separate state machine:
+
+1. `LegacyPrimary`
+2. `ReplicationShadow`
+3. `DualRead`
+4. `StrictLegacyMirror`
+5. `ReplicationPrimaryWithLegacyMirror`
+6. `LegacyRetired`
+
+In either mirror state, each candidate v2 acknowledgement requires both:
+
+- a finalized ReplicatedV2 W2 commit envelope; and
+- an idempotent `ILegacyRollbackMirror` durable acknowledgement plus read-after-write verification
+  for an opaque P05A legacy mirror envelope containing that exact v2 record/certificate.
+
+Legacy rollback retrieves opaque mirror envelopes through the old backend and verifies the embedded
+v2 evidence; the legacy server need not understand it. The mirror has a finite deadline, restart
+tests and a durable continuity journal. If the current backend cannot supply durable idempotent
+store/retrieve semantics, the strict mirror mode is unavailable. A mirror write/read-back failure
+means no rollback-safe client acknowledgement; switching to best-effort simultaneously removes the
+legacy rollback guarantee. Rollback never resets v2 cursors or deletes receipts/tombstones.
 
 ## Quota and charging
 
@@ -221,8 +255,11 @@ Proposed explicit modes:
 - `LegacySingleExit`: current single `ISessionStorageRpcBackend`; no replication claim.
 - `ReplicationShadow`: compute/observe placement and optionally issue non-authoritative comparison
   metrics; current backend remains authoritative.
-- `ReplicationDual`: bounded E/E+1 dual read/write with strict rollback evidence.
-- `ReplicationPrimary`: P03B `N=3/W=2/R=2` authoritative; legacy mirror only until its deadline.
+- `ReplicationDualRead`: v2 reads are compared while legacy remains authoritative.
+- `ReplicationStrictLegacyMirror`: both v2 W2 and verified legacy mirror are required.
+- `ReplicationPrimaryWithLegacyMirror`: v2 is authoritative; the same strict legacy mirror gate
+  remains until its deadline.
+- `ReplicationPrimary`: v2 only after Mr. X retires the legacy mirror.
 
 Modes are operator configuration plus signed membership/protocol eligibility, never ambient
 auto-detection. Legacy mirror acceptance additionally requires P03B
@@ -233,14 +270,18 @@ decode-policy opt-in. Downgrade must not delete v2 data or state.
 
 | Scenario | Required behavior | Client-visible result | Repair/rollback consequence |
 | --- | --- | --- | --- |
-| One replica unavailable | Other two matching durable receipts satisfy W2/R2 | Success with verifiable MQR1 | Repair missing owner when it returns |
-| One stale read | Two newer matching receipts win | Newer cursor; repair scheduled | Stale owner advances monotonically |
-| Only one newer and one stale | Do not invent quorum | Retryable `quorum-unavailable` | No payload/tombstone downgrade |
+| One replica unavailable | W2 finalization survives on one remaining owner and repairs the other before matching R2 high-water | Success after certified repair | Per-record certificate prevents loss/forgery |
+| Alternating AB/BC/AC writes | Quorum ballot/CAS allocates one shared next cursor | Contiguous committed log | No independent local-cursor divergence |
+| Concurrent coordinators | Intersecting W2 accepts at most one value per slot/ballot | Loser retries/adopts chosen value | Conflicting committed values are fork evidence |
+| Unknown-result retry | Recover chosen value/certificate by logical operation ID | Original cursor/certificate | No duplicate object/quota |
+| One stale read | Verify higher contiguous chain, repair stale owner, obtain matching high-water R2 | Complete certified page or retry | Stale owner advances monotonically |
+| Omitted record/page | Cursor gap or broken commit hash fails completeness | Retryable `incomplete-prefix` | No unauthenticated available-union |
 | Split E/E+1 membership | Evaluate each epoch separately | `epoch-mismatch` or quorum in one complete epoch | Never combine 1+1 receipts |
 | Exact retry | Same idempotency key and canonical digest | Cached original result/receipt | No duplicate object or quota |
 | Conflicting retry | Same idempotency key, different canonical digest | Non-retryable conflict/evidence | Original durable record remains |
 | Coordinator omission/censorship | Client retries through another privacy route | Same replica owners because nonce/route are excluded | Coordinator cannot forge W2 |
-| Tombstone vs payload at same cursor | Tombstone blocks payload; require tombstone R2 | Tombstone quorum or no quorum | Payload cannot resurrect |
+| Tombstone | Higher committed slot names exact immutable target | Certified hide/delete | Same-slot conflict is a fork; target cannot change |
+| Legacy mirror gap | Do not issue rollback-safe acknowledgement | Retry/fail strict mirror | Best-effort mode removes rollback claim |
 | Membership addition/removal | HRW changes only keys touched by new/removed owner | Stable placement for unaffected keys | E/E+1 bounds movement |
 
 ## Security and privacy consequences
@@ -266,17 +307,19 @@ The simulator is compiled only into `XNode.Tests`; production projects do not re
 
 | Members | Assignments | Min | Max | Mean | CV | Add-one remap | Expected |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 4 | 24,576 | 6,120 | 6,159 | 6,144.00 | 0.0024 | 0.603760 | 0.600000 |
-| 20 | 24,576 | 1,180 | 1,289 | 1,228.80 | 0.0256 | 0.142456 | 0.142857 |
-| 100 | 24,576 | 216 | 282 | 245.76 | 0.0607 | 0.030029 | 0.029703 |
-| 1000 | 24,576 | 9 | 44 | 24.58 | 0.2032 | 0.002930 | 0.002997 |
+| 4 | 24,576 | 6,125 | 6,171 | 6,144.00 | 0.0027 | 0.603882 | 0.600000 |
+| 20 | 24,576 | 1,187 | 1,265 | 1,228.80 | 0.0163 | 0.144775 | 0.142857 |
+| 100 | 24,576 | 209 | 277 | 245.76 | 0.0600 | 0.033325 | 0.029703 |
+| 1000 | 24,576 | 10 | 39 | 24.58 | 0.2037 | 0.003296 | 0.002997 |
 
-Tests also prove nonce independence at all four sizes, distinct owners, surviving-owner order on
-addition/removal, separate route/replica inputs, one-replica tolerance, stale-read handling,
-split-epoch rejection, retry idempotency and tombstone dominance.
+Tests use separate 32-byte `RouteHopId` and 16-byte `StorageReplicaId` types and pin a binary golden
+owner vector. They model nonce independence and add-one remapping at all four sizes, exact-owner
+receipt binding, alternating AB/BC/AC prefixes, concurrent stale-head rejection, unknown-result
+idempotency, two signed matching high-water statements, contiguous per-record W2 evidence, exact
+tombstone targets and E/E+1 continuity-gap rejection.
 
-These are deterministic design results, not production scale, durability, battery or security
-evidence.
+These tests prove properties of a pure model, not correctness of a production ballot protocol,
+disk/network durability, completeness under Byzantine nodes, battery behavior or security.
 
 ## Protocol pins
 
@@ -293,7 +336,8 @@ evidence.
 
 ## Consequences
 
-P08 may implement placement only after approval. P09A may then implement one local durable
+P05A must first implement and independently review the protocol bytes in `deep-protocol`. P08 may
+consume its pinned package only after P05/P05A/P04D approval. P09A may then implement one local
 replica, followed by P09B coordinator logic. The current single-exit path remains unchanged until
 explicit migration gates pass. This proposal creates no Docker service, endpoint, database,
 contract, key or production configuration.

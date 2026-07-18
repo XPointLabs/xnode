@@ -11,21 +11,22 @@ field beta.
 
 | Work package | Scope | Estimate | Required predecessor |
 | --- | --- | ---: | --- |
-| P08 | Versioned HRW placement, P04D roster consumer, legacy/shadow flags, property/integration evidence | 5-8 days + 2 review days | Approved P05, P04D |
-| P09A | One durable ciphertext replica, atomic persistence, signing, TTL/tombstones, corruption/backup tests | 12-18 days + 3 review days | Approved P05, P03B crypto/key profile |
-| P09B | N3/W2/R2 coordinator, bounded fan-out, read repair, overlap/rollback, chaos | 12-18 days + 4 review days | P08 and P09A accepted |
+| **P05A (new, mandatory)** | `deep-protocol` storage member leaf, epoch-operation/log-chain binding, ballot, high-water, tombstone and legacy-mirror contracts/vectors | 8-12 days + 3 review days | Approved P05, accepted P03B/P04 |
+| P08 | Versioned HRW placement, P04D roster consumer, P05A package consumer, legacy/shadow flags, property/integration evidence | 5-8 days + 2 review days | Approved P05, accepted P05A/P04D |
+| P09A | One durable ciphertext replica, promise/accept/finalize, atomic prefix, signing, TTL/tombstones, corruption/backup tests | 15-22 days + 3 review days | P05A, P03B crypto/key profile |
+| P09B | N3/W2/R2 ballot coordinator, certified pages/read repair, separate epoch rotation and legacy mirror, chaos | 18-25 days + 4 review days | P08 and P09A accepted |
 | P09C | Shared client adapter, receipt verification, persistent outbox integration, mobile/Windows tests | 10-15 days + 3 review days | P07A, P09B, P10B |
-| Integration/soak reserve | 100k deterministic writes, restart/corruption, mixed-version, no-mock lab | 8-12 days | P09A-C integrated |
+| Integration/soak reserve | 100k deterministic writes, alternating quorums, restart/corruption, legacy rollback, mixed-version, no-mock lab | 10-15 days | P09A-C integrated |
 
-Likely critical path: 47-74 engineering days before external review/field beta. P08 and early P09A
-can overlap only where their locked files do not intersect and after the ADR is approved.
+Likely critical path: 75-110 engineering days before external review/field beta. P08 and early P09A
+can overlap only after P05A/P04D are accepted and where their locked files do not intersect.
 
 ## Product ownership
 
 - `xnode`: placement, replica runtime, coordinator, durable local storage, readiness and aggregate
   metrics.
-- `deep-protocol`: only new canonical leaf/placement/epoch binding and cross-language vectors that
-  cannot be expressed by existing P03B/P04 bytes.
+- `deep-protocol`: P05A canonical leaf/placement/epoch/log-chain/ballot/high-water/tombstone and
+  legacy-mirror contracts plus cross-language vectors.
 - `deep-client-shared`: P09C capability presentation, receipt verification and outbox adapter.
 - `deep-devops`: compose/deployment, secrets mounting and rehearsal; never the product storage
   implementation.
@@ -33,6 +34,18 @@ can overlap only where their locked files do not intersect and after the ADR is 
 - Mr. X: ADR acceptance, migration phase transitions and rollback/retirement decisions.
 
 ## File locks
+
+### P05A exclusive locks in `deep-protocol`
+
+- `src/Deep.Protocol/DeepExtension/StorageReplication/**` (new)
+- `tests/Deep.Protocol.Tests/DeepExtension/StorageReplication/**` (new)
+- `artifacts/survival/P05A/**` (new)
+- package version/manifest files for the P05A local package
+- storage-replication compatibility/security/migration docs
+
+P05A owns canonical bytes and validation only. It does not edit XNode or implement storage. Its
+acceptance requires package/hash pins, golden/malformed vectors, cross-language fixtures and
+independent protocol/security review.
 
 ### P08 exclusive locks
 
@@ -64,6 +77,7 @@ after P08 lands; they are not concurrently edited.
 ### P09B exclusive locks
 
 - `src/XNode.Core/Storage/Replication/**` (new)
+- `src/XNode.Core/Storage/LegacyMirror/**` (new)
 - `src/XNode/Storage/HttpStorageReplicaClient.cs` (new)
 - `src/XNode.Core/Runtime/RouterRuntime.cs`
 - coordinator DI/readiness/status sections in `src/XNode/Program.cs`
@@ -92,9 +106,10 @@ P09C does not edit XNode runtime files.
 
 - `APPROVED_ADR_SHA` remains `NOT-APPROVED`.
 - P04D cannot supply an immutable verified full roster bound to `MSM1`.
-- P08 has no reviewed golden vectors binding P03B `OperationId` to P04 epoch/roster/placement, and
-  no approved replacement receipt wrapper.
+- P05A has no accepted package/hash or reviewed golden/cross-language vectors.
 - Production P03B replica/coordinator crypto and key distribution are unapproved.
 - The owner would be the DevOps compatibility service rather than an XNode product runtime.
 - Any design needs raw Session IDs, sender-recipient pairs, wallet IDs or sender master secrets.
-- Rollback is claimed while the old epoch lacks continuous W2 mirror evidence.
+- Membership rotation is treated as legacy rollback, or either E/E+1 prefix has a W2 gap.
+- Legacy rollback is claimed without an idempotent durable mirror write, verified read-back and
+  continuous legacy mirror journal for every acknowledged v2 object.

@@ -403,6 +403,125 @@ internal sealed record AuthenticatedReadPage(
     IReadOnlyList<CommittedStorageRecord> Records,
     IReadOnlyList<VisibleStorageObject> VisibleObjects);
 
+internal static class AuthenticatedReadPageVerifier
+{
+    private static ReadOnlySpan<byte> HighWaterDomain => "deep-storage-high-water-v1"u8;
+
+    public static bool Verify(
+        AuthenticatedReadPage page,
+        CanonicalStoragePlacementResult placement,
+        ulong generation,
+        ulong afterCursor,
+        ReadOnlySpan<byte> expectedPreviousCommitHash)
+    {
+        if (page.Status != AuthenticatedReadStatus.Complete ||
+            expectedPreviousCommitHash.Length != 32 ||
+            page.HighWaterEvidence.Count != 2 ||
+            page.HighWaterEvidence.Select(static item => item.ReplicaId).Distinct().Count() != 2 ||
+            page.HighWaterEvidence.Any(evidence =>
+                !placement.Replicas.Contains(evidence.ReplicaId) ||
+                evidence.MembershipEpoch != placement.MembershipEpoch ||
+                evidence.Generation != generation ||
+                evidence.Cursor != page.HighWaterCursor ||
+                evidence.CommitHash.Length != 32 ||
+                evidence.EvidenceDigest.Length != 32 ||
+                !evidence.EvidenceDigest.AsSpan().SequenceEqual(
+                    Digest(evidence.ReplicaId, placement.MembershipEpoch, generation,
+                        evidence.Cursor, evidence.CommitHash))) ||
+            !page.HighWaterEvidence[0].CommitHash.AsSpan()
+                .SequenceEqual(page.HighWaterEvidence[1].CommitHash))
+        {
+            return false;
+        }
+
+        var expectedCount = page.HighWaterCursor > afterCursor
+            ? checked((int)(page.HighWaterCursor - afterCursor))
+            : 0;
+        if (page.Records.Count != expectedCount)
+        {
+            return false;
+        }
+
+        var previousHash = expectedPreviousCommitHash.ToArray();
+        for (var index = 0; index < page.Records.Count; index++)
+        {
+            var record = page.Records[index];
+            var expectedCursor = afterCursor + (ulong)index + 1;
+            if (record.MembershipEpoch != placement.MembershipEpoch ||
+                record.Generation != generation ||
+                record.Cursor != expectedCursor ||
+                record.PreviousCommitHash.Length != 32 ||
+                record.CommitHash.Length != 32 ||
+                !record.PreviousCommitHash.AsSpan().SequenceEqual(previousHash))
+            {
+                return false;
+            }
+
+            var expectation = ReceiptExpectation.Create(
+                placement,
+                generation,
+                record.Cursor,
+                record.EpochOperationId,
+                record.PreviousCommitHash,
+                record.PayloadDigest,
+                record.TombstoneTarget);
+            if (BoundReceiptEvaluator.Evaluate(expectation, record.DurableOwnerReceipts) !=
+                BoundQuorumStatus.Durable)
+            {
+                return false;
+            }
+
+            previousHash = record.CommitHash;
+        }
+
+        return previousHash.AsSpan().SequenceEqual(page.HighWaterEvidence[0].CommitHash);
+    }
+
+    public static byte[] Digest(
+        StorageReplicaId replica,
+        ulong epoch,
+        ulong generation,
+        ulong cursor,
+        ReadOnlySpan<byte> commitHash)
+    {
+        var input = new byte[HighWaterDomain.Length + 16 + 8 + 8 + 8 + 32];
+        var offset = 0;
+        HighWaterDomain.CopyTo(input);
+        offset += HighWaterDomain.Length;
+        replica.Bytes.Span.CopyTo(input.AsSpan(offset));
+        offset += 16;
+        BinaryPrimitives.WriteUInt64BigEndian(input.AsSpan(offset), epoch);
+        offset += 8;
+        BinaryPrimitives.WriteUInt64BigEndian(input.AsSpan(offset), generation);
+        offset += 8;
+        BinaryPrimitives.WriteUInt64BigEndian(input.AsSpan(offset), cursor);
+        offset += 8;
+        commitHash.CopyTo(input.AsSpan(offset));
+        return SHA256.HashData(input);
+    }
+}
+
+internal enum LegacyMirrorStatus
+{
+    NotRollbackSafe,
+    RollbackSafe
+}
+
+internal static class LegacyMirrorEvaluator
+{
+    public static LegacyMirrorStatus Evaluate(
+        bool v2FinalizedW2,
+        bool legacyDurableAck,
+        bool legacyReadBackMatches,
+        bool continuityJournalComplete) =>
+        v2FinalizedW2 &&
+        legacyDurableAck &&
+        legacyReadBackMatches &&
+        continuityJournalComplete
+            ? LegacyMirrorStatus.RollbackSafe
+            : LegacyMirrorStatus.NotRollbackSafe;
+}
+
 /// <summary>
 /// A pure executable protocol model. The global record list is the model oracle;
 /// individual replica prefixes are the observable state used by every operation.
@@ -413,8 +532,6 @@ internal sealed class QuorumLogProtocolSimulator
 {
     private static ReadOnlySpan<byte> OperationDomain => "deep-storage-epoch-operation-v1"u8;
     private static ReadOnlySpan<byte> CommitDomain => "deep-storage-commit-chain-v1"u8;
-    private static ReadOnlySpan<byte> HighWaterDomain => "deep-storage-high-water-v1"u8;
-
     private readonly CanonicalStoragePlacementResult _placement;
     private readonly ulong _generation;
     private readonly Dictionary<StorageReplicaId, List<CommittedStorageRecord>> _replicaPrefixes;
@@ -437,6 +554,10 @@ internal sealed class QuorumLogProtocolSimulator
     }
 
     public IReadOnlyList<CommittedStorageRecord> CommittedRecords => _committed;
+
+    public CanonicalStoragePlacementResult Placement => _placement;
+
+    public ulong Generation => _generation;
 
     public QuorumAppendResult TryAppend(
         CanonicalStorageOperation operation,
@@ -571,7 +692,12 @@ internal sealed class QuorumLogProtocolSimulator
                 _generation,
                 head,
                 headHash.ToArray(),
-                HighWaterDigest(reader, head, headHash)))
+                AuthenticatedReadPageVerifier.Digest(
+                    reader,
+                    _placement.MembershipEpoch,
+                    _generation,
+                    head,
+                    headHash)))
             .ToArray();
         var records = prefixes[0]
             .Where(record => record.Cursor > afterCursor)
@@ -663,27 +789,6 @@ internal sealed class QuorumLogProtocolSimulator
         offset += 32;
         input[offset++] = operation.IsTombstone ? (byte)1 : (byte)0;
         tombstone.CopyTo(input, offset);
-        return SHA256.HashData(input);
-    }
-
-    private byte[] HighWaterDigest(
-        StorageReplicaId replica,
-        ulong cursor,
-        ReadOnlySpan<byte> commitHash)
-    {
-        var input = new byte[HighWaterDomain.Length + 16 + 8 + 8 + 8 + 32];
-        var offset = 0;
-        HighWaterDomain.CopyTo(input);
-        offset += HighWaterDomain.Length;
-        replica.Bytes.Span.CopyTo(input.AsSpan(offset));
-        offset += 16;
-        BinaryPrimitives.WriteUInt64BigEndian(input.AsSpan(offset), _placement.MembershipEpoch);
-        offset += 8;
-        BinaryPrimitives.WriteUInt64BigEndian(input.AsSpan(offset), _generation);
-        offset += 8;
-        BinaryPrimitives.WriteUInt64BigEndian(input.AsSpan(offset), cursor);
-        offset += 8;
-        commitHash.CopyTo(input.AsSpan(offset));
         return SHA256.HashData(input);
     }
 
