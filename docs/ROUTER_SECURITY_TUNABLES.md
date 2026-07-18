@@ -52,12 +52,46 @@ until the UAT environment identity is explicit.
 
 Each router needs one tuple for every private recipient it may contact. The advertised relay contact must use that same literal address, port, path, and router identity. Neighboring addresses, a different port/path/router, loopback, IPv6 ULA, and non-RFC1918 addresses do not match.
 
+### Three-router UAT allowlist matrix
+
+A three-router private-only UAT requires the complete 3 x 3
+node-to-recipient matrix below. Each row is the allowlist loaded by that
+router; each cell is one exact recipient tuple. `A_ID`, `B_ID`, and `C_ID`
+stand for the full 64-character router IDs.
+
+| Configuration loaded by | Recipient A | Recipient B | Recipient C |
+| --- | --- | --- | --- |
+| Router A | `A_ID, 10.20.30.40, 8080, /api/peer/onion` | `B_ID, 10.20.30.41, 8081, /api/peer/onion` | `C_ID, 10.20.30.42, 8082, /api/peer/onion` |
+| Router B | `A_ID, 10.20.30.40, 8080, /api/peer/onion` | `B_ID, 10.20.30.41, 8081, /api/peer/onion` | `C_ID, 10.20.30.42, 8082, /api/peer/onion` |
+| Router C | `A_ID, 10.20.30.40, 8080, /api/peer/onion` | `B_ID, 10.20.30.41, 8081, /api/peer/onion` | `C_ID, 10.20.30.42, 8082, /api/peer/onion` |
+
+All nine cells are required. In particular, each row includes the router's
+own tuple because route assembly validates the local entry hop with the same
+policy used for remote socket connections. This matrix is an inventory, not
+a CIDR or port-range rule; generate each row from the same reviewed source of
+truth and render the full router IDs in the deployed JSON.
+
+With `AllowPublicPeerEndpoints=false`, omission or mismatch of any tuple needed
+by a three-hop route returns `path-not-found`. A registered public relay cannot
+replace the missing private hop because the effective public authorizer is
+`DenyAll`. This is intentional fail-closed behavior and must not be worked
+around by enabling public peers.
+
 The process fails startup when this feature is enabled under `Production`, when `Node:Network` is `mainnet`, when the two network identities do not match, or when any tuple is malformed. The default is empty and disabled. Do not set these values in a production configuration overlay.
 
 For a private-only UAT, also set `Runtime:AllowPublicPeerEndpoints=false`.
 This installs the deny-all public authorizer while retaining exact RFC1918
 tuples. Network policy must additionally deny public egress as defense in
 depth.
+
+Expected authorization and readiness signals, assuming the runtime and
+transport themselves are healthy:
+
+| Deployment mode | `/status` authorization fields | `/health/ready` |
+| --- | --- | --- |
+| Non-production private-only UAT (`AllowPublicPeerEndpoints=false`) | `publicPeerAuthorizationMode="DenyAll"`, `productionPublicRoutingReady=true` | `200`; exact private tuples remain usable |
+| Non-production public-enabled test (`AllowPublicPeerEndpoints=true`) | `publicPeerAuthorizationMode="UnverifiedNonProduction"`, `productionPublicRoutingReady=true` | `200`; not a production security posture |
+| Production safe fallback | `publicPeerAuthorizationMode="DenyAll"`, `productionPublicRoutingReady=false` | `503`; public routing is intentionally unavailable |
 
 ## Production public peer proof
 

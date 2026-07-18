@@ -168,6 +168,42 @@ and supply the complete per-recipient allowlist. Mr. X
 owns approval of that UAT inventory. Remove the entire allowlist and disable the feature
 before promoting a configuration to production.
 
+For a three-router UAT, "complete" means the following 3 x 3 matrix. Each
+router configuration must contain all three exact recipient tuples, including
+its own tuple:
+
+| Configuration loaded by | Recipient A | Recipient B | Recipient C |
+| --- | --- | --- | --- |
+| Router A | `A_ID @ 10.20.30.40:8080/api/peer/onion` | `B_ID @ 10.20.30.41:8081/api/peer/onion` | `C_ID @ 10.20.30.42:8082/api/peer/onion` |
+| Router B | `A_ID @ 10.20.30.40:8080/api/peer/onion` | `B_ID @ 10.20.30.41:8081/api/peer/onion` | `C_ID @ 10.20.30.42:8082/api/peer/onion` |
+| Router C | `A_ID @ 10.20.30.40:8080/api/peer/onion` | `B_ID @ 10.20.30.41:8081/api/peer/onion` | `C_ID @ 10.20.30.42:8082/api/peer/onion` |
+
+Replace the symbolic IDs with full router IDs and derive all three rows from
+the same Mr. X-approved inventory. Do not abbreviate IDs in configuration and
+do not replace exact tuples with ranges. Missing or mismatched local and remote
+tuples have the same result: a three-hop storage route fails with
+`path-not-found`. In private-only mode, a public contact cannot fill that gap.
+
+Validate the mode before accepting the UAT:
+
+1. Set `Runtime:AllowPublicPeerEndpoints=false` on all three routers and deny
+   public egress at the network layer.
+2. Confirm `/status` reports
+   `publicPeerAuthorizationMode="DenyAll"` and
+   `productionPublicRoutingReady=true`.
+3. With runtime and transport healthy, confirm `/health/ready` returns `200`.
+4. Request a storage route and confirm it contains exactly the three expected,
+   unique router IDs, with the contacted local router as entry hop.
+5. In a disposable negative test, remove or alter each of the A, B, and C
+   tuples in turn and confirm `path-not-found`; restore the approved inventory
+   after every check.
+
+`DenyAll` has different readiness meaning across environments: in
+non-production private-only UAT it denies public peers while exact private
+tuples remain operational, so healthy readiness is `200`; in Production it
+means no proof-capable public routing is available, so readiness is
+intentionally `503` and `productionPublicRoutingReady=false`.
+
 ## Runtime Metrics
 
 `GET /status` now includes `router.metrics` counters for key runtime flows:

@@ -554,77 +554,198 @@ public sealed class RouterRuntimeIntegrationTests
         }
     }
 
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task Runtime_StorageRouteUsesTheSameExactPrivatePeerPolicyAsConnect(bool exactSecondTuple)
+    [Fact]
+    public async Task Runtime_PrivateOnlyStorageRouteUsesExactlyThreeAllowlistedPrivateRelays()
     {
         var root = NewTempDirectory();
         try
         {
-            var local = NodeOptions(root);
-            var privateOne = NodeOptionsFromSeed(
-                root,
-                Seed(21),
-                "http://10.20.30.41:8081/api/peer/onion");
-            var privateTwo = NodeOptionsFromSeed(
-                root,
-                Seed(42),
-                "http://10.20.30.42:8082/api/peer/onion");
-            var runtimeOptions = new RouterRuntimeOptions
-            {
-                BootstrapFromStorage = true,
-                RequireSignedRelayContacts = true,
-                EnablePrivatePeerEndpoints = true,
-                PrivatePeerNetworkIdentity = "testnet",
-                PrivatePeerEndpointAllowlist =
-                [
-                    new PrivatePeerEndpointAllowlistEntry
-                    {
-                        RouterId = privateOne.RouterId,
-                        IpAddress = "10.20.30.41",
-                        Port = 8081
-                    },
-                    new PrivatePeerEndpointAllowlistEntry
-                    {
-                        RouterId = privateTwo.RouterId,
-                        IpAddress = "10.20.30.42",
-                        Port = exactSecondTuple ? 8082 : 8081
-                    }
-                ]
-            };
+            var nodes = PrivateRelayNodes(root);
+            var runtimeOptions = PrivateOnlyRuntimeOptions(nodes);
             var policy = PeerEndpointPolicy.Create(
                 runtimeOptions,
-                local,
-                "Staging",
-                AllowAllPublicPeerEndpointAuthorizer.Instance);
+                nodes[0],
+                "UAT",
+                DenyAllPublicPeerEndpointAuthorizer.Instance);
             var runtime = CreateRuntime(
                 root,
-                local,
-                new FakeStorageBackend(
-                    SignedContact(local),
-                    SignedContact(privateOne),
-                    SignedContact(privateTwo)),
+                nodes[0],
+                new FakeStorageBackend(nodes.Select(SignedContact).ToArray()),
                 runtimeOptions,
                 new PathSelectionOptions { ClientHops = 3 },
                 peerEndpointPolicy: policy);
 
             await runtime.StartAsync(CancellationToken.None);
-            var request = new SessionRpcRequest(
-                $"private-route-{exactSecondTuple}",
-                "storage_route",
-                JsonSerializer.SerializeToElement(new { routeNonce = new string('4', 64) }, SessionRpc.JsonOptions),
-                "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd");
-            var response = await runtime.HandleRpcAsync(request, CancellationToken.None);
+            var response = await RequestStorageRouteAsync(runtime, "private-route-exact");
 
-            Assert.Equal(exactSecondTuple, response.Success);
-            Assert.Equal(exactSecondTuple ? null : "path-not-found", response.Error);
+            Assert.True(response.Success);
+            Assert.Null(response.Error);
+            Assert.Equal(PublicPeerAuthorizationMode.DenyAll, policy.PublicAuthorizationMode);
+            Assert.True(policy.IsProductionPublicRoutingReady);
+
+            var route = ParseRoute(response.Result);
+            var expectedRouterIds = nodes
+                .Select(static node => node.RouterId)
+                .Order(StringComparer.Ordinal)
+                .ToArray();
+            var actualRouterIds = route
+                .Select(static node => node.RouterId)
+                .Order(StringComparer.Ordinal)
+                .ToArray();
+
+            Assert.Equal(3, route.Count);
+            Assert.Equal(nodes[0].RouterId, route[0].RouterId);
+            Assert.Equal(3, route.Select(static node => node.RouterId).Distinct(StringComparer.Ordinal).Count());
+            Assert.Equal(expectedRouterIds, actualRouterIds);
         }
         finally
         {
             Directory.Delete(root, recursive: true);
         }
     }
+
+    [Theory]
+    [InlineData(0, false)]
+    [InlineData(1, false)]
+    [InlineData(2, false)]
+    [InlineData(0, true)]
+    [InlineData(1, true)]
+    [InlineData(2, true)]
+    public async Task Runtime_PrivateOnlyStorageRouteFailsWhenAnyRequiredTupleIsMissingOrMismatched(
+        int tupleIndex,
+        bool mismatch)
+    {
+        var root = NewTempDirectory();
+        try
+        {
+            var nodes = PrivateRelayNodes(root);
+            var runtimeOptions = PrivateOnlyRuntimeOptions(nodes);
+            if (mismatch)
+            {
+                runtimeOptions.PrivatePeerEndpointAllowlist[tupleIndex].Port++;
+            }
+            else
+            {
+                runtimeOptions.PrivatePeerEndpointAllowlist.RemoveAt(tupleIndex);
+            }
+
+            var policy = PeerEndpointPolicy.Create(
+                runtimeOptions,
+                nodes[0],
+                "UAT",
+                DenyAllPublicPeerEndpointAuthorizer.Instance);
+            var runtime = CreateRuntime(
+                root,
+                nodes[0],
+                new FakeStorageBackend(nodes.Select(SignedContact).ToArray()),
+                runtimeOptions,
+                new PathSelectionOptions { ClientHops = 3 },
+                peerEndpointPolicy: policy);
+
+            await runtime.StartAsync(CancellationToken.None);
+            var response = await RequestStorageRouteAsync(
+                runtime,
+                $"private-route-{(mismatch ? "mismatch" : "missing")}-{tupleIndex}");
+
+            Assert.False(response.Success);
+            Assert.Equal("path-not-found", response.Error);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Runtime_PrivateOnlyStorageRouteDoesNotUsePublicRelayAsMissingPrivateHop()
+    {
+        var root = NewTempDirectory();
+        try
+        {
+            var nodes = PrivateRelayNodes(root);
+            var publicRelay = NodeOptionsFromSeed(
+                root,
+                Seed(63),
+                "https://8.8.8.8/api/peer/onion");
+            var runtimeOptions = PrivateOnlyRuntimeOptions(nodes);
+            runtimeOptions.PrivatePeerEndpointAllowlist.RemoveAt(2);
+            var policy = PeerEndpointPolicy.Create(
+                runtimeOptions,
+                nodes[0],
+                "UAT",
+                DenyAllPublicPeerEndpointAuthorizer.Instance);
+            var contacts = nodes
+                .Append(publicRelay)
+                .Select(SignedContact)
+                .ToArray();
+            var runtime = CreateRuntime(
+                root,
+                nodes[0],
+                new FakeStorageBackend(contacts),
+                runtimeOptions,
+                new PathSelectionOptions { ClientHops = 3 },
+                peerEndpointPolicy: policy);
+
+            Assert.False(policy.TryValidatePeerEndpoint(
+                publicRelay.GetRouterId(),
+                new Uri(publicRelay.PublicPeerRpcEndpoint),
+                out _));
+
+            await runtime.StartAsync(CancellationToken.None);
+            var response = await RequestStorageRouteAsync(runtime, "private-route-public-fallback");
+
+            Assert.False(response.Success);
+            Assert.Equal("path-not-found", response.Error);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static RouterNodeOptions[] PrivateRelayNodes(string root) =>
+    [
+        NodeOptionsFromSeed(root, Seed(200), "http://10.20.30.40:8080/api/peer/onion"),
+        NodeOptionsFromSeed(root, Seed(21), "http://10.20.30.41:8081/api/peer/onion"),
+        NodeOptionsFromSeed(root, Seed(42), "http://10.20.30.42:8082/api/peer/onion")
+    ];
+
+    private static RouterRuntimeOptions PrivateOnlyRuntimeOptions(
+        IEnumerable<RouterNodeOptions> nodes) =>
+        new()
+        {
+            BootstrapFromStorage = true,
+            RequireSignedRelayContacts = true,
+            EnablePrivatePeerEndpoints = true,
+            PrivatePeerNetworkIdentity = "testnet",
+            AllowPublicPeerEndpoints = false,
+            PrivatePeerEndpointAllowlist = nodes
+                .Select(static node =>
+                {
+                    var endpoint = new Uri(node.PublicPeerRpcEndpoint);
+                    return new PrivatePeerEndpointAllowlistEntry
+                    {
+                        RouterId = node.RouterId,
+                        IpAddress = endpoint.Host,
+                        Port = endpoint.Port,
+                        Path = endpoint.AbsolutePath
+                    };
+                })
+                .ToList()
+        };
+
+    private static Task<SessionRpcResponse> RequestStorageRouteAsync(
+        RouterRuntime runtime,
+        string requestId) =>
+        runtime.HandleRpcAsync(
+            new SessionRpcRequest(
+                requestId,
+                "storage_route",
+                JsonSerializer.SerializeToElement(
+                    new { routeNonce = new string('4', 64) },
+                    SessionRpc.JsonOptions),
+                "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"),
+            CancellationToken.None);
 
     private static RouterNodeOptions NodeOptionsFromSeed(string root, string seed, string rpcEndpoint)
     {
