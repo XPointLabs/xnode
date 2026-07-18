@@ -2,7 +2,7 @@
   "schema": "deep-survival-work-package-report.v1",
   "workPackage": "P05",
   "title": "Storage ownership and replication ADR",
-  "status": "corrected-proposed-not-approved-independent-rereview-pending",
+  "status": "second-corrected-proposed-not-approved-independent-rereview-pending",
   "humanOwner": "Mr. X",
   "decisionOwner": "Mr. X",
   "decisionDeadline": "2026-07-21",
@@ -17,6 +17,10 @@
   "correctiveRedCommit": "8c2156bd37d551da6ef4f1776679c4399e429101",
   "correctiveSimulatorCommit": "25cf55b26b7393b5abf654104fdc25fa790c5760",
   "correctiveDesignCommit": "b131f853bf702d958d1552d3b6fa031837753c96",
+  "firstCorrectiveEvidenceCommit": "30dc69fdc02feba2c9543b89e01511b30bcf3437",
+  "secondCorrectiveRedCommit": "f95452ec1499cd9bdc5ec5812dd5b87e82552e43",
+  "secondCorrectiveDesignCommit": "86a4fd4fc9fe81d227c47b5266fd62628c7ac416",
+  "secondCorrectiveEvidenceCommit": "PENDING",
   "recommendation": {
     "architecture": "xnode-core-storage-coordinator",
     "productRuntimeOwner": "xnode",
@@ -38,21 +42,22 @@
     "p04WorkPackageReportSha256": "fd9f78f88070a94450c2b07d14486a34508d852a6f66fa6b8368e7a59dfee04c"
   },
   "files": {
-    "adrSha256": "e6c48a153f1d08680aadf0d4e0c6f72051ebc2ba976bcd85ed78a97106df7b91",
-    "apiProposalSha256": "4fb49093df73e0870e9609de5a7264723068b4b5b07a9fc5458b70d2cc06d7e3",
+    "adrSha256": "b5596de00fd9fd9da68f5f321fcc60667e16601f29e00bb45ff78aa8d8a6b914",
+    "apiProposalSha256": "db76a5f319b81714de75095fb952facacd973e36f6e00b5152fda9e0c9283f7e",
     "estimateAndLocksSha256": "647532611c80c5aad4d5ce8d7cfb3a33445923b07eb9ba5df89a94f2fc1a6e3d",
-    "p05aWorkPackageSha256": "f85ce6d53061e8ce1b8c7f5c5d4e2aca1b07b903c21557b791512d9afe58f7df",
-    "simulatorSha256": "c26eae834e0b2e36341662c7b260eebbaa4a0f36016b2b429a76aa72f1db250e",
-    "simulatorTestsSha256": "a394e2138871e7dfac81010de2ab3088139dcf2cba102f9eb297999c2b1287d3"
+    "p05aWorkPackageSha256": "e9ea59f521198a4af5e7863bdab7c363e6763b5c56a17be0c22f408e24f694a2",
+    "simulatorSha256": "68c730de54397739d1b844ec21f62df452119d66bbe19874f379f0a97f8b1a83",
+    "simulatorTestsSha256": "078f940c7a54fc30b4310960567b65e63c5786c4f0ad7974b9a3384a6c9e0782",
+    "gateScriptSha256": "9a9a7da3dd883da17a567a7613af556ae307666f457fba2154807e77129c88f3"
   },
   "tests": {
     "focusedRelease": {
-      "passed": 11,
+      "passed": 12,
       "failed": 0,
       "skipped": 0
     },
     "fullRelease": {
-      "unitPassed": 95,
+      "unitPassed": 96,
       "integrationPassed": 30,
       "failed": 0,
       "skipped": 0
@@ -70,7 +75,8 @@
     "binaryTypedGoldenPlacement": "pass",
     "failureTable": "pass-corrected-design",
     "quorumCursorAndPrefix": "pass-test-model-not-production-proof",
-    "authenticatedReadCompleteness": "pass-test-model-omission-rejected",
+    "authenticatedReadCompleteness": "pass-test-model-exact-log-fresh-challenge-lkg-omission-rejected",
+    "boundedPagination": "pass-test-model-page-boundary-omission-and-reorder-rejected",
     "epochOverlapRollback": "pass-separate-membership-state-machine-design",
     "legacyRollbackMirror": "pass-separate-strict-state-machine-design",
     "logicalPhysicalQuota": "pass-design",
@@ -97,7 +103,15 @@
       "p2": 1,
       "p3": 0
     },
-    "correctiveRereview": "pending"
+    "firstCorrectiveCommit": "30dc69fdc02feba2c9543b89e01511b30bcf3437",
+    "firstCorrectiveVerdict": "NO-GO",
+    "firstCorrectiveCounts": {
+      "p0": 0,
+      "p1": 1,
+      "p2": 2,
+      "p3": 0
+    },
+    "secondCorrectiveRereview": "pending"
   },
   "publication": {
     "gitPush": false,

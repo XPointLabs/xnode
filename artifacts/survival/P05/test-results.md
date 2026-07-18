@@ -4,8 +4,8 @@ Status: design/simulator green; ADR **PROPOSED / NOT-APPROVED**.
 
 | Check | Result |
 | --- | --- |
-| Focused simulator Release | PASS, 11/11, 0 failed, 0 skipped |
-| Full `XNode.slnx` Release | PASS, unit 95/95 and integration 30/30 |
+| Focused simulator Release | PASS, 12/12, 0 failed, 0 skipped |
+| Full `XNode.slnx` Release | PASS, unit 96/96 and integration 30/30 |
 | Production source delta | PASS, zero files under `src/` |
 | Docker/network | NOT RUN; not required and prohibited by P05 scope |
 | No-mock/multi-node rehearsal | NOT RUN; no release-path or product runtime change |
@@ -30,4 +30,7 @@ The corrected focused tests cover binary 32-byte route/16-byte replica types, a 
 vector, 4/20/100/1000-member nonce independence/balance/minimal remapping, exact receipt bindings,
 alternating AB/BC/AC prefixes, stale concurrent head rejection, unknown-result retry, signed
 high-water/contiguous per-record evidence, omission rejection, exact tombstone target, E/E+1
-continuity gaps and separate legacy mirror gaps.
+continuity gaps and separate legacy mirror gaps. The second corrective iteration adds an exact
+log identifier, client-bound freshness challenge and issuance bucket, per-log monotonic
+last-known-good state, cross-network/cross-placement/empty-head substitution rejection, and
+multi-page boundary omission/reordering rejection.
