@@ -2,6 +2,8 @@ namespace XNode.Core.Runtime;
 
 public sealed class RouterRuntimeOptions
 {
+    public const int PrivateAllowlistMembershipRelayCount = 3;
+
     public TimeSpan HeartbeatInterval { get; set; } = TimeSpan.FromSeconds(30);
 
     public bool BootstrapFromStorage { get; set; } = true;

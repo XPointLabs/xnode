@@ -712,7 +712,10 @@ public sealed class RouterRuntime : IRouterRuntime
         }
 
         var route = new List<RelayContact>(StorageRouteHopCount) { localContact };
-        var onionKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { localContact.X25519PublicKey.Trim() };
+        var onionKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            StorageRouteOnionKey(localContact)
+        };
         var rpcEndpoints = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             NormalizeRpcEndpoint(localContact.RpcEndpoint)
@@ -725,7 +728,7 @@ public sealed class RouterRuntime : IRouterRuntime
             .ThenBy(contact => XorDistanceHex(contact.RouterId, routingEntropy), StringComparer.Ordinal)
             .ThenBy(contact => contact.RouterId))
         {
-            if (!onionKeys.Add(contact.X25519PublicKey.Trim())
+            if (!onionKeys.Add(StorageRouteOnionKey(contact))
                 || !rpcEndpoints.Add(NormalizeRpcEndpoint(contact.RpcEndpoint)))
             {
                 continue;
@@ -814,6 +817,15 @@ public sealed class RouterRuntime : IRouterRuntime
     private static string NormalizeRpcEndpoint(string endpoint)
     {
         return new Uri(endpoint.Trim(), UriKind.Absolute).AbsoluteUri.TrimEnd('/');
+    }
+
+    private static string StorageRouteOnionKey(RelayContact contact) =>
+        contact.X25519PublicKey.Trim();
+
+    private static bool HasUniqueStorageRouteOnionKeys(IEnumerable<RelayContact> contacts)
+    {
+        var onionKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        return contacts.All(contact => onionKeys.Add(StorageRouteOnionKey(contact)));
     }
 
     private bool IsRequestWithinQuota(SessionRpcRequest request)
@@ -1071,10 +1083,15 @@ public sealed class RouterRuntime : IRouterRuntime
         var expected = _peerEndpointPolicy.PrivateMembershipRouterIds;
         var registered = _nodeDb.GetRegisteredRelays().ToHashSet();
         var now = _clock.UtcNow;
+        var contacts = expected
+            .Select(_nodeDb.GetContact)
+            .Where(static contact => contact is not null)
+            .Select(static contact => contact!)
+            .ToArray();
         var ready = registered.SetEquals(expected)
-            && expected.All(routerId =>
-                _nodeDb.GetContact(routerId) is { } contact
-                && IsStorageRouteContact(contact, now));
+            && contacts.Length == expected.Count
+            && contacts.All(contact => IsStorageRouteContact(contact, now))
+            && HasUniqueStorageRouteOnionKeys(contacts);
 
         return new PrivateAllowlistMembershipStatusSnapshot(
             Enabled: true,

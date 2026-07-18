@@ -86,7 +86,8 @@ around by enabling public peers.
 for an isolated UAT. It is disabled by default and fails startup unless private
 endpoints are enabled, public peers are disabled, signed contacts are required,
 the explicit non-production network identities match, the public authorizer is
-`DenyAll`, and the allowlist has one unique endpoint per unique router ID,
+`DenyAll`, and the allowlist has exactly three entries with one unique endpoint
+per unique router ID,
 including the local router.
 
 The allowlist is only an authorization boundary. It does not create contacts
@@ -113,7 +114,8 @@ contact storage occur under the same NodeDb state gate.
 
 While the membership is incomplete, `/health/ready` returns `503` and
 `storage_route` returns `path-not-found`. Once all configured IDs have fresh,
-valid, exact signed contacts, the registered set equals that configured set,
+valid, exact signed contacts with route-wide unique X25519 public keys, the
+registered set equals that configured set,
 Xray is ready, and authorization remains `DenyAll`, readiness returns `200`.
 
 The process fails startup when this feature is enabled under `Production`, when `Node:Network` is `mainnet`, when the two network identities do not match, or when any tuple is malformed. The default is empty and disabled. Do not set these values in a production configuration overlay.

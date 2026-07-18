@@ -822,6 +822,81 @@ public sealed class RouterRuntimeIntegrationTests
     }
 
     [Fact]
+    public async Task Runtime_PrivateMembershipRejectsReadinessAndRouteForDuplicateX25519Keys()
+    {
+        var root = NewTempDirectory();
+        try
+        {
+            var nodes = PrivateRelayNodes(root);
+            var runtimeOptions = PrivateMembershipRuntimeOptions(nodes);
+            var policy = PeerEndpointPolicy.Create(
+                runtimeOptions,
+                nodes[0],
+                "UAT",
+                DenyAllPublicPeerEndpointAuthorizer.Instance);
+            var runtime = CreateRuntime(
+                root,
+                nodes[0],
+                new FakeStorageBackend(),
+                runtimeOptions,
+                new PathSelectionOptions { ClientHops = 3 },
+                peerEndpointPolicy: policy,
+                localRelayContactProvider: new FixedLocalRelayContactProvider(SignedContact(nodes[0])));
+
+            await runtime.StartAsync(CancellationToken.None);
+
+            var secondContact = SignedContact(nodes[1]);
+            Assert.True((await StoreRelayContactAsync(
+                runtime,
+                secondContact,
+                "membership-duplicate-key-node-two")).Success);
+            Assert.True((await StoreRelayContactAsync(
+                runtime,
+                SignedContactWithX25519Key(
+                    nodes[2],
+                    secondContact.X25519PublicKey.ToUpperInvariant(),
+                    TestData.Now),
+                "membership-duplicate-key-node-three")).Success);
+
+            Assert.Equal(
+                new PrivateAllowlistMembershipStatusSnapshot(true, 3, 3, false),
+                runtime.Status.PrivateMembership);
+            Assert.Equal(
+                503,
+                RouterReadinessEvaluator
+                    .Evaluate(runtime.Status, transportReady: true, policy.IsProductionPublicRoutingReady)
+                    .StatusCode);
+            var duplicateRoute = await RequestStorageRouteAsync(runtime, "membership-duplicate-key-route");
+            Assert.False(duplicateRoute.Success);
+            Assert.Equal("path-not-found", duplicateRoute.Error);
+
+            Assert.True((await StoreRelayContactAsync(
+                runtime,
+                SignedContactAt(
+                    nodes[2],
+                    TestData.Now.AddMinutes(1),
+                    TestData.Now.AddDays(1)),
+                "membership-unique-key-node-three")).Success);
+
+            Assert.Equal(
+                new PrivateAllowlistMembershipStatusSnapshot(true, 3, 3, true),
+                runtime.Status.PrivateMembership);
+            Assert.Equal(
+                200,
+                RouterReadinessEvaluator
+                    .Evaluate(runtime.Status, transportReady: true, policy.IsProductionPublicRoutingReady)
+                    .StatusCode);
+            Assert.True((await RequestStorageRouteAsync(
+                runtime,
+                "membership-unique-key-route")).Success);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Runtime_PrivateMembershipFailsStartupWhenLocalSeedDoesNotMatchRouterId()
     {
         var root = NewTempDirectory();
@@ -966,6 +1041,18 @@ public sealed class RouterRuntimeIntegrationTests
 
     private static RelayContact SignedContact(RouterNodeOptions node) =>
         SignedContactAt(node, TestData.Now, TestData.Now.AddDays(1));
+
+    private static RelayContact SignedContactWithX25519Key(
+        RouterNodeOptions node,
+        string x25519PublicKey,
+        DateTimeOffset signedAt)
+    {
+        var contact = SignedContactAt(node, signedAt, TestData.Now.AddDays(1)) with
+        {
+            X25519PublicKey = x25519PublicKey
+        };
+        return RelayContactSigner.Sign(contact, node.GetEd25519PrivateKey());
+    }
 
     private static RelayContact SignedContactAt(
         RouterNodeOptions node,

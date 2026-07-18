@@ -186,6 +186,12 @@ public sealed class PeerEndpointPolicy
 
         if (runtimeOptions.EnablePrivateAllowlistMembership)
         {
+            if (tuples.Count != RouterRuntimeOptions.PrivateAllowlistMembershipRelayCount)
+            {
+                throw new InvalidOperationException(
+                    $"Private allowlist membership requires exactly {RouterRuntimeOptions.PrivateAllowlistMembershipRelayCount} routers.");
+            }
+
             if (tuples.Select(static tuple => tuple.RouterId).Distinct().Count() != tuples.Count)
             {
                 throw new InvalidOperationException(

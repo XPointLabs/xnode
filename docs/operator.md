@@ -180,9 +180,11 @@ its own tuple:
 
 Replace the symbolic IDs with full router IDs and derive all three rows from
 the same Mr. X-approved inventory. Do not abbreviate IDs in configuration and
-do not replace exact tuples with ranges. Missing or mismatched local and remote
-tuples have the same result: a three-hop storage route fails with
-`path-not-found`. In private-only mode, a public contact cannot fill that gap.
+do not replace exact tuples with ranges. Private membership mode rejects any
+allowlist whose exact unique cardinality is not three. Missing or mismatched
+local and remote tuples have the same result: a three-hop storage route fails
+with `path-not-found`. In private-only mode, a public contact cannot fill that
+gap.
 
 Validate the mode before accepting the UAT:
 
@@ -211,6 +213,10 @@ Validate the mode before accepting the UAT:
      }
    }
    ```
+
+   `ready` remains `false` when any two of the three fresh signed contacts
+   advertise the same X25519 public key, even if all three router identities
+   are registered.
 
 5. With runtime and transport healthy, confirm `/health/ready` returns `200`.
    Before all three signed contacts are registered it must return `503`.

@@ -361,12 +361,7 @@ public sealed class PeerEndpointPolicyTests
     {
         var local = Id(2);
         var duplicateRouter = PrivateMembershipOptions(local);
-        duplicateRouter.PrivatePeerEndpointAllowlist.Add(new PrivatePeerEndpointAllowlistEntry
-        {
-            RouterId = local.Value,
-            IpAddress = "10.20.30.41",
-            Port = 8082
-        });
+        duplicateRouter.PrivatePeerEndpointAllowlist[1].RouterId = local.Value;
         Assert.Throws<InvalidOperationException>(() => PeerEndpointPolicy.Create(
             duplicateRouter,
             new RouterNodeOptions { Network = "uat", RouterId = local.Value },
@@ -374,17 +369,49 @@ public sealed class PeerEndpointPolicyTests
             DenyAllPublicPeerEndpointAuthorizer.Instance));
 
         var duplicateEndpoint = PrivateMembershipOptions(local);
-        duplicateEndpoint.PrivatePeerEndpointAllowlist.Add(new PrivatePeerEndpointAllowlistEntry
-        {
-            RouterId = Id(3).Value,
-            IpAddress = "10.20.30.40",
-            Port = 8081
-        });
+        duplicateEndpoint.PrivatePeerEndpointAllowlist[1].IpAddress =
+            duplicateEndpoint.PrivatePeerEndpointAllowlist[0].IpAddress;
+        duplicateEndpoint.PrivatePeerEndpointAllowlist[1].Port =
+            duplicateEndpoint.PrivatePeerEndpointAllowlist[0].Port;
         Assert.Throws<InvalidOperationException>(() => PeerEndpointPolicy.Create(
             duplicateEndpoint,
             new RouterNodeOptions { Network = "uat", RouterId = local.Value },
             "UAT",
             DenyAllPublicPeerEndpointAuthorizer.Instance));
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(4)]
+    public void PrivateMembership_RequiresExactlyThreeRouters(int routerCount)
+    {
+        var local = Id(2);
+        var options = PrivateMembershipOptions(local);
+        if (routerCount < RouterRuntimeOptions.PrivateAllowlistMembershipRelayCount)
+        {
+            options.PrivatePeerEndpointAllowlist.RemoveRange(
+                routerCount,
+                options.PrivatePeerEndpointAllowlist.Count - routerCount);
+        }
+        else
+        {
+            options.PrivatePeerEndpointAllowlist.Add(new PrivatePeerEndpointAllowlistEntry
+            {
+                RouterId = Id(252).Value,
+                IpAddress = "10.20.30.43",
+                Port = 8084,
+                Path = PeerEndpointPolicy.OnionPeerPath
+            });
+        }
+
+        var error = Assert.Throws<InvalidOperationException>(() => PeerEndpointPolicy.Create(
+            options,
+            new RouterNodeOptions { Network = "uat", RouterId = local.Value },
+            "UAT",
+            DenyAllPublicPeerEndpointAuthorizer.Instance));
+
+        Assert.Contains("requires exactly 3 routers", error.Message);
     }
 
     private static PeerEndpointPolicy CreateUatPolicy(RouterId recipient, string ipAddress, int port) =>
@@ -426,6 +453,20 @@ public sealed class PeerEndpointPolicyTests
                     RouterId = local.Value,
                     IpAddress = "10.20.30.40",
                     Port = 8081,
+                    Path = PeerEndpointPolicy.OnionPeerPath
+                },
+                new PrivatePeerEndpointAllowlistEntry
+                {
+                    RouterId = Id(250).Value,
+                    IpAddress = "10.20.30.41",
+                    Port = 8082,
+                    Path = PeerEndpointPolicy.OnionPeerPath
+                },
+                new PrivatePeerEndpointAllowlistEntry
+                {
+                    RouterId = Id(251).Value,
+                    IpAddress = "10.20.30.42",
+                    Port = 8083,
                     Path = PeerEndpointPolicy.OnionPeerPath
                 }
             ]
