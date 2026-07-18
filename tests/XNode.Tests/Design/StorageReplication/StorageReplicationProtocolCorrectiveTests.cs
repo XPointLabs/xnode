@@ -159,14 +159,44 @@ public sealed class StorageReplicationProtocolCorrectiveTests(ITestOutputHelper 
         Assert.All(log.CommittedRecords, static record => Assert.Equal(2, record.DurableOwnerReceipts.Count));
 
         log.CatchUp(replicas[1], replicas[0]);
-        var page = log.ReadAuthenticatedPage([replicas[0], replicas[1]], 0);
-        Assert.True(AuthenticatedReadPageVerifier.Verify(page, log.Placement, log.Generation, 0, new byte[32]));
+        var challenge = Nonce(300, 1);
+        var lkg = new ClientHighWaterLkg();
+        var firstPage = log.ReadAuthenticatedPage(
+            [replicas[0], replicas[1]], 0, maximumRecords: 2, challenge, issuedBucket: 1000);
+        Assert.True(AuthenticatedReadPageVerifier.Verify(
+            firstPage, log.Placement, log.Generation, 0, new byte[32],
+            challenge, currentBucket: 1000, lkg));
         Assert.False(AuthenticatedReadPageVerifier.Verify(
-            page with { Records = page.Records.Where(record => record.Cursor != 2).ToArray() },
+            firstPage with { Records = firstPage.Records.Where(record => record.Cursor != 2).ToArray() },
             log.Placement,
             log.Generation,
             0,
-            new byte[32]));
+            new byte[32],
+            challenge,
+            1000,
+            new ClientHighWaterLkg()));
+        Assert.False(AuthenticatedReadPageVerifier.Verify(
+            firstPage with { Records = firstPage.Records.Reverse().ToArray() },
+            log.Placement,
+            log.Generation,
+            0,
+            new byte[32],
+            challenge,
+            1000,
+            new ClientHighWaterLkg()));
+
+        var secondPage = log.ReadAuthenticatedPage(
+            [replicas[0], replicas[1]], firstPage.PageEndCursor, 2, challenge, 1000);
+        Assert.True(AuthenticatedReadPageVerifier.Verify(
+            secondPage,
+            log.Placement,
+            log.Generation,
+            firstPage.PageEndCursor,
+            firstPage.ContinuationHash,
+            challenge,
+            1000,
+            lkg));
+        Assert.Equal<ulong>(3, secondPage.PageEndCursor);
     }
 
     [Fact]
@@ -183,11 +213,14 @@ public sealed class StorageReplicationProtocolCorrectiveTests(ITestOutputHelper 
         Assert.Equal(QuorumAppendStatus.Idempotent, retryViaAlternateCoordinator.Status);
         Assert.Equal(unknownToClient.Cursor, retryViaAlternateCoordinator.Cursor);
 
-        var incomplete = log.ReadAuthenticatedPage([replicas[1], replicas[2]], afterCursor: 0);
+        var challenge = Nonce(400, 1);
+        var incomplete = log.ReadAuthenticatedPage(
+            [replicas[1], replicas[2]], afterCursor: 0, 16, challenge, 1000);
         Assert.Equal(AuthenticatedReadStatus.NoMatchingHighWater, incomplete.Status);
 
         log.CatchUp(replicas[2], replicas[1]);
-        var complete = log.ReadAuthenticatedPage([replicas[1], replicas[2]], afterCursor: 0);
+        var complete = log.ReadAuthenticatedPage(
+            [replicas[1], replicas[2]], afterCursor: 0, 16, challenge, 1000);
         Assert.Equal(AuthenticatedReadStatus.Complete, complete.Status);
         Assert.Equal<ulong>(1, complete.HighWaterCursor);
         Assert.Equal(2, complete.HighWaterEvidence.Count);
@@ -210,7 +243,8 @@ public sealed class StorageReplicationProtocolCorrectiveTests(ITestOutputHelper 
         Assert.Equal<ulong>(2, removed.Cursor);
 
         log.CatchUp(replicas[0], replicas[2]);
-        var page = log.ReadAuthenticatedPage([replicas[0], replicas[2]], 0);
+        var page = log.ReadAuthenticatedPage(
+            [replicas[0], replicas[2]], 0, 16, Nonce(500, 1), 1000);
         Assert.Equal(AuthenticatedReadStatus.Complete, page.Status);
         Assert.DoesNotContain(
             page.VisibleObjects,
@@ -298,28 +332,67 @@ public sealed class StorageReplicationProtocolCorrectiveTests(ITestOutputHelper 
         log.TryAppend(Operation(31), 0, [replicas[0], replicas[1]]);
         log.CatchUp(replicas[2], replicas[1]);
         var challengeOne = Nonce(900, 1);
-        var pageOne = log.ReadAuthenticatedPage([replicas[1], replicas[2]], 0, challengeOne);
+        var pageOne = log.ReadAuthenticatedPage(
+            [replicas[1], replicas[2]], 0, 16, challengeOne, 1000);
         Assert.True(AuthenticatedReadPageVerifier.Verify(
-            pageOne, placement, log.Generation, 0, new byte[32], challengeOne, clientLkg));
+            pageOne, placement, log.Generation, 0, new byte[32],
+            challengeOne, 1000, clientLkg));
 
         log.TryAppend(Operation(32), 1, [replicas[1], replicas[2]]);
         log.CatchUp(replicas[0], replicas[2]);
         var challengeTwo = Nonce(900, 2);
-        var pageTwo = log.ReadAuthenticatedPage([replicas[0], replicas[2]], 0, challengeTwo);
+        var pageTwo = log.ReadAuthenticatedPage(
+            [replicas[0], replicas[2]], 0, 16, challengeTwo, 1000);
         Assert.True(AuthenticatedReadPageVerifier.Verify(
-            pageTwo, placement, log.Generation, 0, new byte[32], challengeTwo, clientLkg));
+            pageTwo, placement, log.Generation, 0, new byte[32],
+            challengeTwo, 1000, clientLkg));
 
         Assert.False(AuthenticatedReadPageVerifier.Verify(
-            pageOne, placement, log.Generation, 0, new byte[32], challengeTwo, clientLkg));
+            pageOne, placement, log.Generation, 0, new byte[32],
+            challengeTwo, 1000, clientLkg));
         Assert.False(AuthenticatedReadPageVerifier.Verify(
-            pageOne, placement, log.Generation, 0, new byte[32], challengeOne, clientLkg));
+            pageOne, placement, log.Generation, 0, new byte[32],
+            challengeOne, 1000, clientLkg));
+        Assert.False(AuthenticatedReadPageVerifier.Verify(
+            pageTwo, placement, log.Generation, 0, new byte[32],
+            challengeTwo, 1002, new ClientHighWaterLkg()));
 
         var otherNetwork = new CanonicalMembershipContext(Fixed16(0xA1), context.MembershipStatementHash);
         var otherPlacement = CanonicalStoragePlacementSimulator.Assign(
             Key(800), 500, Nonce(1, 1), Route(), replicas, otherNetwork);
         Assert.False(AuthenticatedReadPageVerifier.Verify(
             pageTwo, otherPlacement, log.Generation, 0, new byte[32], challengeTwo,
-            new ClientHighWaterLkg()));
+            1000, new ClientHighWaterLkg()));
+
+        var otherPlacementKey = CanonicalStoragePlacementSimulator.Assign(
+            Key(801), 500, Nonce(1, 1), Route(), replicas, context);
+        Assert.False(AuthenticatedReadPageVerifier.Verify(
+            pageTwo, otherPlacementKey, log.Generation, 0, new byte[32], challengeTwo,
+            1000, new ClientHighWaterLkg()));
+
+        var emptyPlacement = CanonicalStoragePlacementSimulator.Assign(
+            Key(802), 501, Nonce(1, 1), Route(), replicas, context);
+        var emptyLog = new QuorumLogProtocolSimulator(emptyPlacement, generation: 8);
+        var emptyChallenge = Nonce(901, 1);
+        var emptyPage = emptyLog.ReadAuthenticatedPage(
+            [emptyPlacement.Replicas[0], emptyPlacement.Replicas[1]],
+            0,
+            16,
+            emptyChallenge,
+            1000);
+        Assert.True(AuthenticatedReadPageVerifier.Verify(
+            emptyPage, emptyPlacement, emptyLog.Generation, 0, new byte[32],
+            emptyChallenge, 1000, new ClientHighWaterLkg()));
+        var emptyOtherPlacement = CanonicalStoragePlacementSimulator.Assign(
+            Key(803), 501, Nonce(1, 1), Route(), replicas, context);
+        Assert.False(AuthenticatedReadPageVerifier.Verify(
+            emptyPage, emptyOtherPlacement, emptyLog.Generation, 0, new byte[32],
+            emptyChallenge, 1000, new ClientHighWaterLkg()));
+        var emptyOtherNetwork = CanonicalStoragePlacementSimulator.Assign(
+            Key(802), 501, Nonce(1, 1), Route(), replicas, otherNetwork);
+        Assert.False(AuthenticatedReadPageVerifier.Verify(
+            emptyPage, emptyOtherNetwork, emptyLog.Generation, 0, new byte[32],
+            emptyChallenge, 1000, new ClientHighWaterLkg()));
     }
 
     private static CanonicalStorageOperation Operation(int value) =>

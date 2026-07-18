@@ -130,6 +130,20 @@ those gaps. Before P08, issue **P05A** in `deep-protocol`, owned by the protocol
 - golden, malformed, truncation and cross-language vectors;
 - package manifest/hash and independent protocol/security review.
 
+Every replication message uses one canonical log identity:
+
+```text
+storageLogId32 =
+  SHA-256(
+    "deep-storage-log-id-v1" || networkId16 || membershipStatementHash32 ||
+    placementCommitment32 || u64be(epoch) || u64be(generation) ||
+    algorithmVersion || N || W || R
+  )
+```
+
+Promise, accept, finalize, commit envelope and high-water signing bytes all include this exact ID.
+Numeric epoch/generation alone is never sufficient scope.
+
 Proposed epoch operation binding:
 
 ```text
@@ -182,16 +196,20 @@ quorum tombstone/retention checkpoint prevents resurrection.
 
 ## Read semantics: `R=2/available-union`
 
-- Query the three owners up to a bound and obtain at least two replica-signed P05A high-water
-  statements for one epoch/generation.
+- The client creates a fresh unpredictable read challenge. Query the three owners up to a bound and
+  obtain at least two replica-signed P05A high-water statements for the exact `storageLogId32`,
+  challenge and freshness bucket.
 - If heads differ, accept a higher head only with a contiguous, per-record certified chain from the
   lower head; repair the stale owner, then obtain two matching high-water statements. With no
   verifiable chain or repair quorum, return `quorum-unavailable`.
-- A page carries `pageStart/pageEnd`, two signed high-water statements and one record envelope per
-  contiguous cursor. Every record includes ciphertext or canonical tombstone, P03B `MQR1`, exact
-  membership/placement binding and previous/current commit hashes.
-- The client verifies every record, every chain edge and that successive pages reach the signed
-  high-water cursor. One `MQR1` never authenticates an array of unrelated ciphertexts.
+- A bounded page carries `pageStart/pageEnd`, continuation hash, the challenged high-water and one
+  record envelope per contiguous cursor. Every record includes ciphertext or canonical tombstone,
+  P03B `MQR1`, exact log binding and previous/current commit hashes.
+- Successive pages reuse the same challenged high-water snapshot and begin from the exact prior
+  `pageEnd/continuationHash`; omission, reordering or substitution at a page boundary fails. The
+  final page must reach the signed high-water cursor.
+- The client persists a monotonic high-water LKG per log ID and rejects a lower cursor or a
+  different hash at the same cursor, even if an old signature remains within a clock bucket.
 - A higher-cursor valid tombstone hides only its signed target. Repair copies commit envelopes and
   cannot reduce a head, alter a target or replace a tombstone with payload.
 - Receipts and high-water statements from different epochs never combine to make R2.
@@ -293,6 +311,8 @@ decode-policy opt-in. Downgrade must not delete v2 data or state.
   value and repeated access. This ADR does not claim traffic-analysis resistance.
 - Residual: coordinator censorship remains possible. Retry through a different route improves
   availability, not anonymity against a global observer.
+- Required: a high-water response is log-ID scoped, bound to the client's fresh read challenge,
+  time-bounded and checked against client monotonic LKG; old signed heads are not fresh responses.
 - Required: internal replica transport must be mutually authenticated, bounded and protected from
   SSRF; P04 member proofs bind endpoint/key ownership.
 - Required: aggregate metrics have no placement key, raw Session ID, sender/recipient pair,

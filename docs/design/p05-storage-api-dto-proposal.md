@@ -132,6 +132,7 @@ Proposed method: `storage_coordinate_v1` inside the existing onion RPC body.
     "epochOperationId": "<16-byte base64>",
     "payloadDigest": "<32-byte base64>"
   },
+  "readChallenge": "<fresh unpredictable 16..64-byte base64>",
   "requestNonce": "<transport replay nonce>"
 }
 ```
@@ -153,6 +154,8 @@ Validation:
   the P05A canonical tombstone-body digest;
 - maximum envelope size is a reviewed constant no larger than the small-envelope product limit;
 - request nonce is replay input only.
+- read challenge is client freshness input, distinct from the transport nonce, and is signed into
+  both replica high-water responses.
 
 Response:
 
@@ -177,6 +180,7 @@ Response:
     "pageStartCursor": 101,
     "pageEndCursor": 125,
     "highWaterCursor": 140,
+    "readChallenge": "<same challenge as request>",
     "highWaterEvidence": [
       "<P05A replica-signed high-water>",
       "<P05A replica-signed high-water>"
@@ -191,15 +195,17 @@ Response:
         "durableQuorumMqr1": "<canonical bytes base64>"
       }
     ],
+    "continuationHash": "<commit hash at pageEndCursor>",
     "nextCursor": 125
   }
 }
 ```
 
 Each `epochWrites` entry needs an independent W2 final certificate; E and E+1 never share receipts.
-For reads the client verifies two high-water statements, every P03B/P05A record envelope, contiguous
-cursor/commit-hash edges across pages, and eventual arrival at `highWaterCursor`. One `MQR1` never
-authenticates an array. A JSON success field alone has no authority.
+For reads the client verifies two fresh challenge-bound high-water statements for the exact
+`StorageLogIdV1`, every P03B/P05A record envelope, contiguous cursor/commit-hash edges across
+bounded pages, and eventual arrival at `highWaterCursor`. It persists a monotonic per-log LKG.
+One `MQR1` never authenticates an array. A JSON success field alone has no authority.
 
 ## Coordinator-to-replica API (P09A/P09B)
 
@@ -211,11 +217,13 @@ Internal mutually authenticated endpoints:
 - `POST /internal/storage/v1/replica/read`
 - `POST /internal/storage/v1/replica/repair`
 
-Promise/accept/finalize implement a per-slot quorum ballot. Every request binds network, epoch,
-roster hash, exact owner ID, ballot, common cursor, previous commit hash, derived operation ID,
-generation, canonical request digest, tombstone target and payload digest. A replica persists and
-signs `MRR1` at accept; the coordinator acknowledges the client only after the resulting `MQR1`
-commit envelope is finalized on W2. HTTP status never substitutes for evidence.
+Promise/accept/finalize implement a per-slot quorum ballot. Every request binds one canonical log
+ID (which itself binds network, roster hash, placement, epoch, generation and algorithm policy),
+exact owner ID, ballot, common cursor, previous commit hash, derived operation ID, canonical request
+digest, tombstone target and payload digest. A replica persists and signs `MRR1` at accept; the
+coordinator acknowledges the client only after the resulting `MQR1` commit envelope is finalized
+on W2. High-water additionally signs the client challenge and freshness bucket. HTTP status never
+substitutes for evidence.
 
 Repair accepts only a contiguous P05A per-record certificate chain from the local high-water to a
 strictly newer signed high-water. It cannot skip a cursor, replace a chosen slot, alter a tombstone

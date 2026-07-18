@@ -14,11 +14,11 @@ Status: design/simulator green; ADR **PROPOSED / NOT-APPROVED**.
 Focused command:
 
 ```powershell
-dotnet test tests\XNode.Tests\XNode.Tests.csproj `
-  --configuration Release `
-  --filter FullyQualifiedName~StoragePlacementSimulatorTests `
-  --no-restore
+powershell -ExecutionPolicy Bypass -File eng\verify-p05-simulator.ps1 -Configuration Release
 ```
+
+The wrapper uses the corrected filter, parses TRX counters and fails if total/executed is zero;
+`dotnet test` alone can return exit code zero for a filter that matches nothing.
 
 Full command:
 

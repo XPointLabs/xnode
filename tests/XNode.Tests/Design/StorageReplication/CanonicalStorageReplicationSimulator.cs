@@ -95,9 +95,48 @@ internal sealed class RequestNonce
     public ReadOnlySpan<byte> Span => _bytes;
 }
 
+internal sealed class CanonicalMembershipContext
+{
+    private readonly byte[] _networkId;
+    private readonly byte[] _membershipStatementHash;
+
+    public CanonicalMembershipContext(
+        ReadOnlySpan<byte> networkId,
+        ReadOnlySpan<byte> membershipStatementHash)
+    {
+        if (networkId.Length != 16 || membershipStatementHash.Length != 32)
+        {
+            throw new ArgumentException("Membership context requires networkId16 and statementHash32.");
+        }
+
+        _networkId = networkId.ToArray();
+        _membershipStatementHash = membershipStatementHash.ToArray();
+    }
+
+    public byte[] NetworkId => _networkId.ToArray();
+
+    public byte[] MembershipStatementHash => _membershipStatementHash.ToArray();
+
+    public static CanonicalMembershipContext TestDefault(
+        IReadOnlyCollection<StorageReplicaId> replicas)
+    {
+        var network = SHA256.HashData("deep-storage-test-network-v1"u8)[..16];
+        var membershipBytes = replicas
+            .Order()
+            .SelectMany(static replica => replica.Bytes.ToArray())
+            .ToArray();
+        var framed = new byte["deep-storage-test-membership-v1"u8.Length + membershipBytes.Length];
+        "deep-storage-test-membership-v1"u8.CopyTo(framed);
+        membershipBytes.CopyTo(framed, "deep-storage-test-membership-v1"u8.Length);
+        return new CanonicalMembershipContext(network, SHA256.HashData(framed));
+    }
+}
+
 internal sealed record CanonicalStoragePlacementResult(
     ulong MembershipEpoch,
     OpaquePlacementKey32 PlacementKey,
+    CanonicalMembershipContext Membership,
+    byte[] PlacementCommitment,
     IReadOnlyList<RouteHopId> RouteHops,
     IReadOnlyList<StorageReplicaId> Replicas);
 
@@ -137,7 +176,8 @@ internal static class CanonicalStoragePlacementSimulator
         ulong membershipEpoch,
         RequestNonce requestNonce,
         IReadOnlyList<RouteHopId> routeHops,
-        IReadOnlyList<StorageReplicaId> eligibleReplicas)
+        IReadOnlyList<StorageReplicaId> eligibleReplicas,
+        CanonicalMembershipContext? membership = null)
     {
         ArgumentNullException.ThrowIfNull(placementKey);
         ArgumentNullException.ThrowIfNull(requestNonce);
@@ -171,12 +211,28 @@ internal static class CanonicalStoragePlacementSimulator
             .Take(3)
             .Select(static value => value.Replica)
             .ToArray();
+        membership ??= CanonicalMembershipContext.TestDefault(members);
 
         return new CanonicalStoragePlacementResult(
             membershipEpoch,
             placementKey,
+            membership,
+            PlacementCommitment(placementKey.Span),
             routeHops.ToArray(),
             selected);
+    }
+
+    private static byte[] PlacementCommitment(ReadOnlySpan<byte> placementKey)
+    {
+        var domain = "deep-storage-placement-commit-v1"u8;
+        var input = new byte[domain.Length + placementKey.Length + 4];
+        domain.CopyTo(input);
+        placementKey.CopyTo(input.AsSpan(domain.Length));
+        input[^4] = 1; // algorithm version
+        input[^3] = 3; // N
+        input[^2] = 2; // W
+        input[^1] = 2; // R
+        return SHA256.HashData(input);
     }
 
     private static byte[] Score(ReadOnlySpan<byte> placementKey, ReadOnlySpan<byte> replicaId)
@@ -218,8 +274,46 @@ internal static class CanonicalStoragePlacementSimulator
     }
 }
 
+internal static class CanonicalStorageLogId
+{
+    private static ReadOnlySpan<byte> Domain => "deep-storage-log-id-v1"u8;
+
+    public static byte[] Derive(
+        CanonicalStoragePlacementResult placement,
+        ulong generation)
+    {
+        if (generation == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(generation));
+        }
+
+        var networkId = placement.Membership.NetworkId;
+        var membershipHash = placement.Membership.MembershipStatementHash;
+        var input = new byte[Domain.Length + 16 + 32 + 32 + 8 + 8 + 4];
+        var offset = 0;
+        Domain.CopyTo(input);
+        offset += Domain.Length;
+        networkId.CopyTo(input, offset);
+        offset += 16;
+        membershipHash.CopyTo(input, offset);
+        offset += 32;
+        placement.PlacementCommitment.CopyTo(input, offset);
+        offset += 32;
+        BinaryPrimitives.WriteUInt64BigEndian(input.AsSpan(offset), placement.MembershipEpoch);
+        offset += 8;
+        BinaryPrimitives.WriteUInt64BigEndian(input.AsSpan(offset), generation);
+        offset += 8;
+        input[offset++] = 1; // algorithm version
+        input[offset++] = 3; // N
+        input[offset++] = 2; // W
+        input[offset] = 2; // R
+        return SHA256.HashData(input);
+    }
+}
+
 internal sealed record ReceiptExpectation(
     CanonicalStoragePlacementResult Placement,
+    byte[] LogId,
     ulong Generation,
     ulong Cursor,
     byte[] OperationId,
@@ -247,6 +341,7 @@ internal sealed record ReceiptExpectation(
 
         return new ReceiptExpectation(
             placement,
+            CanonicalStorageLogId.Derive(placement, generation),
             generation,
             cursor,
             operationId.ToArray(),
@@ -257,6 +352,7 @@ internal sealed record ReceiptExpectation(
 }
 
 internal sealed record SimulatedBoundReceipt(
+    byte[] LogId,
     ulong MembershipEpoch,
     StorageReplicaId ReplicaId,
     ulong Generation,
@@ -271,6 +367,7 @@ internal sealed record SimulatedBoundReceipt(
         ReceiptExpectation expectation,
         StorageReplicaId replicaId) =>
         new(
+            expectation.LogId.ToArray(),
             expectation.Placement.MembershipEpoch,
             replicaId,
             expectation.Generation,
@@ -298,6 +395,7 @@ internal static class BoundReceiptEvaluator
         var valid = receipts
             .Where(receipt =>
                 receipt.Durable &&
+                receipt.LogId.AsSpan().SequenceEqual(expectation.LogId) &&
                 owners.Contains(receipt.ReplicaId) &&
                 receipt.MembershipEpoch == expectation.Placement.MembershipEpoch &&
                 receipt.Generation == expectation.Generation &&
@@ -359,6 +457,7 @@ internal sealed record CanonicalStorageOperation(
 }
 
 internal sealed record CommittedStorageRecord(
+    byte[] LogId,
     ulong MembershipEpoch,
     ulong Generation,
     ulong Cursor,
@@ -387,21 +486,56 @@ internal enum AuthenticatedReadStatus
 }
 
 internal sealed record ReplicaHighWaterEvidence(
+    byte[] LogId,
     StorageReplicaId ReplicaId,
     ulong MembershipEpoch,
     ulong Generation,
     ulong Cursor,
     byte[] CommitHash,
+    byte[] ReadChallenge,
+    uint IssuedBucket,
     byte[] EvidenceDigest);
 
 internal sealed record VisibleStorageObject(byte[] LogicalObjectId, byte[] PayloadDigest);
 
 internal sealed record AuthenticatedReadPage(
     AuthenticatedReadStatus Status,
+    ulong PageStartCursor,
+    ulong PageEndCursor,
     ulong HighWaterCursor,
+    byte[] ContinuationHash,
     IReadOnlyList<ReplicaHighWaterEvidence> HighWaterEvidence,
     IReadOnlyList<CommittedStorageRecord> Records,
     IReadOnlyList<VisibleStorageObject> VisibleObjects);
+
+internal sealed class ClientHighWaterLkg
+{
+    private readonly Dictionary<string, (ulong Cursor, byte[] CommitHash)> _heads =
+        new(StringComparer.Ordinal);
+
+    public bool TryObserve(ReadOnlySpan<byte> logId, ulong cursor, ReadOnlySpan<byte> commitHash)
+    {
+        var key = Convert.ToHexString(logId);
+        if (!_heads.TryGetValue(key, out var current))
+        {
+            _heads[key] = (cursor, commitHash.ToArray());
+            return true;
+        }
+
+        if (cursor < current.Cursor ||
+            cursor == current.Cursor && !commitHash.SequenceEqual(current.CommitHash))
+        {
+            return false;
+        }
+
+        if (cursor > current.Cursor)
+        {
+            _heads[key] = (cursor, commitHash.ToArray());
+        }
+
+        return true;
+    }
+}
 
 internal static class AuthenticatedReadPageVerifier
 {
@@ -412,32 +546,59 @@ internal static class AuthenticatedReadPageVerifier
         CanonicalStoragePlacementResult placement,
         ulong generation,
         ulong afterCursor,
-        ReadOnlySpan<byte> expectedPreviousCommitHash)
+        ReadOnlySpan<byte> expectedPreviousCommitHash,
+        RequestNonce expectedChallenge,
+        uint currentBucket,
+        ClientHighWaterLkg clientLkg)
     {
+        var logId = CanonicalStorageLogId.Derive(placement, generation);
         if (page.Status != AuthenticatedReadStatus.Complete ||
             expectedPreviousCommitHash.Length != 32 ||
+            page.ContinuationHash.Length != 32 ||
             page.HighWaterEvidence.Count != 2 ||
             page.HighWaterEvidence.Select(static item => item.ReplicaId).Distinct().Count() != 2 ||
             page.HighWaterEvidence.Any(evidence =>
+                evidence.LogId.Length != 32 ||
+                !evidence.LogId.AsSpan().SequenceEqual(logId) ||
                 !placement.Replicas.Contains(evidence.ReplicaId) ||
                 evidence.MembershipEpoch != placement.MembershipEpoch ||
                 evidence.Generation != generation ||
                 evidence.Cursor != page.HighWaterCursor ||
                 evidence.CommitHash.Length != 32 ||
+                evidence.ReadChallenge.Length != expectedChallenge.Span.Length ||
+                !evidence.ReadChallenge.AsSpan().SequenceEqual(expectedChallenge.Span) ||
+                evidence.IssuedBucket > currentBucket ||
+                currentBucket - evidence.IssuedBucket > 1 ||
                 evidence.EvidenceDigest.Length != 32 ||
                 !evidence.EvidenceDigest.AsSpan().SequenceEqual(
-                    Digest(evidence.ReplicaId, placement.MembershipEpoch, generation,
-                        evidence.Cursor, evidence.CommitHash))) ||
+                    Digest(logId, evidence.ReplicaId, evidence.Cursor, evidence.CommitHash,
+                        evidence.ReadChallenge, evidence.IssuedBucket))) ||
             !page.HighWaterEvidence[0].CommitHash.AsSpan()
                 .SequenceEqual(page.HighWaterEvidence[1].CommitHash))
         {
             return false;
         }
 
-        var expectedCount = page.HighWaterCursor > afterCursor
-            ? checked((int)(page.HighWaterCursor - afterCursor))
-            : 0;
-        if (page.Records.Count != expectedCount)
+        if (page.Records.Count == 0)
+        {
+            if (page.HighWaterCursor > afterCursor ||
+                page.PageStartCursor != afterCursor + 1 ||
+                page.PageEndCursor != afterCursor ||
+                !page.ContinuationHash.AsSpan().SequenceEqual(expectedPreviousCommitHash))
+            {
+                return false;
+            }
+
+            return clientLkg.TryObserve(
+                logId,
+                page.HighWaterCursor,
+                page.HighWaterEvidence[0].CommitHash);
+        }
+
+        if (page.PageStartCursor != afterCursor + 1 ||
+            page.PageEndCursor != page.Records[^1].Cursor ||
+            page.PageEndCursor > page.HighWaterCursor ||
+            page.Records.Count != checked((int)(page.PageEndCursor - page.PageStartCursor + 1)))
         {
             return false;
         }
@@ -446,8 +607,10 @@ internal static class AuthenticatedReadPageVerifier
         for (var index = 0; index < page.Records.Count; index++)
         {
             var record = page.Records[index];
-            var expectedCursor = afterCursor + (ulong)index + 1;
-            if (record.MembershipEpoch != placement.MembershipEpoch ||
+            var expectedCursor = page.PageStartCursor + (ulong)index;
+            if (record.LogId.Length != 32 ||
+                !record.LogId.AsSpan().SequenceEqual(logId) ||
+                record.MembershipEpoch != placement.MembershipEpoch ||
                 record.Generation != generation ||
                 record.Cursor != expectedCursor ||
                 record.PreviousCommitHash.Length != 32 ||
@@ -474,29 +637,45 @@ internal static class AuthenticatedReadPageVerifier
             previousHash = record.CommitHash;
         }
 
-        return previousHash.AsSpan().SequenceEqual(page.HighWaterEvidence[0].CommitHash);
+        if (!previousHash.AsSpan().SequenceEqual(page.ContinuationHash) ||
+            page.PageEndCursor == page.HighWaterCursor &&
+            !page.ContinuationHash.AsSpan().SequenceEqual(page.HighWaterEvidence[0].CommitHash))
+        {
+            return false;
+        }
+
+        return clientLkg.TryObserve(
+            logId,
+            page.HighWaterCursor,
+            page.HighWaterEvidence[0].CommitHash);
     }
 
     public static byte[] Digest(
+        ReadOnlySpan<byte> logId,
         StorageReplicaId replica,
-        ulong epoch,
-        ulong generation,
         ulong cursor,
-        ReadOnlySpan<byte> commitHash)
+        ReadOnlySpan<byte> commitHash,
+        ReadOnlySpan<byte> readChallenge,
+        uint issuedBucket)
     {
-        var input = new byte[HighWaterDomain.Length + 16 + 8 + 8 + 8 + 32];
+        var input = new byte[
+            HighWaterDomain.Length + 32 + 16 + 8 + 32 + 2 + readChallenge.Length + 4];
         var offset = 0;
         HighWaterDomain.CopyTo(input);
         offset += HighWaterDomain.Length;
+        logId.CopyTo(input.AsSpan(offset));
+        offset += 32;
         replica.Bytes.Span.CopyTo(input.AsSpan(offset));
         offset += 16;
-        BinaryPrimitives.WriteUInt64BigEndian(input.AsSpan(offset), epoch);
-        offset += 8;
-        BinaryPrimitives.WriteUInt64BigEndian(input.AsSpan(offset), generation);
-        offset += 8;
         BinaryPrimitives.WriteUInt64BigEndian(input.AsSpan(offset), cursor);
         offset += 8;
         commitHash.CopyTo(input.AsSpan(offset));
+        offset += 32;
+        BinaryPrimitives.WriteUInt16BigEndian(input.AsSpan(offset), checked((ushort)readChallenge.Length));
+        offset += 2;
+        readChallenge.CopyTo(input.AsSpan(offset));
+        offset += readChallenge.Length;
+        BinaryPrimitives.WriteUInt32BigEndian(input.AsSpan(offset), issuedBucket);
         return SHA256.HashData(input);
     }
 }
@@ -617,6 +796,7 @@ internal sealed class QuorumLogProtocolSimulator
         }
 
         var record = new CommittedStorageRecord(
+            expectation.LogId.ToArray(),
             _placement.MembershipEpoch,
             _generation,
             cursor,
@@ -666,8 +846,17 @@ internal sealed class QuorumLogProtocolSimulator
 
     public AuthenticatedReadPage ReadAuthenticatedPage(
         IReadOnlyCollection<StorageReplicaId> readQuorum,
-        ulong afterCursor)
+        ulong afterCursor,
+        int maximumRecords,
+        RequestNonce readChallenge,
+        uint issuedBucket)
     {
+        ArgumentNullException.ThrowIfNull(readChallenge);
+        if (maximumRecords is < 1 or > 1024)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maximumRecords));
+        }
+
         var readers = readQuorum.Distinct().ToArray();
         if (readers.Length != 2 || readers.Any(reader => !_replicaPrefixes.ContainsKey(reader)))
         {
@@ -684,27 +873,36 @@ internal sealed class QuorumLogProtocolSimulator
         }
 
         var head = (ulong)prefixes[0].Count;
+        if (afterCursor > head)
+        {
+            return EmptyRead(AuthenticatedReadStatus.NoMatchingHighWater);
+        }
+
         var headHash = head == 0 ? new byte[32] : prefixes[0][^1].CommitHash;
+        var logId = CanonicalStorageLogId.Derive(_placement, _generation);
         var evidence = readers
             .Select(reader => new ReplicaHighWaterEvidence(
+                logId.ToArray(),
                 reader,
                 _placement.MembershipEpoch,
                 _generation,
                 head,
                 headHash.ToArray(),
+                readChallenge.Span.ToArray(),
+                issuedBucket,
                 AuthenticatedReadPageVerifier.Digest(
+                    logId,
                     reader,
-                    _placement.MembershipEpoch,
-                    _generation,
                     head,
-                    headHash)))
+                    headHash,
+                    readChallenge.Span,
+                    issuedBucket)))
             .ToArray();
         var records = prefixes[0]
             .Where(record => record.Cursor > afterCursor)
+            .Take(maximumRecords)
             .ToArray();
-        var expectedCount = head > afterCursor ? checked((int)(head - afterCursor)) : 0;
-        if (records.Length != expectedCount ||
-            records.Select(static record => record.Cursor)
+        if (records.Select(static record => record.Cursor)
                 .SequenceEqual(Enumerable.Range(1, records.Length).Select(index => afterCursor + (ulong)index)) is false ||
             records.Any(static record => record.DurableOwnerReceipts.Count < 2))
         {
@@ -725,16 +923,26 @@ internal sealed class QuorumLogProtocolSimulator
             }
         }
 
+        var pageStart = afterCursor + 1;
+        var pageEnd = records.Length == 0 ? afterCursor : records[^1].Cursor;
+        var continuationHash = records.Length > 0
+            ? records[^1].CommitHash.ToArray()
+            : afterCursor == 0
+                ? new byte[32]
+                : prefixes[0][checked((int)afterCursor - 1)].CommitHash.ToArray();
         return new AuthenticatedReadPage(
             AuthenticatedReadStatus.Complete,
+            pageStart,
+            pageEnd,
             head,
+            continuationHash,
             evidence,
             records,
             visible.Values.ToArray());
     }
 
     private AuthenticatedReadPage EmptyRead(AuthenticatedReadStatus status) =>
-        new(status, 0, Array.Empty<ReplicaHighWaterEvidence>(),
+        new(status, 0, 0, 0, new byte[32], Array.Empty<ReplicaHighWaterEvidence>(),
             Array.Empty<CommittedStorageRecord>(), Array.Empty<VisibleStorageObject>());
 
     private byte[] DeriveEpochOperationId(
@@ -743,15 +951,14 @@ internal sealed class QuorumLogProtocolSimulator
         ReadOnlySpan<byte> previousCommitHash)
     {
         var tombstone = operation.TombstoneTarget ?? Array.Empty<byte>();
+        var logId = CanonicalStorageLogId.Derive(_placement, _generation);
         var input = new byte[
-            OperationDomain.Length + 8 + 8 + 8 + 32 + 16 + 32 + 1 + tombstone.Length];
+            OperationDomain.Length + 32 + 8 + 32 + 16 + 32 + 1 + tombstone.Length];
         var offset = 0;
         OperationDomain.CopyTo(input);
         offset += OperationDomain.Length;
-        BinaryPrimitives.WriteUInt64BigEndian(input.AsSpan(offset), _placement.MembershipEpoch);
-        offset += 8;
-        BinaryPrimitives.WriteUInt64BigEndian(input.AsSpan(offset), _generation);
-        offset += 8;
+        logId.CopyTo(input, offset);
+        offset += 32;
         BinaryPrimitives.WriteUInt64BigEndian(input.AsSpan(offset), cursor);
         offset += 8;
         previousCommitHash.CopyTo(input.AsSpan(offset));
@@ -765,18 +972,26 @@ internal sealed class QuorumLogProtocolSimulator
         return SHA256.HashData(input)[..16];
     }
 
-    private static byte[] DeriveCommitHash(
+    private byte[] DeriveCommitHash(
         CanonicalStorageOperation operation,
         ulong cursor,
         ReadOnlySpan<byte> epochOperationId,
         ReadOnlySpan<byte> previousCommitHash)
     {
         var tombstone = operation.TombstoneTarget ?? Array.Empty<byte>();
+        var logId = CanonicalStorageLogId.Derive(_placement, _generation);
+        if (epochOperationId.Length != 16)
+        {
+            throw new ArgumentException("Epoch operation ID must be 16 bytes.");
+        }
+
         var input = new byte[
-            CommitDomain.Length + 8 + 16 + 32 + 16 + 32 + 1 + tombstone.Length];
+            CommitDomain.Length + 32 + 8 + 16 + 32 + 16 + 32 + 1 + tombstone.Length];
         var offset = 0;
         CommitDomain.CopyTo(input);
         offset += CommitDomain.Length;
+        logId.CopyTo(input, offset);
+        offset += 32;
         BinaryPrimitives.WriteUInt64BigEndian(input.AsSpan(offset), cursor);
         offset += 8;
         epochOperationId.CopyTo(input.AsSpan(offset));
