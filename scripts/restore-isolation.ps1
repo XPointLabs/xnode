@@ -16,6 +16,18 @@ function Invoke-DotNet {
     }
 }
 
+function Assert-CleanWorktree {
+    param([Parameter(Mandatory)][string]$RepositoryRoot)
+
+    $status = @(& git -C $RepositoryRoot status --porcelain=v1 --untracked-files=all)
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Unable to inspect the repository worktree.'
+    }
+    if ($status.Count -ne 0) {
+        throw 'Repository worktree must be clean before isolated verification.'
+    }
+}
+
 function Copy-TrackedSource {
     param(
         [Parameter(Mandatory)][string]$RepositoryRoot,
@@ -23,7 +35,7 @@ function Copy-TrackedSource {
     )
 
     New-Item -ItemType Directory -Path $DestinationRoot | Out-Null
-    $paths = & git -C $RepositoryRoot ls-files --cached --others --exclude-standard
+    $paths = & git -C $RepositoryRoot ls-files --cached
     if ($LASTEXITCODE -ne 0) {
         throw 'Unable to enumerate the repository source.'
     }

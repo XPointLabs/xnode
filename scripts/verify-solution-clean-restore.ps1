@@ -9,6 +9,7 @@ Set-StrictMode -Version Latest
 Assert-ExactSdk '10.0.301'
 
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+Assert-CleanWorktree $repositoryRoot
 $artifactsRoot = [IO.Path]::GetFullPath((Join-Path $repositoryRoot 'artifacts\solution-clean'))
 $ownsWorkRoot = [string]::IsNullOrWhiteSpace($WorkRoot)
 if ($ownsWorkRoot) {

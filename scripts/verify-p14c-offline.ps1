@@ -11,6 +11,7 @@ $runtimePackVersion = '10.0.9'
 Assert-ExactSdk $requiredSdk
 
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+Assert-CleanWorktree $repositoryRoot
 $artifactsRoot = [IO.Path]::GetFullPath((Join-Path $repositoryRoot 'artifacts\p14c-offline'))
 $ownsWorkRoot = [string]::IsNullOrWhiteSpace($WorkRoot)
 if ($ownsWorkRoot) {
