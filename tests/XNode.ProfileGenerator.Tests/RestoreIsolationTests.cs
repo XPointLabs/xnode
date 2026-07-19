@@ -122,6 +122,130 @@ public sealed class RestoreIsolationTests
         Assert.DoesNotContain("--others", helper, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void BuildDiscoveryAnchorsAreTrackedAndNeutral()
+    {
+        var root = P04PackagePinTests.RepositoryRoot();
+        var xmlAnchors = new[]
+        {
+            "Directory.Build.props",
+            "Directory.Build.targets",
+            "Directory.Solution.props",
+            "Directory.Solution.targets",
+            "Directory.Packages.props"
+        };
+        foreach (var relativePath in xmlAnchors)
+        {
+            var path = Path.Combine(root, relativePath);
+            Assert.True(File.Exists(path), $"Missing build-discovery anchor: {relativePath}");
+            Assert.Equal("<Project />", File.ReadAllText(path).Trim());
+        }
+
+        var response = Path.Combine(root, "Directory.Build.rsp");
+        Assert.True(File.Exists(response), "Missing Directory.Build.rsp anchor.");
+        Assert.StartsWith("#", File.ReadAllText(response).Trim(), StringComparison.Ordinal);
+
+        var tracked = TrackedFiles(root);
+        Assert.All(xmlAnchors.Append("Directory.Build.rsp"), path => Assert.Contains(path, tracked));
+    }
+
+    [Fact]
+    public void BothGatesPinEveryBuildAndNuGetDiscoveryInput()
+    {
+        var root = P04PackagePinTests.RepositoryRoot();
+        var helper = File.ReadAllText(HelperScript());
+        Assert.Contains("-noAutoResponse", helper, StringComparison.Ordinal);
+        Assert.Contains("DirectoryBuildPropsPath", helper, StringComparison.Ordinal);
+        Assert.Contains("DirectoryBuildTargetsPath", helper, StringComparison.Ordinal);
+        Assert.Contains("DirectorySolutionPropsPath", helper, StringComparison.Ordinal);
+        Assert.Contains("DirectorySolutionTargetsPath", helper, StringComparison.Ordinal);
+        Assert.Contains("DirectoryPackagesPropsPath", helper, StringComparison.Ordinal);
+
+        foreach (var scriptName in new[]
+                 {
+                     "verify-p14c-offline.ps1",
+                     "verify-solution-clean-restore.ps1"
+                 })
+        {
+            var script = File.ReadAllText(Path.Combine(root, "scripts", scriptName));
+            Assert.Contains("Assert-SafeWorkRootAncestors", script, StringComparison.Ordinal);
+            Assert.Contains("Get-PinnedBuildArguments", script, StringComparison.Ordinal);
+            Assert.Contains("--configfile", script, StringComparison.Ordinal);
+            Assert.Contains("[IO.Path]::GetTempPath()", script, StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                "Join-Path $repositoryRoot 'artifacts",
+                script,
+                StringComparison.Ordinal);
+        }
+
+        Assert.True(File.Exists(Path.Combine(
+            root,
+            "scripts",
+            "solution-clean.NuGet.Config")));
+    }
+
+    [Theory]
+    [InlineData("Directory.Build.props")]
+    [InlineData("Directory.Build.targets")]
+    [InlineData("Directory.Build.rsp")]
+    [InlineData("Directory.Solution.props")]
+    [InlineData("Directory.Solution.targets")]
+    [InlineData("Directory.Packages.props")]
+    [InlineData("NuGet.Config")]
+    public void UserWorkRootRejectsMaliciousAncestorDiscoveryFile(string fileName)
+    {
+        using var directory = TemporaryDirectory.Create();
+        var ancestor = Path.Combine(directory.Root, "ancestor");
+        Directory.CreateDirectory(ancestor);
+        File.WriteAllText(Path.Combine(ancestor, fileName), "malicious");
+        var workRoot = Path.Combine(ancestor, "child", "work");
+
+        var result = RunPowerShell(
+            $". '{Quote(HelperScript())}'; " +
+            $"Assert-SafeWorkRootAncestors -WorkRoot '{Quote(workRoot)}'");
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains(
+            "Unsafe build customization file found above the verification work root.",
+            result.Output,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void IgnoredRepositoryArtifactCannotBecomeAWorkRootAncestor()
+    {
+        var repositoryRoot = P04PackagePinTests.RepositoryRoot();
+        var attackRoot = Path.Combine(
+            repositoryRoot,
+            "artifacts",
+            $"p14c-c5-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(attackRoot);
+            File.WriteAllText(Path.Combine(attackRoot, "Directory.Build.props"), "<Project />");
+            File.WriteAllText(Path.Combine(attackRoot, "Directory.Build.targets"), "<Project />");
+            File.WriteAllText(Path.Combine(attackRoot, "Directory.Build.rsp"), "-property:Injected=true");
+            var workRoot = Path.Combine(attackRoot, "work");
+
+            Assert.DoesNotContain(
+                "artifacts/",
+                GitStatus(repositoryRoot),
+                StringComparison.OrdinalIgnoreCase);
+            var result = RunPowerShell(
+                $". '{Quote(HelperScript())}'; " +
+                $"Assert-SafeWorkRootAncestors -WorkRoot '{Quote(workRoot)}'");
+            Assert.NotEqual(0, result.ExitCode);
+            Assert.Contains(
+                "Unsafe build customization file found above the verification work root.",
+                result.Output,
+                StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(attackRoot))
+                Directory.Delete(attackRoot, recursive: true);
+        }
+    }
+
     private static string HelperScript() => Path.Combine(
         P04PackagePinTests.RepositoryRoot(),
         "scripts",
@@ -145,7 +269,65 @@ public sealed class RestoreIsolationTests
 
     private static string Quote(string value) => value.Replace("'", "''", StringComparison.Ordinal);
 
+    private static IReadOnlySet<string> TrackedFiles(string repositoryRoot)
+    {
+        var result = RunGit(repositoryRoot, "ls-files", "--cached");
+        Assert.Equal(0, result.ExitCode);
+        return result.Output
+            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+            .ToHashSet(StringComparer.Ordinal);
+    }
+
+    private static string GitStatus(string repositoryRoot)
+    {
+        var result = RunGit(repositoryRoot, "status", "--porcelain=v1", "--untracked-files=all");
+        Assert.Equal(0, result.ExitCode);
+        return result.Output.Replace('\\', '/');
+    }
+
+    private static ProcessResult RunGit(string repositoryRoot, params string[] arguments)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "git.exe",
+            WorkingDirectory = repositoryRoot,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        startInfo.ArgumentList.Add("-C");
+        startInfo.ArgumentList.Add(repositoryRoot);
+        foreach (var argument in arguments)
+            startInfo.ArgumentList.Add(argument);
+        using var process = Process.Start(startInfo) ??
+            throw new InvalidOperationException("Unable to start git.");
+        var output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        return new ProcessResult(process.ExitCode, output);
+    }
+
     private sealed record ProcessResult(int ExitCode, string Output);
+
+    private sealed class TemporaryDirectory : IDisposable
+    {
+        private TemporaryDirectory(string root)
+        {
+            Root = root;
+            Directory.CreateDirectory(Root);
+        }
+
+        public string Root { get; }
+
+        public static TemporaryDirectory Create() =>
+            new(Path.Combine(Path.GetTempPath(), $"p14c-parent-{Guid.NewGuid():N}"));
+
+        public void Dispose()
+        {
+            if (Directory.Exists(Root))
+                Directory.Delete(Root, recursive: true);
+        }
+    }
 
     private sealed class TemporaryGitRepository : IDisposable
     {
