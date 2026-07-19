@@ -107,7 +107,7 @@ internal static class TestOnlyProfileFixture
             NetworkId = genesis.NetworkId.ToArray(),
             Sequence = genesis.GenesisSequence + 1,
             PreviousHash = MembershipContractHash.Sha256(canonicalGenesis),
-            IssuedAtUnixSeconds = 1_010,
+            IssuedAtUnixSeconds = 1_000,
             ValidFromUnixSeconds = 1_000,
             ValidUntilUnixSeconds = 2_000,
             MinimumProtocol = genesis.MinimumProtocol,
@@ -148,7 +148,7 @@ internal static class TestOnlyProfileFixture
                 NetworkId = genesis.NetworkId.ToArray(),
                 Sequence = sequence,
                 PreviousHash = previousHash,
-                IssuedAtUnixSeconds = 1_020UL + (ulong)index,
+                IssuedAtUnixSeconds = 1_000,
                 ValidFromUnixSeconds = 1_000,
                 ValidUntilUnixSeconds = 2_000,
                 MinimumProtocol = genesis.MinimumProtocol,
@@ -201,15 +201,18 @@ internal static class TestOnlyProfileFixture
         MembershipSignatureDomain domain,
         ReadOnlySpan<byte> canonicalStatement,
         int count,
-        TestOnlySignatureScheme scheme) =>
-        signers.Take(count)
+        TestOnlySignatureScheme scheme)
+    {
+        var canonical = canonicalStatement.ToArray();
+        return signers.Take(count)
             .Select(signer => new MembershipSignature
             {
                 SignerId = signer.SignerId.ToArray(),
                 Domain = domain,
-                Signature = scheme.Sign(signer, domain, canonicalStatement)
+                Signature = scheme.Sign(signer, domain, canonical)
             })
             .ToArray();
+    }
 
     public static IReadOnlyList<MembershipSignerDescriptor> OfflineRoots() =>
         Enumerable.Range(0, 5)

@@ -89,4 +89,41 @@ public sealed class ProfileContractTests
         Assert.NotEqual(genesis.RequestId, delegationRequest.RequestId);
         Assert.NotEqual(delegationRequest.RequestId, bridgeRequest.RequestId);
     }
+
+    [Fact]
+    public void ComposerInvokesP04VerificationForEverySignedArtifact()
+    {
+        var tracking = new TestOnlyTrackingVerifier(TestOnlyProfileFixture.SignatureScheme());
+        _ = DormantProfileComposer.Compose(
+            TestOnlyProfileFixture.Input(bridgeCount: 2),
+            TestOnlyProfileFixture.Options(),
+            tracking);
+
+        Assert.Equal(3, tracking.Count(MembershipSignatureDomain.Genesis));
+        Assert.Equal(9, tracking.Count(MembershipSignatureDomain.OfflineDelegation));
+        Assert.Equal(4, tracking.Count(MembershipSignatureDomain.Bridge));
+        Assert.Equal(16, tracking.Total);
+    }
+}
+
+internal sealed class TestOnlyTrackingVerifier(
+    TestOnlySignatureScheme inner) : IMembershipSignatureVerifier
+{
+    private readonly List<MembershipSignatureDomain> _domains = [];
+
+    public int Total => _domains.Count;
+
+    public int Count(MembershipSignatureDomain domain) =>
+        _domains.Count(value => value == domain);
+
+    public bool Verify(
+        ReadOnlySpan<byte> signerId,
+        ReadOnlySpan<byte> publicKey,
+        MembershipSignatureDomain domain,
+        ReadOnlySpan<byte> signingBytes,
+        ReadOnlySpan<byte> signature)
+    {
+        _domains.Add(domain);
+        return inner.Verify(signerId, publicKey, domain, signingBytes, signature);
+    }
 }

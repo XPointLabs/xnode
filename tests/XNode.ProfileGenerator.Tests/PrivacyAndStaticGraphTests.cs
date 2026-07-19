@@ -86,6 +86,9 @@ public sealed class PrivacyAndStaticGraphTests
                 Path.Combine(root, "src", "XNode.ProfileGenerator"),
                 "*.cs",
                 SearchOption.AllDirectories)
+            .Where(path =>
+                !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal) &&
+                !path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
             .Select(File.ReadAllText)
             .ToArray();
         var forbiddenSource = new[]

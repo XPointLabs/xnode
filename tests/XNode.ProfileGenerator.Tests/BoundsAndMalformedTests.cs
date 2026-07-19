@@ -19,9 +19,17 @@ public sealed class BoundsAndMalformedTests
                 ProfileComposerLimits.MaximumComponents - ProfileComposerLimits.RequiredNonBridgeComponents)
             .Select(static _ => (ReadOnlyMemory<byte>)new byte[1])
             .ToArray();
-        _ = new ProfileAssemblyInput([1], [], [1], maximumBridges);
+        _ = new ProfileAssemblyInput(
+            (ReadOnlyMemory<byte>)new byte[] { 1 },
+            [],
+            (ReadOnlyMemory<byte>)new byte[] { 1 },
+            maximumBridges);
         Assert.Throws<ProfileContractException>(() =>
-            new ProfileAssemblyInput([1], [], [1], maximumBridges.Append((ReadOnlyMemory<byte>)new byte[1])));
+            new ProfileAssemblyInput(
+                (ReadOnlyMemory<byte>)new byte[] { 1 },
+                [],
+                (ReadOnlyMemory<byte>)new byte[] { 1 },
+                maximumBridges.Append((ReadOnlyMemory<byte>)new byte[1])));
     }
 
     [Fact]
@@ -39,6 +47,11 @@ public sealed class BoundsAndMalformedTests
             new string('x', ProfileComposerLimits.MaximumDerivedLabelUtf8Bytes)));
         Assert.False(ProfileComposerLimits.IsDerivedLabelLengthAllowed(
             new string('x', ProfileComposerLimits.MaximumDerivedLabelUtf8Bytes + 1)));
+        Assert.Throws<ProfileContractException>(() =>
+            DormantProfileInspector.Inspect(
+                new byte[ProfileComposerLimits.MaximumFilePayloadBytes + 1],
+                TestOnlyProfileFixture.Options(),
+                TestOnlyProfileFixture.SignatureScheme()));
     }
 
     [Fact]

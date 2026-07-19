@@ -22,6 +22,38 @@ public sealed class QuorumAndReplayTests
                 TestOnlyProfileFixture.Options(),
                 scheme));
 
+        var genesis = MembershipContractCodec.DecodeGenesis(input.CanonicalGenesis.Span);
+        var fourthGenesis = new ProfilePublicSignature(
+            genesis.OfflineRoots[3].SignerId.Span,
+            MembershipSignatureDomain.Genesis,
+            scheme.Sign(
+                genesis.OfflineRoots[3],
+                MembershipSignatureDomain.Genesis,
+                input.CanonicalGenesis.Span));
+        Assert.Throws<ProfileContractException>(() =>
+            DormantProfileComposer.Compose(
+                input.WithGenesisSignatures(input.GenesisSignatures.Concat([fourthGenesis])),
+                TestOnlyProfileFixture.Options(),
+                scheme));
+
+        var delegation = MembershipContractCodec.DecodeSignedDelegation(
+            input.CanonicalSignedDelegation.Span);
+        var delegationCanonical = MembershipContractCodec.GetDelegationSigningBytes(delegation);
+        var excessDelegation = delegation with
+        {
+            Signatures = TestOnlyProfileFixture.Signatures(
+                genesis.OfflineRoots,
+                MembershipSignatureDomain.OfflineDelegation,
+                delegationCanonical,
+                4,
+                scheme)
+        };
+        Assert.Throws<ProfileContractException>(() =>
+            DormantProfileComposer.Compose(
+                input.WithDelegation(MembershipContractCodec.EncodeSignedDelegation(excessDelegation)),
+                TestOnlyProfileFixture.Options(),
+                scheme));
+
         var bridge = MembershipContractCodec.DecodeSignedBridge(input.CanonicalSignedBridges[0].Span);
         var oneSignature = MembershipContractCodec.EncodeSignedBridge(
             bridge with { Signatures = bridge.Signatures.Take(1).ToArray() });
@@ -31,7 +63,22 @@ public sealed class QuorumAndReplayTests
                 TestOnlyProfileFixture.Options(),
                 scheme));
 
-        var genesis = MembershipContractCodec.DecodeGenesis(input.CanonicalGenesis.Span);
+        var bridgeCanonical = MembershipContractCodec.GetBridgeSigningBytes(bridge.Statement);
+        var excessBridge = bridge with
+        {
+            Signatures = TestOnlyProfileFixture.Signatures(
+                delegation.OnlineSigners,
+                MembershipSignatureDomain.Bridge,
+                bridgeCanonical,
+                3,
+                scheme)
+        };
+        Assert.Throws<ProfileContractException>(() =>
+            DormantProfileComposer.Compose(
+                input.WithBridges([MembershipContractCodec.EncodeSignedBridge(excessBridge)]),
+                TestOnlyProfileFixture.Options(),
+                scheme));
+
         var weakPolicy = genesis.Policy with { OfflineThreshold = 1 };
         Assert.Throws<MembershipContractException>(() =>
             ProfileSigningRequestBuilder.ForGenesis(
@@ -70,11 +117,27 @@ public sealed class QuorumAndReplayTests
             input.CanonicalSignedDelegation.Span);
         var replayed = signedDelegation with
         {
-            IssuedAtUnixSeconds = signedDelegation.IssuedAtUnixSeconds + 1
+            ValidUntilUnixSeconds = signedDelegation.ValidUntilUnixSeconds + 1
         };
         Assert.Throws<ProfileContractException>(() =>
             DormantProfileComposer.Compose(
                 input.WithDelegation(MembershipContractCodec.EncodeSignedDelegation(replayed)),
+                TestOnlyProfileFixture.Options(),
+                scheme));
+
+        var crossArtifact = signedDelegation with
+        {
+            Signatures = input.GenesisSignatures.Select(signature =>
+                new MembershipSignature
+                {
+                    SignerId = signature.SignerId.ToArray(),
+                    Domain = MembershipSignatureDomain.OfflineDelegation,
+                    Signature = signature.Signature.ToArray()
+                }).ToArray()
+        };
+        Assert.Throws<ProfileContractException>(() =>
+            DormantProfileComposer.Compose(
+                input.WithDelegation(MembershipContractCodec.EncodeSignedDelegation(crossArtifact)),
                 TestOnlyProfileFixture.Options(),
                 scheme));
     }
@@ -109,10 +172,47 @@ public sealed class QuorumAndReplayTests
                 TestOnlyProfileFixture.Options(),
                 scheme));
 
+        var rollback = bridge with
+        {
+            Statement = bridge.Statement with { Sequence = bridge.Statement.Sequence - 1 }
+        };
+        Assert.Throws<ProfileContractException>(() =>
+            DormantProfileComposer.Compose(
+                input.WithBridges([MembershipContractCodec.EncodeSignedBridge(rollback)]),
+                TestOnlyProfileFixture.Options(),
+                scheme));
+
         Assert.Throws<ProfileContractException>(() =>
             DormantProfileComposer.Compose(
                 input,
                 TestOnlyProfileFixture.Options(time: 3_000),
+                scheme));
+    }
+
+    [Fact]
+    public void AmbiguousSameSequenceBridgeCandidatesFailClosed()
+    {
+        var scheme = TestOnlyProfileFixture.SignatureScheme();
+        var input = TestOnlyProfileFixture.Input(bridgeCount: 2);
+        var first = MembershipContractCodec.DecodeSignedBridge(input.CanonicalSignedBridges[0].Span);
+        var second = MembershipContractCodec.DecodeSignedBridge(input.CanonicalSignedBridges[1].Span);
+        var ambiguous = second with
+        {
+            Statement = second.Statement with
+            {
+                Sequence = first.Statement.Sequence,
+                PreviousHash = first.Statement.PreviousHash.ToArray()
+            }
+        };
+
+        Assert.Throws<ProfileContractException>(() =>
+            DormantProfileComposer.Compose(
+                input.WithBridges(
+                [
+                    input.CanonicalSignedBridges[0],
+                    MembershipContractCodec.EncodeSignedBridge(ambiguous)
+                ]),
+                TestOnlyProfileFixture.Options(),
                 scheme));
     }
 }
