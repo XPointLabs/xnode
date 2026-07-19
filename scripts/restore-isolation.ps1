@@ -28,6 +28,49 @@ function Assert-CleanWorktree {
     }
 }
 
+function Assert-SafeWorkRootAncestors {
+    param([Parameter(Mandatory)][string]$WorkRoot)
+
+    $discoveryFiles = @(
+        'Directory.Build.props',
+        'Directory.Build.targets',
+        'Directory.Build.rsp',
+        'Directory.Solution.props',
+        'Directory.Solution.targets',
+        'Directory.Packages.props',
+        'NuGet.Config'
+    )
+    $current = Split-Path -Parent ([IO.Path]::GetFullPath($WorkRoot))
+    while (-not [string]::IsNullOrWhiteSpace($current)) {
+        foreach ($fileName in $discoveryFiles) {
+            $candidate = Join-Path $current $fileName
+            if (Test-Path -LiteralPath $candidate) {
+                throw "Unsafe build customization file found above the verification work root. '$candidate'."
+            }
+        }
+
+        $parent = Split-Path -Parent $current
+        if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $current) {
+            break
+        }
+        $current = $parent
+    }
+}
+
+function Get-PinnedBuildArguments {
+    param([Parameter(Mandatory)][string]$SourceRoot)
+
+    $sourceRoot = [IO.Path]::GetFullPath($SourceRoot)
+    return @(
+        '-noAutoResponse',
+        "-p:DirectoryBuildPropsPath=$(Join-Path $sourceRoot 'Directory.Build.props')",
+        "-p:DirectoryBuildTargetsPath=$(Join-Path $sourceRoot 'Directory.Build.targets')",
+        "-p:DirectorySolutionPropsPath=$(Join-Path $sourceRoot 'Directory.Solution.props')",
+        "-p:DirectorySolutionTargetsPath=$(Join-Path $sourceRoot 'Directory.Solution.targets')",
+        "-p:DirectoryPackagesPropsPath=$(Join-Path $sourceRoot 'Directory.Packages.props')"
+    )
+}
+
 function Copy-TrackedSource {
     param(
         [Parameter(Mandatory)][string]$RepositoryRoot,
@@ -253,7 +296,7 @@ function Remove-OwnedWorkRoot {
     if (-not (Get-NormalizedPath $WorkRoot).StartsWith(
         $requiredPrefix,
         [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'Refusing to remove a work root outside the repository artifacts directory.'
+        throw 'Refusing to remove a work root outside the owned verification directory.'
     }
     Remove-Item -LiteralPath $WorkRoot -Recurse -Force
 }

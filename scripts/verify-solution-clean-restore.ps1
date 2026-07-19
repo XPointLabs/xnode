@@ -8,9 +8,8 @@ Set-StrictMode -Version Latest
 
 Assert-ExactSdk '10.0.301'
 
-$repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-Assert-CleanWorktree $repositoryRoot
-$artifactsRoot = [IO.Path]::GetFullPath((Join-Path $repositoryRoot 'artifacts\solution-clean'))
+$artifactsRoot = [IO.Path]::GetFullPath(
+    (Join-Path ([IO.Path]::GetTempPath()) 'xnode-solution-clean'))
 $ownsWorkRoot = [string]::IsNullOrWhiteSpace($WorkRoot)
 if ($ownsWorkRoot) {
     $WorkRoot = Join-Path $artifactsRoot ([Guid]::NewGuid().ToString('N'))
@@ -19,6 +18,9 @@ $WorkRoot = [IO.Path]::GetFullPath($WorkRoot)
 if (Test-Path -LiteralPath $WorkRoot) {
     throw 'The clean solution work root must be new and empty.'
 }
+Assert-SafeWorkRootAncestors $WorkRoot
+$repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+Assert-CleanWorktree $repositoryRoot
 
 $projectRoots = @(
     & git -C $repositoryRoot ls-files 'src/**/*.csproj' 'tests/**/*.csproj' |
@@ -49,10 +51,14 @@ try {
     $env:NUGET_HTTP_CACHE_PATH = $httpCache
     $env:NUGET_FALLBACK_PACKAGES = $fallbackPackages
     $solution = Join-Path $sourceRoot 'XNode.slnx'
+    $config = Join-Path $sourceRoot 'scripts\solution-clean.NuGet.Config'
+    $buildIsolation = @(Get-PinnedBuildArguments $sourceRoot)
 
-    Invoke-DotNet restore $solution --packages $packages --no-http-cache `
+    Invoke-DotNet restore $solution @buildIsolation --configfile $config `
+        --packages $packages --no-http-cache `
         -p:NuGetAudit=false -p:DisableImplicitNuGetFallbackFolder=true
-    Invoke-DotNet build $solution --no-restore --no-incremental --configuration Release
+    Invoke-DotNet build $solution @buildIsolation --no-restore --no-incremental `
+        --configuration Release
 
     foreach ($assets in Get-ChildItem -LiteralPath $sourceRoot -Recurse -File -Filter 'project.assets.json') {
         Assert-AssetsPackageFoldersUnderRoot $assets.FullName $packages $WorkRoot

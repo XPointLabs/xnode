@@ -145,8 +145,11 @@ public sealed class RestoreIsolationTests
         Assert.True(File.Exists(response), "Missing Directory.Build.rsp anchor.");
         Assert.StartsWith("#", File.ReadAllText(response).Trim(), StringComparison.Ordinal);
 
-        var tracked = TrackedFiles(root);
-        Assert.All(xmlAnchors.Append("Directory.Build.rsp"), path => Assert.Contains(path, tracked));
+        if (IsGitRepository(root))
+        {
+            var tracked = TrackedFiles(root);
+            Assert.All(xmlAnchors.Append("Directory.Build.rsp"), path => Assert.Contains(path, tracked));
+        }
     }
 
     [Fact]
@@ -200,14 +203,16 @@ public sealed class RestoreIsolationTests
         File.WriteAllText(Path.Combine(ancestor, fileName), "malicious");
         var workRoot = Path.Combine(ancestor, "child", "work");
 
-        var result = RunPowerShell(
-            $". '{Quote(HelperScript())}'; " +
-            $"Assert-SafeWorkRootAncestors -WorkRoot '{Quote(workRoot)}'");
-        Assert.NotEqual(0, result.ExitCode);
-        Assert.Contains(
-            "Unsafe build customization file found above the verification work root.",
-            result.Output,
-            StringComparison.Ordinal);
+        foreach (var gate in GateScripts())
+        {
+            var result = RunPowerShell(
+                $"& '{Quote(gate)}' -WorkRoot '{Quote(workRoot)}'");
+            Assert.NotEqual(0, result.ExitCode);
+            Assert.Contains(
+                "Unsafe build customization file found above the verification work root.",
+                result.Output,
+                StringComparison.Ordinal);
+        }
     }
 
     [Fact]
@@ -226,18 +231,23 @@ public sealed class RestoreIsolationTests
             File.WriteAllText(Path.Combine(attackRoot, "Directory.Build.rsp"), "-property:Injected=true");
             var workRoot = Path.Combine(attackRoot, "work");
 
-            Assert.DoesNotContain(
-                "artifacts/",
-                GitStatus(repositoryRoot),
-                StringComparison.OrdinalIgnoreCase);
-            var result = RunPowerShell(
-                $". '{Quote(HelperScript())}'; " +
-                $"Assert-SafeWorkRootAncestors -WorkRoot '{Quote(workRoot)}'");
-            Assert.NotEqual(0, result.ExitCode);
-            Assert.Contains(
-                "Unsafe build customization file found above the verification work root.",
-                result.Output,
-                StringComparison.Ordinal);
+            if (IsGitRepository(repositoryRoot))
+            {
+                Assert.DoesNotContain(
+                    "artifacts/",
+                    GitStatus(repositoryRoot),
+                    StringComparison.OrdinalIgnoreCase);
+            }
+            foreach (var gate in GateScripts())
+            {
+                var result = RunPowerShell(
+                    $"& '{Quote(gate)}' -WorkRoot '{Quote(workRoot)}'");
+                Assert.NotEqual(0, result.ExitCode);
+                Assert.Contains(
+                    "Unsafe build customization file found above the verification work root.",
+                    result.Output,
+                    StringComparison.Ordinal);
+            }
         }
         finally
         {
@@ -250,6 +260,13 @@ public sealed class RestoreIsolationTests
         P04PackagePinTests.RepositoryRoot(),
         "scripts",
         "restore-isolation.ps1");
+
+    private static IEnumerable<string> GateScripts()
+    {
+        var scripts = Path.Combine(P04PackagePinTests.RepositoryRoot(), "scripts");
+        yield return Path.Combine(scripts, "verify-p14c-offline.ps1");
+        yield return Path.Combine(scripts, "verify-solution-clean-restore.ps1");
+    }
 
     private static ProcessResult RunPowerShell(string command)
     {
@@ -276,6 +293,13 @@ public sealed class RestoreIsolationTests
         return result.Output
             .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
             .ToHashSet(StringComparer.Ordinal);
+    }
+
+    private static bool IsGitRepository(string repositoryRoot)
+    {
+        var result = RunGit(repositoryRoot, "rev-parse", "--is-inside-work-tree");
+        return result.ExitCode == 0 &&
+            result.Output.Trim().Equals("true", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string GitStatus(string repositoryRoot)

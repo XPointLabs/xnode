@@ -10,9 +10,8 @@ $requiredSdk = '10.0.301'
 $runtimePackVersion = '10.0.9'
 Assert-ExactSdk $requiredSdk
 
-$repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-Assert-CleanWorktree $repositoryRoot
-$artifactsRoot = [IO.Path]::GetFullPath((Join-Path $repositoryRoot 'artifacts\p14c-offline'))
+$artifactsRoot = [IO.Path]::GetFullPath(
+    (Join-Path ([IO.Path]::GetTempPath()) 'xnode-p14c-offline'))
 $ownsWorkRoot = [string]::IsNullOrWhiteSpace($WorkRoot)
 if ($ownsWorkRoot) {
     $WorkRoot = Join-Path $artifactsRoot ([Guid]::NewGuid().ToString('N'))
@@ -21,6 +20,9 @@ $WorkRoot = [IO.Path]::GetFullPath($WorkRoot)
 if (Test-Path -LiteralPath $WorkRoot) {
     throw 'The offline verification work root must be new and empty.'
 }
+Assert-SafeWorkRootAncestors $WorkRoot
+$repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+Assert-CleanWorktree $repositoryRoot
 
 $projectRoots = @(
     'src\XNode.ProfileGenerator',
@@ -69,8 +71,9 @@ try {
     $generator = Join-Path $sourceRoot 'src\XNode.ProfileGenerator\XNode.ProfileGenerator.csproj'
     $manifest = Join-Path $sourceRoot 'vendor\p04\offline-closure-manifest.json'
     $vendorSource = Join-Path $sourceRoot 'vendor\p04\packages'
+    $buildIsolation = @(Get-PinnedBuildArguments $sourceRoot)
 
-    Invoke-DotNet restore $tests --configfile $config --packages $packages `
+    Invoke-DotNet restore $tests @buildIsolation --configfile $config --packages $packages `
         --no-http-cache --locked-mode -p:NuGetAudit=false -p:RestoreIgnoreFailedSources=false
     Assert-AssetsPackageFolder `
         (Join-Path $sourceRoot 'tests\XNode.ProfileGenerator.Tests\obj\project.assets.json') `
@@ -79,13 +82,14 @@ try {
         (Join-Path $sourceRoot 'src\XNode.ProfileGenerator\obj\project.assets.json') `
         $packages
 
-    Invoke-DotNet build $tests --no-restore --no-incremental --configuration Release
-    Invoke-DotNet test $tests --no-restore --no-build --configuration Release
+    Invoke-DotNet build $tests @buildIsolation --no-restore --no-incremental `
+        --configuration Release
+    Invoke-DotNet test $tests @buildIsolation --no-restore --no-build --configuration Release
 
-    Invoke-DotNet restore $generator --configfile $config --packages $packages `
+    Invoke-DotNet restore $generator @buildIsolation --configfile $config --packages $packages `
         --no-http-cache --locked-mode --runtime win-arm64 `
         -p:NuGetAudit=false -p:RestoreIgnoreFailedSources=false
-    Invoke-DotNet build $generator --no-restore --no-incremental `
+    Invoke-DotNet build $generator @buildIsolation --no-restore --no-incremental `
         --configuration Release --runtime win-arm64
 
     $generatorAssets = Join-Path $sourceRoot 'src\XNode.ProfileGenerator\obj\project.assets.json'
