@@ -76,10 +76,14 @@ public sealed class OfflineClosureTests
     public void NuGetAndVerificationScriptAreLocalOnly()
     {
         var root = P04PackagePinTests.RepositoryRoot();
-        var config = XDocument.Load(Path.Combine(root, "NuGet.Config"));
+        Assert.False(File.Exists(Path.Combine(root, "NuGet.Config")));
+        var config = XDocument.Load(Path.Combine(
+            root,
+            "scripts",
+            "p14c-offline.NuGet.Config"));
         var sources = config.Descendants("packageSources").Elements("add").ToArray();
         var source = Assert.Single(sources);
-        Assert.Equal("vendor/p04/packages", source.Attribute("value")?.Value);
+        Assert.Equal("../vendor/p04/packages", source.Attribute("value")?.Value);
         Assert.DoesNotContain(
             config.Descendants("add").Select(element => element.Attribute("value")?.Value ?? string.Empty),
             value => value.StartsWith("http:", StringComparison.OrdinalIgnoreCase) ||
