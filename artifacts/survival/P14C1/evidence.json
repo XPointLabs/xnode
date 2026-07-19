@@ -172,6 +172,7 @@
   "isolation": {
     "runtimeReferencesGenerator": false,
     "generatorReferencesRuntimeProjects": false,
+    "freshWorktreeCheckout": "git -c core.autocrlf=false worktree add at sourceCommit",
     "defaultVerificationWorkRootsInsideRepository": false,
     "sourceCopyInput": "tracked files at sourceCommit only",
     "msbuildAutomaticResponseFilesDisabled": true,
@@ -226,7 +227,7 @@
     },
     {
       "name": "clean-solution-gate",
-      "command": "powershell -NoProfile -NonInteractive -File scripts/verify-solution-clean-restore.ps1",
+      "command": "powershell -NoProfile -NonInteractive -File scripts/verify-solution-clean-restore.ps1 -WorkRoot <temporary-matrix-root>",
       "exitCode": 0,
       "sentinel": "SOLUTION_CLEAN_RESTORE=PASS",
       "tests": {
@@ -237,7 +238,15 @@
       },
       "projectsRestoredAndBuilt": 8,
       "buildWarnings": 0,
-      "buildErrors": 0
+      "buildErrors": 0,
+      "packageCacheRetainedForMatrixRestore": true
+    },
+    {
+      "name": "full-matrix-restore",
+      "command": "dotnet restore XNode.slnx <pinned-build-discovery-arguments> --configfile <retained-cache-only-config> --packages <empty-matrix-package-cache> --no-http-cache -p:NuGetAudit=false -p:DisableImplicitNuGetFallbackFolder=true -p:RestoreIgnoreFailedSources=false",
+      "exitCode": 0,
+      "network": "no network source configured; packages retained from clean-solution-gate",
+      "projectsRestored": 8
     },
     {
       "name": "full-debug",
