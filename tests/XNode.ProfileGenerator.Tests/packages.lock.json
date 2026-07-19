@@ -2,6 +2,15 @@
   "version": 1,
   "dependencies": {
     "net10.0": {
+      "Deep.Protocol.ProfileCarrier": {
+        "type": "Direct",
+        "requested": "[0.1.0-p14.faa598f, 0.1.0-p14.faa598f]",
+        "resolved": "0.1.0-p14.faa598f",
+        "contentHash": "XV6HBDrOAQKVp9jQDirlxIO1QrdWIFhMuF5ij8HGavGPCMhIvOTHwTwn/bDuSTsMfmQ0BJDDC+RH+VE8BtqR5Q==",
+        "dependencies": {
+          "Deep.Protocol": "[0.3.0-p04.b887fa0]"
+        }
+      },
       "Microsoft.NET.Test.Sdk": {
         "type": "Direct",
         "requested": "[17.14.1, )",
