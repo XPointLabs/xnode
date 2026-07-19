@@ -61,7 +61,9 @@ internal static class TestOnlyProfileFixture
         bool reverseGenesisSignatures = false,
         bool reverseBridges = false,
         int bridgeCount = 1,
-        int contactLength = 48)
+        int contactLength = 48,
+        int contactsPerBridge = 1,
+        IReadOnlyList<int>? exactContactLengths = null)
     {
         var scheme = SignatureScheme();
         var genesis = Genesis();
@@ -81,7 +83,15 @@ internal static class TestOnlyProfileFixture
             Array.Reverse(genesisSignatures);
 
         var delegation = SignedDelegation(genesis, canonicalGenesis, scheme);
-        var bridges = SignedBridges(genesis, canonicalGenesis, delegation, bridgeCount, contactLength, scheme)
+        var bridges = SignedBridges(
+                genesis,
+                canonicalGenesis,
+                delegation,
+                bridgeCount,
+                contactLength,
+                contactsPerBridge,
+                exactContactLengths,
+                scheme)
             .Select(static value => (ReadOnlyMemory<byte>)MembershipContractCodec.EncodeSignedBridge(value))
             .ToArray();
         if (reverseBridges)
@@ -134,15 +144,34 @@ internal static class TestOnlyProfileFixture
         SignerDelegation delegation,
         int count,
         int contactLength,
+        int contactsPerBridge,
+        IReadOnlyList<int>? exactContactLengths,
         TestOnlySignatureScheme scheme)
     {
+        if (contactsPerBridge is < 1 or > MembershipLimits.MaximumBridgeContacts)
+            throw new ArgumentOutOfRangeException(nameof(contactsPerBridge));
+        if (exactContactLengths is not null &&
+            exactContactLengths.Count != count * contactsPerBridge)
+            throw new ArgumentException("Exact contact length count is invalid.", nameof(exactContactLengths));
         var result = new List<SignedBridgeSnapshot>();
         var previousHash = MembershipContractHash.Sha256(canonicalGenesis);
         var sequence = genesis.GenesisSequence + 1;
         for (var index = 0; index < count; index++)
         {
-            var contact = "https://bridge.example.invalid/" +
-                new string((char)('a' + index % 20), Math.Max(1, contactLength - 31));
+            var contacts = Enumerable.Range(0, contactsPerBridge)
+                .Select(contactIndex =>
+                {
+                    var exactIndex = index * contactsPerBridge + contactIndex;
+                    var length = exactContactLengths?[exactIndex] ?? contactLength;
+                    return new BridgeEntryContact
+                    {
+                        EntryId = Range(
+                            0x20 + contactIndex * MembershipLimits.SignerIdLength,
+                            MembershipLimits.SignerIdLength),
+                        Contact = ExactContact(length, index, contactIndex)
+                    };
+                })
+                .ToArray();
             var preliminary = new BridgeSnapshot
             {
                 NetworkId = genesis.NetworkId.ToArray(),
@@ -154,14 +183,7 @@ internal static class TestOnlyProfileFixture
                 MinimumProtocol = genesis.MinimumProtocol,
                 MaximumProtocol = genesis.MaximumProtocol,
                 PolicyVersion = genesis.PolicyVersion,
-                EntryContacts =
-                [
-                    new BridgeEntryContact
-                    {
-                        EntryId = Range(0xc0 + index, MembershipLimits.SignerIdLength),
-                        Contact = contact
-                    }
-                ],
+                EntryContacts = contacts,
                 ForkWitness = new ForkWitnessRecord
                 {
                     CandidateDomain = MembershipSignatureDomain.Bridge,
@@ -194,6 +216,14 @@ internal static class TestOnlyProfileFixture
         }
 
         return result;
+    }
+
+    private static string ExactContact(int length, int bridgeIndex, int contactIndex)
+    {
+        var prefix = $"https://b.invalid/{bridgeIndex:D2}/{contactIndex:D2}/";
+        if (length < prefix.Length || length > MembershipLimits.MaximumContactLength)
+            throw new ArgumentOutOfRangeException(nameof(length));
+        return prefix + new string((char)('a' + contactIndex % 20), length - prefix.Length);
     }
 
     public static IReadOnlyList<MembershipSignature> Signatures(
