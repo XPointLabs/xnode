@@ -1,12 +1,14 @@
 ﻿<Solution>
   <Folder Name="/src/">
     <Project Path="src/XNode.Core/XNode.Core.csproj" />
+    <Project Path="src/XNode.ProfileGenerator/XNode.ProfileGenerator.csproj" />
     <Project Path="src/XNode.Registry/XNode.Registry.csproj" />
     <Project Path="src/XNode.Transport.Vless/XNode.Transport.Vless.csproj" />
     <Project Path="src/XNode/XNode.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj" />
+    <Project Path="tests/XNode.ProfileGenerator.Tests/XNode.ProfileGenerator.Tests.csproj" />
     <Project Path="tests/XNode.Tests/XNode.Tests.csproj" />
   </Folder>
 </Solution>
