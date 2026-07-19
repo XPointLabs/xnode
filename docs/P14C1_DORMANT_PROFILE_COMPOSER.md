@@ -36,8 +36,13 @@ The exact package version is locked and source-mapped to that local directory.
 ### Complete offline closure
 
 `vendor/p04/offline-closure-manifest.json` is the manifest-driven closure of
-both P14C lock files. `NuGet.Config` has one repository-local source,
-`vendor/p04/packages`, and no HTTP or nuget.org fallback.
+both P14C lock files. `scripts/p14c-offline.NuGet.Config` has one
+repository-local source, `vendor/p04/packages`, and no HTTP or nuget.org
+fallback. It is passed only to the P14C offline verification script. The
+repository root has no NuGet override, so ordinary solution restores retain
+their baseline source behavior. The generator and its test project add only
+the pinned P04 vendor directory as a project-scoped restore source so a normal
+whole-solution restore can resolve their private dependency.
 
 The production-library P04 graph is:
 
@@ -56,14 +61,27 @@ dependencies under `PRODUCTION-SIGNER-NO-GO`.
 The remaining closure packages are exact test SDK, test-host, JSON and xUnit
 dependencies and never compile into the generator library.
 
-The Windows ARM64 restore also pins the SDK-selected .NETCore, ASP.NET Core and
-WindowsDesktop runtime packs at `10.0.9`. They are architecture restore inputs,
-not application references or runtime activation.
+The repository pins .NET SDK `10.0.301` in `global.json` with roll-forward
+disabled. That SDK selects .NETCore, ASP.NET Core and WindowsDesktop Windows
+ARM64 runtime packs at `10.0.9`; those exact packs are present in the closure.
+They are architecture restore inputs, not application references or runtime
+activation.
 
-Run `scripts/verify-p14c-offline.ps1` to create a new empty packages directory,
-disable HTTP through dead proxies, restore in locked mode without an HTTP
-cache, build and test from that cache, and cross-restore/build the generator
-for Windows ARM64.
+Run `scripts/verify-p14c-offline.ps1` with .NET SDK `10.0.301` installed. It
+copies tracked source into a new temporary work root, creates empty package and
+HTTP-cache directories there, disables HTTP through dead proxies, restores in
+locked mode, builds and tests without incremental inputs, and cross-restores
+and builds the generator for Windows ARM64. It verifies that assets,
+intermediate/output files and package metadata remain under that work root,
+that all 22 packages came from the vendor source, that the HTTP cache is empty,
+and that the SDK download dependencies are the three manifest-pinned `10.0.9`
+runtime packs. The temporary work root is removed afterward without changing
+repository `bin` or `obj` state.
+
+Run `scripts/verify-solution-clean-restore.ps1` for the separate normal-source
+regression gate. It performs a clean-cache restore and non-incremental Release
+build of `XNode.slnx` from another temporary source copy without applying the
+P14C offline configuration.
 
 ## Deterministic framing version 1
 

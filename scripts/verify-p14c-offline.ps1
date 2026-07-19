@@ -4,6 +4,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'restore-isolation.ps1')
+
+$requiredSdk = '10.0.301'
+$runtimePackVersion = '10.0.9'
+Assert-ExactSdk $requiredSdk
 
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $artifactsRoot = [IO.Path]::GetFullPath((Join-Path $repositoryRoot 'artifacts\p14c-offline'))
@@ -16,9 +21,17 @@ if (Test-Path -LiteralPath $WorkRoot) {
     throw 'The offline verification work root must be new and empty.'
 }
 
+$projectRoots = @(
+    'src\XNode.ProfileGenerator',
+    'tests\XNode.ProfileGenerator.Tests'
+)
+$repositorySnapshot = Get-RepositoryBuildSnapshot $repositoryRoot $projectRoots
+
+$sourceRoot = Join-Path $WorkRoot 'source'
 $packages = Join-Path $WorkRoot 'packages'
 $httpCache = Join-Path $WorkRoot 'http-cache'
-New-Item -ItemType Directory -Force -Path $packages, $httpCache | Out-Null
+New-Item -ItemType Directory -Force -Path $WorkRoot, $packages, $httpCache | Out-Null
+Copy-TrackedSource $repositoryRoot $sourceRoot
 
 $environmentNames = @(
     'NUGET_PACKAGES',
@@ -37,13 +50,6 @@ foreach ($name in $environmentNames) {
     $previousEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
 }
 
-function Invoke-DotNet {
-    & dotnet @args
-    if ($LASTEXITCODE -ne 0) {
-        throw "dotnet failed with exit code $LASTEXITCODE."
-    }
-}
-
 try {
     $deadProxy = 'http://127.0.0.1:9'
     $env:NUGET_PACKAGES = $packages
@@ -57,19 +63,41 @@ try {
     $env:all_proxy = $deadProxy
     $env:no_proxy = ''
 
-    $config = Join-Path $repositoryRoot 'NuGet.Config'
-    $tests = Join-Path $repositoryRoot 'tests\XNode.ProfileGenerator.Tests\XNode.ProfileGenerator.Tests.csproj'
-    $generator = Join-Path $repositoryRoot 'src\XNode.ProfileGenerator\XNode.ProfileGenerator.csproj'
+    $config = Join-Path $sourceRoot 'scripts\p14c-offline.NuGet.Config'
+    $tests = Join-Path $sourceRoot 'tests\XNode.ProfileGenerator.Tests\XNode.ProfileGenerator.Tests.csproj'
+    $generator = Join-Path $sourceRoot 'src\XNode.ProfileGenerator\XNode.ProfileGenerator.csproj'
+    $manifest = Join-Path $sourceRoot 'vendor\p04\offline-closure-manifest.json'
+    $vendorSource = Join-Path $sourceRoot 'vendor\p04\packages'
 
     Invoke-DotNet restore $tests --configfile $config --packages $packages `
         --no-http-cache --locked-mode -p:NuGetAudit=false -p:RestoreIgnoreFailedSources=false
-    Invoke-DotNet build $tests --no-restore --configuration Release
-    Invoke-DotNet test $tests --no-restore --configuration Release
+    Assert-AssetsPackageFolder `
+        (Join-Path $sourceRoot 'tests\XNode.ProfileGenerator.Tests\obj\project.assets.json') `
+        $packages
+    Assert-AssetsPackageFolder `
+        (Join-Path $sourceRoot 'src\XNode.ProfileGenerator\obj\project.assets.json') `
+        $packages
+
+    Invoke-DotNet build $tests --no-restore --no-incremental --configuration Release
+    Invoke-DotNet test $tests --no-restore --no-build --configuration Release
 
     Invoke-DotNet restore $generator --configfile $config --packages $packages `
         --no-http-cache --locked-mode --runtime win-arm64 `
         -p:NuGetAudit=false -p:RestoreIgnoreFailedSources=false
-    Invoke-DotNet build $generator --no-restore --configuration Release --runtime win-arm64
+    Invoke-DotNet build $generator --no-restore --no-incremental `
+        --configuration Release --runtime win-arm64
+
+    $generatorAssets = Join-Path $sourceRoot 'src\XNode.ProfileGenerator\obj\project.assets.json'
+    Assert-AssetsPackageFolder $generatorAssets $packages
+    Assert-DownloadDependencies $generatorAssets $manifest $runtimePackVersion
+    Assert-MetadataSources $packages $vendorSource 22
+    Assert-NoHttpCacheFiles $httpCache
+    Assert-ArtifactsUnderRoot $sourceRoot $WorkRoot
+
+    # These checks prove packageFolders, every .nupkg.metadata source, and
+    # downloadDependencies are isolated and vendor-only.
+    $afterSnapshot = Get-RepositoryBuildSnapshot $repositoryRoot $projectRoots
+    Assert-SnapshotEqual $repositorySnapshot $afterSnapshot
 
     Write-Output 'P14C_OFFLINE_VERIFICATION=PASS'
     Write-Output "P14C_OFFLINE_PACKAGES=$packages"
@@ -81,11 +109,10 @@ finally {
             $previousEnvironment[$name],
             'Process')
     }
+    $afterSnapshot = Get-RepositoryBuildSnapshot $repositoryRoot $projectRoots
+    Assert-SnapshotEqual $repositorySnapshot $afterSnapshot
+    Assert-RepositoryAssetsUsable $repositoryRoot $projectRoots
     if ($ownsWorkRoot -and (Test-Path -LiteralPath $WorkRoot)) {
-        $requiredPrefix = $artifactsRoot + [IO.Path]::DirectorySeparatorChar
-        if (-not $WorkRoot.StartsWith($requiredPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-            throw 'Refusing to remove an offline work root outside the repository artifacts directory.'
-        }
-        Remove-Item -LiteralPath $WorkRoot -Recurse -Force
+        Remove-OwnedWorkRoot $WorkRoot $artifactsRoot
     }
 }
