@@ -33,6 +33,38 @@ domain, signed JSON, root format, operator override or endpoint override.
 The accepted packages, manifest and golden fixture are under `vendor/p04`.
 The exact package version is locked and source-mapped to that local directory.
 
+### Complete offline closure
+
+`vendor/p04/offline-closure-manifest.json` is the manifest-driven closure of
+both P14C lock files. `NuGet.Config` has one repository-local source,
+`vendor/p04/packages`, and no HTTP or nuget.org fallback.
+
+The production-library P04 graph is:
+
+- `Deep.Protocol`, `Deep.Protocol.Abstractions` and
+  `Deep.Protocol.Protobuf` `0.3.0-p04.b887fa0`;
+- `Google.Protobuf` `3.32.1`;
+- `Sodium.Core` `1.4.1`;
+- native `libsodium` `1.0.22`.
+
+The libsodium package carries Windows ARM64, x64 and x86 assets as well as
+Linux, macOS, Android and Apple ARM64 assets. Presence in the accepted P04
+dependency graph does not approve a production signature algorithm, verifier,
+key source or ceremony. Sodium/libsodium remain transitive contract
+dependencies under `PRODUCTION-SIGNER-NO-GO`.
+
+The remaining closure packages are exact test SDK, test-host, JSON and xUnit
+dependencies and never compile into the generator library.
+
+The Windows ARM64 restore also pins the SDK-selected .NETCore, ASP.NET Core and
+WindowsDesktop runtime packs at `10.0.9`. They are architecture restore inputs,
+not application references or runtime activation.
+
+Run `scripts/verify-p14c-offline.ps1` to create a new empty packages directory,
+disable HTTP through dead proxies, restore in locked mode without an HTTP
+cache, build and test from that cache, and cross-restore/build the generator
+for Windows ARM64.
+
 ## Deterministic framing version 1
 
 All integers are unsigned. `varuint` is minimal unsigned LEB128.
@@ -66,6 +98,12 @@ artifact is then verified through P04.
 - component count: 16 maximum
 - QR text: 2,048 ASCII characters maximum
 - derived labels and summaries: 96 UTF-8 bytes maximum
+
+These are reachable canonical boundaries rather than predicate-only claims.
+Tests compose and inspect an exact 49,152-byte profile containing exactly 16
+components. A canonical 1,524-byte profile produces exactly 2,048 QR
+characters and round-trips to identical file bytes; a canonical 1,525-byte
+profile is file-only.
 
 The fingerprint is SHA-256 of the exact canonical P04 genesis. Compatibility
 comes from the signed genesis protocol range. Display text is fixed-format and

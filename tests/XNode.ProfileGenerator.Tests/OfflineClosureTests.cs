@@ -39,10 +39,23 @@ public sealed class OfflineClosureTests
             .Order(StringComparer.OrdinalIgnoreCase)
             .ToArray();
         var declared = packages
+            .Where(static package => package.Role != "win-arm64-sdk-runtime-pack")
             .Select(static package => $"{package.Id}/{package.Version}")
             .Order(StringComparer.OrdinalIgnoreCase)
             .ToArray();
         Assert.Equal(locked, declared, StringComparer.OrdinalIgnoreCase);
+        Assert.Equal(
+            new[]
+            {
+                "Microsoft.AspNetCore.App.Runtime.win-arm64/10.0.9",
+                "Microsoft.NETCore.App.Runtime.win-arm64/10.0.9",
+                "Microsoft.WindowsDesktop.App.Runtime.win-arm64/10.0.9"
+            },
+            packages
+                .Where(static package => package.Role == "win-arm64-sdk-runtime-pack")
+                .Select(static package => $"{package.Id}/{package.Version}")
+                .Order(StringComparer.OrdinalIgnoreCase),
+            StringComparer.OrdinalIgnoreCase);
 
         foreach (var package in packages)
         {
