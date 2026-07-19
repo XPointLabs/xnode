@@ -1,0 +1,327 @@
+{
+  "schema": "xnode-p14c1-sanitized-evidence.v1",
+  "decision": "DORMANT-PROFILE-COMPOSER-GO",
+  "humanDecisionOwner": "Mr. X",
+  "productionBoundaries": {
+    "productionSigner": "NO-GO",
+    "clientVerifier": "NO-GO",
+    "selfHostedRuntime": "NO-GO"
+  },
+  "source": {
+    "baseCommit": "2980c15c1901d7569f5ba025912ab019c1058407",
+    "sourceCommit": "eff452368fa4cb1324c5b3c8ee06e2f10e96b835",
+    "baseTree": "eeed950737dc76073c160ea3c8e10302ed1eb7e7",
+    "sourceTree": "ee7a54e9eb0bc4c0803b9508627355eec75f0405",
+    "diffSha256": "61a3eaac7990e48804dabd78f73f65ee8cfd504a42033c190ce329878ed734ee",
+    "diffAlgorithm": "SHA-256 of raw bytes from git diff --binary --no-ext-diff --no-textconv <baseCommit> <sourceCommit> -- .",
+    "diffSummary": {
+      "filesChanged": 57,
+      "insertions": 3856,
+      "deletions": 0
+    }
+  },
+  "iterations": [
+    {
+      "iteration": "C1",
+      "red": {
+        "commit": "236566a2189ceccffb5d721cb50b3375887c07c6",
+        "subject": "test: specify dormant self-hosted profile contract"
+      },
+      "green": {
+        "commit": "dd3c929e843f025686c91fdbfd5b9ddf6c88eb46",
+        "subject": "feat: add dormant self-hosted profile composer"
+      }
+    },
+    {
+      "iteration": "C2",
+      "red": {
+        "commit": "5b214d142e45a3862899199caedd303a24f15a8a",
+        "subject": "test: specify complete offline profile closure"
+      },
+      "green": {
+        "commit": "fe5f2fd841d8ff1458a20ea7ee3944b9e32606d8",
+        "subject": "build: close dormant profile offline restore graph"
+      }
+    },
+    {
+      "iteration": "C3",
+      "red": {
+        "commit": "ce058e9eaeeb2e9f6197fd863ebaff6825e8e40f",
+        "subject": "test: specify isolated profile restore gates"
+      },
+      "green": {
+        "commit": "8c77a8fac93870d5e8cf6c7d30ac47773207866c",
+        "subject": "fix: isolate offline profile restore"
+      }
+    },
+    {
+      "iteration": "C4",
+      "red": {
+        "commit": "2d04967294a9bf400fba4df336ac6a49403baed2",
+        "subject": "test: reject untracked restore inputs"
+      },
+      "green": {
+        "commit": "905aff95d9155df7f074f837ddb8ba220c963374",
+        "subject": "fix: reject untracked restore inputs"
+      }
+    },
+    {
+      "iteration": "C5",
+      "red": {
+        "commit": "f1458e297ec085dd6c04cb43de727b096674bf71",
+        "subject": "test: reject ancestor build injection",
+        "expectedRedResult": {
+          "passed": 6,
+          "failed": 10,
+          "exitCode": 1
+        }
+      },
+      "green": {
+        "commit": "eff452368fa4cb1324c5b3c8ee06e2f10e96b835",
+        "subject": "fix: isolate build discovery inputs"
+      }
+    }
+  ],
+  "independentReviews": [
+    {
+      "review": "final-security-architecture",
+      "independent": true,
+      "sourceCommit": "eff452368fa4cb1324c5b3c8ee06e2f10e96b835",
+      "decision": "GO",
+      "findings": {
+        "P0": 0,
+        "P1": 0,
+        "P2": 0,
+        "P3": 0
+      }
+    },
+    {
+      "review": "final-implementation-test",
+      "independent": true,
+      "sourceCommit": "eff452368fa4cb1324c5b3c8ee06e2f10e96b835",
+      "decision": "GO",
+      "findings": {
+        "P0": 0,
+        "P1": 0,
+        "P2": 0,
+        "P3": 0
+      }
+    }
+  ],
+  "p04": {
+    "contractVersion": "Deep.Protocol/P04-canonical-v1",
+    "packageVersion": "0.3.0-p04.b887fa0",
+    "sourceCommit": "b887fa088f486390be182cac4cbcb59b60ce8931",
+    "sdkVersion": "10.0.301",
+    "sdkRollForward": "disable",
+    "winArm64RuntimePackVersion": "10.0.9",
+    "packageManifestSha256": "fd3ef27bf0b9272570d6c6e680a3c99e581f6220799d13ee3afbd86ea0e99298",
+    "membershipContractFixtureSha256": "758707e4705c0499f546ce1e1e5201df253ef70822225c5fd3086c43d8d9bf45",
+    "offlineClosureManifestSha256": "b7a5d278583f1c3be55fcc3dc87d6a57cc23525e532cdd94aa5ac701dc32186d",
+    "productionLockSha256": "281d45b0481eedc5b6f7629c876b7d3306f117a0fafe1980e0e37cf1a0ee498b",
+    "testLockSha256": "2274d2210749dd78bb7a39b777763453d5c3b48f4dfa68f92f9bea05cb618ebc",
+    "offlineClosurePackageCount": 22,
+    "offlineClosureMismatchCount": 0,
+    "closureEvidence": "closure-packages.json"
+  },
+  "framing": {
+    "version": 1,
+    "magicAscii": "DPF1",
+    "integerEncoding": "unsigned; minimal unsigned LEB128 for varuint",
+    "header": [
+      "magic",
+      "version byte",
+      "component-count byte",
+      "total component-body length varuint"
+    ],
+    "componentEncoding": [
+      "type byte",
+      "byte length varuint",
+      "exact bytes"
+    ],
+    "fixedComponentOrder": [
+      "canonical P04 genesis",
+      "public P04 genesis approvals sorted by signer ID",
+      "canonical P04 signed delegation envelope",
+      "one or more canonical P04 signed bridge envelopes ordered by sequence and canonical bytes"
+    ],
+    "outerCarrierSigned": false,
+    "newTrustSemanticsIntroduced": false
+  },
+  "bounds": {
+    "maximumFilePayloadBytes": 49152,
+    "maximumComponentBytes": 16384,
+    "maximumComponentCount": 16,
+    "maximumQrAsciiCharacters": 2048,
+    "maximumDerivedLabelUtf8Bytes": 96,
+    "reachableBoundaryEvidence": {
+      "exactMaximumProfileBytes": 49152,
+      "exactMaximumProfileComponents": 16,
+      "largestQrEligibleProfileBytes": 1524,
+      "firstFileOnlyProfileBytes": 1525
+    }
+  },
+  "quorums": {
+    "distinctRootApprovalsForGenesis": 3,
+    "distinctRootApprovalsForDelegation": 3,
+    "distinctOnlineApprovalsPerBridge": 2,
+    "authority": "P04",
+    "localOverride": false,
+    "everySignedArtifactVerifiedByP04": true
+  },
+  "isolation": {
+    "runtimeReferencesGenerator": false,
+    "generatorReferencesRuntimeProjects": false,
+    "defaultVerificationWorkRootsInsideRepository": false,
+    "sourceCopyInput": "tracked files at sourceCommit only",
+    "msbuildAutomaticResponseFilesDisabled": true,
+    "buildDiscoveryPathsExplicitlyPinned": [
+      "DirectoryBuildPropsPath",
+      "DirectoryBuildTargetsPath",
+      "DirectorySolutionPropsPath",
+      "DirectorySolutionTargetsPath",
+      "DirectoryPackagesPropsPath"
+    ],
+    "unsafeAncestorDiscoveryFilesRejected": [
+      "Directory.Build.props",
+      "Directory.Build.targets",
+      "Directory.Build.rsp",
+      "Directory.Solution.props",
+      "Directory.Solution.targets",
+      "Directory.Packages.props",
+      "NuGet.Config"
+    ]
+  },
+  "verification": [
+    {
+      "name": "restore-isolation-focused",
+      "command": "dotnet test tests/XNode.ProfileGenerator.Tests/XNode.ProfileGenerator.Tests.csproj --filter FullyQualifiedName~RestoreIsolationTests --no-restore",
+      "exitCode": 0,
+      "tests": {
+        "passed": 16,
+        "failed": 0,
+        "skipped": 0,
+        "total": 16
+      }
+    },
+    {
+      "name": "offline-gate",
+      "command": "powershell -NoProfile -NonInteractive -File scripts/verify-p14c-offline.ps1",
+      "exitCode": 0,
+      "sentinel": "P14C_OFFLINE_VERIFICATION=PASS",
+      "tests": {
+        "passed": 41,
+        "failed": 0,
+        "skipped": 0,
+        "total": 41
+      },
+      "additionalChecks": [
+        "locked vendor-only restore",
+        "empty HTTP cache",
+        "22 package metadata sources verified",
+        "Release non-incremental build",
+        "Windows ARM64 restore and build",
+        "repository build-state snapshot unchanged"
+      ]
+    },
+    {
+      "name": "clean-solution-gate",
+      "command": "powershell -NoProfile -NonInteractive -File scripts/verify-solution-clean-restore.ps1",
+      "exitCode": 0,
+      "sentinel": "SOLUTION_CLEAN_RESTORE=PASS",
+      "tests": {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "total": 0
+      },
+      "projectsRestoredAndBuilt": 8,
+      "buildWarnings": 0,
+      "buildErrors": 0
+    },
+    {
+      "name": "full-debug",
+      "command": "dotnet test XNode.slnx --configuration Debug --no-restore",
+      "exitCode": 0,
+      "tests": {
+        "XNode.ProfileGenerator.Tests": 41,
+        "XNode.Tests": 48,
+        "XNode.IntegrationTests": 17,
+        "passed": 106,
+        "failed": 0,
+        "skipped": 0,
+        "total": 106
+      }
+    },
+    {
+      "name": "full-release-final",
+      "command": "dotnet test XNode.slnx --configuration Release --no-restore",
+      "exitCode": 0,
+      "tests": {
+        "XNode.ProfileGenerator.Tests": 41,
+        "XNode.Tests": 48,
+        "XNode.IntegrationTests": 17,
+        "passed": 106,
+        "failed": 0,
+        "skipped": 0,
+        "total": 106
+      }
+    },
+    {
+      "name": "release-performance-isolated-rerun",
+      "command": "dotnet test tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj --configuration Release --no-restore --filter FullyQualifiedName~C3_SoakChaosLoad_BaselineAndArtifacts",
+      "exitCode": 0,
+      "tests": {
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "total": 1
+      },
+      "note": "A pre-final concurrent sample missed a timing-only threshold. The isolated rerun and final full Release rerun passed; timing values and raw failure text are intentionally omitted."
+    }
+  ],
+  "scans": [
+    {
+      "name": "runtime-source-diff",
+      "command": "git diff --exit-code 2980c15c1901d7569f5ba025912ab019c1058407 eff452368fa4cb1324c5b3c8ee06e2f10e96b835 -- src/XNode src/XNode.Core src/XNode.Registry src/XNode.Transport.Vless",
+      "exitCode": 0,
+      "matches": 0
+    },
+    {
+      "name": "private-production-api-source",
+      "command": "rg -n -F -e Microsoft.Extensions -e System.Net -e HttpClient -e System.IO.File -e IServiceCollection -e WebApplication -e PrivateKey -e RecoveryPhrase src/XNode.ProfileGenerator -g *.cs",
+      "exitCode": 1,
+      "exitMeaning": "no matches",
+      "matches": 0
+    },
+    {
+      "name": "runtime-project-reference",
+      "command": "rg -n -F XNode.ProfileGenerator src -g *.csproj -g !src/XNode.ProfileGenerator/**",
+      "exitCode": 1,
+      "exitMeaning": "no matches",
+      "matches": 0
+    },
+    {
+      "name": "format",
+      "command": "dotnet format tests/XNode.ProfileGenerator.Tests/XNode.ProfileGenerator.Tests.csproj --no-restore --verify-no-changes --include tests/XNode.ProfileGenerator.Tests/RestoreIsolationTests.cs",
+      "exitCode": 0
+    },
+    {
+      "name": "source-diff-check",
+      "command": "git diff --check 2980c15c1901d7569f5ba025912ab019c1058407..eff452368fa4cb1324c5b3c8ee06e2f10e96b835",
+      "exitCode": 0
+    }
+  ],
+  "sanitization": {
+    "absolutePaths": 0,
+    "userOrMachineNames": 0,
+    "timestamps": 0,
+    "durations": 0,
+    "serviceEndpoints": 0,
+    "networkIdentifiers": 0,
+    "signatureBytes": 0,
+    "testSeeds": 0,
+    "rawExceptions": 0,
+    "credentialsOrSecrets": 0
+  }
+}
