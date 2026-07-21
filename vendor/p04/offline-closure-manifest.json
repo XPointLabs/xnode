@@ -29,6 +29,14 @@
       "role": "p04-authority"
     },
     {
+      "id": "Deep.Protocol.ProfileCarrier",
+      "version": "0.1.0-p14.faa598f",
+      "file": "packages/Deep.Protocol.ProfileCarrier.0.1.0-p14.faa598f.nupkg",
+      "bytes": 24597,
+      "sha256": "5b895ced820d678e6957482989f74621322a7bb0661ede13dcb3184e4f3e960e",
+      "role": "p14-shared-carrier"
+    },
+    {
       "id": "Google.Protobuf",
       "version": "3.32.1",
       "file": "packages/Google.Protobuf.3.32.1.nupkg",

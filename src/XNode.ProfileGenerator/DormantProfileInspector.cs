@@ -1,4 +1,5 @@
 using Deep.Protocol.DeepExtension.Membership;
+using Deep.Protocol.DeepExtension.SelfHostedProfiles;
 
 namespace XNode.ProfileGenerator;
 
@@ -11,21 +12,24 @@ public static class DormantProfileInspector
     {
         if (options is null || verifier is null)
             throw ProfileErrors.InvalidInput();
+
         try
         {
-            var components = ProfileFraming.Decode(filePayload);
-            var canonical = filePayload.ToArray();
-            ValidateOrder(components);
-
-            var input = new ProfileAssemblyInput(
-                components[0].Bytes,
-                DormantProfileComposer.DecodeGenesisApprovals(components[1].Bytes),
-                components[2].Bytes,
-                components.Skip(3).Select(static value => (ReadOnlyMemory<byte>)value.Bytes));
-            var recomposed = DormantProfileComposer.Compose(input, options, verifier);
-            if (!recomposed.FilePayload.Span.SequenceEqual(canonical))
-                throw ProfileErrors.Framing();
-            return recomposed;
+            var verification = ProfileCarrierVerifier.VerifyExact(
+                filePayload,
+                options.ToCarrier(),
+                verifier);
+            return DormantProfileDocumentFactory.Create(
+                filePayload,
+                verification.Fingerprint,
+                verification.MinimumProtocol,
+                verification.MaximumProtocol,
+                verification.ComponentCount,
+                verification.BridgeCount);
+        }
+        catch (ProfileCarrierException exception)
+        {
+            throw ProfileErrors.FromCarrier(exception);
         }
         catch (ProfileContractException)
         {
@@ -35,16 +39,6 @@ public static class DormantProfileInspector
         {
             throw ProfileErrors.Framing();
         }
-    }
-
-    private static void ValidateOrder(IReadOnlyList<ProfileComponent> components)
-    {
-        if (components.Count < 4 ||
-            components[0].Kind != ProfileComponentKind.CanonicalGenesis ||
-            components[1].Kind != ProfileComponentKind.GenesisApprovals ||
-            components[2].Kind != ProfileComponentKind.SignedDelegation ||
-            components.Skip(3).Any(static value => value.Kind != ProfileComponentKind.SignedBridge))
-            throw ProfileErrors.Framing();
     }
 }
 

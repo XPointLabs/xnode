@@ -11,6 +11,7 @@
 
   <ItemGroup>
     <PackageReference Include="Deep.Protocol" Version="[0.3.0-p04.b887fa0]" />
+    <PackageReference Include="Deep.Protocol.ProfileCarrier" Version="[0.1.0-p14.faa598f]" />
   </ItemGroup>
 
 </Project>

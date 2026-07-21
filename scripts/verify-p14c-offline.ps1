@@ -95,7 +95,7 @@ try {
     $generatorAssets = Join-Path $sourceRoot 'src\XNode.ProfileGenerator\obj\project.assets.json'
     Assert-AssetsPackageFolder $generatorAssets $packages
     Assert-DownloadDependencies $generatorAssets $manifest $runtimePackVersion
-    Assert-MetadataSources $packages $vendorSource 22
+    Assert-MetadataSources $packages $vendorSource 23
     Assert-NoHttpCacheFiles $httpCache
     Assert-ArtifactsUnderRoot $sourceRoot $WorkRoot
 

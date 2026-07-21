@@ -2,15 +2,16 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Deep.Protocol.DeepExtension.Membership;
+using Deep.Protocol.DeepExtension.SelfHostedProfiles;
 
 namespace XNode.ProfileGenerator;
 
 public static class ProfileComposerLimits
 {
-    public const int MaximumFilePayloadBytes = 48 * 1024;
-    public const int MaximumComponentBytes = 16 * 1024;
-    public const int MaximumComponents = 16;
-    public const int RequiredNonBridgeComponents = 3;
+    public const int MaximumFilePayloadBytes = ProfileCarrierLimits.MaximumFilePayloadBytes;
+    public const int MaximumComponentBytes = ProfileCarrierLimits.MaximumComponentBytes;
+    public const int MaximumComponents = ProfileCarrierLimits.MaximumComponents;
+    public const int RequiredNonBridgeComponents = ProfileCarrierLimits.RequiredNonBridgeComponents;
     public const int MaximumQrTextCharacters = 2_048;
     public const int MaximumDerivedLabelUtf8Bytes = 96;
 
@@ -128,6 +129,13 @@ public sealed class ProfileAssemblyInput
     internal ReadOnlySpan<byte> DelegationSpan => _canonicalSignedDelegation;
     internal IReadOnlyList<byte[]> BridgeValues => _canonicalSignedBridges;
 
+    internal ProfileCarrierAssemblyInput ToCarrier() =>
+        new(
+            _canonicalGenesis,
+            _genesisSignatures.Select(static value => value.ToP04()),
+            _canonicalSignedDelegation,
+            _canonicalSignedBridges.Select(static value => (ReadOnlyMemory<byte>)value));
+
     public override string ToString() =>
         $"{nameof(ProfileAssemblyInput)} signatures={GenesisSignatureCount} bridges={BridgeCount}";
 
@@ -192,6 +200,9 @@ public sealed class ProfileVerificationOptions
     public uint AllowedClockSkewSeconds { get; }
     public ushort Protocol { get; }
 
+    internal ProfileCarrierVerificationOptions ToCarrier() =>
+        new(VerificationTimeUnixSeconds, AllowedClockSkewSeconds, Protocol);
+
     public override string ToString() => nameof(ProfileVerificationOptions);
 }
 
@@ -229,16 +240,6 @@ public sealed class DormantProfileDocument
     public override string ToString() => DisplaySummary;
 }
 
-internal enum ProfileComponentKind : byte
-{
-    CanonicalGenesis = 1,
-    GenesisApprovals = 2,
-    SignedDelegation = 3,
-    SignedBridge = 4
-}
-
-internal sealed record ProfileComponent(ProfileComponentKind Kind, byte[] Bytes);
-
 internal static class ProfileErrors
 {
     public static ProfileContractException InvalidInput() =>
@@ -252,6 +253,47 @@ internal static class ProfileErrors
 
     public static ProfileContractException Framing() =>
         new("The dormant profile framing is invalid.");
+
+    public static ProfileContractException FromCarrier(ProfileCarrierException exception) =>
+        exception.Error switch
+        {
+            ProfileCarrierError.InvalidInput => InvalidInput(),
+            ProfileCarrierError.BoundsExceeded => Bounds(),
+            ProfileCarrierError.InvalidFraming => Framing(),
+            ProfileCarrierError.VerificationRejected => Verification(),
+            _ => Verification()
+        };
+}
+
+internal static class DormantProfileDocumentFactory
+{
+    public static DormantProfileDocument Create(
+        ReadOnlySpan<byte> filePayload,
+        string fingerprint,
+        ushort minimumProtocol,
+        ushort maximumProtocol,
+        int componentCount,
+        int bridgeCount)
+    {
+        var compatibility = $"protocol:{minimumProtocol}-{maximumProtocol}";
+        var display =
+            $"self-hosted {fingerprint.AsSpan(7, 16)} {compatibility} sources:{bridgeCount}";
+        if (!ProfileComposerLimits.IsDerivedLabelLengthAllowed(fingerprint) ||
+            !ProfileComposerLimits.IsDerivedLabelLengthAllowed(compatibility) ||
+            !ProfileComposerLimits.IsDerivedLabelLengthAllowed(display))
+        {
+            throw ProfileErrors.Bounds();
+        }
+
+        var payload = filePayload.ToArray();
+        return new DormantProfileDocument(
+            payload,
+            DormantProfileQr.EncodeOrNull(payload),
+            fingerprint,
+            compatibility,
+            display,
+            componentCount);
+    }
 }
 
 internal sealed class ProfilePublicSignatureJsonConverter :
