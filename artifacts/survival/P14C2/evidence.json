@@ -1,0 +1,212 @@
+{
+  "schema": "xnode-p14c2-sanitized-evidence.v1",
+  "validation": {
+    "state": "RED",
+    "expectedFailure": "content hash closure is intentionally absent"
+  },
+  "humanDecisionOwner": "Mr. X",
+  "decisions": {
+    "xnodeSharedCarrier": "GO",
+    "byteIdentity": "GO",
+    "productionSigner": "NO-GO",
+    "clientVerifier": "PENDING",
+    "selfHostedRuntime": "NO-GO"
+  },
+  "acceptedSource": {
+    "commit": "cd9d20a8ec8346d171d4cd070dde170aa5f471d7",
+    "tree": "e27c1d7c2517bd9d1bcdfbacda8c68c57a2ced59",
+    "subject": "fix(p14c2): sanitize caller memory copy boundaries"
+  },
+  "sourceChain": [
+    {
+      "phase": "accepted-p14c1-base",
+      "commit": "eff452368fa4cb1324c5b3c8ee06e2f10e96b835",
+      "tree": "ee7a54e9eb0bc4c0803b9508627355eec75f0405",
+      "subject": "fix: isolate build discovery inputs"
+    },
+    {
+      "phase": "p14c2-red",
+      "commit": "09fe2a7a872e5de6a43d0b377d5914d91671b7ae",
+      "tree": "ab0cc021873498b0c5188a1d83d494c2e09c4b7e",
+      "subject": "test(p14c2): require shared profile carrier adoption"
+    },
+    {
+      "phase": "p14c2-green",
+      "commit": "628b7820251fa0d862fa57084499a9a51b062037",
+      "tree": "9c194ea9f4f8ffc119804378c56186f408eb0f38",
+      "subject": "feat(p14c2): consume shared profile carrier"
+    },
+    {
+      "phase": "privacy-c3-red",
+      "commit": "4d8543fe0293adc644f3ec2916b6afc6a171a27a",
+      "tree": "de9dfc3f75f4b9bce9b6ac9e0be6936713c2da09",
+      "subject": "test(p14c2): sanitize caller enumerable failures"
+    },
+    {
+      "phase": "privacy-c3-green",
+      "commit": "14d6f6a750bf9b1036060a241e4e7a6474d3a8d2",
+      "tree": "a6ece2993c32f4f2a5aead4f6106b9f744cae89f",
+      "subject": "fix(p14c2): sanitize caller enumerable failures"
+    },
+    {
+      "phase": "privacy-c4-red",
+      "commit": "bea2c10de4d8886ee712a23e88336d78465cf6e4",
+      "tree": "d4354334504694def3abe69f9aecc3fae6837d76",
+      "subject": "test(p14c2): reject contract exceptions from caller enumerators"
+    },
+    {
+      "phase": "privacy-c4-green",
+      "commit": "03c1a4507f892e425391bd6d34877b3fe7e64afd",
+      "tree": "9d92d15526cb23b15e5b829674b9587ccba2b82d",
+      "subject": "fix(p14c2): sanitize each caller enumerator operation"
+    },
+    {
+      "phase": "privacy-c5-red",
+      "commit": "c1943cb0373447b7520783aba94c557b682adbd0",
+      "tree": "b0527fa519d19a6b15556526c04cdcb47f6e95ae",
+      "subject": "test(p14c2): close caller memory and oom privacy gaps"
+    },
+    {
+      "phase": "privacy-c5-green",
+      "commit": "cd9d20a8ec8346d171d4cd070dde170aa5f471d7",
+      "tree": "e27c1d7c2517bd9d1bcdfbacda8c68c57a2ced59",
+      "subject": "fix(p14c2): sanitize caller memory copy boundaries"
+    }
+  ],
+  "priorNoGoFindings": [
+    {
+      "reviewedCommit": "628b7820251fa0d862fa57084499a9a51b062037",
+      "decision": "NO-GO",
+      "severity": "P1",
+      "finding": "Caller-owned IEnumerable failures from GetEnumerator or MoveNext could expose a custom non-OOM exception type and message.",
+      "closedBy": "14d6f6a750bf9b1036060a241e4e7a6474d3a8d2"
+    },
+    {
+      "reviewedCommit": "14d6f6a750bf9b1036060a241e4e7a6474d3a8d2",
+      "decision": "NO-GO",
+      "severity": "P1",
+      "finding": "A caller-created public ProfileContractException from GetEnumerator, MoveNext, Current or Dispose was rethrown with its raw message for both caller-owned sequences.",
+      "closedBy": "03c1a4507f892e425391bd6d34877b3fe7e64afd"
+    },
+    {
+      "reviewedCommit": "03c1a4507f892e425391bd6d34877b3fe7e64afd",
+      "decision": "NO-GO",
+      "severity": "P1",
+      "finding": "A hostile ReadOnlyMemory MemoryManager could expose a public ProfileContractException from genesis, delegation or bridge component copying.",
+      "closedBy": "cd9d20a8ec8346d171d4cd070dde170aa5f471d7"
+    },
+    {
+      "reviewedCommit": "03c1a4507f892e425391bd6d34877b3fe7e64afd",
+      "decision": "NO-GO",
+      "severity": "P1",
+      "finding": "A primary OutOfMemoryException from MoveNext or Current could be replaced by a distinct OutOfMemoryException from caller-owned Dispose.",
+      "closedBy": "cd9d20a8ec8346d171d4cd070dde170aa5f471d7"
+    }
+  ],
+  "finalIndependentReviews": [
+    {
+      "task": "resume_p15_c4",
+      "independenceLabel": "independent-implementation-and-privacy-review",
+      "independent": true,
+      "sourceCommit": "cd9d20a8ec8346d171d4cd070dde170aa5f471d7",
+      "sourceTree": "e27c1d7c2517bd9d1bcdfbacda8c68c57a2ced59",
+      "decision": "GO",
+      "findings": { "P0": 0, "P1": 0, "P2": 0, "P3": 0 }
+    },
+    {
+      "task": "p14c2_c4_review",
+      "independenceLabel": "independent-security-and-architecture-review",
+      "independent": true,
+      "sourceCommit": "cd9d20a8ec8346d171d4cd070dde170aa5f471d7",
+      "sourceTree": "e27c1d7c2517bd9d1bcdfbacda8c68c57a2ced59",
+      "decision": "GO",
+      "findings": { "P0": 0, "P1": 0, "P2": 0, "P3": 0 }
+    }
+  ],
+  "packagePin": {
+    "id": "Deep.Protocol.ProfileCarrier",
+    "version": "0.1.0-p14.faa598f",
+    "bytes": 24597,
+    "sha256": "5b895ced820d678e6957482989f74621322a7bb0661ede13dcb3184e4f3e960e",
+    "nugetContentHash": "XV6HBDrOAQKVp9jQDirlxIO1QrdWIFhMuF5ij8HGavGPCMhIvOTHwTwn/bDuSTsMfmQ0BJDDC+RH+VE8BtqR5Q==",
+    "normalizedIdentity": "ab402ce9420ecb5f3f80a6fb9fd48b807a4bda96565c28f88f3c35ac860719ba",
+    "sourceCommit": "faa598ff32913470cf85d6f2c8a8921cbf2aa287",
+    "dependency": "Deep.Protocol/[0.3.0-p04.b887fa0]",
+    "manifestSha256": "ec071602a2f52fd3e1550e776a6b83ac7cacf680980237ee80d0d8cabe475e6e"
+  },
+  "goldenByteIdentity": {
+    "sourceCommit": "eff452368fa4cb1324c5b3c8ee06e2f10e96b835",
+    "vectorManifestSha256": "7ce68a2884d2debb13c40b2019f73746d70e957a6738e8e0a52d0ea4ab91897e",
+    "acceptedVectors": [
+      { "file": "accepted-eff4523-default.dpf", "bytes": 1359, "sha256": "cc8df0559b033ad7c70aa5d19134c06c58fb2dd6cfc10449525e1fb919679dbe" },
+      { "file": "accepted-eff4523-two-bridges.dpf", "bytes": 1726, "sha256": "05549533056af9a7f6d1cfb779e336fec3ac40395bcd9512ca953d1fe7795385" },
+      { "file": "accepted-eff4523-qr-1524.dpf", "bytes": 1524, "sha256": "0a1708d4fdf65ad0e72904867857973191ecb291bed379c6d728a5a56e0c497f" },
+      { "file": "accepted-eff4523-qr-1525.dpf", "bytes": 1525, "sha256": "854f4f73f304bc1cbf95be7a48231b7a1549079ea456a7eb2b06e763d8f70894" },
+      { "file": "accepted-eff4523-max-49152.dpf", "bytes": 49152, "sha256": "554f63afd6da4ecdde2c66732c9e4daf28391f796d26e949eb41ca3e95c74441" }
+    ],
+    "acceptedGoldenPayloadsRemainExact": true,
+    "localAndSharedCompositionByteIdenticalAcrossFourInputOrders": true,
+    "decision": "BYTE-IDENTITY-GO"
+  },
+  "verification": {
+    "focusedPrivacy": { "passed": 41, "failed": 0, "skipped": 0, "total": 41 },
+    "profileDebug": { "passed": 89, "failed": 0, "skipped": 0, "total": 89 },
+    "profileRelease": { "passed": 89, "failed": 0, "skipped": 0, "total": 89 },
+    "solutionDebug": { "passed": 154, "failed": 0, "skipped": 0, "total": 154 },
+    "solutionRelease": { "passed": 154, "failed": 0, "skipped": 0, "total": 154 },
+    "solutionBreakdown": { "profile": 89, "unit": 48, "integration": 17 },
+    "offlineLocked": { "sentinel": "P14C_OFFLINE_VERIFICATION=PASS", "passed": 89, "failed": 0 },
+    "winArm64Release": { "warnings": 0, "errors": 0 },
+    "cleanSolutionRestoreBuild": { "sentinel": "SOLUTION_CLEAN_RESTORE=PASS", "warnings": 0, "errors": 0 },
+    "staticPrivacyPackageChecks": { "passed": 10, "failed": 0, "total": 10 },
+    "scopedFormat": "PASS",
+    "diffCheck": "PASS"
+  },
+  "artifactIdentities": {
+    "winArm64DllSha256": "df5368af14e5987fd0e0a193c38e34f41b7a7a3adfca635c5302fa369cd6fd10",
+    "winArm64PdbSha256": "589c72db3c7121a81103653f76565f14c450b29c0b7bc3d2086f7d22bcd9820e",
+    "deterministicDllRebuild": true,
+    "binaryCopiesInEvidenceCarrier": 0
+  },
+  "sourceDeltaFromAcceptedBase": {
+    "baseCommit": "eff452368fa4cb1324c5b3c8ee06e2f10e96b835",
+    "filesChanged": 21,
+    "insertions": 945,
+    "deletions": 487,
+    "runtimeProjectFilesChanged": 0
+  },
+  "publicBoundaryAudit": {
+    "callerOwnedReadOnlyMemoryInputs": [
+      "ProfileAssemblyInput.canonicalGenesis",
+      "ProfileAssemblyInput.canonicalSignedDelegation",
+      "ProfileAssemblyInput.canonicalSignedBridges elements",
+      "ProfileAssemblyInput.WithDelegation route",
+      "ProfileAssemblyInput.WithBridges route"
+    ],
+    "boundsCheckedBeforeUntrustedSpanAccess": true,
+    "allNonOomMemoryManagerFailuresSanitized": true,
+    "outOfMemoryInstancePreserved": true,
+    "allEnumerableOperationsSanitized": ["GetEnumerator", "MoveNext", "Current", "Dispose"],
+    "primaryOutOfMemoryCannotBeMaskedByDispose": true,
+    "normalArrayDefensiveCopiesPreserved": true,
+    "otherReadOnlyMemoryApis": "defensive-copy outputs only; remaining public binary inputs are ReadOnlySpan"
+  },
+  "sanitization": {
+    "absolutePaths": false,
+    "timestampsOrDurations": false,
+    "hostOrUserNames": false,
+    "endpointsOrNetworkIdentifiers": false,
+    "credentialsSeedsOrPrivateKeys": false,
+    "signatureBytes": false,
+    "rawExceptionsOrSensitiveSentinels": false
+  },
+  "scope": {
+    "evidenceOnly": true,
+    "sourceChanges": 0,
+    "testChanges": 0,
+    "vendorChanges": 0,
+    "scriptChanges": 0,
+    "binaryCopies": 0,
+    "pushPerformed": false
+  }
+}
