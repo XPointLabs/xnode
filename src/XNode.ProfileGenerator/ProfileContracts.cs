@@ -1,3 +1,4 @@
+using System.Runtime.ExceptionServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -161,37 +162,130 @@ public sealed class ProfileAssemblyInput
     }
 
     private static ProfilePublicSignature[] CopySignatures(
-        IEnumerable<ProfilePublicSignature> values)
-    {
-        if (values is null)
-            throw ProfileErrors.InvalidInput();
-        var result = new List<ProfilePublicSignature>(5);
-        foreach (var value in values)
-        {
-            if (value is null || result.Count == MembershipLimits.MaximumSigners)
-                throw ProfileErrors.Bounds();
-            result.Add(new ProfilePublicSignature(
-                value.SignerIdSpan,
-                value.Domain,
-                value.SignatureSpan));
-        }
-        return result.ToArray();
-    }
+        IEnumerable<ProfilePublicSignature> values) =>
+        CopyCallerSequence(
+            values,
+            MembershipLimits.MaximumSigners,
+            static value => value is null
+                ? throw ProfileErrors.Bounds()
+                : new ProfilePublicSignature(
+                    value.SignerIdSpan,
+                    value.Domain,
+                    value.SignatureSpan));
 
     private static byte[][] CopyBridges(IEnumerable<ReadOnlyMemory<byte>> values)
     {
-        if (values is null)
-            throw ProfileErrors.InvalidInput();
         var maximum = ProfileComposerLimits.MaximumComponents -
             ProfileComposerLimits.RequiredNonBridgeComponents;
-        var result = new List<byte[]>(maximum);
-        foreach (var value in values)
+        return CopyCallerSequence(
+            values,
+            maximum,
+            static value => CopyBoundedComponent(value));
+    }
+
+    private static TResult[] CopyCallerSequence<T, TResult>(
+        IEnumerable<T> values,
+        int maximum,
+        Func<T, TResult> copy)
+    {
+        if (values is null)
+            throw ProfileErrors.InvalidInput();
+
+        var enumerator = GetCallerEnumerator(values);
+        var result = new List<TResult>(maximum);
+        ExceptionDispatchInfo? pendingFailure = null;
+        try
         {
-            if (result.Count == maximum)
-                throw ProfileErrors.Bounds();
-            result.Add(CopyBoundedComponent(value));
+            while (MoveNextCaller(enumerator))
+            {
+                var value = ReadCallerCurrent(enumerator);
+                if (result.Count == maximum)
+                    throw ProfileErrors.Bounds();
+                result.Add(copy(value));
+            }
         }
+        catch (Exception exception)
+        {
+            pendingFailure = ExceptionDispatchInfo.Capture(exception);
+        }
+
+        try
+        {
+            DisposeCaller(enumerator);
+        }
+        catch (ProfileContractException) when (pendingFailure is not null)
+        {
+            // Preserve an earlier sanitized caller failure or internal
+            // validation result; a later disposal failure is also sanitized.
+        }
+
+        if (pendingFailure is not null)
+            pendingFailure.Throw();
         return result.ToArray();
+    }
+
+    private static IEnumerator<T> GetCallerEnumerator<T>(IEnumerable<T> values)
+    {
+        try
+        {
+            return values.GetEnumerator() ?? throw ProfileErrors.InvalidInput();
+        }
+        catch (OutOfMemoryException)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            throw ProfileErrors.InvalidInput();
+        }
+    }
+
+    private static bool MoveNextCaller<T>(IEnumerator<T> enumerator)
+    {
+        try
+        {
+            return enumerator.MoveNext();
+        }
+        catch (OutOfMemoryException)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            throw ProfileErrors.InvalidInput();
+        }
+    }
+
+    private static T ReadCallerCurrent<T>(IEnumerator<T> enumerator)
+    {
+        try
+        {
+            return enumerator.Current;
+        }
+        catch (OutOfMemoryException)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            throw ProfileErrors.InvalidInput();
+        }
+    }
+
+    private static void DisposeCaller<T>(IEnumerator<T> enumerator)
+    {
+        try
+        {
+            enumerator.Dispose();
+        }
+        catch (OutOfMemoryException)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            throw ProfileErrors.InvalidInput();
+        }
     }
 }
 
