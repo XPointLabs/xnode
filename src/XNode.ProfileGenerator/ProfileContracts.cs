@@ -84,10 +84,21 @@ public sealed class ProfileAssemblyInput
         ReadOnlyMemory<byte> canonicalSignedDelegation,
         IEnumerable<ReadOnlyMemory<byte>> canonicalSignedBridges)
     {
-        _canonicalGenesis = CopyBoundedComponent(canonicalGenesis);
-        _canonicalSignedDelegation = CopyBoundedComponent(canonicalSignedDelegation);
-        _genesisSignatures = CopySignatures(genesisSignatures);
-        _canonicalSignedBridges = CopyBridges(canonicalSignedBridges);
+        try
+        {
+            _canonicalGenesis = CopyBoundedComponent(canonicalGenesis);
+            _canonicalSignedDelegation = CopyBoundedComponent(canonicalSignedDelegation);
+            _genesisSignatures = CopySignatures(genesisSignatures);
+            _canonicalSignedBridges = CopyBridges(canonicalSignedBridges);
+        }
+        catch (ProfileContractException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            throw ProfileErrors.InvalidInput();
+        }
     }
 
     [JsonIgnore]
