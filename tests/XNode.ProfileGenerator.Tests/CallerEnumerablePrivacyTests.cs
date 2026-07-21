@@ -85,6 +85,39 @@ public sealed class CallerEnumerablePrivacyTests
         Assert.Same(failure, exception);
     }
 
+    [Theory]
+    [InlineData(CallerCollection.GenesisSignatures, FailureStage.MoveNext)]
+    [InlineData(CallerCollection.GenesisSignatures, FailureStage.Current)]
+    [InlineData(CallerCollection.SignedBridges, FailureStage.MoveNext)]
+    [InlineData(CallerCollection.SignedBridges, FailureStage.Current)]
+    public void PrimaryOutOfMemoryIsNotMaskedByDisposeOutOfMemory(
+        CallerCollection collection,
+        FailureStage primaryStage)
+    {
+        var fixture = TestOnlyProfileFixture.Input();
+        var primaryFailure = new OutOfMemoryException("primary-oom-sentinel");
+        var disposeFailure = new OutOfMemoryException("dispose-oom-sentinel");
+
+        var exception = Assert.Throws<OutOfMemoryException>(() => new ProfileAssemblyInput(
+            fixture.CanonicalGenesis,
+            collection == CallerCollection.GenesisSignatures
+                ? new DualFailureEnumerable<ProfilePublicSignature>(
+                    primaryStage,
+                    primaryFailure,
+                    disposeFailure)
+                : fixture.GenesisSignatures,
+            fixture.CanonicalSignedDelegation,
+            collection == CallerCollection.SignedBridges
+                ? new DualFailureEnumerable<ReadOnlyMemory<byte>>(
+                    primaryStage,
+                    primaryFailure,
+                    disposeFailure)
+                : fixture.CanonicalSignedBridges));
+
+        Assert.Same(primaryFailure, exception);
+        Assert.NotSame(disposeFailure, exception);
+    }
+
     public enum CallerCollection
     {
         GenesisSignatures,
@@ -150,5 +183,45 @@ public sealed class CallerEnumerablePrivacyTests
             if (stage == FailureStage.Dispose)
                 throw failure;
         }
+    }
+
+    private sealed class DualFailureEnumerable<T>(
+        FailureStage primaryStage,
+        Exception primaryFailure,
+        Exception disposeFailure) : IEnumerable<T>
+    {
+        public IEnumerator<T> GetEnumerator() =>
+            new DualFailureEnumerator<T>(primaryStage, primaryFailure, disposeFailure);
+
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
+    private sealed class DualFailureEnumerator<T>(
+        FailureStage primaryStage,
+        Exception primaryFailure,
+        Exception disposeFailure) : IEnumerator<T>
+    {
+        private bool _moved;
+
+        public T Current =>
+            primaryStage == FailureStage.Current ? throw primaryFailure : default!;
+
+        object? IEnumerator.Current => Current;
+
+        public bool MoveNext()
+        {
+            if (primaryStage == FailureStage.MoveNext)
+                throw primaryFailure;
+            if (!_moved)
+            {
+                _moved = true;
+                return true;
+            }
+            return false;
+        }
+
+        public void Reset() => throw new NotSupportedException();
+
+        public void Dispose() => throw disposeFailure;
     }
 }
