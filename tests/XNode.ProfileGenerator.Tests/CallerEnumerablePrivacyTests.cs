@@ -8,16 +8,31 @@ public sealed class CallerEnumerablePrivacyTests
     private const string Sentinel = "caller-owned-enumerable-sensitive-sentinel";
 
     [Theory]
-    [InlineData(CallerCollection.GenesisSignatures, FailureStage.GetEnumerator)]
-    [InlineData(CallerCollection.GenesisSignatures, FailureStage.MoveNext)]
-    [InlineData(CallerCollection.SignedBridges, FailureStage.GetEnumerator)]
-    [InlineData(CallerCollection.SignedBridges, FailureStage.MoveNext)]
+    [InlineData(CallerCollection.GenesisSignatures, FailureStage.GetEnumerator, FailureKind.Custom)]
+    [InlineData(CallerCollection.GenesisSignatures, FailureStage.GetEnumerator, FailureKind.ProfileContract)]
+    [InlineData(CallerCollection.GenesisSignatures, FailureStage.MoveNext, FailureKind.Custom)]
+    [InlineData(CallerCollection.GenesisSignatures, FailureStage.MoveNext, FailureKind.ProfileContract)]
+    [InlineData(CallerCollection.GenesisSignatures, FailureStage.Current, FailureKind.Custom)]
+    [InlineData(CallerCollection.GenesisSignatures, FailureStage.Current, FailureKind.ProfileContract)]
+    [InlineData(CallerCollection.GenesisSignatures, FailureStage.Dispose, FailureKind.Custom)]
+    [InlineData(CallerCollection.GenesisSignatures, FailureStage.Dispose, FailureKind.ProfileContract)]
+    [InlineData(CallerCollection.SignedBridges, FailureStage.GetEnumerator, FailureKind.Custom)]
+    [InlineData(CallerCollection.SignedBridges, FailureStage.GetEnumerator, FailureKind.ProfileContract)]
+    [InlineData(CallerCollection.SignedBridges, FailureStage.MoveNext, FailureKind.Custom)]
+    [InlineData(CallerCollection.SignedBridges, FailureStage.MoveNext, FailureKind.ProfileContract)]
+    [InlineData(CallerCollection.SignedBridges, FailureStage.Current, FailureKind.Custom)]
+    [InlineData(CallerCollection.SignedBridges, FailureStage.Current, FailureKind.ProfileContract)]
+    [InlineData(CallerCollection.SignedBridges, FailureStage.Dispose, FailureKind.Custom)]
+    [InlineData(CallerCollection.SignedBridges, FailureStage.Dispose, FailureKind.ProfileContract)]
     public void NonOomCallerEnumerableFailuresAreSanitized(
         CallerCollection collection,
-        FailureStage stage)
+        FailureStage stage,
+        FailureKind kind)
     {
         var fixture = TestOnlyProfileFixture.Input();
-        var failure = new CallerOwnedEnumerableSentinelException(Sentinel);
+        Exception failure = kind == FailureKind.ProfileContract
+            ? new ProfileContractException(Sentinel)
+            : new CallerOwnedEnumerableSentinelException(Sentinel);
 
         var exception = Assert.Throws<ProfileContractException>(() => new ProfileAssemblyInput(
             fixture.CanonicalGenesis,
@@ -32,17 +47,24 @@ public sealed class CallerEnumerablePrivacyTests
         Assert.Equal(ExpectedInvalidInput, exception.Message);
         Assert.Null(exception.InnerException);
         Assert.DoesNotContain(Sentinel, exception.ToString(), StringComparison.Ordinal);
-        Assert.DoesNotContain(
-            nameof(CallerOwnedEnumerableSentinelException),
-            exception.ToString(),
-            StringComparison.Ordinal);
+        if (kind == FailureKind.Custom)
+        {
+            Assert.DoesNotContain(
+                nameof(CallerOwnedEnumerableSentinelException),
+                exception.ToString(),
+                StringComparison.Ordinal);
+        }
     }
 
     [Theory]
     [InlineData(CallerCollection.GenesisSignatures, FailureStage.GetEnumerator)]
     [InlineData(CallerCollection.GenesisSignatures, FailureStage.MoveNext)]
+    [InlineData(CallerCollection.GenesisSignatures, FailureStage.Current)]
+    [InlineData(CallerCollection.GenesisSignatures, FailureStage.Dispose)]
     [InlineData(CallerCollection.SignedBridges, FailureStage.GetEnumerator)]
     [InlineData(CallerCollection.SignedBridges, FailureStage.MoveNext)]
+    [InlineData(CallerCollection.SignedBridges, FailureStage.Current)]
+    [InlineData(CallerCollection.SignedBridges, FailureStage.Dispose)]
     public void CallerEnumerableOutOfMemoryFailuresPropagateUnchanged(
         CallerCollection collection,
         FailureStage stage)
@@ -72,7 +94,15 @@ public sealed class CallerEnumerablePrivacyTests
     public enum FailureStage
     {
         GetEnumerator,
-        MoveNext
+        MoveNext,
+        Current,
+        Dispose
+    }
+
+    public enum FailureKind
+    {
+        Custom,
+        ProfileContract
     }
 
     private sealed class CallerOwnedEnumerableSentinelException(string message) :
@@ -85,24 +115,40 @@ public sealed class CallerEnumerablePrivacyTests
         {
             if (stage == FailureStage.GetEnumerator)
                 throw failure;
-            return new ThrowingEnumerator<T>(failure);
+            return new ThrowingEnumerator<T>(stage, failure);
         }
 
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
     }
 
-    private sealed class ThrowingEnumerator<T>(Exception failure) : IEnumerator<T>
+    private sealed class ThrowingEnumerator<T>(FailureStage stage, Exception failure) :
+        IEnumerator<T>
     {
-        public T Current => default!;
+        private bool _moved;
+
+        public T Current =>
+            stage == FailureStage.Current ? throw failure : default!;
 
         object? IEnumerator.Current => Current;
 
-        public bool MoveNext() => throw failure;
+        public bool MoveNext()
+        {
+            if (stage == FailureStage.MoveNext)
+                throw failure;
+            if (stage == FailureStage.Current && !_moved)
+            {
+                _moved = true;
+                return true;
+            }
+            return false;
+        }
 
         public void Reset() => throw new NotSupportedException();
 
         public void Dispose()
         {
+            if (stage == FailureStage.Dispose)
+                throw failure;
         }
     }
 }
