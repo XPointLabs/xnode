@@ -1,8 +1,14 @@
 {
   "schema": "xnode-p14c2-sanitized-evidence.v1",
   "validation": {
-    "state": "RED",
-    "expectedFailure": "content hash closure is intentionally absent"
+    "state": "GREEN",
+    "evidenceRedCommit": "51a511226ba9379e38eb0c6c71636271c37c9cb2",
+    "hashClosure": {
+      "algorithm": "SHA-256",
+      "manifest": "SHA256SUMS",
+      "contentHash": "CONTENT_SHA256",
+      "selfReferentialCommitHashEmbedded": false
+    }
   },
   "humanDecisionOwner": "Mr. X",
   "decisions": {
