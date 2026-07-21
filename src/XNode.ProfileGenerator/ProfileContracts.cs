@@ -158,7 +158,18 @@ public sealed class ProfileAssemblyInput
     {
         if (component.Length > ProfileComposerLimits.MaximumComponentBytes)
             throw ProfileErrors.Bounds();
-        return component.ToArray();
+        try
+        {
+            return component.ToArray();
+        }
+        catch (OutOfMemoryException)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            throw ProfileErrors.InvalidInput();
+        }
     }
 
     private static ProfilePublicSignature[] CopySignatures(
@@ -209,14 +220,19 @@ public sealed class ProfileAssemblyInput
             pendingFailure = ExceptionDispatchInfo.Capture(exception);
         }
 
-        try
+        // Invoking more caller code after a primary OOM can replace the exact
+        // failure instance. Skip untrusted disposal in that exceptional case.
+        if (pendingFailure?.SourceException is not OutOfMemoryException)
         {
-            DisposeCaller(enumerator);
-        }
-        catch (ProfileContractException) when (pendingFailure is not null)
-        {
-            // Preserve an earlier sanitized caller failure or internal
-            // validation result; a later disposal failure is also sanitized.
+            try
+            {
+                DisposeCaller(enumerator);
+            }
+            catch (ProfileContractException) when (pendingFailure is not null)
+            {
+                // Preserve an earlier sanitized caller failure or internal
+                // validation result; a later disposal failure is also sanitized.
+            }
         }
 
         if (pendingFailure is not null)
