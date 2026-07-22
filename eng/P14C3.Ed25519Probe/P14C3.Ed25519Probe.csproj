@@ -5,6 +5,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <RuntimeIdentifiers>linux-arm64;linux-x64</RuntimeIdentifiers>
     <UseAppHost>false</UseAppHost>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <RestoreAdditionalProjectSources>$(MSBuildThisFileDirectory)..\..\vendor\p04\packages</RestoreAdditionalProjectSources>
