@@ -265,7 +265,8 @@ public sealed class RouterRuntime : IRouterRuntime
                 return await StoreRelayContactAsync(request, cancellationToken).ConfigureAwait(false);
 
             case "report_path_result":
-                return ReportPathResult(request);
+                Interlocked.Increment(ref _rpcFailures);
+                return SessionRpcResponse.Fail(request.Id, "untrusted-public-path-report");
 
             default:
                 Interlocked.Increment(ref _rpcFailures);
@@ -388,45 +389,6 @@ public sealed class RouterRuntime : IRouterRuntime
         return SessionRpcResponse.Ok(request.Id, result);
     }
 
-    private SessionRpcResponse ReportPathResult(SessionRpcRequest request)
-    {
-        if (!request.Payload.TryGetProperty("success", out var successProperty))
-        {
-            Interlocked.Increment(ref _rpcFailures);
-            return SessionRpcResponse.Fail(request.Id, "missing-success-flag");
-        }
-
-        var success = successProperty.GetBoolean();
-        var hopIds = request.Payload.TryGetProperty("hops", out var hopsProperty)
-            ? hopsProperty.EnumerateArray()
-                .Select(item => RouterId.TryParse(item.GetString(), out var id) ? id : default)
-                .Where(id => id.Value.Length > 0)
-                .ToArray()
-            : Array.Empty<RouterId>();
-
-        if (!success)
-        {
-            foreach (var hopId in hopIds)
-            {
-                _pathFailureScores.AddOrUpdate(hopId, 1, static (_, score) => score + 1);
-            }
-        }
-        else
-        {
-            foreach (var hopId in hopIds)
-            {
-                _pathFailureScores.AddOrUpdate(hopId, 0, static (_, score) => score > 0 ? score - 1 : 0);
-            }
-        }
-
-        return SessionRpcResponse.Ok(request.Id, new
-        {
-            success,
-            updatedHops = hopIds.Select(id => id.Value).ToArray(),
-            churnBlockedRouters = GetChurnBlockedRouters().Count
-        });
-    }
-
     private SessionRpcResponse SelectStorageRoute(SessionRpcRequest request)
     {
         var routeNonce = GetRouteNonce(request.Payload);
@@ -436,7 +398,13 @@ public sealed class RouterRuntime : IRouterRuntime
             return SessionRpcResponse.Fail(request.Id, "invalid-route-nonce");
         }
 
-        var route = BuildStorageRoute(routeNonce);
+        if (!TryGetExcludedRouterIds(request.Payload, out var excludedRouterIds))
+        {
+            Interlocked.Increment(ref _rpcFailures);
+            return SessionRpcResponse.Fail(request.Id, "invalid-excluded-router-ids");
+        }
+
+        var route = BuildStorageRoute(routeNonce, excludedRouterIds);
         if (route.Count == 0)
         {
             Interlocked.Increment(ref _pathSelectionFailures);
@@ -476,7 +444,7 @@ public sealed class RouterRuntime : IRouterRuntime
             return SessionRpcResponse.Fail(request.Id, "missing-storage-target");
         }
 
-        var route = BuildStorageRoute(targetKey);
+        var route = BuildStorageRoute(targetKey, new HashSet<RouterId>());
         if (route.Count == 0)
         {
             Interlocked.Increment(ref _pathSelectionFailures);
@@ -664,7 +632,9 @@ public sealed class RouterRuntime : IRouterRuntime
         });
     }
 
-    private IReadOnlyList<RelayContact> BuildStorageRoute(string routingEntropy)
+    private IReadOnlyList<RelayContact> BuildStorageRoute(
+        string routingEntropy,
+        IReadOnlySet<RouterId> excludedRouterIds)
     {
         var now = _clock.UtcNow;
         var localRouterId = _nodeOptions.GetRouterId();
@@ -677,8 +647,9 @@ public sealed class RouterRuntime : IRouterRuntime
             .GroupBy(contact => contact.RouterId)
             .ToDictionary(group => group.Key, group => group.OrderByDescending(contact => contact.SignedAt).First());
 
-        if (contacts.Count < StorageRouteHopCount
+        if (contacts.Count - contacts.Keys.Count(excludedRouterIds.Contains) < StorageRouteHopCount
             || !registered.Contains(localRouterId)
+            || excludedRouterIds.Contains(localRouterId)
             || !contacts.TryGetValue(localRouterId, out var localContact))
         {
             return [];
@@ -693,7 +664,7 @@ public sealed class RouterRuntime : IRouterRuntime
         var blocked = GetChurnBlockedRouters();
 
         foreach (var contact in contacts.Values
-            .Where(contact => contact.RouterId != localRouterId)
+            .Where(contact => contact.RouterId != localRouterId && !excludedRouterIds.Contains(contact.RouterId))
             .OrderBy(contact => blocked.Contains(contact.RouterId) ? 1 : 0)
             .ThenBy(contact => XorDistanceHex(contact.RouterId, routingEntropy), StringComparer.Ordinal)
             .ThenBy(contact => contact.RouterId))
@@ -712,6 +683,36 @@ public sealed class RouterRuntime : IRouterRuntime
         }
 
         return route.Count == StorageRouteHopCount ? route : [];
+    }
+
+    private static bool TryGetExcludedRouterIds(
+        JsonElement payload,
+        out IReadOnlySet<RouterId> excludedRouterIds)
+    {
+        excludedRouterIds = new HashSet<RouterId>();
+        if (!payload.TryGetProperty("excludedRouterIds", out var property))
+        {
+            return true;
+        }
+
+        if (property.ValueKind != JsonValueKind.Array || property.GetArrayLength() > StorageRouteHopCount)
+        {
+            return false;
+        }
+
+        var parsed = new HashSet<RouterId>();
+        foreach (var item in property.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.String
+                || !RouterId.TryParse(item.GetString(), out var routerId)
+                || !parsed.Add(routerId))
+            {
+                return false;
+            }
+        }
+
+        excludedRouterIds = parsed;
+        return true;
     }
 
     private void RecordPathResult(IReadOnlyList<RelayContact> route, bool success)

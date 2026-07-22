@@ -150,7 +150,7 @@ public sealed class C3FailureAndLoadIntegrationTests
                     JsonSerializer.SerializeToElement(new { success = !packetDropped, hops })),
                 cancellationToken);
 
-            if (!report.Success)
+            if (report.Success || !string.Equals(report.Error, "untrusted-public-path-report", StringComparison.Ordinal))
             {
                 failed++;
                 continue;

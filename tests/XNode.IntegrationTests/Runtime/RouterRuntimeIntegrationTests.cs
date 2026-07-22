@@ -142,7 +142,7 @@ public sealed class RouterRuntimeIntegrationTests
     }
 
     [Fact]
-    public async Task Runtime_SelectPathAvoidsChurnBlockedRouters()
+    public async Task Runtime_RejectsUntrustedPublicPathReportsWithoutPoisoningScores()
     {
         var root = NewTempDirectory();
         try
@@ -175,8 +175,16 @@ public sealed class RouterRuntimeIntegrationTests
                 hops = new[] { TestData.Id(2).Value }
             });
 
-            await runtime.HandleRpcAsync(new SessionRpcRequest("report-1", "report_path_result", reportPayload), CancellationToken.None);
-            await runtime.HandleRpcAsync(new SessionRpcRequest("report-2", "report_path_result", reportPayload), CancellationToken.None);
+            var firstReport = await runtime.HandleRpcAsync(
+                new SessionRpcRequest("report-1", "report_path_result", reportPayload),
+                CancellationToken.None);
+            var secondReport = await runtime.HandleRpcAsync(
+                new SessionRpcRequest("report-2", "report_path_result", reportPayload),
+                CancellationToken.None);
+
+            Assert.False(firstReport.Success);
+            Assert.False(secondReport.Success);
+            Assert.Equal("untrusted-public-path-report", firstReport.Error);
 
             var selectPayload = JsonSerializer.SerializeToElement(new
             {
@@ -191,8 +199,8 @@ public sealed class RouterRuntimeIntegrationTests
             Assert.True(response.Success);
             using var json = JsonDocument.Parse(JsonSerializer.Serialize(response.Result));
             var hops = json.RootElement.GetProperty("hops").EnumerateArray().Select(static item => item.GetString()).ToArray();
-            Assert.DoesNotContain(TestData.Id(2).Value, hops);
-            Assert.True(runtime.Status.Metrics.ChurnBlockedRouters >= 1);
+            Assert.Contains(TestData.Id(2).Value, hops);
+            Assert.Equal(0, runtime.Status.Metrics.ChurnBlockedRouters);
         }
         finally
         {
@@ -543,6 +551,71 @@ public sealed class RouterRuntimeIntegrationTests
                 StringComparison.OrdinalIgnoreCase));
             Assert.Equal(4, runtime.Status.NodeDb.KnownRelayContacts);
             Assert.Equal(3, runtime.Status.NodeDb.RegisteredRelays);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Runtime_StorageRouteHonorsThreeExplicitExclusionsWithoutReducingHopCount()
+    {
+        var root = NewTempDirectory();
+        try
+        {
+            var nodes = new[]
+            {
+                NodeOptions(root),
+                NodeOptionsFromSeed(root, Seed(11), "http://xnode-11:8081/api/peer/onion"),
+                NodeOptionsFromSeed(root, Seed(22), "http://xnode-22:8081/api/peer/onion"),
+                NodeOptionsFromSeed(root, Seed(33), "http://xnode-33:8081/api/peer/onion"),
+                NodeOptionsFromSeed(root, Seed(44), "http://xnode-44:8081/api/peer/onion"),
+                NodeOptionsFromSeed(root, Seed(55), "http://xnode-55:8081/api/peer/onion")
+            };
+            var runtime = CreateRuntime(
+                root,
+                nodes[0],
+                new FakeStorageBackend(nodes.Select(SignedContact).ToArray()),
+                new RouterRuntimeOptions
+                {
+                    BootstrapFromStorage = true,
+                    RequireSignedRelayContacts = true
+                },
+                new PathSelectionOptions { ClientHops = 3 });
+
+            await runtime.StartAsync(CancellationToken.None);
+            var excluded = nodes.Skip(1).Take(3).Select(static node => node.GetRouterId().Value).ToArray();
+            var request = new SessionRpcRequest(
+                "route-with-exclusions",
+                "storage_route",
+                JsonSerializer.SerializeToElement(new
+                {
+                    routeNonce = new string('7', 64),
+                    excludedRouterIds = excluded
+                }, SessionRpc.JsonOptions),
+                new string('8', 64));
+
+            var response = await runtime.HandleRpcAsync(request, CancellationToken.None);
+
+            Assert.True(response.Success);
+            var route = ParseRoute(response.Result);
+            Assert.Equal(3, route.Count);
+            Assert.DoesNotContain(route, node => excluded.Contains(node.RouterId, StringComparer.OrdinalIgnoreCase));
+
+            var invalid = await runtime.HandleRpcAsync(
+                request with
+                {
+                    Id = "too-many-exclusions",
+                    Payload = JsonSerializer.SerializeToElement(new
+                    {
+                        routeNonce = new string('9', 64),
+                        excludedRouterIds = nodes.Skip(1).Take(4).Select(static node => node.GetRouterId().Value)
+                    }, SessionRpc.JsonOptions)
+                },
+                CancellationToken.None);
+            Assert.False(invalid.Success);
+            Assert.Equal("invalid-excluded-router-ids", invalid.Error);
         }
         finally
         {
