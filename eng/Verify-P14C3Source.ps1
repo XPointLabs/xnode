@@ -33,10 +33,10 @@ function Assert-Exact([string]$Expected, [string]$Actual, [string]$Label) {
     }
 }
 
-Assert-Exact $ExpectedHead (Invoke-Git rev-parse HEAD)[0] 'P14C3 source HEAD'
-Assert-Exact $ExpectedTree (Invoke-Git rev-parse 'HEAD^{tree}')[0] 'P14C3 source tree'
-Assert-Exact $baseTree (Invoke-Git rev-parse "$baseCommit^{tree}")[0] 'P14C2 base tree'
-Assert-Exact 'false' (Invoke-Git rev-parse --is-shallow-repository)[0] 'Shallow state'
+Assert-Exact $ExpectedHead @(Invoke-Git rev-parse HEAD)[0] 'P14C3 source HEAD'
+Assert-Exact $ExpectedTree @(Invoke-Git rev-parse 'HEAD^{tree}')[0] 'P14C3 source tree'
+Assert-Exact $baseTree @(Invoke-Git rev-parse "$baseCommit^{tree}")[0] 'P14C2 base tree'
+Assert-Exact 'false' @(Invoke-Git rev-parse --is-shallow-repository)[0] 'Shallow state'
 
 $status = @(Invoke-Git status --porcelain=v1 --untracked-files=all)
 if ($status.Count -ne 0) {
@@ -49,7 +49,7 @@ $alternatesConfig = @(& git -C $RepositoryRoot config --get-all objects.alternat
 if ($LASTEXITCODE -notin @(0, 1) -or $alternatesConfig.Count -ne 0) {
     throw 'Git object alternates are forbidden.'
 }
-$common = (Invoke-Git rev-parse --git-common-dir)[0]
+$common = @(Invoke-Git rev-parse --git-common-dir)[0]
 if (-not [IO.Path]::IsPathRooted($common)) {
     $common = Join-Path $RepositoryRoot $common
 }
