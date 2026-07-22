@@ -54,20 +54,6 @@
           "libsodium": "[1.0.22, 1.0.23)"
         }
       }
-    },
-    "net10.0/linux-arm64": {
-      "libsodium": {
-        "type": "Transitive",
-        "resolved": "1.0.22",
-        "contentHash": "KPD9SloJFclrsjnhABu7dzWrcyYkwPbvx5l1gRSPAX/0n+OBtSiVCKtGFv4n+ecWUHU0tCG9LSSwoZZx673zBQ=="
-      }
-    },
-    "net10.0/linux-x64": {
-      "libsodium": {
-        "type": "Transitive",
-        "resolved": "1.0.22",
-        "contentHash": "KPD9SloJFclrsjnhABu7dzWrcyYkwPbvx5l1gRSPAX/0n+OBtSiVCKtGFv4n+ecWUHU0tCG9LSSwoZZx673zBQ=="
-      }
     }
   }
 }
