@@ -38,7 +38,11 @@ public sealed class HttpOnionPeerClient : IOnionPeerClient
     {
         var endpointError = "invalid-onion-peer-endpoint";
         if (!Uri.TryCreate(rpcEndpoint.Trim(), UriKind.Absolute, out var uri)
-            || !PeerEndpointPolicy.TryValidateUri(uri, _runtimeOptions.AllowLoopbackPeerEndpoints, out endpointError)
+            || !PeerEndpointPolicy.TryValidateUri(
+                uri,
+                _runtimeOptions.AllowLoopbackPeerEndpoints,
+                _runtimeOptions.AllowPrivatePeerEndpoints,
+                out endpointError)
             || !string.Equals(uri.AbsolutePath, "/api/peer/onion", StringComparison.Ordinal)
             || !string.IsNullOrEmpty(uri.Query))
         {
@@ -129,6 +133,7 @@ public static class OnionPeerHttpHandler
             ConnectCallback = (context, cancellationToken) => ConnectAsync(
                 context.DnsEndPoint,
                 runtimeOptions.AllowLoopbackPeerEndpoints,
+                runtimeOptions.AllowPrivatePeerEndpoints,
                 cancellationToken)
         };
     }
@@ -136,11 +141,12 @@ public static class OnionPeerHttpHandler
     private static async ValueTask<Stream> ConnectAsync(
         DnsEndPoint endpoint,
         bool allowLoopback,
+        bool allowPrivate,
         CancellationToken cancellationToken)
     {
         var addresses = await Dns.GetHostAddressesAsync(endpoint.Host, cancellationToken).ConfigureAwait(false);
         var permitted = addresses
-            .Where(address => PeerEndpointPolicy.IsPubliclyRoutable(address, allowLoopback))
+            .Where(address => PeerEndpointPolicy.IsPermitted(address, allowLoopback, allowPrivate))
             .ToArray();
         if (permitted.Length == 0)
         {

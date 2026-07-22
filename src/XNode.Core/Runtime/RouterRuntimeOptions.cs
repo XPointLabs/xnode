@@ -29,4 +29,6 @@ public sealed class RouterRuntimeOptions
     public TimeSpan PublicApiRateLimitWindow { get; set; } = TimeSpan.FromMinutes(1);
 
     public bool AllowLoopbackPeerEndpoints { get; set; }
+
+    public bool AllowPrivatePeerEndpoints { get; set; }
 }

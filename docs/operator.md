@@ -148,6 +148,11 @@ Supported first-pass methods are `status`, `path_ping`, `fetch_rids`, `fetch_rcs
 
 Runtime now also accepts `report_path_result` to feed churn/failure outcomes back into path repair.
 
+Private peer routing is disabled by default. A controlled container or private-LAN deployment may opt in to
+RFC1918 peer endpoints with `Runtime__AllowPrivatePeerEndpoints=true`. This does not permit loopback,
+link-local, multicast, unspecified, CGNAT, documentation, or IPv6 unique-local addresses. Loopback remains
+separately gated by `Runtime__AllowLoopbackPeerEndpoints=true`.
+
 ## Runtime Metrics
 
 `GET /status` now includes `router.metrics` counters for key runtime flows:

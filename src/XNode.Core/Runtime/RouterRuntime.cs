@@ -770,7 +770,11 @@ public sealed class RouterRuntime : IRouterRuntime
             || string.IsNullOrWhiteSpace(contact.X25519PublicKey)
             || string.IsNullOrWhiteSpace(contact.RpcEndpoint)
             || !Uri.TryCreate(contact.RpcEndpoint, UriKind.Absolute, out var endpoint)
-            || !PeerEndpointPolicy.TryValidateUri(endpoint, _runtimeOptions.AllowLoopbackPeerEndpoints, out _))
+            || !PeerEndpointPolicy.TryValidateUri(
+                endpoint,
+                _runtimeOptions.AllowLoopbackPeerEndpoints,
+                _runtimeOptions.AllowPrivatePeerEndpoints,
+                out _))
         {
             return false;
         }

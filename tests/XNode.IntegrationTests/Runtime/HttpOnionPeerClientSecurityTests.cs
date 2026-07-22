@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Json;
 using System.Text.Json;
 using XNode;
 using XNode.Core;
@@ -40,6 +41,26 @@ public sealed class HttpOnionPeerClientSecurityTests
     }
 
     [Fact]
+    public async Task ForwardAsync_AllowsRfc1918PeerOnlyWithExplicitRuntimeOptIn()
+    {
+        var handler = new CountingHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = JsonContent.Create(SessionRpcResponse.Ok("onion-forward", new { accepted = true }))
+        });
+        using var client = new HttpClient(handler);
+        var peer = CreatePeer(client, new RouterRuntimeOptions { AllowPrivatePeerEndpoints = true });
+
+        var response = await peer.ForwardAsync(
+            Id(2),
+            "http://10.1.2.3:8081/api/peer/onion",
+            Request(),
+            CancellationToken.None);
+
+        Assert.True(response.Success);
+        Assert.Equal(1, handler.Requests);
+    }
+
+    [Fact]
     public async Task ForwardAsync_RejectsRedirectsWithoutFollowingThem()
     {
         var handler = new CountingHandler(_ => new HttpResponseMessage(HttpStatusCode.Found)
@@ -60,7 +81,9 @@ public sealed class HttpOnionPeerClientSecurityTests
         Assert.Equal(1, handler.Requests);
     }
 
-    private static HttpOnionPeerClient CreatePeer(HttpClient client)
+    private static HttpOnionPeerClient CreatePeer(
+        HttpClient client,
+        RouterRuntimeOptions? runtimeOptions = null)
     {
         const string seed = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
         return new HttpOnionPeerClient(
@@ -70,7 +93,7 @@ public sealed class HttpOnionPeerClientSecurityTests
                 RouterId = RelayContactSigner.DeriveRouterId(seed).Value,
                 Ed25519PrivateKey = seed
             },
-            new RouterRuntimeOptions(),
+            runtimeOptions ?? new RouterRuntimeOptions(),
             new FixedClock(new DateTimeOffset(2026, 5, 28, 12, 0, 0, TimeSpan.Zero)));
     }
 

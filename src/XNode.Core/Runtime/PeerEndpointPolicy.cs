@@ -4,7 +4,11 @@ namespace XNode.Core.Runtime;
 
 public static class PeerEndpointPolicy
 {
-    public static bool TryValidateUri(Uri uri, bool allowLoopback, out string error)
+    public static bool TryValidateUri(
+        Uri uri,
+        bool allowLoopback,
+        bool allowPrivate,
+        out string error)
     {
         error = string.Empty;
         if (!uri.IsAbsoluteUri
@@ -18,7 +22,7 @@ public static class PeerEndpointPolicy
         }
 
         if (IPAddress.TryParse(uri.Host, out var address)
-            && !IsPubliclyRoutable(address, allowLoopback))
+            && !IsPermitted(address, allowLoopback, allowPrivate))
         {
             error = "blocked-onion-peer-endpoint";
             return false;
@@ -27,7 +31,7 @@ public static class PeerEndpointPolicy
         return true;
     }
 
-    public static bool IsPubliclyRoutable(IPAddress address, bool allowLoopback)
+    public static bool IsPermitted(IPAddress address, bool allowLoopback, bool allowPrivate)
     {
         if (address.IsIPv4MappedToIPv6)
         {
@@ -44,13 +48,19 @@ public static class PeerEndpointPolicy
         {
             var first = bytes[0];
             var second = bytes[1];
+            if (first == 10
+                || (first == 172 && second is >= 16 and <= 31)
+                || (first == 192 && second == 168))
+            {
+                return allowPrivate;
+            }
+
             return first switch
             {
-                0 or 10 or 127 => false,
+                0 or 127 => false,
                 100 when second is >= 64 and <= 127 => false,
                 169 when second == 254 => false,
-                172 when second is >= 16 and <= 31 => false,
-                192 when second is 0 or 2 or 88 or 168 => false,
+                192 when second is 0 or 2 or 88 => false,
                 198 when second is 18 or 19 or 51 => false,
                 203 when second is 0 or 113 => false,
                 >= 224 => false,
