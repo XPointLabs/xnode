@@ -24,21 +24,26 @@ public sealed class LocalRelayContactProvider : ILocalRelayContactProvider
         var privateKey = _nodeOptions.GetEd25519PrivateKey();
         var onionKeys = OnionCrypto.DeriveNodeKeysFromEd25519Seed(privateKey);
         var now = _clock.UtcNow;
+        var rpcEndpoint = NormalizePeerRpcEndpoint();
         var contact = new RelayContact
         {
             RouterId = _nodeOptions.GetRouterId(),
-            PublicHost = string.IsNullOrWhiteSpace(_transportOptions.PublicHost)
+            PublicHost = !_transportOptions.Enabled || string.IsNullOrWhiteSpace(_transportOptions.PublicHost)
                 ? _nodeOptions.PublicHost
                 : _transportOptions.PublicHost,
             PublicIp = string.IsNullOrWhiteSpace(_nodeOptions.PublicIp) ? null : _nodeOptions.PublicIp.Trim(),
-            PublicPort = _transportOptions.PublicPort == 0 ? _nodeOptions.PublicPort : _transportOptions.PublicPort,
+            PublicPort = !_transportOptions.Enabled || _transportOptions.PublicPort == 0
+                ? _nodeOptions.PublicPort
+                : _transportOptions.PublicPort,
             X25519PublicKey = OnionCrypto.Hex(onionKeys.PublicKey),
-            RpcEndpoint = NormalizePeerRpcEndpoint(),
+            RpcEndpoint = rpcEndpoint,
             SignedAt = now,
             ExpiresAt = now.Add(RelayContact.Lifetime),
             RouterVersion = typeof(LocalRelayContactProvider).Assembly.GetName().Version?.ToString() ?? "0.0.0",
-            IsReachable = _transportOptions.Enabled,
+            IsReachable = true,
             Capabilities = _transportOptions.Capabilities
+                .Where(capability => _transportOptions.Enabled
+                    || !string.Equals(capability, "vless-ingress", StringComparison.OrdinalIgnoreCase))
                 .Append("onion-v1")
                 .Append("session-rpc")
                 .Where(static capability => !string.IsNullOrWhiteSpace(capability))
