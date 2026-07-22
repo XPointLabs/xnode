@@ -72,7 +72,7 @@ function Assert-ExactSource {
 function Invoke-Architecture([string]$Name) {
     $profile = $profiles[$Name]
     $imageInfo = @(& docker image inspect $profile.image `
-        --format '{{.Id}}|{{.Os}}|{{.Architecture}}|{{join .RepoDigests ","}}' 2>$null)
+        --format '{{.Id}}|{{.Os}}|{{.Architecture}}|{{index .RepoDigests 0}}' 2>$null)
     if ($LASTEXITCODE -ne 0 -or $imageInfo.Count -ne 1) {
         throw "LINUX-$($Name.ToUpperInvariant())-EXECUTION-BLOCKED: exact local image is absent."
     }
@@ -81,7 +81,7 @@ function Invoke-Architecture([string]$Name) {
         $fields[0] -cne $profile.imageId -or
         $fields[1] -cne 'linux' -or
         $fields[2] -cne $profile.dockerArchitecture -or
-        -not $fields[3].Split(',').Contains($profile.image)) {
+        $fields[3] -cne $profile.image) {
         throw "LINUX-$($Name.ToUpperInvariant())-EXECUTION-BLOCKED: image identity mismatch."
     }
 
@@ -113,10 +113,15 @@ function Invoke-Architecture([string]$Name) {
         }
     }
     finally {
-        $owner = @(& docker container inspect $containerName `
-            --format '{{index .Config.Labels "deep.p14c3.owner"}}' 2>$null)
+        $labels = @(& docker container inspect $containerName `
+            --format '{{json .Config.Labels}}' 2>$null)
         if ($LASTEXITCODE -eq 0) {
-            if ($owner.Count -ne 1 -or $owner[0] -cne $nonce) {
+            if ($labels.Count -ne 1) {
+                throw 'Refusing to clean a container without the exact owned nonce.'
+            }
+            $owner = ($labels[0] | ConvertFrom-Json).PSObject.Properties[
+                'deep.p14c3.owner'].Value
+            if ($owner -cne $nonce) {
                 throw 'Refusing to clean a container without the exact owned nonce.'
             }
             & docker container rm --force $containerName | Out-Null
