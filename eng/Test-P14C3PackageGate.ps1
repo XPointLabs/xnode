@@ -17,6 +17,7 @@ function New-Fixture([string]$Name) {
     $root = Join-Path $testRoot $Name
     foreach ($relative in @(
         'eng',
+        'eng\P14C3.Ed25519Probe',
         'src\XNode.ProfileGenerator',
         'tests\XNode.ProfileGenerator.Tests',
         'vendor\p04\packages'
@@ -25,6 +26,8 @@ function New-Fixture([string]$Name) {
     }
     foreach ($relative in @(
         'eng\Get-P14C3ProfileCarrierNormalizedIdentity.ps1',
+        'eng\P14C3.Ed25519Probe\P14C3.Ed25519Probe.csproj',
+        'eng\P14C3.Ed25519Probe\packages.lock.json',
         'src\XNode.ProfileGenerator\XNode.ProfileGenerator.csproj',
         'src\XNode.ProfileGenerator\packages.lock.json',
         'tests\XNode.ProfileGenerator.Tests\packages.lock.json',
@@ -146,6 +149,16 @@ try {
     Assert-Rejected {
         & $verify -RepositoryRoot $lockDrift
     } 'lock-drift'
+
+    $probeLockDrift = New-Fixture 'probe-lock-drift'
+    $probeLockPath = Join-Path $probeLockDrift `
+        'eng\P14C3.Ed25519Probe\packages.lock.json'
+    $probeLockText = Get-Content -LiteralPath $probeLockPath -Raw
+    Write-Utf8NoBom $probeLockPath `
+        ($probeLockText.Replace($version, '0.1.0-p14.faa598f'))
+    Assert-Rejected {
+        & $verify -RepositoryRoot $probeLockDrift
+    } 'probe-lock-drift'
 
     $evidenceDrift = New-Fixture 'evidence-carrier-drift'
     $evidencePath = Join-Path $evidenceDrift 'vendor\p04\profile-carrier-manifest.json'
