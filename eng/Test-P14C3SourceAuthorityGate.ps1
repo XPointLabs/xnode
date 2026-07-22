@@ -27,12 +27,12 @@ $unexpectedAcceptances = [Collections.Generic.List[string]]::new()
 
 function New-Fixture([string]$Name) {
     $root = Join-Path $testRoot $Name
-    & git -c core.autocrlf=false clone --no-hardlinks --no-checkout `
+    & git -c core.autocrlf=true clone --no-hardlinks --no-checkout `
         $RepositoryRoot $root | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw "Unable to create authority fixture '$Name'."
     }
-    & git -C $root -c core.autocrlf=false checkout --detach $ExpectedHead | Out-Null
+    & git -C $root -c core.autocrlf=true checkout --detach $ExpectedHead | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw "Unable to materialize authority fixture '$Name'."
     }
