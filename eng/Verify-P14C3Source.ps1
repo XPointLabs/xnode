@@ -73,6 +73,7 @@ $allowed = @(
     '^eng/Get-P14C3ProfileCarrierNormalizedIdentity\.ps1$',
     '^eng/P14C3\.Ed25519Probe/',
     '^eng/Test-P14C3PackageGate\.ps1$',
+    '^eng/Test-P14C3SourceAuthorityGate\.ps1$',
     '^eng/Test-P14C3WindowsMaterialization\.ps1$',
     '^eng/Verify-P14C3StaticProvenance\.ps1$',
     '^eng/Verify-P14C3LinuxExecution\.ps1$',
