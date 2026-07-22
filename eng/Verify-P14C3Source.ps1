@@ -24,7 +24,7 @@ function Invoke-Git([Parameter(ValueFromRemainingArguments = $true)][string[]]$A
     if ($LASTEXITCODE -ne 0) {
         throw "git failed: $($Arguments -join ' ')"
     }
-    return ,$output
+    return $output
 }
 
 function Assert-Exact([string]$Expected, [string]$Actual, [string]$Label) {
