@@ -1,6 +1,7 @@
 using System.Reflection;
 using Deep.Protocol.DeepExtension.Membership;
 using Deep.Protocol.DeepExtension.SelfHostedProfiles;
+using Sodium;
 
 namespace XNode.ProfileGenerator.Tests;
 
@@ -15,6 +16,9 @@ public sealed class P14C3ActivationTrustRebindTests
     // separately precomputed signature over P04 fixed-tag || canonical bytes.
     private static readonly byte[] PublicKey = Convert.FromHexString(
         "D75A980182B10AB7D54BFED3C964073A0EE172F3DAA62325AF021A68F707511A");
+    private static readonly byte[] RfcSignature = Convert.FromHexString(
+        "E5564300C360AC729086E2CC806E828A84877F1EB8E5D974D873E06522490155" +
+        "5FB8821590A33BACC61E39701CF9B46BD25BF5F0595BBE24655141438E7A100B");
     private static readonly byte[] TaggedMessage = Convert.FromHexString(
         "444545502D47454E2D56310000000000" +
         "73796E7468657469632D63616E6F6E6963616C2D73746174656D656E742D7631");
@@ -54,6 +58,11 @@ public sealed class P14C3ActivationTrustRebindTests
     [Fact]
     public void P04TaggedEd25519KatIsAcceptedAndMutationsFailClosed()
     {
+        Assert.True(PublicKeyAuth.VerifyDetached(RfcSignature, [], PublicKey));
+        var corruptedRfc = RfcSignature.ToArray();
+        corruptedRfc[0] ^= 0x80;
+        Assert.False(PublicKeyAuth.VerifyDetached(corruptedRfc, [], PublicKey));
+
         var verifier = CreateVerifier();
         var signerId = new byte[MembershipLimits.SignerIdLength];
 

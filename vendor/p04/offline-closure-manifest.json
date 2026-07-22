@@ -30,11 +30,11 @@
     },
     {
       "id": "Deep.Protocol.ProfileCarrier",
-      "version": "0.1.0-p14.faa598f",
-      "file": "packages/Deep.Protocol.ProfileCarrier.0.1.0-p14.faa598f.nupkg",
-      "bytes": 24597,
-      "sha256": "5b895ced820d678e6957482989f74621322a7bb0661ede13dcb3184e4f3e960e",
-      "role": "p14-shared-carrier"
+      "version": "0.2.0-p14.69a712a",
+      "file": "packages/Deep.Protocol.ProfileCarrier.0.2.0-p14.69a712a.nupkg",
+      "bytes": 29399,
+      "sha256": "fb0feca6bc1734b3a0ac26910421ccdddb24a6a03c1f83972a9b5685e6785498",
+      "role": "p14-activation-trust-carrier-runtime-blocked"
     },
     {
       "id": "Google.Protobuf",

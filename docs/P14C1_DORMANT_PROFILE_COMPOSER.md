@@ -33,6 +33,14 @@ domain, signed JSON, root format, operator override or endpoint override.
 The accepted packages, manifest and golden fixture are under `vendor/p04`.
 The exact package version is locked and source-mapped to that local directory.
 
+P14C3 rebinds the shared carrier to
+`Deep.Protocol.ProfileCarrier 0.2.0-p14.69a712a` from exact accepted protocol
+source `69a712a894b024a09859096025c2bb8fe68a642e`. The package adds a dormant
+verify-only Ed25519 adapter and transition-decision surface. XNode runtime,
+dependency injection, endpoints and configuration neither reference nor
+construct either surface. Runtime registration, signing and profile activation
+remain prohibited.
+
 ### Complete offline closure
 
 `vendor/p04/offline-closure-manifest.json` is the manifest-driven closure of

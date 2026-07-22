@@ -36,6 +36,12 @@ public sealed class ProfileCarrierPackagePinTests
         Assert.Equal(ExpectedSha256, value.GetProperty("sha256").GetString());
         Assert.Equal(ExpectedSha512, value.GetProperty("nugetContentHash").GetString());
         Assert.Equal(ExpectedSource, value.GetProperty("sourceCommit").GetString());
+        Assert.Equal("d83bbdd001b723738357689bbb2150a51357cb3b",
+            value.GetProperty("sourceTree").GetString());
+        Assert.Equal("071b5b300bcba3796d621720fb8f21cfdd5eb882",
+            value.GetProperty("evidenceCarrierCommit").GetString());
+        Assert.Equal("ecbfc7747452709fb82aaf85fa912ba13b61d4ad",
+            value.GetProperty("evidenceCarrierTree").GetString());
         Assert.Equal(ExpectedNormalizedIdentity,
             value.GetProperty("normalizedIdentity").GetString());
         Assert.Equal(ExpectedDllSha256, value.GetProperty("dllSha256").GetString());
@@ -43,6 +49,19 @@ public sealed class ProfileCarrierPackagePinTests
         Assert.Equal(
             "packages/Deep.Protocol.ProfileCarrier.0.2.0-p14.69a712a.nupkg",
             value.GetProperty("file").GetString());
+        Assert.Equal(
+            new[]
+            {
+                "Deep.Protocol/[0.3.0-p04.b887fa0]",
+                "Sodium.Core/[1.4.1]",
+                "libsodium/[1.0.22]"
+            },
+            value.GetProperty("dependencies")
+                .EnumerateArray()
+                .Select(entry =>
+                    $"{entry.GetProperty("id").GetString()}/{entry.GetProperty("version").GetString()}")
+                .Order(StringComparer.Ordinal),
+            StringComparer.Ordinal);
 
         var package = Path.Combine(vendor, value.GetProperty("file").GetString()!);
         Assert.Equal(29_399, new FileInfo(package).Length);
@@ -66,9 +85,20 @@ public sealed class ProfileCarrierPackagePinTests
         var metadata = document.Root.Element(ns + "metadata")!;
         Assert.Equal(ExpectedSource,
             metadata.Element(ns + "repository")!.Attribute("commit")!.Value);
-        var dependency = Assert.Single(metadata.Descendants(ns + "dependency"));
-        Assert.Equal("Deep.Protocol", dependency.Attribute("id")!.Value);
-        Assert.Equal("[0.3.0-p04.b887fa0]", dependency.Attribute("version")!.Value);
+        var dependencies = metadata.Descendants(ns + "dependency")
+            .Select(element =>
+                $"{element.Attribute("id")!.Value}/{element.Attribute("version")!.Value}")
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        Assert.Equal(
+            new[]
+            {
+                "Deep.Protocol/[0.3.0-p04.b887fa0]",
+                "Sodium.Core/[1.4.1]",
+                "libsodium/[1.0.22]"
+            },
+            dependencies,
+            StringComparer.Ordinal);
 
         AssertEntryHash(archive, "lib/net10.0/Deep.Protocol.ProfileCarrier.dll",
             ExpectedDllSha256);
@@ -79,6 +109,64 @@ public sealed class ProfileCarrierPackagePinTests
             vendor,
             "packages",
             "Deep.Protocol.ProfileCarrier.0.1.0-p14.faa598f.nupkg")));
+    }
+
+    [Fact]
+    public void EveryCarrierConsumerRejectsOldPackageAndEvidenceCarrierIdentity()
+    {
+        var root = P04PackagePinTests.RepositoryRoot();
+        var consumers = new[]
+        {
+            "src/XNode.ProfileGenerator/XNode.ProfileGenerator.csproj",
+            "src/XNode.ProfileGenerator/packages.lock.json",
+            "tests/XNode.ProfileGenerator.Tests/packages.lock.json",
+            "vendor/p04/offline-closure-manifest.json",
+            "vendor/p04/package-manifest.json",
+            "vendor/p04/profile-carrier-manifest.json"
+        };
+        foreach (var relative in consumers)
+        {
+            var text = File.ReadAllText(Path.Combine(
+                root,
+                relative.Replace('/', Path.DirectorySeparatorChar)));
+            Assert.DoesNotContain("0.1.0-p14.faa598f", text, StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                "5b895ced820d678e6957482989f74621322a7bb0661ede13dcb3184e4f3e960e",
+                text,
+                StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(
+                "2a21902ff5a613242180fdd75233991da896f879",
+                text,
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("0.2.0-p14.69a712a", text, StringComparison.Ordinal);
+        }
+
+        var packages = Directory.GetFiles(
+            Path.Combine(root, "vendor", "p04", "packages"),
+            "Deep.Protocol.ProfileCarrier.*.nupkg");
+        Assert.Equal(
+            "Deep.Protocol.ProfileCarrier.0.2.0-p14.69a712a.nupkg",
+            Path.GetFileName(Assert.Single(packages)));
+    }
+
+    [Fact]
+    public void NormalizedVerifierIsTheExactSelfContainedAcceptedGate()
+    {
+        var root = P04PackagePinTests.RepositoryRoot();
+        var verifier = Path.Combine(
+            root,
+            "eng",
+            "Get-P14C3ProfileCarrierNormalizedIdentity.ps1");
+        Assert.True(File.Exists(verifier));
+        Assert.Equal(
+            "09eba1ae0a2376094e78478efc75595a385eff84be3f5cfc7c8bb492cb4a3bc3",
+            P04PackagePinTests.Sha256(verifier),
+            ignoreCase: true);
+        var source = File.ReadAllText(verifier);
+        Assert.Contains("deep-p14-profile-carrier-normalized-package-v2", source,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("Invoke-WebRequest", source, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("HttpClient", source, StringComparison.OrdinalIgnoreCase);
     }
 
     private static void AssertEntryHash(

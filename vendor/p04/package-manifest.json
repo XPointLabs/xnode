@@ -4,6 +4,13 @@
   "sourceCommit": "b887fa088f486390be182cac4cbcb59b60ce8931",
   "publication": "local-only-not-published",
   "runtimeActivation": "blocked-no-approved-production-verifier-or-durable-state",
+  "profileCarrier": {
+    "version": "0.2.0-p14.69a712a",
+    "sourceCommit": "69a712a894b024a09859096025c2bb8fe68a642e",
+    "normalizedIdentity": "baadb33d07dfeb139f0d3ffdfd5bbd41587c02963f8434208fb7718a73733e0f",
+    "runtimeRegistration": "blocked",
+    "profileActivation": "blocked"
+  },
   "packages": [
     {
       "file": "packages/Deep.Protocol.0.3.0-p04.b887fa0.nupkg",

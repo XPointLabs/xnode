@@ -2,17 +2,6 @@
   "version": 1,
   "dependencies": {
     "net10.0": {
-      "Deep.Protocol": {
-        "type": "Direct",
-        "requested": "[0.3.0-p04.b887fa0, 0.3.0-p04.b887fa0]",
-        "resolved": "0.3.0-p04.b887fa0",
-        "contentHash": "SuKYcvhW1RNz/pPiQ6iac5J4XdnTOtLaxb8mFKc3MWhGseV2a6Jq5+BQg5r/AIobMvzKr85HcgQzkV6KF6jxVQ==",
-        "dependencies": {
-          "Deep.Protocol.Abstractions": "0.3.0-p04.b887fa0",
-          "Deep.Protocol.Protobuf": "0.3.0-p04.b887fa0",
-          "Sodium.Core": "1.4.1"
-        }
-      },
       "Deep.Protocol.ProfileCarrier": {
         "type": "Direct",
         "requested": "[0.2.0-p14.69a712a, 0.2.0-p14.69a712a]",
@@ -22,6 +11,16 @@
           "Deep.Protocol": "[0.3.0-p04.b887fa0]",
           "Sodium.Core": "[1.4.1]",
           "libsodium": "[1.0.22]"
+        }
+      },
+      "Deep.Protocol": {
+        "type": "Transitive",
+        "resolved": "0.3.0-p04.b887fa0",
+        "contentHash": "SuKYcvhW1RNz/pPiQ6iac5J4XdnTOtLaxb8mFKc3MWhGseV2a6Jq5+BQg5r/AIobMvzKr85HcgQzkV6KF6jxVQ==",
+        "dependencies": {
+          "Deep.Protocol.Abstractions": "0.3.0-p04.b887fa0",
+          "Deep.Protocol.Protobuf": "0.3.0-p04.b887fa0",
+          "Sodium.Core": "1.4.1"
         }
       },
       "Deep.Protocol.Abstractions": {
@@ -56,7 +55,14 @@
         }
       }
     },
-    "net10.0/win-arm64": {
+    "net10.0/linux-arm64": {
+      "libsodium": {
+        "type": "Transitive",
+        "resolved": "1.0.22",
+        "contentHash": "KPD9SloJFclrsjnhABu7dzWrcyYkwPbvx5l1gRSPAX/0n+OBtSiVCKtGFv4n+ecWUHU0tCG9LSSwoZZx673zBQ=="
+      }
+    },
+    "net10.0/linux-x64": {
       "libsodium": {
         "type": "Transitive",
         "resolved": "1.0.22",
