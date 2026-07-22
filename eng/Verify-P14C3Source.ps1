@@ -140,11 +140,11 @@ foreach ($source in $runtimeSources) {
 
 $diff = (Invoke-Git diff --unified=0 "$baseCommit..$ExpectedHead" --) -join "`n"
 foreach ($forbidden in @(
-    'BEGIN PRIVATE KEY',
-    'BEGIN OPENSSH PRIVATE KEY',
-    'UAT_SEED',
-    'UAT_MNEMONIC',
-    'Ed25519PrivateKeyPath'
+    ('BEGIN PRIVATE' + ' KEY'),
+    ('BEGIN OPENSSH PRIVATE' + ' KEY'),
+    ('UAT_' + 'SEED'),
+    ('UAT_' + 'MNEMONIC'),
+    ('Ed25519Private' + 'KeyPath')
 )) {
     if ($diff.IndexOf($forbidden, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
         throw "Static privacy scan rejected '$forbidden'."
