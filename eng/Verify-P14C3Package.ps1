@@ -20,7 +20,7 @@ $expectedSha512 = 'x9LZb8nAUE/XQWQS2ZGBGLbPt2FivGRVc9y1xvlsr02CKHaU6scklrBsOebxj
 $expectedNormalized = 'baadb33d07dfeb139f0d3ffdfd5bbd41587c02963f8434208fb7718a73733e0f'
 $expectedDll = '20489ac15239af11207a0daa670545b975c03eaebb78297adf956af45daa7034'
 $expectedPdb = '80f2210e6c61050e2a4edbbf1fa4181ca0d7285d124073fa0d9aa9a77307542a'
-$expectedVerifier = '09eba1ae0a2376094e78478efc75595a385eff84be3f5cfc7c8bb492cb4a3bc3'
+$expectedVerifier = '8cb67b749e7df1641222b1a5a89cc9d3854a58942dcf67d205a757009d34a0a3'
 $oldValues = @(
     '0.1.0-p14.faa598f',
     '5b895ced820d678e6957482989f74621322a7bb0661ede13dcb3184e4f3e960e',
@@ -38,6 +38,18 @@ function Get-Sha512Base64([string]$Path) {
         $bytes[$index] = [Convert]::ToByte($hex.Substring($index * 2, 2), 16)
     }
     return [Convert]::ToBase64String($bytes)
+}
+
+function Get-NormalizedTextSha256([string]$Path) {
+    $text = [IO.File]::ReadAllText($Path).Replace("`r`n", "`n").Replace("`r", "`n")
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes($text)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($sha.ComputeHash($bytes)) -replace '-', '').ToLowerInvariant()
+    }
+    finally {
+        $sha.Dispose()
+    }
 }
 
 function Get-ZipEntrySha256(
@@ -90,7 +102,9 @@ Assert-Equal $expectedSha256 (Get-Sha256 $PackagePath) 'Carrier package SHA-256'
 Assert-Equal $expectedSha512 (Get-Sha512Base64 $PackagePath) 'Carrier package SHA-512'
 
 $verifierPath = Join-Path $RepositoryRoot 'eng\Get-P14C3ProfileCarrierNormalizedIdentity.ps1'
-Assert-Equal $expectedVerifier (Get-Sha256 $verifierPath) 'Normalized verifier SHA-256'
+Assert-Equal $expectedVerifier `
+    (Get-NormalizedTextSha256 $verifierPath) `
+    'Normalized verifier SHA-256'
 $identity = & $verifierPath `
     -PackagePath $PackagePath `
     -ExpectedRepositoryCommit $sourceCommit

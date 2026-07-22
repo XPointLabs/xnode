@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Text;
 using System.Text.Json;
 using System.Xml.Linq;
 
@@ -159,8 +160,13 @@ public sealed class ProfileCarrierPackagePinTests
             "Get-P14C3ProfileCarrierNormalizedIdentity.ps1");
         Assert.True(File.Exists(verifier));
         Assert.Equal(
-            "09eba1ae0a2376094e78478efc75595a385eff84be3f5cfc7c8bb492cb4a3bc3",
-            P04PackagePinTests.Sha256(verifier),
+            "8cb67b749e7df1641222b1a5a89cc9d3854a58942dcf67d205a757009d34a0a3",
+            Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                    Encoding.UTF8.GetBytes(
+                        File.ReadAllText(verifier)
+                            .Replace("\r\n", "\n", StringComparison.Ordinal)
+                            .Replace('\r', '\n'))))
+                .ToLowerInvariant(),
             ignoreCase: true);
         var source = File.ReadAllText(verifier);
         Assert.Contains("deep-p14-profile-carrier-normalized-package-v2", source,
