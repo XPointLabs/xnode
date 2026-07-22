@@ -60,6 +60,22 @@ function Invoke-CheckedDotNet {
     }
 }
 
+function Invoke-DockerAllowFailure([string[]]$Arguments) {
+    $previousPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'SilentlyContinue'
+        $output = @(& docker @Arguments 2>$null)
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousPreference
+    }
+    return [PSCustomObject]@{
+        ExitCode = $exitCode
+        Output = $output
+    }
+}
+
 function Assert-ExactSource {
     $head = (& git -C $repositoryRoot rev-parse HEAD).Trim()
     $tree = (& git -C $repositoryRoot rev-parse 'HEAD^{tree}').Trim()
@@ -71,9 +87,11 @@ function Assert-ExactSource {
 
 function Invoke-Architecture([string]$Name) {
     $profile = $profiles[$Name]
-    $imageInfo = @(& docker image inspect $profile.image `
-        --format '{{.Id}}|{{.Os}}|{{.Architecture}}|{{index .RepoDigests 0}}' 2>$null)
-    if ($LASTEXITCODE -ne 0 -or $imageInfo.Count -ne 1) {
+    $imageResult = Invoke-DockerAllowFailure @(
+        'image', 'inspect', $profile.image,
+        '--format', '{{.Id}}|{{.Os}}|{{.Architecture}}|{{index .RepoDigests 0}}')
+    $imageInfo = @($imageResult.Output)
+    if ($imageResult.ExitCode -ne 0 -or $imageInfo.Count -ne 1) {
         throw "LINUX-$($Name.ToUpperInvariant())-EXECUTION-BLOCKED: exact local image is absent."
     }
     $fields = $imageInfo[0].Split('|')
@@ -90,32 +108,35 @@ function Invoke-Architecture([string]$Name) {
     $label = "deep.p14c3.owner=$nonce"
     $output = @()
     try {
-        $output = @(& docker run `
-            --rm `
-            --pull never `
-            --platform $profile.platform `
-            --name $containerName `
-            --label $label `
-            --network none `
-            --read-only `
-            --cap-drop ALL `
-            --security-opt no-new-privileges `
-            --pids-limit 64 `
-            --memory 256m `
-            --cpus 1 `
-            --volume "${publishRoot}:/probe:ro" `
-            --workdir /probe `
-            $profile.image `
-            dotnet /probe/P14C3.Ed25519Probe.dll 2>&1)
-        $exitCode = $LASTEXITCODE
-        if ($exitCode -ne 0) {
-            throw "Linux $Name Ed25519 probe failed with exit code $exitCode."
+        $runResult = Invoke-DockerAllowFailure @(
+            'run',
+            '--rm',
+            '--pull', 'never',
+            '--platform', $profile.platform,
+            '--name', $containerName,
+            '--label', $label,
+            '--network', 'none',
+            '--read-only',
+            '--cap-drop', 'ALL',
+            '--security-opt', 'no-new-privileges',
+            '--pids-limit', '64',
+            '--memory', '256m',
+            '--cpus', '1',
+            '--volume', "${publishRoot}:/probe:ro",
+            '--workdir', '/probe',
+            $profile.image,
+            'dotnet', '/probe/P14C3.Ed25519Probe.dll')
+        $output = @($runResult.Output)
+        if ($runResult.ExitCode -ne 0) {
+            throw "Linux $Name Ed25519 probe failed with exit code $($runResult.ExitCode)."
         }
     }
     finally {
-        $labels = @(& docker container inspect $containerName `
-            --format '{{json .Config.Labels}}' 2>$null)
-        if ($LASTEXITCODE -eq 0) {
+        $inspectResult = Invoke-DockerAllowFailure @(
+            'container', 'inspect', $containerName,
+            '--format', '{{json .Config.Labels}}')
+        $labels = @($inspectResult.Output)
+        if ($inspectResult.ExitCode -eq 0) {
             if ($labels.Count -ne 1) {
                 throw 'Refusing to clean a container without the exact owned nonce.'
             }
@@ -124,8 +145,9 @@ function Invoke-Architecture([string]$Name) {
             if ($owner -cne $nonce) {
                 throw 'Refusing to clean a container without the exact owned nonce.'
             }
-            & docker container rm --force $containerName | Out-Null
-            if ($LASTEXITCODE -ne 0) {
+            $removeResult = Invoke-DockerAllowFailure @(
+                'container', 'rm', '--force', $containerName)
+            if ($removeResult.ExitCode -ne 0) {
                 throw 'Unable to clean the exact owned P14C3 container.'
             }
         }
