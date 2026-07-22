@@ -87,7 +87,7 @@ $allowed = @(
     '^vendor/p04/packages/Deep\.Protocol\.ProfileCarrier\.[^/]+\.nupkg$',
     '^vendor/p04/profile-carrier-manifest\.json$'
 )
-$changed = @(Invoke-Git diff --name-only $baseCommit..$ExpectedHead -- |
+$changed = @(Invoke-Git diff --name-only "$baseCommit..$ExpectedHead" -- |
     ForEach-Object { $_.Replace('\', '/') })
 foreach ($path in $changed) {
     if (-not ($allowed | Where-Object { $path -match $_ })) {
@@ -95,7 +95,7 @@ foreach ($path in $changed) {
     }
 }
 
-& git -C $RepositoryRoot diff --check $baseCommit..$ExpectedHead --
+& git -C $RepositoryRoot diff --check "$baseCommit..$ExpectedHead" --
 if ($LASTEXITCODE -ne 0) {
     throw 'git diff --check rejected the P14C3 source.'
 }
@@ -138,7 +138,7 @@ foreach ($source in $runtimeSources) {
     }
 }
 
-$diff = (Invoke-Git diff --unified=0 $baseCommit..$ExpectedHead --) -join "`n"
+$diff = (Invoke-Git diff --unified=0 "$baseCommit..$ExpectedHead" --) -join "`n"
 foreach ($forbidden in @(
     'BEGIN PRIVATE KEY',
     'BEGIN OPENSSH PRIVATE KEY',
