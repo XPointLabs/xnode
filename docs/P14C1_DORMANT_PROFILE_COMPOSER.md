@@ -77,8 +77,11 @@ They are architecture restore inputs, not application references or runtime
 activation.
 
 Run `scripts/verify-p14c-offline.ps1` with .NET SDK `10.0.301` installed. It
-copies tracked source into a new temporary work root, creates empty package and
-HTTP-cache directories there, disables HTTP through dead proxies, restores in
+rejects hidden index state and materializes the exact requested commit and tree
+through a local clone with copied objects, no hardlinks, alternates, global Git
+configuration or network protocol. Every materialized file is checked against
+its committed blob before the gate creates empty package and HTTP-cache
+directories, disables HTTP through dead proxies, restores in
 locked mode, builds and tests without incremental inputs, and cross-restores
 and builds the generator for Windows ARM64. It verifies that assets,
 intermediate/output files and package metadata remain under that work root,
@@ -89,8 +92,9 @@ repository `bin` or `obj` state.
 
 Run `scripts/verify-solution-clean-restore.ps1` for the separate normal-source
 regression gate. It performs a clean-cache restore and non-incremental Release
-build of `XNode.slnx` from another temporary source copy without applying the
-P14C offline configuration.
+build of `XNode.slnx` from another exact local Git snapshot without applying
+the P14C offline configuration. Both scripts accept `-ExpectedHead` and
+`-ExpectedTree` to bind their source authority explicitly.
 
 ## Deterministic framing version 1
 

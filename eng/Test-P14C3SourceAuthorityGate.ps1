@@ -98,6 +98,96 @@ try {
             -RepositoryRoot $assumeSource
     }
 
+    $diffFiles = New-Fixture 'diff-files'
+    $diffPath = Join-Path $diffFiles $probeRelative
+    [IO.File]::AppendAllText(
+        $diffPath,
+        "`n// visible-authority-mutation`n",
+        [Text.UTF8Encoding]::new($false))
+    Assert-Rejected 'source-diff-files' {
+        & (Join-Path $diffFiles 'eng\Verify-P14C3Source.ps1') `
+            -ExpectedHead $ExpectedHead -ExpectedTree $ExpectedTree `
+            -RepositoryRoot $diffFiles
+    }
+
+    $sparse = New-Fixture 'sparse'
+    & git -C $sparse config core.sparseCheckout true
+    if ($LASTEXITCODE -ne 0) { throw 'Unable to configure sparse fixture.' }
+    Assert-Rejected 'source-sparse-config' {
+        & (Join-Path $sparse 'eng\Verify-P14C3Source.ps1') `
+            -ExpectedHead $ExpectedHead -ExpectedTree $ExpectedTree `
+            -RepositoryRoot $sparse
+    }
+
+    $alternates = New-Fixture 'alternates'
+    $alternatesPath = @(& git -C $alternates rev-parse --git-path objects/info/alternates)[0]
+    if (-not [IO.Path]::IsPathRooted($alternatesPath)) {
+        $alternatesPath = Join-Path $alternates $alternatesPath
+    }
+    $sourceObjects = @(& git -C $RepositoryRoot rev-parse --git-path objects)[0]
+    [IO.File]::WriteAllText(
+        $alternatesPath,
+        [IO.Path]::GetFullPath($sourceObjects) + "`n",
+        [Text.UTF8Encoding]::new($false))
+    Assert-Rejected 'source-alternates-file' {
+        & (Join-Path $alternates 'eng\Verify-P14C3Source.ps1') `
+            -ExpectedHead $ExpectedHead -ExpectedTree $ExpectedTree `
+            -RepositoryRoot $alternates
+    }
+
+    $grafts = New-Fixture 'grafts'
+    $graftsPath = @(& git -C $grafts rev-parse --git-path info/grafts)[0]
+    if (-not [IO.Path]::IsPathRooted($graftsPath)) {
+        $graftsPath = Join-Path $grafts $graftsPath
+    }
+    [IO.File]::WriteAllText(
+        $graftsPath,
+        "$ExpectedHead`n",
+        [Text.UTF8Encoding]::new($false))
+    Assert-Rejected 'source-grafts' {
+        & (Join-Path $grafts 'eng\Verify-P14C3Source.ps1') `
+            -ExpectedHead $ExpectedHead -ExpectedTree $ExpectedTree `
+            -RepositoryRoot $grafts
+    }
+
+    $replace = New-Fixture 'replace'
+    & git -C $replace replace $ExpectedHead "$ExpectedHead^"
+    if ($LASTEXITCODE -ne 0) { throw 'Unable to create replace fixture.' }
+    Assert-Rejected 'source-replace-ref' {
+        & (Join-Path $replace 'eng\Verify-P14C3Source.ps1') `
+            -ExpectedHead $ExpectedHead -ExpectedTree $ExpectedTree `
+            -RepositoryRoot $replace
+    }
+
+    $infoAttributes = New-Fixture 'info-attributes'
+    $attributesPath = @(& git -C $infoAttributes rev-parse --git-path info/attributes)[0]
+    if (-not [IO.Path]::IsPathRooted($attributesPath)) {
+        $attributesPath = Join-Path $infoAttributes $attributesPath
+    }
+    [IO.File]::WriteAllText(
+        $attributesPath,
+        "* -text`n",
+        [Text.UTF8Encoding]::new($false))
+    Assert-Rejected 'source-info-attributes' {
+        & (Join-Path $infoAttributes 'eng\Verify-P14C3Source.ps1') `
+            -ExpectedHead $ExpectedHead -ExpectedTree $ExpectedTree `
+            -RepositoryRoot $infoAttributes
+    }
+
+    $ambient = New-Fixture 'ambient'
+    Assert-Rejected 'source-ambient-git-override' {
+        $previousIndex = $env:GIT_INDEX_FILE
+        try {
+            $env:GIT_INDEX_FILE = Join-Path $ambient 'forbidden-index'
+            & (Join-Path $ambient 'eng\Verify-P14C3Source.ps1') `
+                -ExpectedHead $ExpectedHead -ExpectedTree $ExpectedTree `
+                -RepositoryRoot $ambient
+        }
+        finally {
+            $env:GIT_INDEX_FILE = $previousIndex
+        }
+    }
+
     $skipStatic = New-Fixture 'skip-static'
     Hide-Mutation $skipStatic 'skip-worktree'
     Assert-Rejected 'static-provenance-skip-worktree' {

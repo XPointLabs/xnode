@@ -44,6 +44,9 @@ The offline closure covers all three locks and 23 manifest entries.
 The static provenance gate requires clean, exact local materializations of the
 P14E2 source and sanitized evidence commits. It runs the accepted P14E2 evidence
 verifier against the exact package vendored here, without network access.
+Source authority rejects skip-worktree, assume-unchanged, sparse state,
+index/worktree byte drift, replace refs, grafts, object alternates, info
+attributes and relevant ambient Git overrides.
 `P14C3_SOURCE_INTEGRITY=PASS` denotes only the bounded source check and
 `P14C3_P14E2_PROVENANCE_STATIC_GATE=PASS` only the cross-repository provenance
 check. Canonical acceptance remains pending until every command below passes.
@@ -63,9 +66,12 @@ activation change.
 
 ## Actual Linux execution gate
 
-`eng/P14C3.Ed25519Probe` is a test-only executable. One generic committed IL
-publish contains both exact libsodium native assets and executes unchanged in
-both actual processes. It verifies the RFC 8032 empty-message provider KAT,
+`eng/P14C3.Ed25519Probe` is a test-only executable. The gate creates an isolated
+local object snapshot of the exact commit and tree without hardlinks,
+alternates, global Git configuration or network, and checks every materialized
+file against its committed blob. One generic IL publish from that snapshot
+contains both exact libsodium native assets and executes unchanged in both
+actual processes. It verifies the RFC 8032 empty-message provider KAT,
 the exact P04 fixed-tag KAT and negative signature/key/domain/scalar cases. It
 then proves process OS/architecture and hashes the native module actually
 loaded into that process.
@@ -80,7 +86,8 @@ Containers have a unique nonce/name/label, no network, read-only root,
 no capabilities and exact owned cleanup. The gate neither enumerates nor
 changes unrelated Docker resources. It mounts only the clean committed probe
 publish. Runtime receipts are written outside Git and must be sanitized again
-before any later evidence-carrier commit.
+before any later evidence-carrier commit. Every receipt is bound to the source
+commit, tree, committed probe Git blob and probe SHA-256.
 
 ## Required source verification
 
@@ -97,14 +104,19 @@ dotnet build XNode.slnx -c Release --no-restore
 # diagnostics: 68 CHARSET and 4 IMPORTS. The GREEN delta must remain zero.
 dotnet format XNode.slnx --verify-no-changes --no-restore
 eng/Test-P14C3PackageGate.ps1
+eng/Test-P14C3SourceAuthorityGate.ps1 -ExpectedHead <SHA> -ExpectedTree <TREE> `
+  -P14E2SourceRepositoryRoot C:\W\deep-survival\wave08\deep-protocol-p14-activation-trust `
+  -P14E2EvidenceRepositoryRoot C:\W\deep-survival\wave08\deep-protocol-p14e2-evidence
 eng/Verify-P14C3Source.ps1 -ExpectedHead <SHA> -ExpectedTree <TREE>
 eng/Verify-P14C3StaticProvenance.ps1 -ExpectedHead <SHA> -ExpectedTree <TREE> `
   -P14E2SourceRepositoryRoot C:\W\deep-survival\wave08\deep-protocol-p14-activation-trust `
   -P14E2EvidenceRepositoryRoot C:\W\deep-survival\wave08\deep-protocol-p14e2-evidence
 eng/Verify-P14C3LinuxExecution.ps1 -ExpectedHead <SHA> -ExpectedTree <TREE>
+scripts/verify-p14c-offline.ps1 -ExpectedHead <SHA> -ExpectedTree <TREE>
+scripts/verify-solution-clean-restore.ps1 -ExpectedHead <SHA> -ExpectedTree <TREE>
 ```
 
-Also run the two existing isolated restore gates. Acceptance requires two
+Acceptance requires two
 independent exact-source GO reviews and then a separate sanitized RED/GREEN
 evidence carrier with independent review. Package publication, GitHub push,
 runtime registration, production signing and profile activation are outside

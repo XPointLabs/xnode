@@ -30,7 +30,7 @@ public sealed class RestoreIsolationTests
         var root = P04PackagePinTests.RepositoryRoot();
         var script = File.ReadAllText(Path.Combine(root, "scripts", "verify-p14c-offline.ps1"));
         Assert.Contains("$sourceRoot", script, StringComparison.Ordinal);
-        Assert.Contains("Copy-TrackedSource", script, StringComparison.Ordinal);
+        Assert.Contains("New-ExactGitSourceSnapshot", script, StringComparison.Ordinal);
         Assert.Contains("packageFolders", script, StringComparison.Ordinal);
         Assert.Contains(".nupkg.metadata", script, StringComparison.Ordinal);
         Assert.Contains("downloadDependencies", script, StringComparison.Ordinal);
@@ -52,7 +52,7 @@ public sealed class RestoreIsolationTests
         Assert.True(File.Exists(scriptPath));
         var script = File.ReadAllText(scriptPath);
         Assert.Contains("XNode.slnx", script, StringComparison.Ordinal);
-        Assert.Contains("Copy-TrackedSource", script, StringComparison.Ordinal);
+        Assert.Contains("New-ExactGitSourceSnapshot", script, StringComparison.Ordinal);
         Assert.Contains("--no-http-cache", script, StringComparison.Ordinal);
         Assert.Contains("--no-incremental", script, StringComparison.Ordinal);
         Assert.Contains("NUGET_PACKAGES", script, StringComparison.Ordinal);
@@ -60,37 +60,42 @@ public sealed class RestoreIsolationTests
     }
 
     [Fact]
-    public void TrackedSourceCopyExcludesEveryUntrackedBuildInput()
+    public void ExactSnapshotUsesCommittedBytesAndIndependentObjects()
     {
         using var repository = TemporaryGitRepository.Create();
         repository.Write("tracked.txt", "tracked");
         repository.Write("nested/source.cs", "namespace Tracked;");
         repository.Write("vendor/p04/packages/dummy.nupkg", "package");
         repository.Git("add", "tracked.txt", "nested/source.cs", "vendor/p04/packages/dummy.nupkg");
-
-        repository.Write("Directory.Build.props", "<Project />");
-        repository.Write("Directory.Build.targets", "<Project />");
-        repository.Write("untracked/source.cs", "namespace Untracked;");
-
-        var destination = Path.Combine(repository.Root, "copy");
+        repository.Git(
+            "-c", "user.name=P14C Test", "-c", "user.email=p14c@example.invalid",
+            "commit", "-m", "fixture");
+        var head = RunGit(repository.Root, "rev-parse", "HEAD").Output.Trim();
+        var tree = RunGit(repository.Root, "rev-parse", "HEAD^{tree}").Output.Trim();
+        using var destinationParent = TemporaryDirectory.Create();
+        var destination = Path.Combine(destinationParent.Root, "snapshot");
         var result = RunPowerShell(
             $". '{Quote(HelperScript())}'; " +
-            $"Copy-TrackedSource -RepositoryRoot '{Quote(repository.Root)}' " +
-            $"-DestinationRoot '{Quote(destination)}'");
+            $"New-ExactGitSourceSnapshot -RepositoryRoot '{Quote(repository.Root)}' " +
+            $"-DestinationRoot '{Quote(destination)}' -ExpectedHead '{head}' " +
+            $"-ExpectedTree '{tree}'");
         Assert.Equal(0, result.ExitCode);
-
-        var copied = Directory.GetFiles(destination, "*", SearchOption.AllDirectories)
-            .Where(path => !path.Contains(
-                $"{Path.DirectorySeparatorChar}vendor{Path.DirectorySeparatorChar}p04" +
-                $"{Path.DirectorySeparatorChar}packages{Path.DirectorySeparatorChar}",
-                StringComparison.OrdinalIgnoreCase))
-            .Select(path => Path.GetRelativePath(destination, path).Replace('\\', '/'))
-            .Order(StringComparer.Ordinal)
-            .ToArray();
-        Assert.Equal(["nested/source.cs", "tracked.txt"], copied);
-        Assert.False(File.Exists(Path.Combine(destination, "Directory.Build.props")));
-        Assert.False(File.Exists(Path.Combine(destination, "Directory.Build.targets")));
-        Assert.False(File.Exists(Path.Combine(destination, "untracked", "source.cs")));
+        Assert.Equal("tracked", File.ReadAllText(Path.Combine(destination, "tracked.txt")));
+        Assert.Equal(
+            "package",
+            File.ReadAllText(Path.Combine(
+                destination,
+                "vendor",
+                "p04",
+                "packages",
+                "dummy.nupkg")));
+        Assert.False(File.Exists(Path.Combine(
+            destination,
+            ".git",
+            "objects",
+            "info",
+            "alternates")));
+        Assert.Empty(RunGit(destination, "remote").Output.Trim());
     }
 
     [Fact]
@@ -104,22 +109,55 @@ public sealed class RestoreIsolationTests
             "commit", "-m", "fixture");
         repository.Write("Directory.Build.props", "<Project />");
 
+        var head = RunGit(repository.Root, "rev-parse", "HEAD").Output.Trim();
+        var tree = RunGit(repository.Root, "rev-parse", "HEAD^{tree}").Output.Trim();
+
         var result = RunPowerShell(
             $". '{Quote(HelperScript())}'; " +
-            $"Assert-CleanWorktree -RepositoryRoot '{Quote(repository.Root)}'");
+            $"Assert-ExactRepositoryAuthority -RepositoryRoot '{Quote(repository.Root)}' " +
+            $"-ExpectedHead '{head}' -ExpectedTree '{tree}'");
         Assert.NotEqual(0, result.ExitCode);
         Assert.Contains(
-            "Repository worktree must be clean before isolated verification.",
+            "worktree must be clean",
             result.Output,
-            StringComparison.Ordinal);
+            StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public void IsolationHelperNeverEnumeratesUntrackedFiles()
+    public void IsolationHelperUsesDetachedLocalObjectSnapshot()
     {
         var helper = File.ReadAllText(HelperScript());
-        Assert.Contains("git -C $RepositoryRoot ls-files --cached", helper, StringComparison.Ordinal);
-        Assert.DoesNotContain("--others", helper, StringComparison.Ordinal);
+        Assert.Contains("--no-hardlinks", helper, StringComparison.Ordinal);
+        Assert.Contains("--no-checkout", helper, StringComparison.Ordinal);
+        Assert.Contains("GIT_ALLOW_PROTOCOL", helper, StringComparison.Ordinal);
+        Assert.Contains("hash-object --no-filters", helper, StringComparison.Ordinal);
+        Assert.DoesNotContain("Copy-TrackedSource", helper, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("--skip-worktree")]
+    [InlineData("--assume-unchanged")]
+    public void ExactAuthorityRejectsHiddenIndexMutation(string flag)
+    {
+        using var repository = TemporaryGitRepository.Create();
+        repository.Write("tracked.txt", "tracked");
+        repository.Git("add", "tracked.txt");
+        repository.Git(
+            "-c", "user.name=P14C Test", "-c", "user.email=p14c@example.invalid",
+            "commit", "-m", "fixture");
+        var head = RunGit(repository.Root, "rev-parse", "HEAD").Output.Trim();
+        var tree = RunGit(repository.Root, "rev-parse", "HEAD^{tree}").Output.Trim();
+        repository.Git("update-index", flag, "--", "tracked.txt");
+        repository.Write("tracked.txt", "hidden mutation");
+        Assert.Empty(GitStatus(repository.Root));
+
+        var result = RunPowerShell(
+            $". '{Quote(HelperScript())}'; " +
+            $"Assert-ExactRepositoryAuthority -RepositoryRoot '{Quote(repository.Root)}' " +
+            $"-ExpectedHead '{head}' -ExpectedTree '{tree}'");
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("special index flags", result.Output, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

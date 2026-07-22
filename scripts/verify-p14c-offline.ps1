@@ -1,5 +1,7 @@
 param(
-    [string]$WorkRoot
+    [string]$WorkRoot,
+    [string]$ExpectedHead,
+    [string]$ExpectedTree
 )
 
 $ErrorActionPreference = 'Stop'
@@ -22,7 +24,21 @@ if (Test-Path -LiteralPath $WorkRoot) {
 }
 Assert-SafeWorkRootAncestors $WorkRoot
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-Assert-CleanWorktree $repositoryRoot
+Assert-NoGitAuthorityEnvironmentOverrides
+if ([string]::IsNullOrWhiteSpace($ExpectedHead) -and
+    [string]::IsNullOrWhiteSpace($ExpectedTree)) {
+    $ExpectedHead = @(& git -C $repositoryRoot rev-parse HEAD)[0].Trim()
+    $ExpectedTree = @(& git -C $repositoryRoot rev-parse 'HEAD^{tree}')[0].Trim()
+}
+elseif ([string]::IsNullOrWhiteSpace($ExpectedHead) -or
+    [string]::IsNullOrWhiteSpace($ExpectedTree)) {
+    throw 'Offline source HEAD and tree must be supplied together.'
+}
+Assert-ExactRepositoryAuthority `
+    -RepositoryRoot $repositoryRoot `
+    -ExpectedHead $ExpectedHead `
+    -ExpectedTree $ExpectedTree `
+    -Label 'Offline source'
 
 $projectRoots = @(
     'src\XNode.ProfileGenerator',
@@ -34,7 +50,11 @@ $sourceRoot = Join-Path $WorkRoot 'source'
 $packages = Join-Path $WorkRoot 'packages'
 $httpCache = Join-Path $WorkRoot 'http-cache'
 New-Item -ItemType Directory -Force -Path $WorkRoot, $packages, $httpCache | Out-Null
-Copy-TrackedSource $repositoryRoot $sourceRoot
+New-ExactGitSourceSnapshot `
+    -RepositoryRoot $repositoryRoot `
+    -DestinationRoot $sourceRoot `
+    -ExpectedHead $ExpectedHead `
+    -ExpectedTree $ExpectedTree | Out-Null
 
 $environmentNames = @(
     'NUGET_PACKAGES',
@@ -103,8 +123,15 @@ try {
     # downloadDependencies are isolated and vendor-only.
     $afterSnapshot = Get-RepositoryBuildSnapshot $repositoryRoot $projectRoots
     Assert-SnapshotEqual $repositorySnapshot $afterSnapshot
+    Assert-ExactRepositoryAuthority `
+        -RepositoryRoot $sourceRoot `
+        -ExpectedHead $ExpectedHead `
+        -ExpectedTree $ExpectedTree `
+        -Label 'Offline materialized snapshot'
 
     Write-Output 'P14C_OFFLINE_VERIFICATION=PASS'
+    Write-Output "P14C_OFFLINE_SOURCE_SHA=$ExpectedHead"
+    Write-Output "P14C_OFFLINE_SOURCE_TREE=$ExpectedTree"
     Write-Output "P14C_OFFLINE_PACKAGES=$packages"
 }
 finally {

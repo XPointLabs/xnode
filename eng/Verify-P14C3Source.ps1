@@ -11,6 +11,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path (Join-Path $PSScriptRoot '..\scripts') 'restore-isolation.ps1')
 
 $baseCommit = 'cd9d20a8ec8346d171d4cd070dde170aa5f471d7'
 $baseTree = 'e27c1d7c2517bd9d1bcdfbacda8c68c57a2ced59'
@@ -33,32 +34,12 @@ function Assert-Exact([string]$Expected, [string]$Actual, [string]$Label) {
     }
 }
 
-Assert-Exact $ExpectedHead @(Invoke-Git rev-parse HEAD)[0] 'P14C3 source HEAD'
-Assert-Exact $ExpectedTree @(Invoke-Git rev-parse 'HEAD^{tree}')[0] 'P14C3 source tree'
+Assert-ExactRepositoryAuthority `
+    -RepositoryRoot $RepositoryRoot `
+    -ExpectedHead $ExpectedHead `
+    -ExpectedTree $ExpectedTree `
+    -Label 'P14C3 source'
 Assert-Exact $baseTree @(Invoke-Git rev-parse "$baseCommit^{tree}")[0] 'P14C2 base tree'
-Assert-Exact 'false' @(Invoke-Git rev-parse --is-shallow-repository)[0] 'Shallow state'
-
-$status = @(Invoke-Git status --porcelain=v1 --untracked-files=all)
-if ($status.Count -ne 0) {
-    throw 'P14C3 source worktree must be clean.'
-}
-if (@(Invoke-Git replace -l).Count -ne 0) {
-    throw 'Git replace refs are forbidden.'
-}
-$alternatesConfig = @(& git -C $RepositoryRoot config --get-all objects.alternateObjectDirectories)
-if ($LASTEXITCODE -notin @(0, 1) -or $alternatesConfig.Count -ne 0) {
-    throw 'Git object alternates are forbidden.'
-}
-$common = @(Invoke-Git rev-parse --git-common-dir)[0]
-if (-not [IO.Path]::IsPathRooted($common)) {
-    $common = Join-Path $RepositoryRoot $common
-}
-if (Test-Path -LiteralPath (Join-Path $common 'objects\info\alternates')) {
-    throw 'Git alternates file is forbidden.'
-}
-if (Test-Path -LiteralPath (Join-Path $common 'info\grafts')) {
-    throw 'Git grafts are forbidden.'
-}
 
 & git -C $RepositoryRoot merge-base --is-ancestor $baseCommit $ExpectedHead
 if ($LASTEXITCODE -ne 0) {
@@ -79,11 +60,15 @@ $allowed = @(
     '^eng/Verify-P14C3LinuxExecution\.ps1$',
     '^eng/Verify-P14C3Package\.ps1$',
     '^eng/Verify-P14C3Source\.ps1$',
+    '^scripts/restore-isolation\.ps1$',
+    '^scripts/verify-p14c-offline\.ps1$',
+    '^scripts/verify-solution-clean-restore\.ps1$',
     '^src/XNode\.ProfileGenerator/XNode\.ProfileGenerator\.csproj$',
     '^src/XNode\.ProfileGenerator/packages\.lock\.json$',
     '^tests/XNode\.ProfileGenerator\.Tests/P14C3ActivationTrustRebindTests\.cs$',
     '^tests/XNode\.ProfileGenerator\.Tests/OfflineClosureTests\.cs$',
     '^tests/XNode\.ProfileGenerator\.Tests/ProfileCarrierPackagePinTests\.cs$',
+    '^tests/XNode\.ProfileGenerator\.Tests/RestoreIsolationTests\.cs$',
     '^tests/XNode\.ProfileGenerator\.Tests/SharedCarrierAdoptionTests\.cs$',
     '^tests/XNode\.ProfileGenerator\.Tests/XNode\.ProfileGenerator\.Tests\.csproj$',
     '^tests/XNode\.ProfileGenerator\.Tests/packages\.lock\.json$',

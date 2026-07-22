@@ -1,5 +1,7 @@
 param(
-    [string]$WorkRoot
+    [string]$WorkRoot,
+    [string]$ExpectedHead,
+    [string]$ExpectedTree
 )
 
 $ErrorActionPreference = 'Stop'
@@ -20,7 +22,21 @@ if (Test-Path -LiteralPath $WorkRoot) {
 }
 Assert-SafeWorkRootAncestors $WorkRoot
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-Assert-CleanWorktree $repositoryRoot
+Assert-NoGitAuthorityEnvironmentOverrides
+if ([string]::IsNullOrWhiteSpace($ExpectedHead) -and
+    [string]::IsNullOrWhiteSpace($ExpectedTree)) {
+    $ExpectedHead = @(& git -C $repositoryRoot rev-parse HEAD)[0].Trim()
+    $ExpectedTree = @(& git -C $repositoryRoot rev-parse 'HEAD^{tree}')[0].Trim()
+}
+elseif ([string]::IsNullOrWhiteSpace($ExpectedHead) -or
+    [string]::IsNullOrWhiteSpace($ExpectedTree)) {
+    throw 'Solution source HEAD and tree must be supplied together.'
+}
+Assert-ExactRepositoryAuthority `
+    -RepositoryRoot $repositoryRoot `
+    -ExpectedHead $ExpectedHead `
+    -ExpectedTree $ExpectedTree `
+    -Label 'Solution source'
 
 $projectRoots = @(
     & git -C $repositoryRoot ls-files 'src/**/*.csproj' 'tests/**/*.csproj' |
@@ -37,7 +53,11 @@ $httpCache = Join-Path $WorkRoot 'http-cache'
 $fallbackPackages = Join-Path $WorkRoot 'fallback-packages'
 New-Item -ItemType Directory -Force -Path `
     $WorkRoot, $packages, $httpCache, $fallbackPackages | Out-Null
-Copy-TrackedSource $repositoryRoot $sourceRoot
+New-ExactGitSourceSnapshot `
+    -RepositoryRoot $repositoryRoot `
+    -DestinationRoot $sourceRoot `
+    -ExpectedHead $ExpectedHead `
+    -ExpectedTree $ExpectedTree | Out-Null
 
 if (Test-Path -LiteralPath (Join-Path $sourceRoot 'NuGet.Config')) {
     throw 'The normal whole-solution gate must not inherit the dedicated P14C offline config.'
@@ -66,8 +86,15 @@ try {
     Assert-ArtifactsUnderRoot $sourceRoot $WorkRoot
     $afterSnapshot = Get-RepositoryBuildSnapshot $repositoryRoot $projectRoots
     Assert-SnapshotEqual $repositorySnapshot $afterSnapshot
+    Assert-ExactRepositoryAuthority `
+        -RepositoryRoot $sourceRoot `
+        -ExpectedHead $ExpectedHead `
+        -ExpectedTree $ExpectedTree `
+        -Label 'Solution materialized snapshot'
 
     Write-Output 'SOLUTION_CLEAN_RESTORE=PASS'
+    Write-Output "SOLUTION_CLEAN_SOURCE_SHA=$ExpectedHead"
+    Write-Output "SOLUTION_CLEAN_SOURCE_TREE=$ExpectedTree"
     Write-Output "SOLUTION_CLEAN_PACKAGES=$packages"
 }
 finally {

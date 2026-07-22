@@ -22,6 +22,9 @@ $sourceRoot = Join-Path $workRoot 'source'
 $packagesRoot = Join-Path $workRoot 'packages'
 $httpCache = Join-Path $workRoot 'http-cache'
 $publishRoot = Join-Path $workRoot 'publish'
+$probeRelative = 'eng/P14C3.Ed25519Probe/Program.cs'
+$probeGitBlob = ''
+$probeSha256 = ''
 if ([string]::IsNullOrWhiteSpace($EvidenceDirectory)) {
     $EvidenceDirectory = Join-Path ([IO.Path]::GetTempPath()) `
         "xnode-p14c3-runtime-evidence-$([Guid]::NewGuid().ToString('N'))"
@@ -77,12 +80,11 @@ function Invoke-DockerAllowFailure([string[]]$Arguments) {
 }
 
 function Assert-ExactSource {
-    $head = (& git -C $repositoryRoot rev-parse HEAD).Trim()
-    $tree = (& git -C $repositoryRoot rev-parse 'HEAD^{tree}').Trim()
-    if ($LASTEXITCODE -ne 0 -or $head -cne $ExpectedHead -or $tree -cne $ExpectedTree) {
-        throw 'Linux execution source identity is not exact.'
-    }
-    Assert-CleanWorktree $repositoryRoot
+    Assert-ExactRepositoryAuthority `
+        -RepositoryRoot $repositoryRoot `
+        -ExpectedHead $ExpectedHead `
+        -ExpectedTree $ExpectedTree `
+        -Label 'Linux execution source'
 }
 
 function Invoke-Architecture([string]$Name) {
@@ -168,6 +170,8 @@ function Invoke-Architecture([string]$Name) {
         schema = 'xnode-p14c3-linux-ed25519-execution.v1'
         sourceCommit = $ExpectedHead
         sourceTree = $ExpectedTree
+        probeProgramGitBlob = $probeGitBlob
+        probeProgramSha256 = $probeSha256
         os = 'linux'
         architecture = $profile.processArchitecture
         platform = $profile.platform
@@ -202,7 +206,22 @@ try {
     Assert-SafeWorkRootAncestors $workRoot
     New-Item -ItemType Directory -Force -Path `
         $workRoot, $packagesRoot, $httpCache, $EvidenceDirectory | Out-Null
-    Copy-TrackedSource $repositoryRoot $sourceRoot
+    New-ExactGitSourceSnapshot `
+        -RepositoryRoot $repositoryRoot `
+        -DestinationRoot $sourceRoot `
+        -ExpectedHead $ExpectedHead `
+        -ExpectedTree $ExpectedTree | Out-Null
+
+    $probeGitBlob = @(& git -C $sourceRoot rev-parse "$ExpectedHead`:$probeRelative")[0].Trim()
+    if ($LASTEXITCODE -ne 0 -or $probeGitBlob -notmatch '^[0-9a-f]{40,64}$') {
+        throw 'Unable to bind the committed probe blob identity.'
+    }
+    $probeProgram = Join-Path $sourceRoot $probeRelative
+    $materializedProbeBlob = @(& git -C $sourceRoot hash-object --no-filters -- $probeProgram)[0].Trim()
+    if ($LASTEXITCODE -ne 0 -or $materializedProbeBlob -cne $probeGitBlob) {
+        throw 'Materialized probe does not match the committed probe blob.'
+    }
+    $probeSha256 = (Get-FileHash -LiteralPath $probeProgram -Algorithm SHA256).Hash.ToLowerInvariant()
 
     $env:NUGET_PACKAGES = $packagesRoot
     $env:NUGET_HTTP_CACHE_PATH = $httpCache
@@ -223,12 +242,24 @@ try {
         --configuration Release --no-restore --no-self-contained `
         -p:UseAppHost=false --output $publishRoot
     Assert-NoHttpCacheFiles $httpCache
+    Assert-ExactRepositoryAuthority `
+        -RepositoryRoot $sourceRoot `
+        -ExpectedHead $ExpectedHead `
+        -ExpectedTree $ExpectedTree `
+        -Label 'Linux materialized snapshot'
 
     $targets = if ($Architecture -eq 'all') { @('arm64', 'x64') } else { @($Architecture) }
     foreach ($target in $targets) {
         Invoke-Architecture $target
     }
+    Assert-ExactRepositoryAuthority `
+        -RepositoryRoot $sourceRoot `
+        -ExpectedHead $ExpectedHead `
+        -ExpectedTree $ExpectedTree `
+        -Label 'Linux materialized snapshot'
     Assert-ExactSource
+    Write-Output "P14C3_PROBE_PROGRAM_GIT_BLOB=$probeGitBlob"
+    Write-Output "P14C3_PROBE_PROGRAM_SHA256=$probeSha256"
     Write-Output "P14C3_RUNTIME_EVIDENCE=$EvidenceDirectory"
 }
 finally {

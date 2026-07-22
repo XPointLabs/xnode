@@ -16,15 +16,127 @@ function Invoke-DotNet {
     }
 }
 
-function Assert-CleanWorktree {
-    param([Parameter(Mandatory)][string]$RepositoryRoot)
-
-    $status = @(& git -C $RepositoryRoot status --porcelain=v1 --untracked-files=all)
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Unable to inspect the repository worktree.'
+function Assert-NoGitAuthorityEnvironmentOverrides {
+    $exactNames = @(
+        'GIT_DIR',
+        'GIT_WORK_TREE',
+        'GIT_INDEX_FILE',
+        'GIT_OBJECT_DIRECTORY',
+        'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+        'GIT_COMMON_DIR',
+        'GIT_CONFIG',
+        'GIT_CONFIG_GLOBAL',
+        'GIT_CONFIG_SYSTEM',
+        'GIT_CONFIG_NOSYSTEM',
+        'GIT_CONFIG_COUNT',
+        'GIT_ATTR_NOSYSTEM',
+        'GIT_CEILING_DIRECTORIES',
+        'GIT_DISCOVERY_ACROSS_FILESYSTEM'
+    )
+    foreach ($entry in Get-ChildItem Env:) {
+        if (($exactNames -contains $entry.Name) -or
+            $entry.Name -match '^GIT_CONFIG_(KEY|VALUE)_\d+$') {
+            throw "Git authority environment override is forbidden: '$($entry.Name)'."
+        }
     }
-    if ($status.Count -ne 0) {
-        throw 'Repository worktree must be clean before isolated verification.'
+}
+
+function Assert-ExactRepositoryAuthority {
+    param(
+        [Parameter(Mandatory)][string]$RepositoryRoot,
+        [Parameter(Mandatory)][string]$ExpectedHead,
+        [Parameter(Mandatory)][string]$ExpectedTree,
+        [string]$Label = 'Repository'
+    )
+
+    Assert-NoGitAuthorityEnvironmentOverrides
+    $RepositoryRoot = [IO.Path]::GetFullPath($RepositoryRoot)
+    if (-not (Test-Path -LiteralPath $RepositoryRoot -PathType Container)) {
+        throw "$Label worktree is absent."
+    }
+
+    $head = @(& git -C $RepositoryRoot rev-parse --verify HEAD)
+    if ($LASTEXITCODE -ne 0 -or $head.Count -ne 1 -or $head[0].Trim() -cne $ExpectedHead) {
+        throw "$Label HEAD is not exact."
+    }
+    $tree = @(& git -C $RepositoryRoot rev-parse 'HEAD^{tree}')
+    if ($LASTEXITCODE -ne 0 -or $tree.Count -ne 1 -or $tree[0].Trim() -cne $ExpectedTree) {
+        throw "$Label tree is not exact."
+    }
+    $shallow = @(& git -C $RepositoryRoot rev-parse --is-shallow-repository)
+    if ($LASTEXITCODE -ne 0 -or $shallow.Count -ne 1 -or $shallow[0].Trim() -cne 'false') {
+        throw "$Label repository is shallow."
+    }
+    if (@(& git -C $RepositoryRoot replace -l).Count -ne 0 -or $LASTEXITCODE -ne 0) {
+        throw "$Label repository has replace refs."
+    }
+
+    foreach ($key in @(
+        'core.ignorestat',
+        'core.fsmonitor',
+        'core.attributesfile',
+        'core.worktree',
+        'core.sparsecheckout',
+        'core.sparsecheckoutcone',
+        'index.sparse'
+    )) {
+        $values = @(& git -C $RepositoryRoot config --get-all $key)
+        if ($LASTEXITCODE -notin @(0, 1) -or $values.Count -ne 0) {
+            throw "$Label repository has forbidden Git config '$key'."
+        }
+    }
+
+    $alternates = @(& git -C $RepositoryRoot config --get-all objects.alternateObjectDirectories)
+    if ($LASTEXITCODE -notin @(0, 1) -or $alternates.Count -ne 0) {
+        throw "$Label repository has object alternates."
+    }
+    $common = @(& git -C $RepositoryRoot rev-parse --git-common-dir)
+    if ($LASTEXITCODE -ne 0 -or $common.Count -ne 1) {
+        throw "Unable to resolve the $Label common Git directory."
+    }
+    $commonPath = $common[0]
+    if (-not [IO.Path]::IsPathRooted($commonPath)) {
+        $commonPath = Join-Path $RepositoryRoot $commonPath
+    }
+    if (Test-Path -LiteralPath (Join-Path $commonPath 'objects\info\alternates')) {
+        throw "$Label repository has an alternates file."
+    }
+    if (Test-Path -LiteralPath (Join-Path $commonPath 'info\grafts')) {
+        throw "$Label repository has grafts."
+    }
+    $infoAttributes = @(& git -C $RepositoryRoot rev-parse --git-path info/attributes)
+    if ($LASTEXITCODE -ne 0 -or $infoAttributes.Count -ne 1) {
+        throw "Unable to resolve $Label info attributes."
+    }
+    $infoAttributesPath = $infoAttributes[0]
+    if (-not [IO.Path]::IsPathRooted($infoAttributesPath)) {
+        $infoAttributesPath = Join-Path $RepositoryRoot $infoAttributesPath
+    }
+    if (Test-Path -LiteralPath $infoAttributesPath) {
+        throw "$Label repository has uncommitted info attributes."
+    }
+
+    $assumed = @(& git -C $RepositoryRoot ls-files -v |
+        Where-Object { $_ -cmatch '^[a-z] ' })
+    $assumeExitCode = $LASTEXITCODE
+    $skipped = @(& git -C $RepositoryRoot ls-files -t |
+        Where-Object { $_ -cmatch '^S ' })
+    $skipExitCode = $LASTEXITCODE
+    if ($assumeExitCode -ne 0 -or $skipExitCode -ne 0 -or
+        $assumed.Count -ne 0 -or $skipped.Count -ne 0) {
+        throw "$Label repository has special index flags."
+    }
+    & git -C $RepositoryRoot diff-index --cached --quiet HEAD --
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Label index differs from HEAD."
+    }
+    & git -C $RepositoryRoot diff-files --quiet --ignore-submodules=none --
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Label worktree bytes differ from the index."
+    }
+    $status = @(& git -C $RepositoryRoot status --porcelain=v1 --untracked-files=all)
+    if ($LASTEXITCODE -ne 0 -or $status.Count -ne 0) {
+        throw "$Label worktree must be clean."
     }
 }
 
@@ -71,43 +183,95 @@ function Get-PinnedBuildArguments {
     )
 }
 
-function Copy-TrackedSource {
+function New-ExactGitSourceSnapshot {
     param(
         [Parameter(Mandatory)][string]$RepositoryRoot,
-        [Parameter(Mandatory)][string]$DestinationRoot
+        [Parameter(Mandatory)][string]$DestinationRoot,
+        [Parameter(Mandatory)][string]$ExpectedHead,
+        [Parameter(Mandatory)][string]$ExpectedTree
     )
 
-    New-Item -ItemType Directory -Path $DestinationRoot | Out-Null
-    $paths = & git -C $RepositoryRoot ls-files --cached
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Unable to enumerate the repository source.'
+    Assert-ExactRepositoryAuthority `
+        -RepositoryRoot $RepositoryRoot `
+        -ExpectedHead $ExpectedHead `
+        -ExpectedTree $ExpectedTree `
+        -Label 'Snapshot source'
+    $RepositoryRoot = [IO.Path]::GetFullPath($RepositoryRoot)
+    $DestinationRoot = [IO.Path]::GetFullPath($DestinationRoot)
+    if (Test-Path -LiteralPath $DestinationRoot) {
+        throw 'Exact Git snapshot destination must be absent.'
     }
 
+    $emptyConfig = Join-Path (Split-Path -Parent $DestinationRoot) 'empty-git.config'
+    [IO.File]::WriteAllText($emptyConfig, '', [Text.UTF8Encoding]::new($false))
+    $environmentNames = @(
+        'GIT_CONFIG_NOSYSTEM',
+        'GIT_CONFIG_GLOBAL',
+        'GIT_ATTR_NOSYSTEM',
+        'GIT_ALLOW_PROTOCOL'
+    )
+    $previous = @{}
+    foreach ($name in $environmentNames) {
+        $previous[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+    }
+    try {
+        $env:GIT_CONFIG_NOSYSTEM = '1'
+        $env:GIT_CONFIG_GLOBAL = $emptyConfig
+        $env:GIT_ATTR_NOSYSTEM = '1'
+        $env:GIT_ALLOW_PROTOCOL = 'file'
+        & git -c core.autocrlf=false -c core.eol=lf clone `
+            --no-hardlinks --no-checkout --no-tags $RepositoryRoot $DestinationRoot | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to create the exact local Git snapshot.'
+        }
+        & git -C $DestinationRoot -c core.autocrlf=false -c core.eol=lf `
+            checkout --detach $ExpectedHead | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to materialize the exact local Git snapshot.'
+        }
+        & git -C $DestinationRoot remote remove origin
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to detach the exact local Git snapshot from its source.'
+        }
+        & git -C $DestinationRoot config --local core.autocrlf false
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to pin snapshot line-ending materialization.'
+        }
+        & git -C $DestinationRoot config --local core.eol lf
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to pin snapshot line-ending identity.'
+        }
+    }
+    finally {
+        foreach ($name in $environmentNames) {
+            [Environment]::SetEnvironmentVariable($name, $previous[$name], 'Process')
+        }
+    }
+
+    Assert-ExactRepositoryAuthority `
+        -RepositoryRoot $DestinationRoot `
+        -ExpectedHead $ExpectedHead `
+        -ExpectedTree $ExpectedTree `
+        -Label 'Materialized snapshot'
+    $paths = @(& git -C $DestinationRoot ls-files --cached)
+    if ($LASTEXITCODE -ne 0 -or $paths.Count -eq 0) {
+        throw 'Unable to enumerate exact snapshot files.'
+    }
     foreach ($relativePath in $paths) {
-        if ([string]::IsNullOrWhiteSpace($relativePath) -or
-            $relativePath.Replace('\', '/').StartsWith(
-                'vendor/p04/packages/',
-                [StringComparison]::OrdinalIgnoreCase)) {
-            continue
+        $path = Join-Path $DestinationRoot $relativePath
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            throw "Exact snapshot file is absent: '$relativePath'."
         }
-
-        $source = Join-Path $RepositoryRoot $relativePath
-        if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
-            continue
+        $expectedBlob = @(& git -C $DestinationRoot rev-parse "$ExpectedHead`:$relativePath")
+        $actualBlob = @(& git -C $DestinationRoot hash-object --no-filters -- $path)
+        if ($LASTEXITCODE -ne 0 -or
+            $expectedBlob.Count -ne 1 -or
+            $actualBlob.Count -ne 1 -or
+            $actualBlob[0].Trim() -cne $expectedBlob[0].Trim()) {
+            throw "Exact snapshot blob mismatch: '$relativePath'."
         }
-        $destination = Join-Path $DestinationRoot $relativePath
-        $parent = Split-Path -Parent $destination
-        if (-not (Test-Path -LiteralPath $parent)) {
-            New-Item -ItemType Directory -Force -Path $parent | Out-Null
-        }
-        Copy-Item -LiteralPath $source -Destination $destination
     }
-
-    $vendorParent = Join-Path $DestinationRoot 'vendor\p04'
-    New-Item -ItemType Directory -Force -Path $vendorParent | Out-Null
-    $vendorLink = Join-Path $vendorParent 'packages'
-    $vendorTarget = Join-Path $RepositoryRoot 'vendor\p04\packages'
-    New-Item -ItemType Junction -Path $vendorLink -Target $vendorTarget | Out-Null
+    return $DestinationRoot
 }
 
 function Get-RepositoryBuildSnapshot {

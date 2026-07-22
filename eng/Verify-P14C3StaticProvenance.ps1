@@ -15,6 +15,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path (Join-Path $PSScriptRoot '..\scripts') 'restore-isolation.ps1')
 
 $p14e2SourceHead = '69a712a894b024a09859096025c2bb8fe68a642e'
 $p14e2SourceTree = 'd83bbdd001b723738357689bbb2150a51357cb3b'
@@ -28,70 +29,16 @@ $RepositoryRoot = [IO.Path]::GetFullPath($RepositoryRoot)
 $P14E2SourceRepositoryRoot = [IO.Path]::GetFullPath($P14E2SourceRepositoryRoot)
 $P14E2EvidenceRepositoryRoot = [IO.Path]::GetFullPath($P14E2EvidenceRepositoryRoot)
 
-function Invoke-Git(
-    [string]$Root,
-    [Parameter(ValueFromRemainingArguments = $true)]
-    [string[]]$Arguments
-) {
-    $output = @(& git -C $Root @Arguments)
-    if ($LASTEXITCODE -ne 0) {
-        throw "git failed in '$Root': $($Arguments -join ' ')"
-    }
-    return $output
-}
-
-function Assert-ExactRepository(
-    [string]$Root,
-    [string]$ExpectedRepositoryHead,
-    [string]$ExpectedRepositoryTree,
-    [string]$Label
-) {
-    if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
-        throw "$Label worktree is absent."
-    }
-    if (@(Invoke-Git $Root status --porcelain=v1 --untracked-files=all).Count -ne 0) {
-        throw "$Label worktree is not clean."
-    }
-    if (@(Invoke-Git $Root rev-parse HEAD)[0].Trim() -cne $ExpectedRepositoryHead) {
-        throw "$Label HEAD is not exact."
-    }
-    if (@(Invoke-Git $Root rev-parse 'HEAD^{tree}')[0].Trim() -cne $ExpectedRepositoryTree) {
-        throw "$Label tree is not exact."
-    }
-    if (@(Invoke-Git $Root rev-parse --is-shallow-repository)[0].Trim() -cne 'false') {
-        throw "$Label repository is shallow."
-    }
-    if (@(Invoke-Git $Root replace -l).Count -ne 0) {
-        throw "$Label repository has replace refs."
-    }
-    $alternates = @(& git -C $Root config --get-all objects.alternateObjectDirectories)
-    if ($LASTEXITCODE -notin @(0, 1) -or $alternates.Count -ne 0) {
-        throw "$Label repository has object alternates."
-    }
-    $common = @(Invoke-Git $Root rev-parse --git-common-dir)[0]
-    if (-not [IO.Path]::IsPathRooted($common)) {
-        $common = Join-Path $Root $common
-    }
-    if (Test-Path -LiteralPath (Join-Path $common 'objects\info\alternates')) {
-        throw "$Label repository has an alternates file."
-    }
-    if (Test-Path -LiteralPath (Join-Path $common 'info\grafts')) {
-        throw "$Label repository has grafts."
-    }
-    if (@(Invoke-Git $Root ls-files -v | Where-Object { $_ -cmatch '^[a-z] ' }).Count -ne 0 -or
-        @(Invoke-Git $Root ls-files -t | Where-Object { $_ -cmatch '^S ' }).Count -ne 0) {
-        throw "$Label repository has special index flags."
-    }
-    $sparse = @(& git -C $Root config --bool core.sparseCheckout)
-    if ($LASTEXITCODE -notin @(0, 1) -or ($sparse.Count -ne 0 -and $sparse[0] -ceq 'true')) {
-        throw "$Label repository uses sparse checkout."
-    }
-}
-
-Assert-ExactRepository $P14E2SourceRepositoryRoot `
-    $p14e2SourceHead $p14e2SourceTree 'P14E2 source'
-Assert-ExactRepository $P14E2EvidenceRepositoryRoot `
-    $p14e2EvidenceHead $p14e2EvidenceTree 'P14E2 evidence'
+Assert-ExactRepositoryAuthority `
+    -RepositoryRoot $P14E2SourceRepositoryRoot `
+    -ExpectedHead $p14e2SourceHead `
+    -ExpectedTree $p14e2SourceTree `
+    -Label 'P14E2 source'
+Assert-ExactRepositoryAuthority `
+    -RepositoryRoot $P14E2EvidenceRepositoryRoot `
+    -ExpectedHead $p14e2EvidenceHead `
+    -ExpectedTree $p14e2EvidenceTree `
+    -Label 'P14E2 evidence'
 
 & (Join-Path $PSScriptRoot 'Verify-P14C3Source.ps1') `
     -ExpectedHead $ExpectedHead `
