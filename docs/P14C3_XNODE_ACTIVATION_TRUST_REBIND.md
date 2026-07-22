@@ -38,7 +38,15 @@ OPC verifier and validates the raw package, source identities, three exact
 dependencies, all consumer locks/manifests and singleton vendored package.
 `eng/Test-P14C3PackageGate.ps1` proves rejection of path drift, byte
 substitution, raw repacking, source-commit drift, dependency expansion, lock
-drift and the old evidence-carrier identity.
+drift (including the execution probe) and the old evidence-carrier identity.
+The offline closure covers all three locks and 23 manifest entries.
+
+The static provenance gate requires clean, exact local materializations of the
+P14E2 source and sanitized evidence commits. It runs the accepted P14E2 evidence
+verifier against the exact package vendored here, without network access.
+`P14C3_SOURCE_INTEGRITY=PASS` denotes only the bounded source check and
+`P14C3_P14E2_PROVENANCE_STATIC_GATE=PASS` only the cross-repository provenance
+check. Canonical acceptance remains pending until every command below passes.
 
 ## Compatibility and runtime isolation
 
@@ -85,9 +93,14 @@ dotnet test tests/XNode.ProfileGenerator.Tests/XNode.ProfileGenerator.Tests.cspr
 dotnet test XNode.slnx -c Debug --no-restore
 dotnet test XNode.slnx -c Release --no-restore
 dotnet build XNode.slnx -c Release --no-restore
+# The inherited whole-solution baseline exits nonzero with exactly 72 existing
+# diagnostics: 68 CHARSET and 4 IMPORTS. The GREEN delta must remain zero.
 dotnet format XNode.slnx --verify-no-changes --no-restore
 eng/Test-P14C3PackageGate.ps1
 eng/Verify-P14C3Source.ps1 -ExpectedHead <SHA> -ExpectedTree <TREE>
+eng/Verify-P14C3StaticProvenance.ps1 -ExpectedHead <SHA> -ExpectedTree <TREE> `
+  -P14E2SourceRepositoryRoot C:\W\deep-survival\wave08\deep-protocol-p14-activation-trust `
+  -P14E2EvidenceRepositoryRoot C:\W\deep-survival\wave08\deep-protocol-p14e2-evidence
 eng/Verify-P14C3LinuxExecution.ps1 -ExpectedHead <SHA> -ExpectedTree <TREE>
 ```
 

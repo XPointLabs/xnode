@@ -118,6 +118,8 @@ public sealed class ProfileCarrierPackagePinTests
         var root = P04PackagePinTests.RepositoryRoot();
         var consumers = new[]
         {
+            "eng/P14C3.Ed25519Probe/P14C3.Ed25519Probe.csproj",
+            "eng/P14C3.Ed25519Probe/packages.lock.json",
             "src/XNode.ProfileGenerator/XNode.ProfileGenerator.csproj",
             "src/XNode.ProfileGenerator/packages.lock.json",
             "tests/XNode.ProfileGenerator.Tests/packages.lock.json",

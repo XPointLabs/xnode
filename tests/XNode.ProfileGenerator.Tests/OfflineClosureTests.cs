@@ -7,7 +7,7 @@ namespace XNode.ProfileGenerator.Tests;
 public sealed class OfflineClosureTests
 {
     [Fact]
-    public void ClosureManifestExactlyCoversBothLockedP14CGraphs()
+    public void ClosureManifestExactlyCoversAllThreeLockedP14CGraphs()
     {
         var root = P04PackagePinTests.RepositoryRoot();
         var vendorRoot = Path.Combine(root, "vendor", "p04");
@@ -32,7 +32,9 @@ public sealed class OfflineClosureTests
             .Count());
 
         var locked = ReadLockedPackages(
-                Path.Combine(root, "src", "XNode.ProfileGenerator", "packages.lock.json"))
+                Path.Combine(root, "eng", "P14C3.Ed25519Probe", "packages.lock.json"))
+            .Concat(ReadLockedPackages(
+                Path.Combine(root, "src", "XNode.ProfileGenerator", "packages.lock.json")))
             .Concat(ReadLockedPackages(
                 Path.Combine(root, "tests", "XNode.ProfileGenerator.Tests", "packages.lock.json")))
             .Distinct(StringComparer.OrdinalIgnoreCase)

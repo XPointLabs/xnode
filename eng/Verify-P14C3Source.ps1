@@ -66,18 +66,22 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $allowed = @(
+    '^\.gitattributes$',
     '^artifacts/survival/P14C3/',
     '^docs/P14C1_DORMANT_PROFILE_COMPOSER\.md$',
     '^docs/P14C3_XNODE_ACTIVATION_TRUST_REBIND\.md$',
     '^eng/Get-P14C3ProfileCarrierNormalizedIdentity\.ps1$',
     '^eng/P14C3\.Ed25519Probe/',
     '^eng/Test-P14C3PackageGate\.ps1$',
+    '^eng/Test-P14C3WindowsMaterialization\.ps1$',
+    '^eng/Verify-P14C3StaticProvenance\.ps1$',
     '^eng/Verify-P14C3LinuxExecution\.ps1$',
     '^eng/Verify-P14C3Package\.ps1$',
     '^eng/Verify-P14C3Source\.ps1$',
     '^src/XNode\.ProfileGenerator/XNode\.ProfileGenerator\.csproj$',
     '^src/XNode\.ProfileGenerator/packages\.lock\.json$',
     '^tests/XNode\.ProfileGenerator\.Tests/P14C3ActivationTrustRebindTests\.cs$',
+    '^tests/XNode\.ProfileGenerator\.Tests/OfflineClosureTests\.cs$',
     '^tests/XNode\.ProfileGenerator\.Tests/ProfileCarrierPackagePinTests\.cs$',
     '^tests/XNode\.ProfileGenerator\.Tests/SharedCarrierAdoptionTests\.cs$',
     '^tests/XNode\.ProfileGenerator\.Tests/XNode\.ProfileGenerator\.Tests\.csproj$',
@@ -154,7 +158,7 @@ foreach ($forbidden in @(
 & (Join-Path $PSScriptRoot 'Verify-P14C3Package.ps1') `
     -RepositoryRoot $RepositoryRoot | Out-Null
 
-Write-Output 'P14C3_SOURCE_VERIFICATION=PASS'
+Write-Output 'P14C3_SOURCE_INTEGRITY=PASS'
 Write-Output "P14C3_SOURCE_SHA=$ExpectedHead"
 Write-Output "P14C3_SOURCE_TREE=$ExpectedTree"
 Write-Output 'P14C3_DPF1_BYTE_IDENTITY=PASS'

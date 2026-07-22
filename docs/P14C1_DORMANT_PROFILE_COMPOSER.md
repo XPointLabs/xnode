@@ -44,7 +44,8 @@ remain prohibited.
 ### Complete offline closure
 
 `vendor/p04/offline-closure-manifest.json` is the manifest-driven closure of
-both P14C lock files. `scripts/p14c-offline.NuGet.Config` has one
+all three P14C lock files (generator, tests and the Linux execution probe).
+`scripts/p14c-offline.NuGet.Config` has one
 repository-local source, `vendor/p04/packages`, and no HTTP or nuget.org
 fallback. It is passed only to the P14C offline verification script. The
 repository root has no NuGet override, so ordinary solution restores retain
@@ -81,7 +82,7 @@ HTTP-cache directories there, disables HTTP through dead proxies, restores in
 locked mode, builds and tests without incremental inputs, and cross-restores
 and builds the generator for Windows ARM64. It verifies that assets,
 intermediate/output files and package metadata remain under that work root,
-that all 22 packages came from the vendor source, that the HTTP cache is empty,
+that all 23 package entries came from the vendor source, that the HTTP cache is empty,
 and that the SDK download dependencies are the three manifest-pinned `10.0.9`
 runtime packs. The temporary work root is removed afterward without changing
 repository `bin` or `obj` state.

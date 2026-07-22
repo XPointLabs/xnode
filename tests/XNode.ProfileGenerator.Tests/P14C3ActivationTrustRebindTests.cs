@@ -123,6 +123,94 @@ public sealed class P14C3ActivationTrustRebindTests
     }
 
     [Fact]
+    public void ActualTransitionVerifierAcceptsReplayAndForwardSameGenesis()
+    {
+        var previous = ComposeCarrier(TestOnlyProfileFixture.Input());
+        var candidate = ComposeCarrier(TestOnlyProfileFixture.Input(bridgeCount: 2));
+
+        Assert.Equal(
+            ProfileCarrierTransitionDecision.Idempotent,
+            VerifyTransition(previous, previous));
+        Assert.Equal(
+            ProfileCarrierTransitionDecision.ForwardSameGenesis,
+            VerifyTransition(previous, candidate));
+    }
+
+    [Fact]
+    public void ActualTransitionVerifierRejectsMalformedLengthsAndBoundaries()
+    {
+        var valid = ComposeCarrier(TestOnlyProfileFixture.Input());
+        var nonMinimalBodyLength = valid.ToList();
+        var finalBodyLengthByte = 6;
+        while ((nonMinimalBodyLength[finalBodyLengthByte] & 0x80) != 0)
+            finalBodyLengthByte++;
+        nonMinimalBodyLength[finalBodyLengthByte] |= 0x80;
+        nonMinimalBodyLength.Insert(finalBodyLengthByte + 1, 0);
+
+        var malformed = new[]
+        {
+            Array.Empty<byte>(),
+            valid.AsSpan(0, valid.Length - 1).ToArray(),
+            valid.Append((byte)0).ToArray(),
+            nonMinimalBodyLength.ToArray(),
+            new byte[ProfileCarrierLimits.MaximumFilePayloadBytes + 1]
+        };
+        foreach (var candidate in malformed)
+        {
+            Assert.Equal(
+                ProfileCarrierTransitionDecision.TrustRejected,
+                VerifyTransition(valid, candidate));
+            Assert.Equal(
+                ProfileCarrierTransitionDecision.TrustRejected,
+                VerifyTransition(candidate, valid));
+        }
+    }
+
+    [Fact]
+    public void ActualTransitionVerifierRejectsInvalidTrustPolicyInputs()
+    {
+        var payload = ComposeCarrier(TestOnlyProfileFixture.Input());
+        var validOptions = CarrierOptions();
+        var policyNegatives = new[]
+        {
+            new ProfileCarrierVerificationOptions(969, 30, TestOnlyProfileFixture.Protocol),
+            new ProfileCarrierVerificationOptions(2_031, 30, TestOnlyProfileFixture.Protocol),
+            new ProfileCarrierVerificationOptions(
+                TestOnlyProfileFixture.VerificationTime,
+                30,
+                4)
+        };
+
+        foreach (var invalidOptions in policyNegatives)
+        {
+            Assert.Equal(
+                ProfileCarrierTransitionDecision.TrustRejected,
+                ProfileCarrierTransitionVerifier.VerifyExact(
+                    payload,
+                    validOptions,
+                    payload,
+                    invalidOptions,
+                    TestOnlyProfileFixture.SignatureScheme()));
+        }
+        Assert.Equal(
+            ProfileCarrierTransitionDecision.TrustRejected,
+            ProfileCarrierTransitionVerifier.VerifyExact(
+                payload,
+                null!,
+                payload,
+                validOptions,
+                TestOnlyProfileFixture.SignatureScheme()));
+        Assert.Equal(
+            ProfileCarrierTransitionDecision.TrustRejected,
+            ProfileCarrierTransitionVerifier.VerifyExact(
+                payload,
+                validOptions,
+                payload,
+                validOptions,
+                null!));
+    }
+
+    [Fact]
     public void RuntimeProjectsNeitherReferenceNorConstructActivationTrustSurface()
     {
         var root = P04PackagePinTests.RepositoryRoot();
@@ -167,4 +255,26 @@ public sealed class P14C3ActivationTrustRebindTests
         return Assert.IsAssignableFrom<IMembershipSignatureVerifier>(
             Activator.CreateInstance(type!)!);
     }
+
+    private static byte[] ComposeCarrier(ProfileAssemblyInput input) =>
+        DormantProfileComposer.Compose(
+            input,
+            TestOnlyProfileFixture.Options(),
+            TestOnlyProfileFixture.SignatureScheme()).FilePayload.ToArray();
+
+    private static ProfileCarrierVerificationOptions CarrierOptions() =>
+        new(
+            TestOnlyProfileFixture.VerificationTime,
+            30,
+            TestOnlyProfileFixture.Protocol);
+
+    private static ProfileCarrierTransitionDecision VerifyTransition(
+        byte[] previous,
+        byte[] candidate) =>
+        ProfileCarrierTransitionVerifier.VerifyExact(
+            previous,
+            CarrierOptions(),
+            candidate,
+            CarrierOptions(),
+            TestOnlyProfileFixture.SignatureScheme());
 }
