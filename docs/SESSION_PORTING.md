@@ -1,6 +1,6 @@
 ﻿# Session Porting Spec - Node Router
 
-Last updated: 2026-06-10.
+Last updated: 2026-07-26.
 
 ## Scope
 
@@ -86,7 +86,7 @@ For each ported behavior:
   blinded mailbox-id derivation, placement and authenticated retrieval contract exists is not a
   production activation.
 
-## Client Mailbox Adapter V1 (Dormant, Store Slice)
+## Client Mailbox Adapter V1 (Dormant)
 
 - The first client-facing adapter slice consumes only the pinned corrected
   `Deep.Protocol 0.3.0-p09c2.f1a93c9` closure. The superseded
@@ -95,9 +95,12 @@ For each ported behavior:
   capability verifier and replica fanout dependencies fail closed.
 - The store boundary accepts only a canonical `MST1` frame and persists the complete canonical
   `MEO1` bytes as the opaque payload in the existing crash-safe replica store.
-- A capability verifier must independently return the exact epoch, blinded mailbox id,
-  SHA-256 placement commitment and allowed operation. The adapter compares every field in
-  constant time where applicable. Merely parsing an opaque capability is never authorization.
+- A capability verifier must atomically and durably enforce replay and attest the exact
+  operation type, outer operation id, epoch, blinded mailbox id, SHA-256 placement commitment,
+  membership commitment, canonical request and capability digests, replay counter, idempotency
+  key and replay disposition. The adapter compares every field in constant time where
+  applicable. The parser replay guard is deliberately non-authoritative. A verifier that cannot
+  advertise durable atomic replay keeps the adapter not-ready.
 - The durable operation key is `(epoch, blindedMailboxId, operationId)`. Each epoch/mailbox has
   its own monotonic cursor authority; a separate global coordinator-sequence authority is never
   reused. Request context is durably reserved before local storage or fanout.
@@ -126,8 +129,33 @@ For each ported behavior:
   one adapter claim per ledger. A second runtime fails closed. In-memory single-flight entries
   are separately admission-bounded, reference-counted across waiters and removed only after the
   final waiter releases them.
-- `MRT1`/`MRP1`, `MAK1` durable tombstones, real capability-verifier composition and native
-  peer-fanout transport remain mandatory before exposing any client mailbox route.
+- `MRT1` retrieval uses a persisted cursor index and a fixed high-water snapshot. New stores
+  cannot extend an in-progress traversal. The signed `XCT1` continuation binds epoch, mailbox,
+  placement, membership, snapshot high-water, last cursor, maximum page size, expiry and the
+  exact page acknowledgement digest. Its canonical purpose mask authorizes only the next
+  retrieve and the matching non-final `MAK1`; signatures from any currently authorized replica
+  support failover. A replica without the corresponding durable journal/blob state fails closed;
+  the client may restart from cursor zero and deduplicate by envelope digest.
+- `MAK1` validates every cursor/digest target before a single mutation, then atomically journals
+  the complete ACK and logical tombstones before local signing or peer fanout. Tombstoned
+  envelopes disappear from retrieval immediately, including when quorum is unavailable.
+  Per-item native Tombstone `MRR2` bytes and a unique coordinator sequence are persisted before
+  native `MQR2` creation. Partial progress resumes exactly after restart; a durable retry returns
+  the identical reverified receipt without fanout. For a multi-item ACK, its cached replay
+  authority and referenced ledger targets remain until the latest item expiry, preserving exact
+  idempotency when item TTLs differ; expired items are never returned by retrieval. A different
+  operation id cannot ACK an already tombstoned cursor or mint another receipt.
+- Retrieval has no receipt. ACK currently returns an internal list of per-item `MQR2` receipts;
+  no aggregate public frame or V1 transcode is invented. XNode never records client-side
+  `Delivered`.
+- Ciphertext reclamation is bounded and best-effort immediately after durable ACK. A logical
+  tombstone remains authoritative if deletion or parent-directory durability fails, and startup
+  retries every pending `BlobCleaned=false` item before marking cleanup complete.
+- Ledger schema v3 adds canonical blob, placement and membership bindings plus ACK journals.
+  Schema v2 is rejected fail-closed rather than migrated because it cannot prove those bindings.
+  `maxOperationEntries` charges stores, ACK operations and every ACK item.
+- Real capability-verifier composition, native store/tombstone peer transport, and a reviewed
+  public ACK response contract remain mandatory before exposing any client mailbox route.
 
 ## Stop-The-Line Conditions
 

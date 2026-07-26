@@ -3,7 +3,7 @@ using Deep.Protocol.DeepExtension.MailboxCapabilities;
 
 namespace XNode.Core.Mailbox.Client;
 
-public sealed class MailboxClientStoreAdapter : IDisposable
+public sealed partial class MailboxClientStoreAdapter : IDisposable
 {
     private readonly MailboxClientAdapterOptions _options;
     private readonly ReplicatedMailboxOptions _storeOptions;
@@ -12,6 +12,7 @@ public sealed class MailboxClientStoreAdapter : IDisposable
     private readonly IMailboxClientCapabilityVerifier _verifier;
     private readonly IMailboxClientReplicaAuthorizer _replicaAuthorizer;
     private readonly IMailboxClientReplicaFanout _fanout;
+    private readonly IMailboxClientTombstoneFanout _tombstoneFanout;
     private readonly MailboxClientReceiptCrypto _crypto;
     private readonly IClock _clock;
     private readonly Dictionary<string, SingleFlightEntry> _singleFlights =
@@ -31,7 +32,8 @@ public sealed class MailboxClientStoreAdapter : IDisposable
         IMailboxClientReplicaAuthorizer replicaAuthorizer,
         IMailboxClientReplicaFanout fanout,
         MailboxClientReceiptCrypto crypto,
-        IClock? clock = null)
+        IClock? clock = null,
+        IMailboxClientTombstoneFanout? tombstoneFanout = null)
     {
         options.Validate();
         storeOptions.Validate();
@@ -43,6 +45,7 @@ public sealed class MailboxClientStoreAdapter : IDisposable
         _verifier = verifier;
         _replicaAuthorizer = replicaAuthorizer;
         _fanout = fanout;
+        _tombstoneFanout = tombstoneFanout ?? new DisabledMailboxClientTombstoneFanout();
         _crypto = crypto;
         _clock = clock ?? new SystemClock();
         _maxSingleFlights = options.MaxConcurrentSingleFlights;
@@ -52,26 +55,60 @@ public sealed class MailboxClientStoreAdapter : IDisposable
     {
         get
         {
-            var ready = _options.Enabled
-                && _verifier.IsConfigured
-                && _replicaAuthorizer.IsConfigured
-                && _fanout.IsConfigured;
-            var reason = !_options.Enabled
+            var enabled = _options.Enabled;
+            var verifierConfigured = _verifier.IsConfigured;
+            var verifierReplaySafe = _verifier.ProvidesDurableAtomicReplay;
+            var authorizerConfigured = _replicaAuthorizer.IsConfigured;
+            var storeFanoutConfigured = _fanout.IsConfigured;
+            var tombstoneFanoutConfigured = _tombstoneFanout.IsConfigured;
+            var commonReason = !enabled
                 ? "disabled"
-                : !_verifier.IsConfigured
+                : !verifierConfigured
                     ? "capability-verifier-missing"
-                    : !_replicaAuthorizer.IsConfigured
-                        ? "replica-authorizer-missing"
-                        : !_fanout.IsConfigured
-                            ? "replica-fanout-missing"
+                    : !verifierReplaySafe
+                        ? "capability-verifier-replay-unsafe"
+                        : !authorizerConfigured
+                            ? "replica-authorizer-missing"
                             : "ready";
+            var commonReady = commonReason == "ready";
+            var storeReason = !commonReady
+                ? commonReason
+                : !storeFanoutConfigured
+                    ? "replica-fanout-missing"
+                    : "ready";
+            var acknowledgeReason = !commonReady
+                ? commonReason
+                : !tombstoneFanoutConfigured
+                    ? "tombstone-fanout-missing"
+                    : "ready";
+            var storeReady = storeReason == "ready";
+            var retrieveReady = commonReady;
+            var acknowledgeReady = acknowledgeReason == "ready";
+            var ready = storeReady && retrieveReady && acknowledgeReady;
+            var reason = !storeReady
+                ? storeReason
+                : !retrieveReady
+                    ? commonReason
+                    : !acknowledgeReady
+                        ? acknowledgeReason
+                        : "ready";
             return new(
-                _options.Enabled,
-                _verifier.IsConfigured,
-                _replicaAuthorizer.IsConfigured,
-                _fanout.IsConfigured,
+                enabled,
+                verifierConfigured,
+                authorizerConfigured,
+                storeFanoutConfigured,
                 ready,
-                reason);
+                reason)
+            {
+                CapabilityVerifierProvidesDurableAtomicReplay = verifierReplaySafe,
+                TombstoneFanoutConfigured = tombstoneFanoutConfigured,
+                StoreReady = storeReady,
+                RetrieveReady = retrieveReady,
+                AcknowledgeReady = acknowledgeReady,
+                StoreReason = storeReason,
+                RetrieveReason = commonReason,
+                AcknowledgeReason = acknowledgeReason
+            };
         }
     }
 
@@ -83,6 +120,7 @@ public sealed class MailboxClientStoreAdapter : IDisposable
             if (_options.Enabled)
             {
                 await _ledger.InitializeAsync(cancellationToken).ConfigureAwait(false);
+                await CleanupTombstonesAsync(cancellationToken).ConfigureAwait(false);
             }
         }
         finally
@@ -102,9 +140,9 @@ public sealed class MailboxClientStoreAdapter : IDisposable
             return Failure(MailboxClientStoreStatus.Disabled, status.Reason);
         }
 
-        if (!status.Ready)
+        if (!status.StoreReady)
         {
-            return Failure(MailboxClientStoreStatus.NotReady, status.Reason);
+            return Failure(MailboxClientStoreStatus.NotReady, status.StoreReason);
         }
 
         var maximumStoreLength = 48
@@ -124,7 +162,7 @@ public sealed class MailboxClientStoreAdapter : IDisposable
             request = MailboxClientCodec.DecodeStore(
                 ownedRequest,
                 CreateDecodePolicy(),
-                new DeferredReplayGuard());
+                new VerifierDeferredReplayGuard());
         }
         catch (Exception exception) when (
             exception is MailboxClientException or MailboxCapabilityException)
@@ -138,11 +176,16 @@ public sealed class MailboxClientStoreAdapter : IDisposable
             ownedRequest.ToArray(),
             MailboxClientOperation.Store,
             cancellationToken).ConfigureAwait(false);
-        if (verified is null
-            || verified.AllowedOperation != MailboxClientOperation.Store
-            || verified.Epoch != request.Epoch
-            || !FixedEquals(verified.BlindedMailboxId.Span, request.Envelope.MailboxId.Bytes.Span)
-            || !FixedEquals(verified.PlacementCommitment.Span, placementCommitment))
+        if (!BindingMatches(
+                verified,
+                MailboxClientOperation.Store,
+                request.Epoch,
+                request.OperationId.Span,
+                request.Envelope.MailboxId.Bytes.Span,
+                placementCommitment,
+                membershipCommitment,
+                requestDigest,
+                request.DepositCapability))
         {
             return Failure(MailboxClientStoreStatus.Unauthorized, "capability-binding-rejected");
         }
@@ -236,6 +279,9 @@ public sealed class MailboxClientStoreAdapter : IDisposable
                 requestDigest,
                 request.Envelope.MailboxId.Bytes,
                 request.Envelope.DeduplicationDigest,
+                Convert.FromHexString(blob.BlobId),
+                placementCommitment,
+                membershipCommitment,
                 expectedReplicaIds,
                 request.Envelope.ExpiresAtUnixSeconds,
                 cancellationToken).ConfigureAwait(false);
@@ -787,7 +833,9 @@ public sealed class MailboxClientStoreAdapter : IDisposable
 
         lock (_singleFlightsGate)
         {
-            if (_singleFlights.Count != 0 || _activeInitializations != 0)
+            if (_singleFlights.Count != 0
+                || _activeInitializations != 0
+                || _activeDeliveryOperations != 0)
             {
                 throw new InvalidOperationException(
                     "Cannot release a mailbox adapter while operations are active.");
@@ -808,7 +856,9 @@ public sealed class MailboxClientStoreAdapter : IDisposable
         public int Users { get; set; }
     }
 
-    private sealed class DeferredReplayGuard : IMailboxCapabilityReplayGuard
+    // Parsing cannot authorize replay: the configured verifier must atomically attest the
+    // canonical request/capability digest and replay disposition checked by BindingMatches.
+    private sealed class VerifierDeferredReplayGuard : IMailboxCapabilityReplayGuard
     {
         public MailboxCapabilityReplayEvaluation Evaluate(MailboxCapabilityReplayScope scope) =>
             new()

@@ -14,11 +14,21 @@ public sealed record MailboxCapabilityBinding(
     ulong Epoch,
     ReadOnlyMemory<byte> BlindedMailboxId,
     ReadOnlyMemory<byte> PlacementCommitment,
-    MailboxClientOperation AllowedOperation);
+    ReadOnlyMemory<byte> MembershipCommitment,
+    MailboxClientOperation AllowedOperation)
+{
+    public ReadOnlyMemory<byte> OuterOperationId { get; init; }
+    public ReadOnlyMemory<byte> CanonicalRequestDigest { get; init; }
+    public ReadOnlyMemory<byte> CanonicalCapabilityDigest { get; init; }
+    public ulong ReplayCounter { get; init; }
+    public ReadOnlyMemory<byte> IdempotencyKey { get; init; }
+    public MailboxCapabilityReplayDisposition ReplayDisposition { get; init; }
+}
 
 public interface IMailboxClientCapabilityVerifier
 {
     bool IsConfigured { get; }
+    bool ProvidesDurableAtomicReplay { get; }
 
     ValueTask<MailboxCapabilityBinding?> VerifyAsync(
         ReadOnlyMemory<byte> canonicalRequest,
@@ -29,6 +39,7 @@ public interface IMailboxClientCapabilityVerifier
 public sealed class RejectAllMailboxClientCapabilityVerifier : IMailboxClientCapabilityVerifier
 {
     public bool IsConfigured => false;
+    public bool ProvidesDurableAtomicReplay => false;
 
     public ValueTask<MailboxCapabilityBinding?> VerifyAsync(
         ReadOnlyMemory<byte> canonicalRequest,
@@ -48,6 +59,18 @@ public sealed record MailboxReplicaStoreContext(
     ulong ExpiresAtUnixSeconds,
     ReadOnlyMemory<byte> CanonicalEnvelope,
     MailboxReplicaDisposition Disposition,
+    ulong AcceptedAtUnixSeconds,
+    IReadOnlyList<ReadOnlyMemory<byte>> ExpectedReplicaIds);
+
+public sealed record MailboxReplicaTombstoneContext(
+    ulong Cursor,
+    ulong Epoch,
+    ReadOnlyMemory<byte> OperationId,
+    ReadOnlyMemory<byte> BlindedMailboxId,
+    ReadOnlyMemory<byte> PlacementCommitment,
+    ReadOnlyMemory<byte> MembershipCommitment,
+    ReadOnlyMemory<byte> EnvelopeDigest,
+    ulong ExpiresAtUnixSeconds,
     ulong AcceptedAtUnixSeconds,
     IReadOnlyList<ReadOnlyMemory<byte>> ExpectedReplicaIds);
 
@@ -93,6 +116,25 @@ public sealed class DisabledMailboxClientReplicaFanout : IMailboxClientReplicaFa
         Task.FromResult<IReadOnlyList<ReadOnlyMemory<byte>>>([]);
 }
 
+public interface IMailboxClientTombstoneFanout
+{
+    bool IsConfigured { get; }
+
+    Task<IReadOnlyList<ReadOnlyMemory<byte>>> TombstoneAsync(
+        MailboxReplicaTombstoneContext context,
+        CancellationToken cancellationToken);
+}
+
+public sealed class DisabledMailboxClientTombstoneFanout : IMailboxClientTombstoneFanout
+{
+    public bool IsConfigured => false;
+
+    public Task<IReadOnlyList<ReadOnlyMemory<byte>>> TombstoneAsync(
+        MailboxReplicaTombstoneContext context,
+        CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<ReadOnlyMemory<byte>>>([]);
+}
+
 public sealed class MailboxClientAdapterOptions
 {
     public bool Enabled { get; set; }
@@ -121,6 +163,10 @@ public sealed class MailboxClientAdapterOptions
 
     public int MaxConcurrentSingleFlights { get; set; } = 1024;
 
+    public TimeSpan ContinuationTokenLifetime { get; set; } = TimeSpan.FromMinutes(10);
+
+    public int MaxTombstoneCleanupPerInitialization { get; set; } = 1000;
+
     public void Validate()
     {
         if (string.IsNullOrWhiteSpace(DirectoryName)
@@ -133,7 +179,10 @@ public sealed class MailboxClientAdapterOptions
             || MaxCursorAuthorities is < 1 or > 100_000
             || MaxCursorAuthorities > MaxOperationEntries
             || MaxConcurrentSingleFlights is < 1 or > 100_000
-            || MaxConcurrentSingleFlights > MaxOperationEntries)
+            || MaxConcurrentSingleFlights > MaxOperationEntries
+            || ContinuationTokenLifetime < TimeSpan.FromMinutes(1)
+            || ContinuationTokenLifetime > TimeSpan.FromHours(1)
+            || MaxTombstoneCleanupPerInitialization is < 1 or > 100_000)
         {
             throw new InvalidOperationException("MailboxClientAdapter limits are invalid.");
         }
@@ -220,4 +269,61 @@ public sealed record MailboxClientAdapterStatus(
     bool ReplicaAuthorizerConfigured,
     bool ReplicaFanoutConfigured,
     bool Ready,
-    string Reason);
+    string Reason)
+{
+    public bool CapabilityVerifierProvidesDurableAtomicReplay { get; init; }
+    public bool TombstoneFanoutConfigured { get; init; }
+    public bool StoreReady { get; init; }
+    public bool RetrieveReady { get; init; }
+    public bool AcknowledgeReady { get; init; }
+    public string StoreReason { get; init; } = "";
+    public string RetrieveReason { get; init; } = "";
+    public string AcknowledgeReason { get; init; } = "";
+}
+
+public enum MailboxClientRetrieveStatus
+{
+    Success,
+    Disabled,
+    NotReady,
+    Unauthorized,
+    Malformed,
+    Rejected
+}
+
+public sealed record MailboxClientRetrieveResult(
+    MailboxClientRetrieveStatus Status,
+    ReadOnlyMemory<byte> CanonicalPage,
+    string Error)
+{
+    public static MailboxClientRetrieveResult Failure(
+        MailboxClientRetrieveStatus status,
+        string error) => new(status, ReadOnlyMemory<byte>.Empty, error);
+}
+
+public enum MailboxClientAckStatus
+{
+    Durable,
+    Disabled,
+    NotReady,
+    Unauthorized,
+    Malformed,
+    Conflict,
+    Rejected,
+    QuorumUnavailable
+}
+
+public sealed record MailboxClientAckReceipt(
+    ulong Cursor,
+    ReadOnlyMemory<byte> EnvelopeDigest,
+    ReadOnlyMemory<byte> DurableQuorumReceipt);
+
+public sealed record MailboxClientAckResult(
+    MailboxClientAckStatus Status,
+    IReadOnlyList<MailboxClientAckReceipt> Receipts,
+    string Error)
+{
+    public static MailboxClientAckResult Failure(
+        MailboxClientAckStatus status,
+        string error) => new(status, [], error);
+}

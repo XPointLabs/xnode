@@ -354,13 +354,15 @@ Operational bounds:
 
 ### Dormant canonical client adapter
 
-The source tree contains a deliberately uncomposed store-only adapter for the canonical
-`MST1`/`MEO1` contract. It is not mapped to HTTP and therefore cannot be enabled by configuration
-alone. This is intentional: production composition requires both a reviewed
-`IMailboxClientCapabilityVerifier` and a native `MRR2` peer fanout implementation.
+The source tree contains a deliberately uncomposed adapter for canonical `MST1`/`MEO1`,
+`MRT1`/`MRP1`, and `MAK1` processing. It is not mapped to HTTP and therefore cannot be enabled
+by configuration alone. Production composition still requires a reviewed capability verifier,
+native store/tombstone peer fanout, and a reviewed public ACK response contract.
 
-The adapter reports separate states for disabled, missing verifier, missing replica authorizer
-and missing fanout. When used in a test composition it reserves
+The adapter reports `StoreReady`, `RetrieveReady`, and `AcknowledgeReady` independently;
+aggregate `Ready` is true only when all three are ready. Status also exposes durable-replay and
+tombstone-fanout configuration instead of overclaiming readiness. When used in a test
+composition it reserves
 `(epoch, blindedMailboxId, operationId)`, request digest and a per-mailbox monotonic cursor before
 fanout, persists the full opaque `MEO1`, and accepts only the deterministic replica ids selected
 for the exact membership/placement context. Two native context-bound `MRR2` receipts and a
@@ -386,9 +388,36 @@ ledger for the same directory, or a second adapter claim on one ledger, fails st
 the adapter first and ledger second during orderly shutdown; only then can a replacement runtime
 acquire the directory.
 
-Do not expose a store endpoint until the remaining retrieve/ack slice is complete. In particular,
-servers must return cursor-bound `MRP1`, persist `MAK1` tombstones, and must never infer or record
-the client-side `Delivered` state.
+The verifier is an authorization boundary, not a decoder. It must advertise durable atomic
+replay and return an exact attestation for operation type, outer operation id, epoch, mailbox,
+placement and membership commitments, canonical request/capability digests, replay counter,
+idempotency key and replay disposition. Otherwise readiness is
+`capability-verifier-replay-unsafe`.
+
+`MRT1` pagination is a stable high-water snapshot. The signed `XCT1` token binds the mailbox and
+authority context, last cursor, snapshot high-water, page-size ceiling, expiry and exact page ACK
+digest. It verifies against any currently authorized replica key to permit failover. If a replica
+does not possess the durable snapshot data it fails closed; clients restart at cursor zero and
+deduplicate locally.
+
+`MAK1` reserves all targets and logical tombstones atomically before signing or fanout. Quorum
+failure therefore hides the ciphertext from later retrieval but leaves retryable durable journal
+state. Every item completes as a native Tombstone `MRR2` quorum and a native `MQR2`; exact retries
+resume or return persisted, reverified bytes through the latest item expiry, including
+multi-item ACKs with staggered TTLs. A new operation id for an already tombstoned cursor is
+rejected and cannot create another journal or fanout. Retrieval emits no receipt, and the dormant API
+returns an internal per-item receipt list because the protocol has no aggregate ACK frame. The
+node never infers or persists client-side `Delivered`.
+
+Physical ciphertext cleanup is bounded after a durable ACK and repeated on initialization.
+Deletion failure does not roll back a logical tombstone or ACK receipt; the ledger marks the blob
+clean only after the exact delete and parent-directory durability barrier succeed. Ledger schema
+v3 is intentionally incompatible with v2, whose records lack the canonical blob/placement/
+membership evidence needed for safe retrieval and tombstones. Operation capacity counts stores,
+ACK operation records and each ACK item.
+
+Do not expose any client mailbox endpoint yet. There is still no runtime/HTTP composition, real
+production verifier, native tombstone transport, or finalized aggregate ACK wire response.
 
 Pinned offline package closure under `vendor/mailbox-client-package-corrected`:
 

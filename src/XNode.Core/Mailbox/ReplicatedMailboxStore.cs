@@ -213,6 +213,64 @@ public sealed class ReplicatedMailboxStore
         }
     }
 
+    public async Task<EncryptedMailboxBlob?> ReadExactAsync(
+        string mailboxId,
+        string blobId,
+        CancellationToken cancellationToken = default)
+    {
+        if (!EncryptedMailboxBlobValidator.IsCanonicalId(mailboxId)
+            || !EncryptedMailboxBlobValidator.IsCanonicalId(blobId))
+        {
+            return null;
+        }
+
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await ReadExactUnderGateAsync(
+                mailboxId,
+                blobId,
+                cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<bool> DeleteExactAsync(
+        string mailboxId,
+        string blobId,
+        CancellationToken cancellationToken = default)
+    {
+        if (!EncryptedMailboxBlobValidator.IsCanonicalId(mailboxId)
+            || !EncryptedMailboxBlobValidator.IsCanonicalId(blobId))
+        {
+            return false;
+        }
+
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var path = Path.Combine(_rootDirectory, mailboxId, $"{blobId}.json");
+            if (!File.Exists(path))
+            {
+                _durability.FlushParentDirectory(path);
+                return false;
+            }
+
+            EnsureStoredBlobCount();
+            File.Delete(path);
+            _storedBlobCount = Math.Max(0, _storedBlobCount - 1);
+            _durability.FlushParentDirectory(path);
+            return true;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     public async Task<int> PurgeExpiredAsync(CancellationToken cancellationToken = default)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -318,6 +376,38 @@ public sealed class ReplicatedMailboxStore
         catch (FormatException)
         {
             return false;
+        }
+    }
+
+    private async Task<EncryptedMailboxBlob?> ReadExactUnderGateAsync(
+        string mailboxId,
+        string blobId,
+        CancellationToken cancellationToken)
+    {
+        var path = Path.Combine(_rootDirectory, mailboxId, $"{blobId}.json");
+        if (!File.Exists(path))
+        {
+            return null;
+        }
+
+        try
+        {
+            await using var stream = File.OpenRead(path);
+            var blob = await JsonSerializer.DeserializeAsync<EncryptedMailboxBlob>(
+                stream,
+                JsonOptions,
+                cancellationToken).ConfigureAwait(false);
+            return blob is not null
+                && string.Equals(blob.MailboxId, mailboxId, StringComparison.Ordinal)
+                && string.Equals(blob.BlobId, blobId, StringComparison.Ordinal)
+                && IsStoredBlobValid(blob, _clock.UtcNow.ToUnixTimeMilliseconds())
+                    ? blob
+                    : null;
+        }
+        catch (Exception exception) when (
+            exception is IOException or JsonException or UnauthorizedAccessException)
+        {
+            return null;
         }
     }
 

@@ -25,6 +25,9 @@ public sealed record MailboxClientStoreReservation(
     ReadOnlyMemory<byte> OperationId,
     ReadOnlyMemory<byte> RequestDigest,
     ReadOnlyMemory<byte> EnvelopeDigest,
+    ReadOnlyMemory<byte> BlobDigest,
+    ReadOnlyMemory<byte> PlacementCommitment,
+    ReadOnlyMemory<byte> MembershipCommitment,
     IReadOnlyList<ReadOnlyMemory<byte>> ExpectedReplicaIds,
     ulong Cursor,
     ulong ExpiresAtUnixSeconds,
@@ -42,13 +45,15 @@ internal sealed class MailboxClientLedgerDocument
         ulong nextCoordinatorSequence,
         ulong retiredCursorFloor,
         Dictionary<string, ulong> nextCursorByMailbox,
-        Dictionary<string, MailboxClientLedgerOperation> operations)
+        Dictionary<string, MailboxClientLedgerOperation> operations,
+        Dictionary<string, MailboxClientLedgerAckOperation> ackOperations)
     {
         SchemaVersion = schemaVersion;
         NextCoordinatorSequence = nextCoordinatorSequence;
         RetiredCursorFloor = retiredCursorFloor;
         NextCursorByMailbox = nextCursorByMailbox;
         Operations = operations;
+        AckOperations = ackOperations;
     }
 
     public int SchemaVersion { get; set; }
@@ -56,6 +61,7 @@ internal sealed class MailboxClientLedgerDocument
     public ulong RetiredCursorFloor { get; set; }
     public Dictionary<string, ulong> NextCursorByMailbox { get; set; }
     public Dictionary<string, MailboxClientLedgerOperation> Operations { get; set; }
+    public Dictionary<string, MailboxClientLedgerAckOperation> AckOperations { get; set; }
 }
 
 internal sealed record MailboxClientLedgerOperation(
@@ -64,6 +70,9 @@ internal sealed record MailboxClientLedgerOperation(
     string OperationId,
     string RequestDigest,
     string EnvelopeDigest,
+    string BlobDigest,
+    string PlacementCommitment,
+    string MembershipCommitment,
     string[] ExpectedReplicaIds,
     ulong Cursor,
     ulong ExpiresAtUnixSeconds,
@@ -74,11 +83,14 @@ internal sealed record MailboxClientLedgerOperation(
     ulong CoordinatorSequence,
     string FirstReplicaReceipt,
     string SecondReplicaReceipt,
-    string Receipt);
+    string Receipt,
+    bool Tombstoned,
+    ulong TombstonedAtUnixSeconds,
+    bool BlobCleaned);
 
-public sealed class MailboxClientOperationLedger : IDisposable
+public sealed partial class MailboxClientOperationLedger : IDisposable
 {
-    private const int SchemaVersion = 2;
+    private const int SchemaVersion = 3;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _directory;
     private readonly string _path;
@@ -174,6 +186,9 @@ public sealed class MailboxClientOperationLedger : IDisposable
         ReadOnlyMemory<byte> requestDigest,
         ReadOnlyMemory<byte> mailboxId,
         ReadOnlyMemory<byte> envelopeDigest,
+        ReadOnlyMemory<byte> blobDigest,
+        ReadOnlyMemory<byte> placementCommitment,
+        ReadOnlyMemory<byte> membershipCommitment,
         IReadOnlyList<ReadOnlyMemory<byte>> expectedReplicaIds,
         ulong expiresAtUnixSeconds,
         CancellationToken cancellationToken)
@@ -183,6 +198,15 @@ public sealed class MailboxClientOperationLedger : IDisposable
         var mailboxKey = BuildMailboxKey(epoch, mailboxId.Span);
         var requestKey = ToLowerHex(requestDigest.Span, 32, nameof(requestDigest));
         var envelopeKey = ToLowerHex(envelopeDigest.Span, 32, nameof(envelopeDigest));
+        var blobKey = ToLowerHex(blobDigest.Span, 32, nameof(blobDigest));
+        var placementKey = ToLowerHex(
+            placementCommitment.Span,
+            32,
+            nameof(placementCommitment));
+        var membershipKey = ToLowerHex(
+            membershipCommitment.Span,
+            32,
+            nameof(membershipCommitment));
         var replicaKeys = expectedReplicaIds
             .Select(static replica => ToLowerHex(replica.Span, 32, nameof(expectedReplicaIds)))
             .ToArray();
@@ -211,7 +235,7 @@ public sealed class MailboxClientOperationLedger : IDisposable
                 return ToReservation(operationKey, existing);
             }
 
-            if (document.Operations.Count >= _maxEntries)
+            if (LedgerEntryCost(document) >= _maxEntries)
             {
                 throw new MailboxClientLedgerCapacityException();
             }
@@ -241,6 +265,9 @@ public sealed class MailboxClientOperationLedger : IDisposable
                 ToLowerHex(operationId.Span, 16, nameof(operationId)),
                 requestKey,
                 envelopeKey,
+                blobKey,
+                placementKey,
+                membershipKey,
                 replicaKeys,
                 cursor,
                 expiresAtUnixSeconds,
@@ -251,7 +278,10 @@ public sealed class MailboxClientOperationLedger : IDisposable
                 0,
                 "",
                 "",
-                "");
+                "",
+                false,
+                0,
+                false);
             document.Operations.Add(operationKey, operation);
             await SaveAsync(document, cancellationToken).ConfigureAwait(false);
             return ToReservation(operationKey, operation);
@@ -455,6 +485,7 @@ public sealed class MailboxClientOperationLedger : IDisposable
                 0,
                 0,
                 new(StringComparer.Ordinal),
+                new(StringComparer.Ordinal),
                 new(StringComparer.Ordinal));
         }
 
@@ -483,6 +514,9 @@ public sealed class MailboxClientOperationLedger : IDisposable
                 document.Operations ?? throw new InvalidDataException(
                     "Mailbox operation authority is missing."),
                 StringComparer.Ordinal);
+            document.AckOperations = new(
+                document.AckOperations ?? [],
+                StringComparer.Ordinal);
             ValidateDocument(document);
             return document;
         }
@@ -495,7 +529,7 @@ public sealed class MailboxClientOperationLedger : IDisposable
     private void ValidateDocument(MailboxClientLedgerDocument document)
     {
         if (document.SchemaVersion != SchemaVersion
-            || document.Operations.Count > _maxEntries
+            || LedgerEntryCost(document) > _maxEntries
             || document.NextCursorByMailbox.Count > _maxCursorAuthorities)
         {
             throw new InvalidDataException("Mailbox client operation ledger schema is invalid.");
@@ -525,6 +559,9 @@ public sealed class MailboxClientOperationLedger : IDisposable
                 DecodeLowerHex(operation.OperationId, 16));
             _ = DecodeLowerHex(operation.RequestDigest, 32);
             _ = DecodeLowerHex(operation.EnvelopeDigest, 32);
+            _ = DecodeLowerHex(operation.BlobDigest, 32);
+            _ = DecodeLowerHex(operation.PlacementCommitment, 32);
+            _ = DecodeLowerHex(operation.MembershipCommitment, 32);
             if (operation.ExpectedReplicaIds is null
                 || operation.ExpectedReplicaIds.Length is < 2 or > 9
                 || operation.ExpectedReplicaIds.Any(static replica => replica is null)
@@ -548,6 +585,15 @@ public sealed class MailboxClientOperationLedger : IDisposable
             }
 
             ValidateState(operation);
+            if (operation.Tombstoned != (operation.TombstonedAtUnixSeconds != 0)
+                || operation.BlobCleaned && !operation.Tombstoned
+                || operation.Tombstoned
+                && (operation.State != "durable"
+                    || operation.TombstonedAtUnixSeconds < operation.AcceptedAtUnixSeconds
+                    || operation.TombstonedAtUnixSeconds >= operation.ExpiresAtUnixSeconds))
+            {
+                throw new InvalidDataException("Mailbox tombstone state is inconsistent.");
+            }
             if (operation.CoordinatorSequence != 0)
             {
                 maximumSequence = Math.Max(maximumSequence, operation.CoordinatorSequence);
@@ -558,6 +604,7 @@ public sealed class MailboxClientOperationLedger : IDisposable
             }
         }
 
+        ValidateAckOperations(document, sequences, ref maximumSequence);
         if (document.NextCoordinatorSequence < maximumSequence)
         {
             throw new InvalidDataException("Mailbox coordinator sequence authority was rewound.");
@@ -656,8 +703,24 @@ public sealed class MailboxClientOperationLedger : IDisposable
         MailboxClientLedgerDocument document,
         ulong nowUnixSeconds)
     {
+        // Remove dependent ACK replay authorities first, then retain every store
+        // referenced by a surviving multi-item ACK until its latest item expires.
+        // This preserves exact cached-replay semantics across staggered item TTLs.
+        var expiredAcks = RemoveExpiredAckOperations(document, nowUnixSeconds);
+        var ackTargets = document.AckOperations.Values
+            .SelectMany(operation => operation.Items.Select(item => (
+                operation.Epoch,
+                operation.MailboxId,
+                item.Cursor)))
+            .ToHashSet();
         var expired = document.Operations
-            .Where(pair => pair.Value.ExpiresAtUnixSeconds < nowUnixSeconds)
+            .Where(pair =>
+                pair.Value.ExpiresAtUnixSeconds <= nowUnixSeconds
+                && !ackTargets.Contains((
+                    pair.Value.Epoch,
+                    pair.Value.MailboxId,
+                    pair.Value.Cursor))
+                && (!pair.Value.Tombstoned || pair.Value.BlobCleaned))
             .Select(static pair => pair.Key)
             .ToArray();
         foreach (var key in expired)
@@ -666,7 +729,7 @@ public sealed class MailboxClientOperationLedger : IDisposable
         }
 
         var compacted = CompactUnusedCursorAuthorities(document);
-        return expired.Length != 0 || compacted;
+        return expired.Length != 0 || expiredAcks || compacted;
     }
 
     private static bool CompactUnusedCursorAuthorities(MailboxClientLedgerDocument document)
@@ -775,6 +838,9 @@ public sealed class MailboxClientOperationLedger : IDisposable
             DecodeLowerHex(operation.OperationId, 16),
             DecodeLowerHex(operation.RequestDigest, 32),
             DecodeLowerHex(operation.EnvelopeDigest, 32),
+            DecodeLowerHex(operation.BlobDigest, 32),
+            DecodeLowerHex(operation.PlacementCommitment, 32),
+            DecodeLowerHex(operation.MembershipCommitment, 32),
             operation.ExpectedReplicaIds
                 .Select(static replica =>
                     (ReadOnlyMemory<byte>)DecodeLowerHex(replica, 32))

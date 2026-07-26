@@ -126,6 +126,8 @@ public sealed class MailboxStorageSecurity : IMailboxStorageSecurity
 public interface IMailboxDurabilityBarrier
 {
     void FlushFileAndParentDirectory(string path);
+
+    void FlushParentDirectory(string deletedPath);
 }
 
 public sealed class MailboxDurabilityBarrier : IMailboxDurabilityBarrier
@@ -145,6 +147,15 @@ public sealed class MailboxDurabilityBarrier : IMailboxDurabilityBarrier
         if (!OperatingSystem.IsWindows())
         {
             FlushUnixDirectory(Path.GetDirectoryName(path)
+                ?? throw new InvalidOperationException("Mailbox file has no parent directory."));
+        }
+    }
+
+    public void FlushParentDirectory(string deletedPath)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            FlushUnixDirectory(Path.GetDirectoryName(deletedPath)
                 ?? throw new InvalidOperationException("Mailbox file has no parent directory."));
         }
     }

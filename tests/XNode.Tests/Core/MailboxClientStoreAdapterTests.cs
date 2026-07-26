@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
@@ -174,6 +175,7 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
                 7,
                 MailboxId,
                 Range(0xff, 32),
+                MembershipCommitment,
                 MailboxClientOperation.Store));
         adapter.Dispose();
         var unauthorized = Track(new MailboxClientStoreAdapter(
@@ -325,7 +327,7 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
 
     [Theory]
     [InlineData("\"nextCursorByMailbox\":{\"0000000000000007:", "\"nextCursorByMailbox\":{\"0000000000000007:", "rewind")]
-    [InlineData("\"schemaVersion\":2", "\"schemaVersion\":1", "schema")]
+    [InlineData("\"schemaVersion\":3", "\"schemaVersion\":1", "schema")]
     public async Task LedgerCorruption_FailsClosedOnRestart(
         string find,
         string replace,
@@ -371,6 +373,7 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
             7,
             otherMailbox,
             SHA256.HashData(PlacementId),
+            MembershipCommitment,
             MailboxClientOperation.Store));
         adapter.Dispose();
         var secondAdapter = Track(new MailboxClientStoreAdapter(
@@ -438,6 +441,9 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
             Range(0x91, 32),
             MailboxId,
             EnvelopeDigest,
+            Range(0xa1, 32),
+            SHA256.HashData(PlacementId),
+            MembershipCommitment,
             replicas,
             1011,
             CancellationToken.None);
@@ -451,6 +457,9 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
             Range(0x92, 32),
             MailboxId,
             Range(0x93, 32),
+            Range(0x94, 32),
+            SHA256.HashData(PlacementId),
+            MembershipCommitment,
             replicas,
             1200,
             CancellationToken.None);
@@ -472,7 +481,7 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
             Convert.ToHexString(Range(0x81, 32)).ToLowerInvariant();
         var rotatedMembership = CreateAdapter(fixture, new ThrowingFanout());
         Assert.Equal(
-            "cached-quorum-invalid",
+            "capability-binding-rejected",
             (await rotatedMembership.StoreAsync(request)).Error);
 
         rotatedMembership.Dispose();
@@ -537,6 +546,7 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
             8,
             MailboxId,
             SHA256.HashData(PlacementId),
+            NextMembershipCommitment,
             MailboxClientOperation.Store));
         var authorizer = new RecordingAuthorizer(
             [fixture.LocalCrypto.LocalRouterId, fixture.RemoteCrypto.LocalRouterId]);
@@ -641,6 +651,9 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
             Range(0x91, 32),
             MailboxId,
             EnvelopeDigest,
+            Range(0xa1, 32),
+            SHA256.HashData(PlacementId),
+            MembershipCommitment,
             replicas,
             1120,
             CancellationToken.None);
@@ -911,7 +924,13 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
             new ThrowingFanout(),
             fixture.LocalCrypto,
             _clock));
-        Assert.True(replacement.Status.Ready);
+        Assert.True(replacement.Status.StoreReady);
+        Assert.True(replacement.Status.RetrieveReady);
+        Assert.False(replacement.Status.AcknowledgeReady);
+        Assert.False(replacement.Status.Ready);
+        Assert.Equal(
+            "tombstone-fanout-missing",
+            replacement.Status.AcknowledgeReason);
     }
 
     private Fixture CreateFixture(bool enabled = true)
@@ -954,6 +973,7 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
                 7,
                 MailboxId,
                 placementCommitment,
+                MembershipCommitment,
                 MailboxClientOperation.Store)),
             new FixedAuthorizer([localCrypto.LocalRouterId, remoteCrypto.LocalRouterId]),
             localCrypto,
@@ -1033,6 +1053,7 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
             7,
             mailboxId,
             SHA256.HashData(PlacementId),
+            MembershipCommitment,
             MailboxClientOperation.Store);
 
     public void Dispose()
@@ -1094,12 +1115,14 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
         : IMailboxClientCapabilityVerifier
     {
         public bool IsConfigured => true;
+        public bool ProvidesDurableAtomicReplay => true;
 
         public ValueTask<MailboxCapabilityBinding?> VerifyAsync(
             ReadOnlyMemory<byte> canonicalRequest,
             MailboxClientOperation operation,
             CancellationToken cancellationToken) =>
-            ValueTask.FromResult<MailboxCapabilityBinding?>(binding);
+            ValueTask.FromResult<MailboxCapabilityBinding?>(
+                Attest(binding, canonicalRequest, operation));
     }
 
     private sealed class RequestMapVerifier : IMailboxClientCapabilityVerifier
@@ -1117,6 +1140,7 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
         }
 
         public bool IsConfigured => true;
+        public bool ProvidesDurableAtomicReplay => true;
 
         public void Add(byte[] request, MailboxCapabilityBinding binding) =>
             _bindings[Convert.ToHexString(SHA256.HashData(request))] = binding;
@@ -1129,8 +1153,82 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
             _bindings.TryGetValue(
                 Convert.ToHexString(SHA256.HashData(canonicalRequest.Span)),
                 out var binding);
-            return ValueTask.FromResult<MailboxCapabilityBinding?>(binding);
+            return ValueTask.FromResult<MailboxCapabilityBinding?>(
+                binding is null ? null : Attest(binding, canonicalRequest, operation));
         }
+    }
+
+    private static MailboxCapabilityBinding Attest(
+        MailboxCapabilityBinding binding,
+        ReadOnlyMemory<byte> canonicalRequest,
+        MailboxClientOperation operation)
+    {
+        var policy = new MailboxClientDecodePolicy
+        {
+            NowUnixSeconds = 1010,
+            EpochWindow = new()
+            {
+                CurrentEpoch = 7,
+                NextEpoch = 8,
+                CurrentNotBeforeUnixSeconds = 900,
+                NextNotBeforeUnixSeconds = 950,
+                CurrentExpiresAtUnixSeconds = 1100,
+                NextExpiresAtUnixSeconds = 1200
+            },
+            CapabilityPolicy = new()
+            {
+                CurrentBucket = 1010,
+                MinimumGeneration = 7,
+                AllowLegacyMirrorOverlap = false,
+                AllowRevoked = false,
+                AllowRecovery = false
+            },
+            AllowLegacyMirrorOverlap = false
+        };
+        var replay = new AcceptingReplayGuard();
+        var request = canonicalRequest.Span;
+        var (capabilityOffset, capabilityLength, domain) = operation switch
+        {
+            MailboxClientOperation.Store => (
+                48,
+                BinaryPrimitives.ReadUInt16BigEndian(request.Slice(32, 2)),
+                MailboxCapabilityDomain.Deposit),
+            MailboxClientOperation.Retrieve => (
+                120,
+                BinaryPrimitives.ReadUInt16BigEndian(request.Slice(42, 2)),
+                MailboxCapabilityDomain.Retrieve),
+            MailboxClientOperation.Acknowledge => (
+                120,
+                BinaryPrimitives.ReadUInt16BigEndian(request.Slice(34, 2)),
+                MailboxCapabilityDomain.Retrieve),
+            _ => throw new InvalidOperationException()
+        };
+        var operationId = request.Slice(16, 16).ToArray();
+        var capability = MailboxCapabilityCodec.Decode(
+            request.Slice(capabilityOffset, capabilityLength),
+            domain,
+            policy.CapabilityPolicy,
+            replay).Presentation;
+        return binding with
+        {
+            OuterOperationId = operationId.ToArray(),
+            CanonicalRequestDigest = SHA256.HashData(canonicalRequest.Span),
+            CanonicalCapabilityDigest =
+                SHA256.HashData(MailboxCapabilityCodec.Encode(capability)),
+            ReplayCounter = capability.ReplayCounter,
+            IdempotencyKey = capability.IdempotencyKey.ToArray(),
+            ReplayDisposition = MailboxCapabilityReplayDisposition.New
+        };
+    }
+
+    private sealed class AcceptingReplayGuard : IMailboxCapabilityReplayGuard
+    {
+        public MailboxCapabilityReplayEvaluation Evaluate(MailboxCapabilityReplayScope scope) =>
+            new()
+            {
+                Decision = MailboxCapabilityReplayDecision.AcceptedNew,
+                CachedOutcome = ReadOnlyMemory<byte>.Empty
+            };
     }
 
     private sealed class SigningFanout(
@@ -1240,6 +1338,9 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
                 throw new SimulatedCrashException();
             }
         }
+
+        public void FlushParentDirectory(string deletedPath) =>
+            FlushFileAndParentDirectory(deletedPath);
     }
 
     private sealed class SimulatedCrashException : Exception;

@@ -37,6 +37,31 @@ public sealed class ReplicatedMailboxTests : IDisposable
     }
 
     [Fact]
+    public async Task ExactReadAndDelete_AreScopedIdempotentAndFlushDeletion()
+    {
+        var options = Options();
+        var durability = new RecordingDurability();
+        var store = new ReplicatedMailboxStore(
+            _root,
+            options,
+            _clock,
+            new RecordingSecurity(),
+            durability);
+        var blob = Blob(_clock.UtcNow, "mailbox-a", [1, 2, 3, 4]);
+        Assert.Equal(MailboxPutDisposition.Stored, (await store.PutAsync(blob)).Disposition);
+
+        Assert.Equal(blob, await store.ReadExactAsync(blob.MailboxId, blob.BlobId));
+        Assert.Null(await store.ReadExactAsync(
+            Convert.ToHexString(SHA256.HashData([9])).ToLowerInvariant(),
+            blob.BlobId));
+        Assert.Null(await store.ReadExactAsync(blob.MailboxId, "../escape"));
+        Assert.True(await store.DeleteExactAsync(blob.MailboxId, blob.BlobId));
+        Assert.False(await store.DeleteExactAsync(blob.MailboxId, blob.BlobId));
+        Assert.Null(await store.ReadExactAsync(blob.MailboxId, blob.BlobId));
+        Assert.True(durability.Calls >= 3);
+    }
+
+    [Fact]
     public async Task Store_RejectsDigestTtlAndSizeViolations()
     {
         var options = Options();
@@ -675,6 +700,9 @@ public sealed class ReplicatedMailboxTests : IDisposable
                 throw new IOException("simulated durability failure");
             }
         }
+
+        public void FlushParentDirectory(string deletedPath) =>
+            FlushFileAndParentDirectory(deletedPath);
     }
 
     private sealed class BlockingDurability : IMailboxDurabilityBarrier
@@ -693,6 +721,9 @@ public sealed class ReplicatedMailboxTests : IDisposable
             Entered.TrySetResult();
             Release.Task.GetAwaiter().GetResult();
         }
+
+        public void FlushParentDirectory(string deletedPath) =>
+            FlushFileAndParentDirectory(deletedPath);
     }
 
     private sealed class FakePeerClient : IMailboxReplicaPeerClient
