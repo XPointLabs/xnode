@@ -62,7 +62,7 @@ public sealed class ReplicatedMailboxTests : IDisposable
     }
 
     [Fact]
-    public async Task Receiver_AuthenticatesRegisteredPeerAndRejectsReplay()
+    public async Task Receiver_ExactReplayReturnsCachedReceipt()
     {
         var sender = Identity(1);
         var receiver = Identity(2);
@@ -93,7 +93,278 @@ public sealed class ReplicatedMailboxTests : IDisposable
             receiver.Id,
             request.Blob,
             _clock.UtcNow));
-        Assert.Equal(MailboxReplicaReceiveStatus.Replay, replay.Status);
+        Assert.Equal(MailboxReplicaReceiveStatus.Accepted, replay.Status);
+        Assert.Equal(accepted.Receipt, replay.Receipt);
+        Assert.Equal(1, service.Metrics.Stored);
+        Assert.Equal(1, service.Metrics.IdempotentReplays);
+    }
+
+    [Fact]
+    public async Task Receiver_ConcurrentExactReplayWaitsForDurabilityAndSharesReceipt()
+    {
+        var sender = Identity(1);
+        var receiver = Identity(2);
+        var options = Options();
+        var durability = new BlockingDurability();
+        var service = Receiver(
+            sender,
+            receiver,
+            options,
+            new ReplicatedMailboxStore(
+                _root,
+                options,
+                _clock,
+                new RecordingSecurity(),
+                durability),
+            new MailboxReplicaReplayGuard());
+        var request = MailboxReplicationProtocol.SignRequest(
+            sender.Id,
+            receiver.Id,
+            sender.Seed,
+            Blob(_clock.UtcNow, "mailbox-a", [1, 2, 3]),
+            _clock.UtcNow);
+
+        var firstTask = Task.Run(() => service.ReceiveAsync(request));
+        await durability.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var duplicateTask = Task.Run(() => service.ReceiveAsync(request));
+        try
+        {
+            await Task.Delay(50);
+            Assert.False(duplicateTask.IsCompleted);
+        }
+        finally
+        {
+            durability.Release.TrySetResult();
+        }
+
+        var first = await firstTask.WaitAsync(TimeSpan.FromSeconds(5));
+        var duplicate = await duplicateTask.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(first.Receipt, duplicate.Receipt);
+        Assert.Equal(1, durability.Calls);
+    }
+
+    [Fact]
+    public async Task Receiver_RejectsConflictingRequestWithSameNonce()
+    {
+        var sender = Identity(1);
+        var receiver = Identity(2);
+        var service = Receiver(
+            sender,
+            receiver,
+            Options(),
+            new ReplicatedMailboxStore(_root, Options(), _clock),
+            new MailboxReplicaReplayGuard());
+        const string nonce = "00112233445566778899aabbccddeeff";
+        var first = MailboxReplicationProtocol.SignRequest(
+            sender.Id,
+            receiver.Id,
+            sender.Seed,
+            Blob(_clock.UtcNow, "mailbox-a", [1, 2, 3]),
+            _clock.UtcNow,
+            nonce);
+        var conflict = MailboxReplicationProtocol.SignRequest(
+            sender.Id,
+            receiver.Id,
+            sender.Seed,
+            Blob(_clock.UtcNow, "mailbox-a", [4, 5, 6]),
+            _clock.UtcNow,
+            nonce);
+
+        Assert.Equal(MailboxReplicaReceiveStatus.Accepted, (await service.ReceiveAsync(first)).Status);
+        Assert.Equal(MailboxReplicaReceiveStatus.Replay, (await service.ReceiveAsync(conflict)).Status);
+    }
+
+    [Fact]
+    public async Task Receiver_InvalidBlobDoesNotReserveNonce()
+    {
+        var sender = Identity(1);
+        var receiver = Identity(2);
+        var options = Options();
+        var service = Receiver(
+            sender,
+            receiver,
+            options,
+            new ReplicatedMailboxStore(_root, options, _clock),
+            new MailboxReplicaReplayGuard());
+        const string nonce = "00112233445566778899aabbccddeeff";
+        var validBlob = Blob(_clock.UtcNow, "mailbox-a", [1, 2, 3]);
+        var invalid = MailboxReplicationProtocol.SignRequest(
+            sender.Id,
+            receiver.Id,
+            sender.Seed,
+            validBlob with { BlobId = new string('0', 64) },
+            _clock.UtcNow,
+            nonce);
+        var valid = MailboxReplicationProtocol.SignRequest(
+            sender.Id,
+            receiver.Id,
+            sender.Seed,
+            validBlob,
+            _clock.UtcNow,
+            nonce);
+
+        Assert.Equal(MailboxReplicaReceiveStatus.Rejected, (await service.ReceiveAsync(invalid)).Status);
+        Assert.Equal(MailboxReplicaReceiveStatus.Accepted, (await service.ReceiveAsync(valid)).Status);
+    }
+
+    [Fact]
+    public async Task Receiver_FailedDurabilityReleasesReservationForRetry()
+    {
+        var sender = Identity(1);
+        var receiver = Identity(2);
+        var options = Options();
+        var durability = new RecordingDurability { Fail = true };
+        var store = new ReplicatedMailboxStore(
+            _root,
+            options,
+            _clock,
+            new RecordingSecurity(),
+            durability);
+        var service = Receiver(
+            sender,
+            receiver,
+            options,
+            store,
+            new MailboxReplicaReplayGuard(maximumReservationsPerWindow: 1));
+        var request = MailboxReplicationProtocol.SignRequest(
+            sender.Id,
+            receiver.Id,
+            sender.Seed,
+            Blob(_clock.UtcNow, "mailbox-a", [7, 8, 9]),
+            _clock.UtcNow);
+
+        await Assert.ThrowsAsync<IOException>(() => service.ReceiveAsync(request));
+        durability.Fail = false;
+        var retried = await service.ReceiveAsync(request);
+
+        Assert.Equal(MailboxReplicaReceiveStatus.Accepted, retried.Status);
+        Assert.Equal("duplicate", retried.Receipt?.Disposition);
+        Assert.Equal(2, durability.Calls);
+    }
+
+    [Fact]
+    public async Task Receiver_CancelledWriteReleasesReservationForRetry()
+    {
+        var sender = Identity(1);
+        var receiver = Identity(2);
+        var options = Options();
+        var service = Receiver(
+            sender,
+            receiver,
+            options,
+            new ReplicatedMailboxStore(
+                _root,
+                options,
+                _clock,
+                new RecordingSecurity(),
+                new RecordingDurability()),
+            new MailboxReplicaReplayGuard());
+        var request = MailboxReplicationProtocol.SignRequest(
+            sender.Id,
+            receiver.Id,
+            sender.Seed,
+            Blob(_clock.UtcNow, "mailbox-a", [2, 4, 6]),
+            _clock.UtcNow);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => service.ReceiveAsync(request, cancellation.Token));
+        Assert.Equal(MailboxReplicaReceiveStatus.Accepted, (await service.ReceiveAsync(request)).Status);
+    }
+
+    [Fact]
+    public async Task ReplayQuota_IsPerSenderAndCannotGloballySaturateAdmission()
+    {
+        var senderA = Identity(1);
+        var senderB = Identity(3);
+        var receiver = Identity(2);
+        var options = Options();
+        var guard = new MailboxReplicaReplayGuard(
+            maximumEntriesPerSender: 2,
+            maximumReservationsPerWindow: 2,
+            maximumSenderStates: 4);
+        var service = new MailboxReplicaReceiver(
+            receiver.Id,
+            receiver.Seed,
+            options,
+            new ReplicatedMailboxStore(_root, options, _clock),
+            new AllowPeers([senderA.Id, senderB.Id]),
+            guard,
+            _clock);
+
+        Assert.Equal(MailboxReplicaReceiveStatus.Accepted,
+            (await service.ReceiveAsync(Request(senderA, receiver, 1))).Status);
+        Assert.Equal(MailboxReplicaReceiveStatus.Accepted,
+            (await service.ReceiveAsync(Request(senderA, receiver, 2))).Status);
+        Assert.Equal(MailboxReplicaReceiveStatus.RateLimited,
+            (await service.ReceiveAsync(Request(senderA, receiver, 3))).Status);
+        Assert.Equal(MailboxReplicaReceiveStatus.Accepted,
+            (await service.ReceiveAsync(Request(senderB, receiver, 4))).Status);
+    }
+
+    [Fact]
+    public async Task Store_RecoveryPurgesStaleTemporaryAndCorruptFiles()
+    {
+        var options = Options();
+        var mailboxRoot = Path.Combine(_root, options.DirectoryName);
+        var mailboxDirectory = Path.Combine(mailboxRoot, new string('a', 64));
+        Directory.CreateDirectory(mailboxDirectory);
+        await File.WriteAllTextAsync(Path.Combine(mailboxRoot, "stale.json.123.tmp"), "partial");
+        await File.WriteAllTextAsync(Path.Combine(mailboxDirectory, $"{new string('b', 64)}.json"), "{");
+
+        var store = new ReplicatedMailboxStore(_root, options, _clock);
+        await store.InitializeAsync();
+
+        Assert.Empty(Directory.EnumerateFiles(mailboxRoot, "*", SearchOption.AllDirectories));
+        Assert.Equal(MailboxPutDisposition.Stored,
+            (await store.PutAsync(Blob(_clock.UtcNow, "mailbox-a", [1]))).Disposition);
+    }
+
+    [Fact]
+    public async Task Store_RecoveryBoundFailsClosed()
+    {
+        var options = Options();
+        options.MaxStoredBlobs = 1;
+        options.MaxRecoveryScanFiles = 1;
+        var mailboxRoot = Path.Combine(_root, options.DirectoryName);
+        Directory.CreateDirectory(mailboxRoot);
+        await File.WriteAllTextAsync(Path.Combine(mailboxRoot, "one.tmp"), "partial");
+        await File.WriteAllTextAsync(Path.Combine(mailboxRoot, "two.tmp"), "partial");
+
+        var store = new ReplicatedMailboxStore(_root, options, _clock);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.InitializeAsync());
+    }
+
+    [Fact]
+    public async Task Store_SecurityAndDurabilityAreVerifiedBeforeSuccess()
+    {
+        var options = Options();
+        var security = new RecordingSecurity();
+        var durability = new RecordingDurability();
+        var store = new ReplicatedMailboxStore(_root, options, _clock, security, durability);
+
+        await store.InitializeAsync();
+        var result = await store.PutAsync(Blob(_clock.UtcNow, "mailbox-a", [1, 9]));
+
+        Assert.Equal(MailboxPutDisposition.Stored, result.Disposition);
+        Assert.True(security.Directories >= 2);
+        Assert.Equal(1, security.Files);
+        Assert.Equal(1, durability.Calls);
+    }
+
+    [Fact]
+    public async Task Store_SecurityFailureStopsActivation()
+    {
+        var store = new ReplicatedMailboxStore(
+            _root,
+            Options(),
+            _clock,
+            new RecordingSecurity { Fail = true },
+            new RecordingDurability());
+
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() => store.InitializeAsync());
     }
 
     [Fact]
@@ -259,6 +530,33 @@ public sealed class ReplicatedMailboxTests : IDisposable
             client,
             _clock);
 
+    private MailboxReplicaReceiver Receiver(
+        IdentityData sender,
+        IdentityData receiver,
+        ReplicatedMailboxOptions options,
+        ReplicatedMailboxStore store,
+        MailboxReplicaReplayGuard guard) =>
+        new(
+            receiver.Id,
+            receiver.Seed,
+            options,
+            store,
+            new AllowOnlyPeer(sender.Id),
+            guard,
+            _clock);
+
+    private SignedMailboxReplicaRequest Request(
+        IdentityData sender,
+        IdentityData receiver,
+        byte value) =>
+        MailboxReplicationProtocol.SignRequest(
+            sender.Id,
+            receiver.Id,
+            sender.Seed,
+            Blob(_clock.UtcNow, "mailbox-a", [value]),
+            _clock.UtcNow,
+            Convert.ToHexString(Enumerable.Repeat(value, 16).ToArray()).ToLowerInvariant());
+
     private static MailboxReplicaPeer Peer(IdentityData identity) =>
         new(identity.Id, $"https://8.8.8.8/api/peer/mailbox/replica");
 
@@ -320,6 +618,81 @@ public sealed class ReplicatedMailboxTests : IDisposable
         }
 
         public bool IsAuthorized(RouterId routerId, DateTimeOffset now) => routerId == _allowed;
+    }
+
+    private sealed class AllowPeers : IMailboxPeerAuthorizer
+    {
+        private readonly IReadOnlySet<RouterId> _allowed;
+
+        public AllowPeers(IEnumerable<RouterId> allowed)
+        {
+            _allowed = allowed.ToHashSet();
+        }
+
+        public bool IsAuthorized(RouterId routerId, DateTimeOffset now) => _allowed.Contains(routerId);
+    }
+
+    private sealed class RecordingSecurity : IMailboxStorageSecurity
+    {
+        public bool Fail { get; set; }
+
+        public int Directories { get; private set; }
+
+        public int Files { get; private set; }
+
+        public void SecureDirectory(string path)
+        {
+            Directories++;
+            if (Fail)
+            {
+                throw new UnauthorizedAccessException("simulated ACL failure");
+            }
+
+            Directory.CreateDirectory(path);
+        }
+
+        public void SecureFile(string path)
+        {
+            Files++;
+            if (Fail)
+            {
+                throw new UnauthorizedAccessException("simulated ACL failure");
+            }
+        }
+    }
+
+    private sealed class RecordingDurability : IMailboxDurabilityBarrier
+    {
+        public bool Fail { get; set; }
+
+        public int Calls { get; private set; }
+
+        public void FlushFileAndParentDirectory(string path)
+        {
+            Calls++;
+            if (Fail)
+            {
+                throw new IOException("simulated durability failure");
+            }
+        }
+    }
+
+    private sealed class BlockingDurability : IMailboxDurabilityBarrier
+    {
+        public TaskCompletionSource Entered { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource Release { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int Calls { get; private set; }
+
+        public void FlushFileAndParentDirectory(string path)
+        {
+            Calls++;
+            Entered.TrySetResult();
+            Release.Task.GetAwaiter().GetResult();
+        }
     }
 
     private sealed class FakePeerClient : IMailboxReplicaPeerClient

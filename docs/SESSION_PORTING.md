@@ -75,7 +75,8 @@ For each ported behavior:
   verifies against the exact mailbox id, blob digest and expiry. Missing, timed-out or invalid
   receipts never count toward quorum.
 - The blob id is the SHA-256 digest of the canonical base64-decoded ciphertext. Replays are
-  idempotent; a conflicting representation or payload fails closed.
+  transactionally idempotent: exact signed-request retries return the cached receipt only after
+  durable storage, while a conflicting request with the same sender nonce fails closed.
 - Sender and storage-node identities are self-certifying Ed25519 router identities. The receiver
   additionally requires the sender to be present and fresh in the locally verified registered
   relay catalog.

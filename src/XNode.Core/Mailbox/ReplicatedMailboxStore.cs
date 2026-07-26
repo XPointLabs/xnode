@@ -17,25 +17,45 @@ public sealed class ReplicatedMailboxStore
     private readonly string _rootDirectory;
     private readonly ReplicatedMailboxOptions _options;
     private readonly IClock _clock;
+    private readonly IMailboxStorageSecurity _storageSecurity;
+    private readonly IMailboxDurabilityBarrier _durability;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private int _storedBlobCount = -1;
 
     public ReplicatedMailboxStore(
         string dataDirectory,
         ReplicatedMailboxOptions options,
-        IClock? clock = null)
+        IClock? clock = null,
+        IMailboxStorageSecurity? storageSecurity = null,
+        IMailboxDurabilityBarrier? durability = null)
     {
         options.Validate();
         _options = options;
         _clock = clock ?? new SystemClock();
+        _storageSecurity = storageSecurity ?? new MailboxStorageSecurity();
+        _durability = durability ?? new MailboxDurabilityBarrier();
         _rootDirectory = Path.Combine(dataDirectory, options.DirectoryName);
     }
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
-        Directory.CreateDirectory(_rootDirectory);
-        RestrictDirectoryPermissions(_rootDirectory);
-        await PurgeExpiredAsync(cancellationToken).ConfigureAwait(false);
+        _storageSecurity.SecureDirectory(_rootDirectory);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            EnsureRecoveryScanBound();
+            PurgeStaleTemporaryFilesUnderGate(cancellationToken);
+            await PurgeExpiredUnderGateAsync(cancellationToken).ConfigureAwait(false);
+            if (_storedBlobCount > _options.MaxStoredBlobs)
+            {
+                throw new InvalidOperationException(
+                    "Mailbox storage exceeds MaxStoredBlobs after recovery.");
+            }
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
     public async Task<MailboxPutResult> PutAsync(
@@ -52,8 +72,7 @@ public sealed class ReplicatedMailboxStore
             return new MailboxPutResult(MailboxPutDisposition.Rejected, validationError);
         }
 
-        Directory.CreateDirectory(_rootDirectory);
-        RestrictDirectoryPermissions(_rootDirectory);
+        _storageSecurity.SecureDirectory(_rootDirectory);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -62,21 +81,30 @@ public sealed class ReplicatedMailboxStore
             var finalPath = Path.Combine(mailboxDirectory, $"{blob.BlobId}.json");
             if (File.Exists(finalPath))
             {
+                EncryptedMailboxBlob? existing;
                 try
                 {
                     await using var existingStream = File.OpenRead(finalPath);
-                    var existing = await JsonSerializer.DeserializeAsync<EncryptedMailboxBlob>(
+                    existing = await JsonSerializer.DeserializeAsync<EncryptedMailboxBlob>(
                         existingStream,
                         JsonOptions,
                         cancellationToken).ConfigureAwait(false);
-                    return existing == blob
-                        ? new MailboxPutResult(MailboxPutDisposition.Duplicate)
-                        : new MailboxPutResult(MailboxPutDisposition.Rejected, "mailbox-blob-id-conflict");
                 }
                 catch (Exception exception) when (exception is IOException or JsonException)
                 {
                     return new MailboxPutResult(MailboxPutDisposition.Rejected, "mailbox-storage-corrupt");
                 }
+
+                if (existing != blob)
+                {
+                    return new MailboxPutResult(
+                        MailboxPutDisposition.Rejected,
+                        "mailbox-blob-id-conflict");
+                }
+
+                _storageSecurity.SecureFile(finalPath);
+                _durability.FlushFileAndParentDirectory(finalPath);
+                return new MailboxPutResult(MailboxPutDisposition.Duplicate);
             }
 
             if (_storedBlobCount >= _options.MaxStoredBlobs)
@@ -88,8 +116,7 @@ public sealed class ReplicatedMailboxStore
                 }
             }
 
-            Directory.CreateDirectory(mailboxDirectory);
-            RestrictDirectoryPermissions(mailboxDirectory);
+            _storageSecurity.SecureDirectory(mailboxDirectory);
             var temporaryPath = $"{finalPath}.{Guid.NewGuid():N}.tmp";
             try
             {
@@ -103,12 +130,13 @@ public sealed class ReplicatedMailboxStore
                 {
                     await JsonSerializer.SerializeAsync(stream, blob, JsonOptions, cancellationToken)
                         .ConfigureAwait(false);
-                    await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+                    stream.Flush(flushToDisk: true);
                 }
 
                 File.Move(temporaryPath, finalPath, overwrite: false);
-                RestrictFilePermissions(finalPath);
                 _storedBlobCount++;
+                _storageSecurity.SecureFile(finalPath);
+                _durability.FlushFileAndParentDirectory(finalPath);
             }
             finally
             {
@@ -207,6 +235,7 @@ public sealed class ReplicatedMailboxStore
         }
 
         var removed = 0;
+        EnsureRecoveryScanBound();
         EnsureStoredBlobCount();
         var nowUnixMs = _clock.UtcNow.ToUnixTimeMilliseconds();
         foreach (var path in Directory.EnumerateFiles(_rootDirectory, "*.json", SearchOption.AllDirectories))
@@ -256,8 +285,14 @@ public sealed class ReplicatedMailboxStore
         if (_storedBlobCount < 0)
         {
             _storedBlobCount = Directory.Exists(_rootDirectory)
-                ? Directory.EnumerateFiles(_rootDirectory, "*.json", SearchOption.AllDirectories).Count()
+                ? Directory.EnumerateFiles(_rootDirectory, "*.json", SearchOption.AllDirectories)
+                    .Take(_options.MaxRecoveryScanFiles + 1)
+                    .Count()
                 : 0;
+            if (_storedBlobCount > _options.MaxRecoveryScanFiles)
+            {
+                throw new InvalidOperationException("Mailbox recovery scan bound was exceeded.");
+            }
         }
     }
 
@@ -286,21 +321,25 @@ public sealed class ReplicatedMailboxStore
         }
     }
 
-    private static void RestrictDirectoryPermissions(string path)
+    private void EnsureRecoveryScanBound()
     {
-        if (!OperatingSystem.IsWindows())
+        if (Directory.EnumerateFiles(_rootDirectory, "*", SearchOption.AllDirectories)
+            .Take(_options.MaxRecoveryScanFiles + 1)
+            .Count() > _options.MaxRecoveryScanFiles)
         {
-            File.SetUnixFileMode(
-                path,
-                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            throw new InvalidOperationException("Mailbox recovery scan bound was exceeded.");
         }
     }
 
-    private static void RestrictFilePermissions(string path)
+    private void PurgeStaleTemporaryFilesUnderGate(CancellationToken cancellationToken)
     {
-        if (!OperatingSystem.IsWindows())
+        foreach (var path in Directory.EnumerateFiles(
+                     _rootDirectory,
+                     "*.tmp",
+                     SearchOption.AllDirectories))
         {
-            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            cancellationToken.ThrowIfCancellationRequested();
+            File.Delete(path);
         }
     }
 }

@@ -81,7 +81,13 @@ builder.Services.AddSingleton(provider => new ReplicatedMailboxStore(
     mailboxOptions,
     provider.GetRequiredService<IClock>()));
 builder.Services.AddHostedService<MailboxStoreHostedService>();
-builder.Services.AddSingleton<MailboxReplicaReplayGuard>();
+builder.Services.AddSingleton(new MailboxReplicaReplayGuard(
+    mailboxOptions.MaxReplayEntriesPerPeer,
+    mailboxOptions.MaxReplicaRequestsPerPeerPerMinute,
+    mailboxOptions.MaxReplayPeerStates,
+    mailboxOptions.ReplayRetention,
+    mailboxOptions.ReplayReservationTimeout,
+    TimeSpan.FromMinutes(1)));
 builder.Services.AddSingleton<IMailboxPeerAuthorizer, NodeDbMailboxPeerAuthorizer>();
 builder.Services.AddSingleton(provider => new MailboxReplicaReceiver(
     nodeOptions.GetRouterId(),
@@ -380,6 +386,8 @@ app.MapPost("/api/peer/mailbox/replica", async (
         MailboxReplicaReceiveStatus.Accepted => Results.Ok(result.Receipt),
         MailboxReplicaReceiveStatus.Unauthorized => Results.Unauthorized(),
         MailboxReplicaReceiveStatus.Replay => Results.Conflict(),
+        MailboxReplicaReceiveStatus.RateLimited => Results.StatusCode(
+            StatusCodes.Status429TooManyRequests),
         MailboxReplicaReceiveStatus.Rejected => Results.BadRequest(),
         _ => Results.NotFound()
     };

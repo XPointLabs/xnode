@@ -10,6 +10,8 @@ public sealed class ReplicatedMailboxOptions
 
     public int MaxStoredBlobs { get; set; } = 100_000;
 
+    public int MaxRecoveryScanFiles { get; set; } = 200_000;
+
     public TimeSpan MinimumTtl { get; set; } = TimeSpan.FromMinutes(1);
 
     public TimeSpan MaximumTtl { get; set; } = TimeSpan.FromDays(7);
@@ -19,6 +21,16 @@ public sealed class ReplicatedMailboxOptions
     public int WriteQuorum { get; set; } = 2;
 
     public TimeSpan PeerTimeout { get; set; } = TimeSpan.FromSeconds(5);
+
+    public int MaxReplayEntriesPerPeer { get; set; } = 2048;
+
+    public int MaxReplicaRequestsPerPeerPerMinute { get; set; } = 240;
+
+    public int MaxReplayPeerStates { get; set; } = 4096;
+
+    public TimeSpan ReplayRetention { get; set; } = TimeSpan.FromMinutes(5);
+
+    public TimeSpan ReplayReservationTimeout { get; set; } = TimeSpan.FromMinutes(2);
 
     public bool AllowInsecureHttpPeerTransport { get; set; }
 
@@ -36,6 +48,8 @@ public sealed class ReplicatedMailboxOptions
 
         if (MaxBlobBytes is < 1024 or > 1024 * 1024
             || MaxStoredBlobs <= 0
+            || MaxRecoveryScanFiles < MaxStoredBlobs
+            || MaxRecoveryScanFiles > 2_000_000
             || MinimumTtl <= TimeSpan.Zero
             || MaximumTtl < MinimumTtl
             || MaximumTtl > TimeSpan.FromDays(30)
@@ -43,7 +57,14 @@ public sealed class ReplicatedMailboxOptions
             || WriteQuorum is < 1
             || WriteQuorum > ReplicationFactor
             || PeerTimeout <= TimeSpan.Zero
-            || PeerTimeout > TimeSpan.FromMinutes(1))
+            || PeerTimeout > TimeSpan.FromMinutes(1)
+            || MaxReplayEntriesPerPeer is < 1 or > 100_000
+            || MaxReplicaRequestsPerPeerPerMinute is < 1 or > 100_000
+            || MaxReplayPeerStates is < 1 or > 100_000
+            || ReplayRetention < TimeSpan.FromMinutes(1)
+            || ReplayRetention > TimeSpan.FromHours(1)
+            || ReplayReservationTimeout < PeerTimeout
+            || ReplayReservationTimeout > ReplayRetention)
         {
             throw new InvalidOperationException("Replicated mailbox limits are invalid.");
         }

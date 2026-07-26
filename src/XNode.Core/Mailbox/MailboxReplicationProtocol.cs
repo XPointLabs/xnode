@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Security.Cryptography;
 using Rebex.Security.Cryptography;
 
 namespace XNode.Core.Mailbox;
@@ -62,6 +63,12 @@ public static class MailboxReplicationProtocol
         }
 
         return Verify(sender, request.Signature, BuildRequestPayload(request with { Signature = "" }));
+    }
+
+    public static string ComputeRequestFingerprint(SignedMailboxReplicaRequest request)
+    {
+        var payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOptions);
+        return Convert.ToHexString(SHA256.HashData(payload)).ToLowerInvariant();
     }
 
     public static MailboxWriteReceipt SignReceipt(

@@ -312,11 +312,17 @@ and authenticated retrieval have a reviewed cross-repository contract.
     "directoryName": "mailbox-v1",
     "maxBlobBytes": 81920,
     "maxStoredBlobs": 100000,
+    "maxRecoveryScanFiles": 200000,
     "minimumTtl": "00:01:00",
     "maximumTtl": "7.00:00:00",
     "replicationFactor": 3,
     "writeQuorum": 2,
     "peerTimeout": "00:00:05",
+    "maxReplayEntriesPerPeer": 2048,
+    "maxReplicaRequestsPerPeerPerMinute": 240,
+    "maxReplayPeerStates": 4096,
+    "replayRetention": "00:05:00",
+    "replayReservationTimeout": "00:02:00",
     "allowInsecureHttpPeerTransport": false
   }
 }
@@ -337,5 +343,11 @@ Operational bounds:
 - ciphertext is canonical base64 and its SHA-256 digest must equal `blobId`;
 - TTL and ciphertext size are rejected outside configured bounds;
 - writes are atomic and duplicate writes are idempotent;
-- expired or corrupt entries are purged during initialization and capacity recovery;
+- exact signed-request retries return the cached receipt after the first durable write;
+- admission quotas are isolated per registered sender and stale reservations are recoverable;
+- expired, corrupt and stale temporary entries are purged during bounded startup recovery;
+- Windows ACLs are replaced and verified as service-account-only; Unix modes are verified as
+  `0700` for directories and `0600` for files;
+- file data and metadata are flushed before a receipt; parent directories are fsynced where the
+  host filesystem supports it;
 - peer timeouts and invalid node receipts fail closed and do not count toward write quorum.
