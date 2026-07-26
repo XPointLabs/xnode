@@ -146,7 +146,7 @@ Readiness semantics for transport failover:
 
 Supported first-pass methods are `status`, `path_ping`, `fetch_rids`, `fetch_rcs`, `select_path`, and `store_rc`.
 
-Runtime now also accepts `report_path_result` to feed churn/failure outcomes back into path repair.
+Runtime rejects public `report_path_result` requests. Public storage RPC results, including downstream HTTP failures, are not path-health evidence and cannot influence relay selection. The compatibility `churn-blocked router count` remains zero until XNode has an authenticated, direct peer-health plane.
 
 Private peer routing is disabled by default. A controlled container or private-LAN deployment may opt in to
 RFC1918 peer endpoints with `Runtime__AllowPrivatePeerEndpoints=true`. This does not permit loopback,
@@ -163,7 +163,7 @@ separately gated by `Runtime__AllowLoopbackPeerEndpoints=true`.
 - heartbeat submission count
 - path selection attempts/failures
 - path repair attempts/successes
-- churn-blocked router count
+- compatibility churn-blocked router count (currently always zero; no unauthenticated failure scoring)
 
 These counters are also persisted in heartbeat snapshots via `NodeDbStorageBackend`.
 
@@ -281,9 +281,9 @@ Observed baseline (latest run):
 
 Known bottlenecks and remediation plan are emitted in C3 artifacts:
 
-- bottleneck example: churn blocklist pressure under sustained loss/churn
+- bottleneck example: churn blocklist pressure under sustained loss/churn (requires a future authenticated peer-health plane)
 - remediation actions:
   - scale path candidate pool for churn windows
-  - tune adaptive failure-score decay/threshold
+  - add authenticated direct-peer health measurements before enabling any adaptive failure scoring
   - add supervisor restart jitter to reduce synchronized storms
   - enforce ingress concurrency budget/backpressure at saturation

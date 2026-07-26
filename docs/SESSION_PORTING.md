@@ -53,6 +53,7 @@ For each ported behavior:
 - Dynamic relay membership authorization comes from the exact registered catalog currently loaded into `NodeDb`. Locally stored or gossiped contacts outside that catalog are not eligible, and an unavailable or undersized catalog fails with `path-not-found`.
 - Relay contact self-signatures prove contact integrity, key possession, and freshness only. They are never registry or membership authorization.
 - Session RPC responses add `xpoint-rpc-response-v1` metadata signed by the responder Ed25519 identity. The signature binds the pinned responder, request id/method/nonce/payload digest, issuance time, success state, and result/error digest.
+- Public direct storage RPCs do not traverse their advertised relay route. Their downstream HTTP outcomes and public path reports are therefore never used as relay-health evidence; churn blocking remains disabled until direct, authenticated peer-health measurements exist.
 - A future quorum-backed catalog checkpoint may replace the current registered-catalog authorization source. Route trust v1 does not implement a Merkle or on-chain catalog checkpoint.
 
 ## Stop-The-Line Conditions

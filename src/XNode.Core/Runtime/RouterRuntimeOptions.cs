@@ -8,10 +8,6 @@ public sealed class RouterRuntimeOptions
 
     public bool RequireSignedRelayContacts { get; set; } = true;
 
-    public int PathFailureThreshold { get; set; } = 3;
-
-    public TimeSpan PathFailureDecayInterval { get; set; } = TimeSpan.FromMinutes(2);
-
     public int MaxPeerRequestBodyBytes { get; set; } = 256 * 1024;
 
     public int MaxRpcPayloadBytes { get; set; } = 128 * 1024;

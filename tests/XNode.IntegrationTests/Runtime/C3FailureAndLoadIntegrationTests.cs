@@ -332,7 +332,7 @@ public sealed class C3FailureAndLoadIntegrationTests
         return new[]
         {
             new RemediationAction("Scale path candidate pool", "Increase relay contact freshness and candidate breadth during churn to reduce tail-latency retries."),
-            new RemediationAction("Adaptive packet-loss feedback", "Tune failure-score decay and threshold by observed loss profile to avoid over-blocking relays."),
+            new RemediationAction("Authenticated peer-health", "Add direct, authenticated peer-health evidence before enabling any adaptive relay failure scoring."),
             new RemediationAction("Supervisor jitter", "Add randomized restart jitter per node to reduce synchronized restart storms."),
             new RemediationAction("RPC concurrency budget", "Apply bounded worker pools and backpressure on ingress when throughput approaches saturation.")
         };
@@ -425,8 +425,6 @@ public sealed class C3FailureAndLoadIntegrationTests
             {
                 BootstrapFromStorage = true,
                 HeartbeatInterval = TimeSpan.FromMilliseconds(60),
-                PathFailureThreshold = 3,
-                PathFailureDecayInterval = TimeSpan.FromMilliseconds(220),
                 RequireSignedRelayContacts = false
             },
             new PathSelectionOptions

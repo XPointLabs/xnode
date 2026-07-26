@@ -158,7 +158,6 @@ public sealed class RouterRuntimeIntegrationTests
                 new RouterRuntimeOptions
                 {
                     BootstrapFromStorage = true,
-                    PathFailureThreshold = 2,
                     RequireSignedRelayContacts = false
                 },
                 new PathSelectionOptions
@@ -259,6 +258,70 @@ public sealed class RouterRuntimeIntegrationTests
             Assert.Equal(3, route.Length);
             Assert.Equal(local.RouterId, route[0].GetProperty("routerId").GetString());
             Assert.Equal("stored", json.RootElement.GetProperty("storage").GetProperty("status").GetString());
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("storage_store", 422)]
+    [InlineData("storage_retrieve", 503)]
+    public async Task Runtime_PublicStorageFailuresDoNotBlockRelays(
+        string method,
+        int downstreamStatusCode)
+    {
+        var root = NewTempDirectory();
+        try
+        {
+            var local = NodeOptions(root);
+            var remoteOne = NodeOptionsFromSeed(root, Seed(21), "http://xnode-21:8080");
+            var remoteTwo = NodeOptionsFromSeed(root, Seed(42), "http://xnode-42:8080");
+            var storageRpc = new FakeSessionStorageRpcBackend(downstreamStatusCode, "downstream-rejected");
+            var runtime = CreateRuntime(
+                root,
+                local,
+                new FakeStorageBackend(
+                    SignedContact(local),
+                    SignedContact(remoteOne),
+                    SignedContact(remoteTwo)),
+                new RouterRuntimeOptions
+                {
+                    BootstrapFromStorage = true,
+                    RequireSignedRelayContacts = true
+                },
+                new PathSelectionOptions { ClientHops = 3 },
+                storageRpc);
+
+            await runtime.StartAsync(CancellationToken.None);
+
+            var requestPayload = JsonSerializer.SerializeToElement(new
+            {
+                body = new
+                {
+                    pubkey = "05attacker-selected-target",
+                    @namespace = 0,
+                    data = "cGF5bG9hZA=="
+                }
+            });
+
+            for (var attempt = 0; attempt < 3; attempt++)
+            {
+                var response = await runtime.HandleRpcAsync(
+                    new SessionRpcRequest($"storage-failure-{attempt}", method, requestPayload),
+                    CancellationToken.None);
+
+                Assert.False(response.Success);
+            }
+
+            Assert.Equal(3, storageRpc.Requests.Count);
+            Assert.All(
+                storageRpc.Requests,
+                request => Assert.Equal(
+                    method == "storage_store" ? "/storage/store" : "/storage/retrieve",
+                    request.Path));
+            Assert.Equal(0, runtime.Status.Metrics.ChurnBlockedRouters);
         }
         finally
         {
@@ -792,6 +855,14 @@ public sealed class RouterRuntimeIntegrationTests
 
     private sealed class FakeSessionStorageRpcBackend : ISessionStorageRpcBackend
     {
+        private readonly SessionStorageRpcResult _result;
+
+        public FakeSessionStorageRpcBackend(int statusCode = 200, string? error = null)
+        {
+            var body = JsonSerializer.SerializeToElement(new { status = statusCode is >= 200 and <= 299 ? "stored" : "rejected" });
+            _result = new SessionStorageRpcResult(statusCode, body, error);
+        }
+
         public List<(string Path, JsonElement Payload)> Requests { get; } = [];
 
         public Task<SessionStorageRpcResult> PostAsync(
@@ -800,8 +871,7 @@ public sealed class RouterRuntimeIntegrationTests
             CancellationToken cancellationToken)
         {
             Requests.Add((path, payload.Clone()));
-            var body = JsonSerializer.SerializeToElement(new { status = "stored" });
-            return Task.FromResult(new SessionStorageRpcResult(200, body, null));
+            return Task.FromResult(_result);
         }
     }
 

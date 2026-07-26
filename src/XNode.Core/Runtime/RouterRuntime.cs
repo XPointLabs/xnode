@@ -1,4 +1,3 @@
-﻿using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -27,12 +26,10 @@ public sealed class RouterRuntime : IRouterRuntime
     private readonly ILogger<RouterRuntime> _logger;
     private readonly SemaphoreSlim _lifecycle = new(1, 1);
     private readonly PathSelectionOptions _pathOptions;
-    private readonly ConcurrentDictionary<RouterId, int> _pathFailureScores = new();
     private CancellationTokenSource? _backgroundCts;
     private Task? _backgroundLoop;
     private OnionKeyMaterial? _onionKeys;
     private string? _identityPrivateKey;
-    private DateTimeOffset _lastPathFailureDecay = DateTimeOffset.UnixEpoch;
 
     private long _rpcRequests;
     private long _rpcFailures;
@@ -158,7 +155,6 @@ public sealed class RouterRuntime : IRouterRuntime
             }
 
             _startedAt = _clock.UtcNow;
-            _lastPathFailureDecay = _startedAt;
             _started = true;
             await SubmitHeartbeatSafeAsync(cancellationToken).ConfigureAwait(false);
             _backgroundCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -298,11 +294,6 @@ public sealed class RouterRuntime : IRouterRuntime
                 .Where(id => id.Value.Length > 0)
                 .ToHashSet()
             : new HashSet<RouterId>();
-
-        foreach (var routerId in GetChurnBlockedRouters())
-        {
-            avoid.Add(routerId);
-        }
 
         var selected = _pathSelector.SelectHopsToRemote(
             pivot,
@@ -456,7 +447,6 @@ public sealed class RouterRuntime : IRouterRuntime
 
         var result = await _sessionStorageRpcBackend.PostAsync(storagePath, body.Clone(), cancellationToken)
             .ConfigureAwait(false);
-        RecordPathResult(route, result.IsSuccessStatusCode);
 
         if (!result.IsSuccessStatusCode)
         {
@@ -661,12 +651,9 @@ public sealed class RouterRuntime : IRouterRuntime
         {
             NormalizeRpcEndpoint(localContact.RpcEndpoint)
         };
-        var blocked = GetChurnBlockedRouters();
-
         foreach (var contact in contacts.Values
             .Where(contact => contact.RouterId != localRouterId && !excludedRouterIds.Contains(contact.RouterId))
-            .OrderBy(contact => blocked.Contains(contact.RouterId) ? 1 : 0)
-            .ThenBy(contact => XorDistanceHex(contact.RouterId, routingEntropy), StringComparer.Ordinal)
+            .OrderBy(contact => XorDistanceHex(contact.RouterId, routingEntropy), StringComparer.Ordinal)
             .ThenBy(contact => contact.RouterId))
         {
             if (!onionKeys.Add(contact.X25519PublicKey.Trim())
@@ -713,21 +700,6 @@ public sealed class RouterRuntime : IRouterRuntime
 
         excludedRouterIds = parsed;
         return true;
-    }
-
-    private void RecordPathResult(IReadOnlyList<RelayContact> route, bool success)
-    {
-        foreach (var contact in route)
-        {
-            if (success)
-            {
-                _pathFailureScores.AddOrUpdate(contact.RouterId, 0, static (_, score) => score > 0 ? score - 1 : 0);
-            }
-            else
-            {
-                _pathFailureScores.AddOrUpdate(contact.RouterId, 1, static (_, score) => score + 1);
-            }
-        }
     }
 
     private static object[] ToRouteDocument(IReadOnlyList<RelayContact> route)
@@ -892,7 +864,6 @@ public sealed class RouterRuntime : IRouterRuntime
             {
                 await Task.Delay(_runtimeOptions.HeartbeatInterval, cancellationToken).ConfigureAwait(false);
                 await SyncRelayContactsAsync(cancellationToken).ConfigureAwait(false);
-                DecayPathFailureScores();
                 await SubmitHeartbeatSafeAsync(cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -1000,35 +971,6 @@ public sealed class RouterRuntime : IRouterRuntime
         }
     }
 
-    private void DecayPathFailureScores()
-    {
-        var now = _clock.UtcNow;
-        if (now - _lastPathFailureDecay < _runtimeOptions.PathFailureDecayInterval)
-        {
-            return;
-        }
-
-        _lastPathFailureDecay = now;
-        foreach (var routerId in _pathFailureScores.Keys)
-        {
-            _pathFailureScores.AddOrUpdate(routerId, 0, static (_, score) => score > 0 ? score - 1 : 0);
-        }
-    }
-
-    private IReadOnlySet<RouterId> GetChurnBlockedRouters()
-    {
-        var blocked = new HashSet<RouterId>();
-        foreach (var (routerId, score) in _pathFailureScores)
-        {
-            if (score >= _runtimeOptions.PathFailureThreshold)
-            {
-                blocked.Add(routerId);
-            }
-        }
-
-        return blocked;
-    }
-
     private RouterRuntimeMetricsSnapshot MetricsSnapshot()
     {
         return new RouterRuntimeMetricsSnapshot(
@@ -1043,7 +985,10 @@ public sealed class RouterRuntime : IRouterRuntime
             PathSelectionFailures: Interlocked.Read(ref _pathSelectionFailures),
             PathRepairAttempts: Interlocked.Read(ref _pathRepairAttempts),
             PathRepairSuccesses: Interlocked.Read(ref _pathRepairSuccesses),
-            ChurnBlockedRouters: GetChurnBlockedRouters().Count);
+            // Public storage RPCs do not traverse the advertised route, and their
+            // outcomes are not authenticated peer-health evidence. Keep the
+            // compatibility metric at zero until an authenticated health plane exists.
+            ChurnBlockedRouters: 0);
     }
 
     private static PathSelectionOptions BuildRepairOptions(PathSelectionOptions options)
