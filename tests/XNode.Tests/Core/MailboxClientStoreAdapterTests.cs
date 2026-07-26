@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text.Json.Nodes;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
 using XNode.Core;
 using XNode.Core.Mailbox;
@@ -60,12 +61,17 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
         var firstResult = await first.StoreAsync(encoded);
         Assert.Equal(MailboxClientStoreStatus.Durable, firstResult.Status);
 
-        var reopenedLedger = new MailboxClientOperationLedger(_root, fixture.AdapterOptions);
+        var reopenedLedger = new MailboxClientOperationLedger(
+            _root,
+            fixture.AdapterOptions,
+            _clock);
         var reopened = new MailboxClientStoreAdapter(
             fixture.AdapterOptions,
+            fixture.StoreOptions,
             fixture.Store,
             reopenedLedger,
             fixture.Verifier,
+            fixture.Authorizer,
             new ThrowingFanout(),
             fixture.LocalCrypto,
             _clock);
@@ -108,9 +114,11 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
         var fixture = CreateFixture();
         var noVerifier = new MailboxClientStoreAdapter(
             fixture.AdapterOptions,
+            fixture.StoreOptions,
             fixture.Store,
             fixture.Ledger,
             new RejectAllMailboxClientCapabilityVerifier(),
+            fixture.Authorizer,
             new SigningFanout(fixture.RemoteCrypto),
             fixture.LocalCrypto,
             _clock);
@@ -118,6 +126,21 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
         Assert.Equal(
             MailboxClientStoreStatus.NotReady,
             (await noVerifier.StoreAsync(new byte[] { 1, 2, 3 })).Status);
+
+        var noAuthorizer = new MailboxClientStoreAdapter(
+            fixture.AdapterOptions,
+            fixture.StoreOptions,
+            fixture.Store,
+            fixture.Ledger,
+            fixture.Verifier,
+            new RejectAllMailboxClientReplicaAuthorizer(),
+            new SigningFanout(fixture.RemoteCrypto),
+            fixture.LocalCrypto,
+            _clock);
+        Assert.Equal("replica-authorizer-missing", noAuthorizer.Status.Reason);
+        Assert.Equal(
+            MailboxClientStoreStatus.NotReady,
+            (await noAuthorizer.StoreAsync(new byte[] { 1, 2, 3 })).Status);
 
         var noFanout = CreateAdapter(fixture, new DisabledMailboxClientReplicaFanout());
         Assert.Equal("replica-fanout-missing", noFanout.Status.Reason);
@@ -147,9 +170,11 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
                 MailboxClientOperation.Store));
         var unauthorized = new MailboxClientStoreAdapter(
             fixture.AdapterOptions,
+            fixture.StoreOptions,
             fixture.Store,
             fixture.Ledger,
             badVerifier,
+            fixture.Authorizer,
             new SigningFanout(fixture.RemoteCrypto),
             fixture.LocalCrypto,
             _clock);
@@ -203,13 +228,337 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
         Assert.Equal(canonicalEnvelope, Convert.FromBase64String(stored.Ciphertext));
     }
 
+    [Fact]
+    public async Task ForgedSelfSignedNonMemberReceipt_DoesNotCount()
+    {
+        var fixture = CreateFixture();
+        var attackerSeed = Convert.ToHexString(Enumerable.Repeat((byte)0x44, 32).ToArray());
+        var attacker = new MailboxClientReceiptCrypto(
+            RelayContactSigner.DeriveRouterId(attackerSeed),
+            attackerSeed);
+        var adapter = CreateAdapter(fixture, new SigningFanout(attacker));
+        await adapter.InitializeAsync();
+
+        var result = await adapter.StoreAsync(MailboxClientCodec.EncodeStore(Store(Envelope())));
+
+        Assert.Equal(MailboxClientStoreStatus.QuorumUnavailable, result.Status);
+    }
+
+    [Fact]
+    public async Task SimultaneousIdenticalCalls_AreSingleFlightWithOneCoordinatorSequence()
+    {
+        var fixture = CreateFixture();
+        var fanout = new CountingFanout(fixture.RemoteCrypto);
+        var adapter = CreateAdapter(fixture, fanout);
+        await adapter.InitializeAsync();
+        var request = MailboxClientCodec.EncodeStore(Store(Envelope()));
+
+        var results = await Task.WhenAll(
+            Enumerable.Range(0, 12).Select(_ => adapter.StoreAsync(request)));
+
+        Assert.All(results, result => Assert.Equal(MailboxClientStoreStatus.Durable, result.Status));
+        Assert.Equal(1, fanout.CallCount);
+        Assert.Single(results.Select(result =>
+            Convert.ToHexString(SHA256.HashData(result.DurableQuorumReceipt.Span))).Distinct());
+        Assert.All(results, result => Assert.Equal(
+            1UL,
+            MailboxReceiptV2Codec.DecodeDurableQuorum(
+                result.DurableQuorumReceipt.Span).CoordinatorSequence));
+    }
+
+    [Fact]
+    public async Task CrashAfterCompletionReservation_RestartSignsExactPersistedStatement()
+    {
+        var fixture = CreateFixture();
+        var crash = new CrashOnFlush(3);
+        var crashLedger = new MailboxClientOperationLedger(
+            _root,
+            fixture.AdapterOptions,
+            _clock,
+            durability: crash);
+        var crashing = new MailboxClientStoreAdapter(
+            fixture.AdapterOptions,
+            fixture.StoreOptions,
+            fixture.Store,
+            crashLedger,
+            fixture.Verifier,
+            fixture.Authorizer,
+            new SigningFanout(fixture.RemoteCrypto),
+            fixture.LocalCrypto,
+            _clock);
+        await crashing.InitializeAsync();
+        var request = MailboxClientCodec.EncodeStore(Store(Envelope()));
+        await Assert.ThrowsAsync<SimulatedCrashException>(() => crashing.StoreAsync(request));
+
+        var reopened = new MailboxClientStoreAdapter(
+            fixture.AdapterOptions,
+            fixture.StoreOptions,
+            fixture.Store,
+            new MailboxClientOperationLedger(_root, fixture.AdapterOptions, _clock),
+            fixture.Verifier,
+            fixture.Authorizer,
+            new ThrowingFanout(),
+            fixture.LocalCrypto,
+            _clock);
+        await reopened.InitializeAsync();
+        var recovered = await reopened.StoreAsync(request);
+
+        Assert.Equal(MailboxClientStoreStatus.Durable, recovered.Status);
+        Assert.Equal(
+            1UL,
+            MailboxReceiptV2Codec.DecodeDurableQuorum(
+                recovered.DurableQuorumReceipt.Span).CoordinatorSequence);
+    }
+
+    [Theory]
+    [InlineData("\"nextCursorByMailbox\":{\"0000000000000007:", "\"nextCursorByMailbox\":{\"0000000000000007:", "rewind")]
+    [InlineData("\"schemaVersion\":2", "\"schemaVersion\":1", "schema")]
+    public async Task LedgerCorruption_FailsClosedOnRestart(
+        string find,
+        string replace,
+        string scenario)
+    {
+        var fixture = CreateFixture();
+        var adapter = CreateAdapter(fixture, new SigningFanout(fixture.RemoteCrypto));
+        await adapter.InitializeAsync();
+        Assert.Equal(
+            MailboxClientStoreStatus.Durable,
+            (await adapter.StoreAsync(MailboxClientCodec.EncodeStore(Store(Envelope())))).Status);
+        var path = Path.Combine(_root, "mailbox-client-adapter-v1", "operations.json");
+        var json = await File.ReadAllTextAsync(path);
+        if (scenario == "rewind")
+        {
+            var cursorMarker = "\":1}";
+            json = json.Replace(cursorMarker, "\":0}", StringComparison.Ordinal);
+        }
+        else
+        {
+            json = json.Replace(find, replace, StringComparison.Ordinal);
+        }
+        await File.WriteAllTextAsync(path, json);
+
+        var reopened = new MailboxClientOperationLedger(_root, fixture.AdapterOptions, _clock);
+        await Assert.ThrowsAsync<InvalidDataException>(() => reopened.InitializeAsync());
+    }
+
+    [Fact]
+    public async Task PerMailboxCursorAndGlobalCoordinatorSequence_AreIndependent()
+    {
+        var fixture = CreateFixture();
+        var adapter = CreateAdapter(fixture, new SigningFanout(fixture.RemoteCrypto));
+        await adapter.InitializeAsync();
+        var first = await adapter.StoreAsync(MailboxClientCodec.EncodeStore(Store(Envelope())));
+        var otherMailbox = Range(0xf0, 32);
+        var otherOperation = Range(0x01, 16);
+        var secondEnvelope = Envelope(otherMailbox, otherOperation);
+        var secondVerifier = new FixedVerifier(new(
+            7,
+            otherMailbox,
+            SHA256.HashData(PlacementId),
+            MailboxClientOperation.Store));
+        var secondAdapter = new MailboxClientStoreAdapter(
+            fixture.AdapterOptions,
+            fixture.StoreOptions,
+            fixture.Store,
+            fixture.Ledger,
+            secondVerifier,
+            fixture.Authorizer,
+            new SigningFanout(fixture.RemoteCrypto),
+            fixture.LocalCrypto,
+            _clock);
+        var second = await secondAdapter.StoreAsync(
+            MailboxClientCodec.EncodeStore(Store(secondEnvelope)));
+
+        var firstReceipt = MailboxReceiptV2Codec.DecodeDurableQuorum(first.DurableQuorumReceipt.Span);
+        var secondReceipt = MailboxReceiptV2Codec.DecodeDurableQuorum(second.DurableQuorumReceipt.Span);
+        Assert.Equal(1UL, firstReceipt.FirstReplica.Cursor);
+        Assert.Equal(1UL, secondReceipt.FirstReplica.Cursor);
+        Assert.Equal(1UL, firstReceipt.CoordinatorSequence);
+        Assert.Equal(2UL, secondReceipt.CoordinatorSequence);
+    }
+
+    [Fact]
+    public async Task NearExpiryRejection_DoesNotConsumeLedgerCapacity()
+    {
+        var fixture = CreateFixture();
+        fixture.AdapterOptions.MaxOperationEntries = 1;
+        var adapter = CreateAdapter(fixture, new SigningFanout(fixture.RemoteCrypto));
+        await adapter.InitializeAsync();
+        var nearExpiry = Envelope() with
+        {
+            CreatedAtUnixSeconds = 950,
+            ExpiresAtUnixSeconds = 1069
+        };
+        Assert.Equal(
+            MailboxClientStoreStatus.Rejected,
+            (await adapter.StoreAsync(
+                MailboxClientCodec.EncodeStore(Store(nearExpiry)))).Status);
+
+        var valid = await adapter.StoreAsync(MailboxClientCodec.EncodeStore(Store(Envelope())));
+        Assert.Equal(MailboxClientStoreStatus.Durable, valid.Status);
+    }
+
+    [Fact]
+    public async Task ExpiredLedgerCleanup_ReleasesCapacityWithoutCursorReuse()
+    {
+        var fixture = CreateFixture();
+        fixture.AdapterOptions.MaxOperationEntries = 1;
+        var ledger = new MailboxClientOperationLedger(_root, fixture.AdapterOptions, _clock);
+        var replicas = new ReadOnlyMemory<byte>[]
+        {
+            fixture.LocalCrypto.LocalRouterId,
+            fixture.RemoteCrypto.LocalRouterId
+        };
+        var first = await ledger.ReserveStoreAsync(
+            7,
+            OperationId,
+            Range(0x91, 32),
+            MailboxId,
+            EnvelopeDigest,
+            replicas,
+            1011,
+            CancellationToken.None);
+        Assert.Equal(1UL, first.Cursor);
+
+        _clock.UtcNow = DateTimeOffset.FromUnixTimeSeconds(1012);
+        await ledger.InitializeAsync();
+        var second = await ledger.ReserveStoreAsync(
+            7,
+            Range(0x61, 16),
+            Range(0x92, 32),
+            MailboxId,
+            Range(0x93, 32),
+            replicas,
+            1200,
+            CancellationToken.None);
+
+        Assert.Equal(2UL, second.Cursor);
+    }
+
+    [Fact]
+    public async Task CachedReceipt_IsRejectedAfterMembershipOrCoordinatorKeyRotation()
+    {
+        var fixture = CreateFixture();
+        var request = MailboxClientCodec.EncodeStore(Store(Envelope()));
+        var first = CreateAdapter(fixture, new SigningFanout(fixture.RemoteCrypto));
+        await first.InitializeAsync();
+        Assert.Equal(MailboxClientStoreStatus.Durable, (await first.StoreAsync(request)).Status);
+
+        fixture.AdapterOptions.CurrentMembershipCommitment =
+            Convert.ToHexString(Range(0x81, 32)).ToLowerInvariant();
+        var rotatedMembership = CreateAdapter(fixture, new ThrowingFanout());
+        Assert.Equal(
+            "cached-quorum-invalid",
+            (await rotatedMembership.StoreAsync(request)).Error);
+
+        fixture.AdapterOptions.CurrentMembershipCommitment =
+            Convert.ToHexString(MembershipCommitment).ToLowerInvariant();
+        var newSeed = Convert.ToHexString(Enumerable.Repeat((byte)0x55, 32).ToArray());
+        var newLocal = new MailboxClientReceiptCrypto(
+            RelayContactSigner.DeriveRouterId(newSeed),
+            newSeed);
+        var rotatedKey = new MailboxClientStoreAdapter(
+            fixture.AdapterOptions,
+            fixture.StoreOptions,
+            fixture.Store,
+            fixture.Ledger,
+            fixture.Verifier,
+            new FixedAuthorizer([newLocal.LocalRouterId, fixture.RemoteCrypto.LocalRouterId]),
+            new ThrowingFanout(),
+            newLocal,
+            _clock);
+        Assert.Equal(
+            "replica-authority-rotated",
+            (await rotatedKey.StoreAsync(request)).Error);
+    }
+
+    [Fact]
+    public async Task CachedReceiptWithStaleSignature_IsReverifiedAndRejected()
+    {
+        var fixture = CreateFixture();
+        var request = MailboxClientCodec.EncodeStore(Store(Envelope()));
+        var first = CreateAdapter(fixture, new SigningFanout(fixture.RemoteCrypto));
+        await first.InitializeAsync();
+        Assert.Equal(MailboxClientStoreStatus.Durable, (await first.StoreAsync(request)).Status);
+        var path = Path.Combine(_root, "mailbox-client-adapter-v1", "operations.json");
+        var document = JsonNode.Parse(await File.ReadAllTextAsync(path))!.AsObject();
+        var operation = document["operations"]!.AsObject().First().Value!.AsObject();
+        var receipt = Convert.FromBase64String(operation["receipt"]!.GetValue<string>());
+        receipt[^1] ^= 0x01;
+        operation["receipt"] = Convert.ToBase64String(receipt);
+        await File.WriteAllTextAsync(path, document.ToJsonString());
+
+        var reopened = CreateAdapter(fixture, new ThrowingFanout());
+        await reopened.InitializeAsync();
+        var result = await reopened.StoreAsync(request);
+
+        Assert.Equal(MailboxClientStoreStatus.Rejected, result.Status);
+        Assert.Equal("cached-quorum-invalid", result.Error);
+    }
+
+    [Fact]
+    public async Task EAndEPlusOne_UseDistinctMembershipCommitments()
+    {
+        var fixture = CreateFixture();
+        var nextOperation = Range(0x60, 16);
+        var nextEnvelope = Envelope(MailboxId, nextOperation) with
+        {
+            Epoch = 8,
+            CreatedAtUnixSeconds = 1000,
+            ExpiresAtUnixSeconds = 1130
+        };
+        var nextVerifier = new FixedVerifier(new(
+            8,
+            MailboxId,
+            SHA256.HashData(PlacementId),
+            MailboxClientOperation.Store));
+        var authorizer = new RecordingAuthorizer(
+            [fixture.LocalCrypto.LocalRouterId, fixture.RemoteCrypto.LocalRouterId]);
+        var adapter = new MailboxClientStoreAdapter(
+            fixture.AdapterOptions,
+            fixture.StoreOptions,
+            fixture.Store,
+            fixture.Ledger,
+            nextVerifier,
+            authorizer,
+            new SigningFanout(fixture.RemoteCrypto),
+            fixture.LocalCrypto,
+            _clock);
+
+        var result = await adapter.StoreAsync(
+            MailboxClientCodec.EncodeStore(Store(nextEnvelope, 8)));
+
+        Assert.Equal(MailboxClientStoreStatus.Durable, result.Status);
+        Assert.Equal(NextMembershipCommitment, authorizer.SeenMembership);
+        var receipt = MailboxReceiptV2Codec.DecodeDurableQuorum(result.DurableQuorumReceipt.Span);
+        Assert.Equal(NextMembershipCommitment, receipt.FirstReplica.MembershipCommitment.ToArray());
+    }
+
+    [Fact]
+    public void PublicAdapterContracts_DoNotExposeNodeSeedOrClientSecrets()
+    {
+        var forbidden = new[] { "Seed", "PrivateKey", "Master", "RetrieveCapability", "Plaintext" };
+        var publicProperties = typeof(MailboxClientStoreAdapter).Assembly.GetTypes()
+            .Where(type => type.IsPublic
+                && type.Namespace == "XNode.Core.Mailbox.Client")
+            .SelectMany(static type => type.GetProperties())
+            .Select(static property => property.Name)
+            .ToArray();
+        Assert.All(forbidden, value => Assert.DoesNotContain(
+            publicProperties,
+            property => property.Contains(value, StringComparison.OrdinalIgnoreCase)));
+    }
+
     private Fixture CreateFixture(bool enabled = true)
     {
         var mailboxOptions = new ReplicatedMailboxOptions { Enabled = true };
         var adapterOptions = new MailboxClientAdapterOptions
         {
             Enabled = enabled,
-            MembershipCommitment = Convert.ToHexString(MembershipCommitment).ToLowerInvariant(),
+            CurrentMembershipCommitment =
+                Convert.ToHexString(MembershipCommitment).ToLowerInvariant(),
+            NextMembershipCommitment =
+                Convert.ToHexString(NextMembershipCommitment).ToLowerInvariant(),
             CurrentEpoch = 7,
             NextEpoch = 8,
             CurrentNotBeforeUnixSeconds = 900,
@@ -229,13 +578,15 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
         var placementCommitment = SHA256.HashData(PlacementId);
         return new(
             adapterOptions,
+            mailboxOptions,
             store,
-            new MailboxClientOperationLedger(_root, adapterOptions),
+            new MailboxClientOperationLedger(_root, adapterOptions, _clock),
             new FixedVerifier(new(
                 7,
                 MailboxId,
                 placementCommitment,
                 MailboxClientOperation.Store)),
+            new FixedAuthorizer([localCrypto.LocalRouterId, remoteCrypto.LocalRouterId]),
             localCrypto,
             remoteCrypto);
     }
@@ -245,9 +596,11 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
         IMailboxClientReplicaFanout fanout) =>
         new(
             fixture.AdapterOptions,
+            fixture.StoreOptions,
             fixture.Store,
             fixture.Ledger,
             fixture.Verifier,
+            fixture.Authorizer,
             fanout,
             fixture.LocalCrypto,
             _clock);
@@ -257,30 +610,35 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
     private static readonly byte[] PlacementId = Range(0x50, 32);
     private static readonly byte[] EnvelopeDigest = Range(0x70, 32);
     private static readonly byte[] MembershipCommitment = Range(0xd0, 32);
+    private static readonly byte[] NextMembershipCommitment = Range(0xe0, 32);
 
-    private static MailboxEncryptedEnvelope Envelope() => new()
+    private static MailboxEncryptedEnvelope Envelope() => Envelope(MailboxId, OperationId);
+
+    private static MailboxEncryptedEnvelope Envelope(byte[] mailboxId, byte[] operationId) => new()
     {
         Epoch = 7,
-        MailboxId = new BlindedMailboxId(MailboxId),
+        MailboxId = new BlindedMailboxId(mailboxId),
         PlacementId = new BlindedPlacementId(PlacementId),
-        OperationId = OperationId,
+        OperationId = operationId,
         DeduplicationDigest = EnvelopeDigest,
         CreatedAtUnixSeconds = 1000,
         ExpiresAtUnixSeconds = 1120,
         Ciphertext = Range(0xa0, 32)
     };
 
-    private static MailboxStoreRequest Store(MailboxEncryptedEnvelope envelope) => new()
+    private static MailboxStoreRequest Store(
+        MailboxEncryptedEnvelope envelope,
+        ulong epoch = 7) => new()
     {
-        Epoch = 7,
-        OperationId = OperationId,
+        Epoch = epoch,
+        OperationId = envelope.OperationId,
         MixedVersion = MailboxMixedVersionMarker.StrictV1,
         DepositCapability = new MailboxCapabilityPresentation
         {
             DomainValue = new RotatingDepositCapability(Range(0x90, 32)),
             Lifecycle = MailboxCapabilityLifecycle.Active,
             MixedVersion = MailboxMixedVersionMarker.StrictV1,
-            Generation = 7,
+            Generation = epoch,
             NotBeforeBucket = 1000,
             ExpiresAtBucket = 1100,
             OverlapUntilBucket = 0,
@@ -305,11 +663,43 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
 
     private sealed record Fixture(
         MailboxClientAdapterOptions AdapterOptions,
+        ReplicatedMailboxOptions StoreOptions,
         ReplicatedMailboxStore Store,
         MailboxClientOperationLedger Ledger,
         IMailboxClientCapabilityVerifier Verifier,
+        IMailboxClientReplicaAuthorizer Authorizer,
         MailboxClientReceiptCrypto LocalCrypto,
         MailboxClientReceiptCrypto RemoteCrypto);
+
+    private sealed class FixedAuthorizer(IReadOnlyList<ReadOnlyMemory<byte>> replicas)
+        : IMailboxClientReplicaAuthorizer
+    {
+        public bool IsConfigured => true;
+
+        public ValueTask<IReadOnlyList<ReadOnlyMemory<byte>>> SelectReplicaIdsAsync(
+            ulong epoch,
+            ReadOnlyMemory<byte> membershipCommitment,
+            ReadOnlyMemory<byte> placementCommitment,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult(replicas);
+    }
+
+    private sealed class RecordingAuthorizer(IReadOnlyList<ReadOnlyMemory<byte>> replicas)
+        : IMailboxClientReplicaAuthorizer
+    {
+        public bool IsConfigured => true;
+        public byte[] SeenMembership { get; private set; } = [];
+
+        public ValueTask<IReadOnlyList<ReadOnlyMemory<byte>>> SelectReplicaIdsAsync(
+            ulong epoch,
+            ReadOnlyMemory<byte> membershipCommitment,
+            ReadOnlyMemory<byte> placementCommitment,
+            CancellationToken cancellationToken)
+        {
+            SeenMembership = membershipCommitment.ToArray();
+            return ValueTask.FromResult(replicas);
+        }
+    }
 
     private sealed class FixedVerifier(MailboxCapabilityBinding binding)
         : IMailboxClientCapabilityVerifier
@@ -336,11 +726,11 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
             CancellationToken cancellationToken)
         {
             beforeSign?.Invoke();
-            var now = 1010UL;
+            var now = context.AcceptedAtUnixSeconds;
             var unsigned = new MailboxReplicaReceiptV2
             {
                 Status = MailboxReceiptStatus.Durable,
-                Disposition = MailboxReplicaDisposition.Stored,
+                Disposition = context.Disposition,
                 ReplicaId = crypto.LocalRouterId,
                 OperationId = context.OperationId,
                 Epoch = context.Epoch,
@@ -373,4 +763,36 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
             CancellationToken cancellationToken) =>
             throw new InvalidOperationException("Cached retries must not fan out.");
     }
+
+    private sealed class CountingFanout(MailboxClientReceiptCrypto crypto)
+        : IMailboxClientReplicaFanout
+    {
+        private int _calls;
+        public bool IsConfigured => true;
+        public int CallCount => Volatile.Read(ref _calls);
+
+        public async Task<IReadOnlyList<ReadOnlyMemory<byte>>> StoreAsync(
+            MailboxReplicaStoreContext context,
+            CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _calls);
+            await Task.Delay(40, cancellationToken);
+            return await new SigningFanout(crypto).StoreAsync(context, cancellationToken);
+        }
+    }
+
+    private sealed class CrashOnFlush(int crashAt) : IMailboxDurabilityBarrier
+    {
+        private int _flushes;
+
+        public void FlushFileAndParentDirectory(string path)
+        {
+            if (Interlocked.Increment(ref _flushes) == crashAt)
+            {
+                throw new SimulatedCrashException();
+            }
+        }
+    }
+
+    private sealed class SimulatedCrashException : Exception;
 }

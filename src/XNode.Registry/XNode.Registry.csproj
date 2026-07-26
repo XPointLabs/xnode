@@ -13,7 +13,9 @@
   </ItemGroup>
 
   <PropertyGroup>
-    <RestoreAdditionalProjectSources>$(MSBuildThisFileDirectory)..\..\vendor\mailbox-client-package-corrected;$(RestoreAdditionalProjectSources)</RestoreAdditionalProjectSources>
+    <RestoreConfigFile>$(MSBuildThisFileDirectory)..\..\eng\mailbox-client.NuGet.Config</RestoreConfigFile>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <RestoreLockedMode>true</RestoreLockedMode>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>

@@ -7,7 +7,9 @@
 
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
-    <RestoreAdditionalProjectSources>$(MSBuildThisFileDirectory)..\..\vendor\mailbox-client-package-corrected;$(RestoreAdditionalProjectSources)</RestoreAdditionalProjectSources>
+    <RestoreConfigFile>$(MSBuildThisFileDirectory)..\..\eng\mailbox-client.NuGet.Config</RestoreConfigFile>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <RestoreLockedMode>true</RestoreLockedMode>
   </PropertyGroup>
 
   <ItemGroup>

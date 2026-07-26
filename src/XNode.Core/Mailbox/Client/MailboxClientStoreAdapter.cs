@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
 
@@ -6,27 +7,36 @@ namespace XNode.Core.Mailbox.Client;
 public sealed class MailboxClientStoreAdapter
 {
     private readonly MailboxClientAdapterOptions _options;
+    private readonly ReplicatedMailboxOptions _storeOptions;
     private readonly ReplicatedMailboxStore _store;
     private readonly MailboxClientOperationLedger _ledger;
     private readonly IMailboxClientCapabilityVerifier _verifier;
+    private readonly IMailboxClientReplicaAuthorizer _replicaAuthorizer;
     private readonly IMailboxClientReplicaFanout _fanout;
     private readonly MailboxClientReceiptCrypto _crypto;
     private readonly IClock _clock;
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _singleFlights =
+        new(StringComparer.Ordinal);
 
     public MailboxClientStoreAdapter(
         MailboxClientAdapterOptions options,
+        ReplicatedMailboxOptions storeOptions,
         ReplicatedMailboxStore store,
         MailboxClientOperationLedger ledger,
         IMailboxClientCapabilityVerifier verifier,
+        IMailboxClientReplicaAuthorizer replicaAuthorizer,
         IMailboxClientReplicaFanout fanout,
         MailboxClientReceiptCrypto crypto,
         IClock? clock = null)
     {
         options.Validate();
+        storeOptions.Validate();
         _options = options;
+        _storeOptions = storeOptions;
         _store = store;
         _ledger = ledger;
         _verifier = verifier;
+        _replicaAuthorizer = replicaAuthorizer;
         _fanout = fanout;
         _crypto = crypto;
         _clock = clock ?? new SystemClock();
@@ -36,17 +46,23 @@ public sealed class MailboxClientStoreAdapter
     {
         get
         {
-            var ready = _options.Enabled && _verifier.IsConfigured && _fanout.IsConfigured;
+            var ready = _options.Enabled
+                && _verifier.IsConfigured
+                && _replicaAuthorizer.IsConfigured
+                && _fanout.IsConfigured;
             var reason = !_options.Enabled
                 ? "disabled"
                 : !_verifier.IsConfigured
                     ? "capability-verifier-missing"
-                    : !_fanout.IsConfigured
-                        ? "replica-fanout-missing"
-                        : "ready";
+                    : !_replicaAuthorizer.IsConfigured
+                        ? "replica-authorizer-missing"
+                        : !_fanout.IsConfigured
+                            ? "replica-fanout-missing"
+                            : "ready";
             return new(
                 _options.Enabled,
                 _verifier.IsConfigured,
+                _replicaAuthorizer.IsConfigured,
                 _fanout.IsConfigured,
                 ready,
                 reason);
@@ -68,33 +84,43 @@ public sealed class MailboxClientStoreAdapter
         var status = Status;
         if (!status.Enabled)
         {
-            return MailboxClientStoreResult.Failure(MailboxClientStoreStatus.Disabled, status.Reason);
+            return Failure(MailboxClientStoreStatus.Disabled, status.Reason);
         }
 
         if (!status.Ready)
         {
-            return MailboxClientStoreResult.Failure(MailboxClientStoreStatus.NotReady, status.Reason);
+            return Failure(MailboxClientStoreStatus.NotReady, status.Reason);
         }
 
+        var maximumStoreLength = 48
+            + MailboxCapabilityLimits.MaximumPresentationLength
+            + MailboxClientLimits.MaximumEncryptedEnvelopeLength;
+        if (canonicalStoreRequest.Length is < 4
+            || canonicalStoreRequest.Length > maximumStoreLength)
+        {
+            return Failure(MailboxClientStoreStatus.Malformed, "non-canonical-mst1");
+        }
+
+        var ownedRequest = canonicalStoreRequest.ToArray();
+        var requestDigest = SHA256.HashData(ownedRequest);
         MailboxStoreRequest request;
         try
         {
             request = MailboxClientCodec.DecodeStore(
-                canonicalStoreRequest.Span,
+                ownedRequest,
                 CreateDecodePolicy(),
                 new DeferredReplayGuard());
         }
         catch (Exception exception) when (
             exception is MailboxClientException or MailboxCapabilityException)
         {
-            return MailboxClientStoreResult.Failure(
-                MailboxClientStoreStatus.Malformed,
-                "non-canonical-mst1");
+            return Failure(MailboxClientStoreStatus.Malformed, "non-canonical-mst1");
         }
 
         var placementCommitment = SHA256.HashData(request.Envelope.PlacementId.Bytes.Span);
+        var membershipCommitment = _options.GetMembershipCommitment(request.Epoch);
         var verified = await _verifier.VerifyAsync(
-            canonicalStoreRequest,
+            ownedRequest.ToArray(),
             MailboxClientOperation.Store,
             cancellationToken).ConfigureAwait(false);
         if (verified is null
@@ -103,99 +129,166 @@ public sealed class MailboxClientStoreAdapter
             || !FixedEquals(verified.BlindedMailboxId.Span, request.Envelope.MailboxId.Bytes.Span)
             || !FixedEquals(verified.PlacementCommitment.Span, placementCommitment))
         {
-            return MailboxClientStoreResult.Failure(
-                MailboxClientStoreStatus.Unauthorized,
-                "capability-binding-rejected");
+            return Failure(MailboxClientStoreStatus.Unauthorized, "capability-binding-rejected");
+        }
+
+        IReadOnlyList<ReadOnlyMemory<byte>> expectedReplicaIds;
+        try
+        {
+            expectedReplicaIds = NormalizeReplicaAuthority(
+                await _replicaAuthorizer.SelectReplicaIdsAsync(
+                    request.Epoch,
+                    membershipCommitment.ToArray(),
+                    placementCommitment.ToArray(),
+                    cancellationToken).ConfigureAwait(false));
+        }
+        catch (ArgumentException)
+        {
+            return Failure(MailboxClientStoreStatus.Unauthorized, "replica-authority-invalid");
+        }
+
+        if (expectedReplicaIds.Count < 2
+            || !expectedReplicaIds.Take(2).Any(
+                id => id.Span.SequenceEqual(_crypto.LocalRouterId)))
+        {
+            return Failure(MailboxClientStoreStatus.Unauthorized, "local-replica-not-authorized");
         }
 
         var canonicalEnvelope = MailboxClientCodec.EncodeEncryptedEnvelope(request.Envelope);
-        if (canonicalEnvelope.Length > MailboxClientLimits.MaximumEncryptedEnvelopeLength)
+        if (!TryCreateAndPreflightBlob(
+                request,
+                canonicalEnvelope,
+                out var blob,
+                out var preflightError))
         {
-            return MailboxClientStoreResult.Failure(
-                MailboxClientStoreStatus.Rejected,
-                "envelope-too-large");
+            return Failure(MailboxClientStoreStatus.Rejected, preflightError);
         }
 
-        var requestDigest = SHA256.HashData(canonicalStoreRequest.Span);
+        var operationKey = MailboxClientOperationLedger.BuildOperationKey(
+            request.Epoch,
+            request.Envelope.MailboxId.Bytes.Span,
+            request.OperationId.Span);
+        var singleFlight = _singleFlights.GetOrAdd(operationKey, static _ => new SemaphoreSlim(1, 1));
+        await singleFlight.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await StoreSingleFlightAsync(
+                requestDigest,
+                request,
+                canonicalEnvelope,
+                blob!,
+                placementCommitment,
+                membershipCommitment,
+                expectedReplicaIds,
+                cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            singleFlight.Release();
+        }
+    }
+
+    private async Task<MailboxClientStoreResult> StoreSingleFlightAsync(
+        byte[] requestDigest,
+        MailboxStoreRequest request,
+        byte[] canonicalEnvelope,
+        EncryptedMailboxBlob blob,
+        byte[] placementCommitment,
+        byte[] membershipCommitment,
+        IReadOnlyList<ReadOnlyMemory<byte>> expectedReplicaIds,
+        CancellationToken cancellationToken)
+    {
         MailboxClientStoreReservation reservation;
         try
         {
             reservation = await _ledger.ReserveStoreAsync(
+                request.Epoch,
                 request.OperationId,
                 requestDigest,
                 request.Envelope.MailboxId.Bytes,
                 request.Envelope.DeduplicationDigest,
+                expectedReplicaIds,
+                request.Envelope.ExpiresAtUnixSeconds,
                 cancellationToken).ConfigureAwait(false);
         }
         catch (MailboxClientOperationConflictException)
         {
-            return MailboxClientStoreResult.Failure(
-                MailboxClientStoreStatus.Conflict,
-                "operation-id-conflict");
+            return Failure(MailboxClientStoreStatus.Conflict, "operation-id-conflict");
         }
         catch (MailboxClientLedgerCapacityException)
         {
-            return MailboxClientStoreResult.Failure(
-                MailboxClientStoreStatus.Rejected,
-                "operation-ledger-capacity");
+            return Failure(MailboxClientStoreStatus.Rejected, "operation-ledger-capacity");
         }
 
-        if (!reservation.CachedReceipt.IsEmpty)
+        if (!ReplicaSetsEqual(reservation.ExpectedReplicaIds, expectedReplicaIds))
         {
-            return new(
-                MailboxClientStoreStatus.Durable,
-                reservation.CachedReceipt,
-                "");
+            return Failure(MailboxClientStoreStatus.Unauthorized, "replica-authority-rotated");
         }
 
-        long expiresAtUnixMs;
-        try
-        {
-            expiresAtUnixMs = checked((long)request.Envelope.ExpiresAtUnixSeconds * 1000L);
-        }
-        catch (OverflowException)
-        {
-            return MailboxClientStoreResult.Failure(
-                MailboxClientStoreStatus.Rejected,
-                "ttl-conversion-overflow");
-        }
-
-        var mailboxId = Convert.ToHexString(request.Envelope.MailboxId.Bytes.Span).ToLowerInvariant();
-        var blobId = Convert.ToHexString(SHA256.HashData(canonicalEnvelope)).ToLowerInvariant();
-        var blob = new EncryptedMailboxBlob(
-            mailboxId,
-            blobId,
-            expiresAtUnixMs,
-            Convert.ToBase64String(canonicalEnvelope));
-        var localStore = await _store.PutAsync(blob, cancellationToken).ConfigureAwait(false);
-        if (localStore.Disposition == MailboxPutDisposition.Rejected)
-        {
-            return MailboxClientStoreResult.Failure(
-                MailboxClientStoreStatus.Rejected,
-                localStore.Error);
-        }
-
-        var now = checked((ulong)_clock.UtcNow.ToUnixTimeSeconds());
-        var context = new MailboxReplicaStoreContext(
-            reservation.Cursor,
-            request.Epoch,
-            request.OperationId,
-            request.Envelope.MailboxId.Bytes,
+        var context = CreateContext(
+            reservation,
+            request,
+            canonicalEnvelope,
             placementCommitment,
-            _options.GetMembershipCommitment(),
-            request.Envelope.DeduplicationDigest,
-            request.Envelope.ExpiresAtUnixSeconds,
-            canonicalEnvelope);
-        var localReceipt = CreateLocalReceipt(
-            context,
-            now,
-            localStore.Disposition == MailboxPutDisposition.Stored
+            membershipCommitment,
+            expectedReplicaIds);
+        if (reservation.State == MailboxClientLedgerState.Terminal)
+        {
+            return Failure(MailboxClientStoreStatus.Rejected, reservation.Error);
+        }
+
+        if (reservation.State == MailboxClientLedgerState.Durable)
+        {
+            return VerifyCached(reservation, context, expectedReplicaIds)
+                ? new(MailboxClientStoreStatus.Durable, reservation.CachedReceipt.ToArray(), "")
+                : Failure(MailboxClientStoreStatus.Rejected, "cached-quorum-invalid");
+        }
+
+        if (reservation.State == MailboxClientLedgerState.Completing)
+        {
+            return await ResumeCompletionAsync(
+                reservation,
+                context,
+                expectedReplicaIds,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        if (reservation.Disposition is null)
+        {
+            var localStore = await _store.PutAsync(blob, cancellationToken).ConfigureAwait(false);
+            if (localStore.Disposition == MailboxPutDisposition.Rejected)
+            {
+                await _ledger.MarkTerminalAsync(
+                    reservation.OperationKey,
+                    localStore.Error,
+                    cancellationToken).ConfigureAwait(false);
+                return Failure(MailboxClientStoreStatus.Rejected, localStore.Error);
+            }
+
+            var disposition = localStore.Disposition == MailboxPutDisposition.Stored
                 ? MailboxReplicaDisposition.Stored
-                : MailboxReplicaDisposition.Duplicate);
+                : MailboxReplicaDisposition.Duplicate;
+            reservation = await _ledger.SetDispositionAsync(
+                reservation.OperationKey,
+                disposition,
+                NowUnixSeconds(),
+                cancellationToken).ConfigureAwait(false);
+            context = CreateContext(
+                reservation,
+                request,
+                canonicalEnvelope,
+                placementCommitment,
+                membershipCommitment,
+                expectedReplicaIds);
+        }
+
+        var localReceipt = CreateLocalReceipt(context);
         IReadOnlyList<ReadOnlyMemory<byte>> remoteReceipts;
         try
         {
-            remoteReceipts = await _fanout.StoreAsync(context, cancellationToken).ConfigureAwait(false);
+            remoteReceipts = await _fanout.StoreAsync(
+                CopyContext(context),
+                cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception) when (
             exception is HttpRequestException or IOException or OperationCanceledException)
@@ -205,80 +298,217 @@ public sealed class MailboxClientStoreAdapter
                 throw;
             }
 
-            return MailboxClientStoreResult.Failure(
+            await _ledger.MarkRetryableAsync(
+                reservation.OperationKey,
+                "replica-fanout-unavailable",
+                cancellationToken).ConfigureAwait(false);
+            return Failure(
                 MailboxClientStoreStatus.QuorumUnavailable,
                 "replica-fanout-unavailable");
         }
 
-        var expectation = new MailboxDurableQuorumExpectationV2
+        if (remoteReceipts is null || remoteReceipts.Count > 9)
         {
-            OperationId = context.OperationId,
-            Epoch = context.Epoch,
-            Cursor = context.Cursor,
-            Disposition = localReceipt.Disposition,
-            BlindedMailboxId = context.BlindedMailboxId,
-            PlacementCommitment = context.PlacementCommitment,
-            MembershipCommitment = context.MembershipCommitment,
-            EnvelopeDigest = context.EnvelopeDigest,
-            ExpiresAtUnixSeconds = context.ExpiresAtUnixSeconds
+            await _ledger.MarkRetryableAsync(
+                reservation.OperationKey,
+                "replica-fanout-invalid",
+                cancellationToken).ConfigureAwait(false);
+            return Failure(
+                MailboxClientStoreStatus.QuorumUnavailable,
+                "replica-fanout-invalid");
+        }
+
+        var receiptsById = new Dictionary<string, MailboxReplicaReceiptV2>(StringComparer.Ordinal)
+        {
+            [Convert.ToHexString(localReceipt.ReplicaId.Span).ToLowerInvariant()] = localReceipt
         };
-        var valid = new List<MailboxReplicaReceiptV2> { localReceipt };
         foreach (var encoded in remoteReceipts)
         {
             try
             {
                 var receipt = MailboxReceiptV2Codec.DecodeReplica(encoded.Span);
-                if (receipt.ReplicaId.Span.SequenceEqual(localReceipt.ReplicaId.Span)
-                    || valid.Any(existing => existing.ReplicaId.Span.SequenceEqual(receipt.ReplicaId.Span)))
+                var id = Convert.ToHexString(receipt.ReplicaId.Span).ToLowerInvariant();
+                if (!receiptsById.ContainsKey(id)
+                    && expectedReplicaIds.Any(expected =>
+                        expected.Span.SequenceEqual(receipt.ReplicaId.Span))
+                    && VerifyReplica(receipt, context))
                 {
-                    continue;
+                    receiptsById.Add(id, receipt);
                 }
-
-                var candidateQuorum = SignQuorum(localReceipt, receipt, reservation.Cursor);
-                _ = MailboxReceiptV2Codec.VerifyDurableQuorum(
-                    MailboxReceiptV2Codec.EncodeDurableQuorum(candidateQuorum),
-                    _crypto,
-                    expectation);
-                valid.Add(receipt);
             }
             catch (MailboxReceiptException)
             {
-                // Malformed, unauthenticated or context-mismatched replica receipts never count.
+                // An unauthenticated, malformed or context-mismatched receipt never counts.
             }
         }
 
-        if (valid.Count < 2)
+        var required = expectedReplicaIds.Take(2)
+            .Select(id => Convert.ToHexString(id.Span).ToLowerInvariant())
+            .ToArray();
+        if (!required.All(receiptsById.ContainsKey))
         {
-            return MailboxClientStoreResult.Failure(
+            await _ledger.MarkRetryableAsync(
+                reservation.OperationKey,
+                "durable-quorum-not-reached",
+                cancellationToken).ConfigureAwait(false);
+            return Failure(
                 MailboxClientStoreStatus.QuorumUnavailable,
                 "durable-quorum-not-reached");
         }
 
-        var quorum = SignQuorum(localReceipt, valid[1], reservation.Cursor);
-        var encodedQuorum = MailboxReceiptV2Codec.EncodeDurableQuorum(quorum);
-        _ = MailboxReceiptV2Codec.VerifyDurableQuorum(encodedQuorum, _crypto, expectation);
-        await _ledger.CompleteStoreAsync(
-            request.OperationId,
-            encodedQuorum,
+        var firstBytes = MailboxReceiptV2Codec.EncodeReplica(receiptsById[required[0]]);
+        var secondBytes = MailboxReceiptV2Codec.EncodeReplica(receiptsById[required[1]]);
+        reservation = await _ledger.BeginCompletionAsync(
+            reservation.OperationKey,
+            firstBytes,
+            secondBytes,
             cancellationToken).ConfigureAwait(false);
-        return new(MailboxClientStoreStatus.Durable, encodedQuorum, "");
+        return await ResumeCompletionAsync(
+            reservation,
+            context,
+            expectedReplicaIds,
+            cancellationToken).ConfigureAwait(false);
     }
 
-    private MailboxReplicaReceiptV2 CreateLocalReceipt(
+    private async Task<MailboxClientStoreResult> ResumeCompletionAsync(
+        MailboxClientStoreReservation reservation,
         MailboxReplicaStoreContext context,
-        ulong now,
-        MailboxReplicaDisposition disposition)
+        IReadOnlyList<ReadOnlyMemory<byte>> expectedReplicaIds,
+        CancellationToken cancellationToken)
+    {
+        if (reservation.Completion is null)
+        {
+            return Failure(MailboxClientStoreStatus.Rejected, "completion-reservation-invalid");
+        }
+
+        MailboxReplicaReceiptV2 first;
+        MailboxReplicaReceiptV2 second;
+        try
+        {
+            first = MailboxReceiptV2Codec.DecodeReplica(
+                reservation.Completion.FirstReplicaReceipt.Span);
+            second = MailboxReceiptV2Codec.DecodeReplica(
+                reservation.Completion.SecondReplicaReceipt.Span);
+        }
+        catch (MailboxReceiptException)
+        {
+            return Failure(MailboxClientStoreStatus.Rejected, "completion-receipt-invalid");
+        }
+
+        var expected = expectedReplicaIds.Take(2)
+            .Select(id => Convert.ToHexString(id.Span).ToLowerInvariant())
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        var actual = new[] { first, second }
+            .Select(receipt => Convert.ToHexString(receipt.ReplicaId.Span).ToLowerInvariant())
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        if (!expected.SequenceEqual(actual, StringComparer.Ordinal)
+            || !VerifyReplica(first, context)
+            || !VerifyReplica(second, context))
+        {
+            return Failure(MailboxClientStoreStatus.Rejected, "completion-authority-stale");
+        }
+
+        var quorum = SignQuorum(
+            first,
+            second,
+            reservation.Completion.CoordinatorSequence);
+        var encoded = MailboxReceiptV2Codec.EncodeDurableQuorum(quorum);
+        if (!VerifyQuorum(
+                encoded,
+                context,
+                expectedReplicaIds,
+                reservation.Completion.CoordinatorSequence))
+        {
+            return Failure(MailboxClientStoreStatus.Rejected, "completion-quorum-invalid");
+        }
+
+        await _ledger.CompleteStoreAsync(
+            reservation.OperationKey,
+            reservation.Completion.CoordinatorSequence,
+            encoded,
+            cancellationToken).ConfigureAwait(false);
+        return new(MailboxClientStoreStatus.Durable, encoded, "");
+    }
+
+    private bool VerifyCached(
+        MailboxClientStoreReservation reservation,
+        MailboxReplicaStoreContext context,
+        IReadOnlyList<ReadOnlyMemory<byte>> expectedReplicaIds) =>
+        reservation.Completion is not null
+        && !reservation.CachedReceipt.IsEmpty
+        && VerifyQuorum(
+            reservation.CachedReceipt.Span,
+            context,
+            expectedReplicaIds,
+            reservation.Completion.CoordinatorSequence);
+
+    private bool VerifyQuorum(
+        ReadOnlySpan<byte> encoded,
+        MailboxReplicaStoreContext context,
+        IReadOnlyList<ReadOnlyMemory<byte>> expectedReplicaIds,
+        ulong coordinatorSequence)
+    {
+        try
+        {
+            var verified = MailboxReceiptV2Codec.VerifyDurableQuorum(
+                encoded,
+                _crypto,
+                Expectation(context));
+            var coordinator = verified.CoordinatorReceipt;
+            var actualIds = verified.ReplicaReceipts
+                .Select(receipt => Convert.ToHexString(receipt.ReplicaId.Span).ToLowerInvariant())
+                .Order(StringComparer.Ordinal)
+                .ToArray();
+            var expectedIds = expectedReplicaIds.Take(2)
+                .Select(id => Convert.ToHexString(id.Span).ToLowerInvariant())
+                .Order(StringComparer.Ordinal)
+                .ToArray();
+            return coordinator.CoordinatorSequence == coordinatorSequence
+                && coordinator.CoordinatorId.Span.SequenceEqual(_crypto.LocalRouterId)
+                && actualIds.SequenceEqual(expectedIds, StringComparer.Ordinal);
+        }
+        catch (MailboxReceiptException)
+        {
+            return false;
+        }
+    }
+
+    private bool VerifyReplica(
+        MailboxReplicaReceiptV2 receipt,
+        MailboxReplicaStoreContext context)
+    {
+        var valid = receipt.Status == MailboxReceiptStatus.Durable
+            && receipt.Disposition == context.Disposition
+            && receipt.OperationId.Span.SequenceEqual(context.OperationId.Span)
+            && receipt.Epoch == context.Epoch
+            && receipt.Cursor == context.Cursor
+            && receipt.AcceptedAtUnixSeconds == context.AcceptedAtUnixSeconds
+            && receipt.DurableAtUnixSeconds == context.AcceptedAtUnixSeconds
+            && receipt.ExpiresAtUnixSeconds == context.ExpiresAtUnixSeconds
+            && receipt.BlindedMailboxId.Span.SequenceEqual(context.BlindedMailboxId.Span)
+            && receipt.PlacementCommitment.Span.SequenceEqual(context.PlacementCommitment.Span)
+            && receipt.MembershipCommitment.Span.SequenceEqual(context.MembershipCommitment.Span)
+            && receipt.EnvelopeDigest.Span.SequenceEqual(context.EnvelopeDigest.Span);
+        return valid && _crypto.VerifyReplica(
+            receipt.ReplicaId.Span,
+            MailboxReceiptV2Codec.GetReplicaSigningBytes(receipt),
+            receipt.Signature.Span);
+    }
+
+    private MailboxReplicaReceiptV2 CreateLocalReceipt(MailboxReplicaStoreContext context)
     {
         var unsigned = new MailboxReplicaReceiptV2
         {
             Status = MailboxReceiptStatus.Durable,
-            Disposition = disposition,
+            Disposition = context.Disposition,
             ReplicaId = _crypto.LocalRouterId,
             OperationId = context.OperationId,
             Epoch = context.Epoch,
             Cursor = context.Cursor,
-            AcceptedAtUnixSeconds = now,
-            DurableAtUnixSeconds = now,
+            AcceptedAtUnixSeconds = context.AcceptedAtUnixSeconds,
+            DurableAtUnixSeconds = context.AcceptedAtUnixSeconds,
             ExpiresAtUnixSeconds = context.ExpiresAtUnixSeconds,
             BlindedMailboxId = context.BlindedMailboxId,
             PlacementCommitment = context.PlacementCommitment,
@@ -312,9 +542,76 @@ public sealed class MailboxClientStoreAdapter
         };
     }
 
+    private MailboxReplicaStoreContext CreateContext(
+        MailboxClientStoreReservation reservation,
+        MailboxStoreRequest request,
+        byte[] canonicalEnvelope,
+        byte[] placementCommitment,
+        byte[] membershipCommitment,
+        IReadOnlyList<ReadOnlyMemory<byte>> expectedReplicaIds) =>
+        new(
+            reservation.Cursor,
+            request.Epoch,
+            request.OperationId.ToArray(),
+            request.Envelope.MailboxId.Bytes.ToArray(),
+            placementCommitment.ToArray(),
+            membershipCommitment.ToArray(),
+            request.Envelope.DeduplicationDigest.ToArray(),
+            request.Envelope.ExpiresAtUnixSeconds,
+            canonicalEnvelope.ToArray(),
+            reservation.Disposition ?? MailboxReplicaDisposition.Stored,
+            reservation.AcceptedAtUnixSeconds,
+            expectedReplicaIds.Select(static id => (ReadOnlyMemory<byte>)id.ToArray()).ToArray());
+
+    private static MailboxReplicaStoreContext CopyContext(MailboxReplicaStoreContext context) =>
+        context with
+        {
+            OperationId = context.OperationId.ToArray(),
+            BlindedMailboxId = context.BlindedMailboxId.ToArray(),
+            PlacementCommitment = context.PlacementCommitment.ToArray(),
+            MembershipCommitment = context.MembershipCommitment.ToArray(),
+            EnvelopeDigest = context.EnvelopeDigest.ToArray(),
+            CanonicalEnvelope = context.CanonicalEnvelope.ToArray(),
+            ExpectedReplicaIds = context.ExpectedReplicaIds
+                .Select(static id => (ReadOnlyMemory<byte>)id.ToArray())
+                .ToArray()
+        };
+
+    private bool TryCreateAndPreflightBlob(
+        MailboxStoreRequest request,
+        byte[] canonicalEnvelope,
+        out EncryptedMailboxBlob? blob,
+        out string error)
+    {
+        blob = null;
+        error = "mailbox-envelope-preflight-rejected";
+        long expiresAtUnixMs;
+        try
+        {
+            expiresAtUnixMs = checked((long)request.Envelope.ExpiresAtUnixSeconds * 1000L);
+        }
+        catch (OverflowException)
+        {
+            error = "ttl-conversion-overflow";
+            return false;
+        }
+
+        blob = new(
+            Convert.ToHexString(request.Envelope.MailboxId.Bytes.Span).ToLowerInvariant(),
+            Convert.ToHexString(SHA256.HashData(canonicalEnvelope)).ToLowerInvariant(),
+            expiresAtUnixMs,
+            Convert.ToBase64String(canonicalEnvelope));
+        return EncryptedMailboxBlobValidator.TryValidate(
+            blob,
+            _clock.UtcNow,
+            _storeOptions,
+            out _,
+            out error);
+    }
+
     private MailboxClientDecodePolicy CreateDecodePolicy()
     {
-        var now = checked((ulong)_clock.UtcNow.ToUnixTimeSeconds());
+        var now = NowUnixSeconds();
         return new()
         {
             NowUnixSeconds = now,
@@ -331,8 +628,68 @@ public sealed class MailboxClientStoreAdapter
         };
     }
 
+    private static IReadOnlyList<ReadOnlyMemory<byte>> NormalizeReplicaAuthority(
+        IReadOnlyList<ReadOnlyMemory<byte>> replicaIds)
+    {
+        ArgumentNullException.ThrowIfNull(replicaIds);
+        if (replicaIds.Count is < 2 or > 9)
+        {
+            throw new ArgumentException("Replica authority must select 2..9 replicas.");
+        }
+
+        var result = new List<ReadOnlyMemory<byte>>(replicaIds.Count);
+        var unique = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var replicaId in replicaIds)
+        {
+            var owned = replicaId.ToArray();
+            if (owned.Length != RouterId.ByteLength || owned.AsSpan().IndexOfAnyExcept((byte)0) < 0)
+            {
+                throw new ArgumentException("Replica ids must be 32 nonzero bytes.");
+            }
+
+            var key = Convert.ToHexString(owned).ToLowerInvariant();
+            if (!unique.Add(key))
+            {
+                throw new ArgumentException("Replica authority selected a duplicate.");
+            }
+
+            result.Add(owned);
+        }
+
+        return result;
+    }
+
+    private static bool ReplicaSetsEqual(
+        IReadOnlyList<ReadOnlyMemory<byte>> left,
+        IReadOnlyList<ReadOnlyMemory<byte>> right) =>
+        left.Count == right.Count
+        && left.Zip(right).All(pair =>
+            pair.First.Span.SequenceEqual(pair.Second.Span));
+
+    private static MailboxDurableQuorumExpectationV2 Expectation(
+        MailboxReplicaStoreContext context) =>
+        new()
+        {
+            OperationId = context.OperationId,
+            Epoch = context.Epoch,
+            Cursor = context.Cursor,
+            Disposition = context.Disposition,
+            BlindedMailboxId = context.BlindedMailboxId,
+            PlacementCommitment = context.PlacementCommitment,
+            MembershipCommitment = context.MembershipCommitment,
+            EnvelopeDigest = context.EnvelopeDigest,
+            ExpiresAtUnixSeconds = context.ExpiresAtUnixSeconds
+        };
+
+    private ulong NowUnixSeconds() => checked((ulong)_clock.UtcNow.ToUnixTimeSeconds());
+
     private static bool FixedEquals(ReadOnlySpan<byte> left, ReadOnlySpan<byte> right) =>
         left.Length == right.Length && CryptographicOperations.FixedTimeEquals(left, right);
+
+    private static MailboxClientStoreResult Failure(
+        MailboxClientStoreStatus status,
+        string error) =>
+        MailboxClientStoreResult.Failure(status, error);
 
     private sealed class DeferredReplayGuard : IMailboxCapabilityReplayGuard
     {

@@ -98,14 +98,26 @@ For each ported behavior:
 - A capability verifier must independently return the exact epoch, blinded mailbox id,
   SHA-256 placement commitment and allowed operation. The adapter compares every field in
   constant time where applicable. Merely parsing an opaque capability is never authorization.
-- Operation id, request digest and a strictly increasing mailbox cursor are durably reserved
-  before any local store or replica fanout. Exact completed retries return the persisted `MQR2`;
-  a conflicting request under the same operation id fails closed.
-- Replica responses count only after native `MRR2` signature and complete context verification.
+- The durable operation key is `(epoch, blindedMailboxId, operationId)`. Each epoch/mailbox has
+  its own monotonic cursor authority; a separate global coordinator-sequence authority is never
+  reused. Request context is durably reserved before local storage or fanout.
+- Concurrent exact retries are single-flight. Before a coordinator signature is made, the exact
+  two native replica receipts and the next global coordinator sequence are atomically persisted.
+  Crash recovery can therefore sign only that previously reserved statement.
+- Completed retries return a persisted `MQR2` only after fully reverifying its replica signatures,
+  current epoch membership commitment, placement, operation, cursor, expiry, expected replica
+  set and current local coordinator identity. Membership or node-key rotation fails closed.
+- Replica responses count only after native `MRR2` signature, complete context verification and
+  membership/placement authorization. An injected authorizer selects the deterministic expected
+  replica ids for the exact epoch, membership commitment and placement commitment; an arbitrary
+  self-signed receipt from any other node never counts.
   The coordinator emits native `MQR2` binding operation, epoch, cursor, blinded mailbox,
   placement, membership, envelope digest and expiry.
 - No node seed, retrieve capability, master secret, account identifier or plaintext is persisted
   in the adapter ledger or returned by its contracts.
+- E and E+1 have distinct configured membership commitments. TTL/size/blob validation is
+  side-effect-free and precedes cursor reservation. Expired terminal/retryable/durable records
+  are boundedly removed without rewinding either cursor or coordinator authorities.
 - `MRT1`/`MRP1`, `MAK1` durable tombstones, real capability-verifier composition and native
   peer-fanout transport remain mandatory before exposing any client mailbox route.
 

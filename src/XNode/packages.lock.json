@@ -1,0 +1,86 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net10.0": {
+      "Deep.Protocol": {
+        "type": "Transitive",
+        "resolved": "0.3.0-p09c2.f1a93c9",
+        "contentHash": "l4hjLbU50YI+gCtnLKh3cEax+J5rS5lbHwL/ko2DT5AuVS5YfoVFjabOyDav8LVX2YoXEv8E0qXul0O2HgmG4w==",
+        "dependencies": {
+          "Deep.Protocol.Abstractions": "0.3.0-p09c2.f1a93c9",
+          "Deep.Protocol.Protobuf": "0.3.0-p09c2.f1a93c9",
+          "Sodium.Core": "1.4.1"
+        }
+      },
+      "Deep.Protocol.Abstractions": {
+        "type": "Transitive",
+        "resolved": "0.3.0-p09c2.f1a93c9",
+        "contentHash": "W/z1ijHo2Q7ISOAgh+majIKzehl4e+DTqJ2R+YAIQrRgXzgAWcVdj4aEAj2OZQNJqluk9vvG320psWvp08lW/g=="
+      },
+      "Deep.Protocol.Protobuf": {
+        "type": "Transitive",
+        "resolved": "0.3.0-p09c2.f1a93c9",
+        "contentHash": "tz4tXQpmniMaXKlaWFe7vkISwCxu64jJh6iZYZiCK0eKE41aNYZhxPoaHeAvAQRzFHI20RkAYetC3KkfTlVpIQ==",
+        "dependencies": {
+          "Google.Protobuf": "3.32.1"
+        }
+      },
+      "Google.Protobuf": {
+        "type": "Transitive",
+        "resolved": "3.32.1",
+        "contentHash": "HbFFRNU46e1E+qhGvwCDAO2EZ80WADqlkNqlOBYvGi7SNxwMPkTrReZgCg9/TrXwLO/n0za+AIiT2IplzqrjZw=="
+      },
+      "Keccak256": {
+        "type": "Transitive",
+        "resolved": "1.0.2",
+        "contentHash": "C17EWht0c2yVJRbfj9iuX6VHBQ4NiCeTVbb2cFje9BE3Tc9KKyHRN0cjL635cEWrVVZMn7n8NQTvntVMXTT5SA=="
+      },
+      "libsodium": {
+        "type": "Transitive",
+        "resolved": "1.0.22",
+        "contentHash": "KPD9SloJFclrsjnhABu7dzWrcyYkwPbvx5l1gRSPAX/0n+OBtSiVCKtGFv4n+ecWUHU0tCG9LSSwoZZx673zBQ=="
+      },
+      "Neo.Cryptography.BLS12_381": {
+        "type": "Transitive",
+        "resolved": "3.9.0",
+        "contentHash": "/SE5BJndqRcbk4ri4p6dvttgg3uuQ8Wi5viGxx+Qhs4oRETXG7OM9M5hPQweGcwpErEqK8Qc1Nbx/K37qPxIpw=="
+      },
+      "Rebex.Elliptic.Ed25519": {
+        "type": "Transitive",
+        "resolved": "1.2.2",
+        "contentHash": "19Fopd+m6rkrotbA9XY1bJ7BOL1N5cipC6K2RLshY1y6jEGC+5cCl2OgRGDhEda3CQ2vbNQUZORlqUkMTErblw=="
+      },
+      "Sodium.Core": {
+        "type": "Transitive",
+        "resolved": "1.4.1",
+        "contentHash": "K1Xhi20h9H15UPOa6NDNgW81NYN6AAvVT+v0Jz3n1qLS/nqiWzamWCyHyFxgoriCEMA90L1KQbYrIqBH+zKbrg==",
+        "dependencies": {
+          "libsodium": "[1.0.22, 1.0.23)"
+        }
+      },
+      "xnode.core": {
+        "type": "Project",
+        "dependencies": {
+          "Deep.Protocol": "[0.3.0-p09c2.f1a93c9, 0.3.0-p09c2.f1a93c9]",
+          "Rebex.Elliptic.Ed25519": "[1.2.2, )",
+          "Sodium.Core": "[1.4.1, )"
+        }
+      },
+      "xnode.registry": {
+        "type": "Project",
+        "dependencies": {
+          "Keccak256": "[1.0.2, )",
+          "Neo.Cryptography.BLS12_381": "[3.9.0, )",
+          "XNode.Core": "[1.0.0, )",
+          "XNode.Transport.Vless": "[1.0.0, )"
+        }
+      },
+      "xnode.transport.vless": {
+        "type": "Project",
+        "dependencies": {
+          "XNode.Core": "[1.0.0, )"
+        }
+      }
+    }
+  }
+}

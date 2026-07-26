@@ -359,11 +359,23 @@ The source tree contains a deliberately uncomposed store-only adapter for the ca
 alone. This is intentional: production composition requires both a reviewed
 `IMailboxClientCapabilityVerifier` and a native `MRR2` peer fanout implementation.
 
-The adapter reports separate states for disabled, missing verifier and missing fanout. When used
-in a test composition it reserves the operation/request binding and monotonic cursor durably
-before fanout, persists the full opaque `MEO1`, verifies two distinct context-bound `MRR2`
-receipts, and returns a canonical `MQR2`. Exact completed retries are served from the durable
-ledger. Conflicting operation-id reuse is rejected.
+The adapter reports separate states for disabled, missing verifier, missing replica authorizer
+and missing fanout. When used in a test composition it reserves
+`(epoch, blindedMailboxId, operationId)`, request digest and a per-mailbox monotonic cursor before
+fanout, persists the full opaque `MEO1`, and accepts only the deterministic replica ids selected
+for the exact membership/placement context. Two native context-bound `MRR2` receipts and a
+separate global coordinator sequence are durably bound before `MQR2` signing.
+
+Exact concurrent retries are single-flight. Restart recovery either resumes the exact persisted
+completion statement or fails closed; one coordinator sequence cannot sign two statements.
+Cached `MQR2` bytes are not trusted as a cache hit: signatures, coordinator identity/sequence,
+replica set and all request/membership bindings are reverified on every retry. Ledger loading
+rejects non-canonical keys/hex, duplicate or rewound cursors/sequences, and inconsistent
+state/receipt combinations.
+
+E and E+1 use distinct membership commitments. Blob, size and remaining-TTL preflight occurs
+before reserving a cursor, and expired operation records are cleaned without reusing cursor or
+coordinator authorities. Conflicting operation-id reuse within an epoch/mailbox is rejected.
 
 Do not expose a store endpoint until the remaining retrieve/ack slice is complete. In particular,
 servers must return cursor-bound `MRP1`, persist `MAK1` tombstones, and must never infer or record
@@ -379,3 +391,6 @@ Pinned offline package closure under `vendor/mailbox-client-package-corrected`:
   `8f27c94281ad70edd70f9e6c1876a9b9ec37abdc180a92eb7ea9009098cb3668`
 
 The older `0.3.0-p09c.451f3dc` package must never be introduced into this repository.
+`eng/mailbox-client.NuGet.Config` maps `Deep.Protocol` and `Deep.Protocol.*` exclusively to this
+offline feed. Relevant projects restore in locked mode and commit `packages.lock.json` content
+hashes; nuget.org has no wildcard mapping capable of resolving a Deep protocol package.

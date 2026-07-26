@@ -45,7 +45,33 @@ public sealed record MailboxReplicaStoreContext(
     ReadOnlyMemory<byte> MembershipCommitment,
     ReadOnlyMemory<byte> EnvelopeDigest,
     ulong ExpiresAtUnixSeconds,
-    ReadOnlyMemory<byte> CanonicalEnvelope);
+    ReadOnlyMemory<byte> CanonicalEnvelope,
+    MailboxReplicaDisposition Disposition,
+    ulong AcceptedAtUnixSeconds,
+    IReadOnlyList<ReadOnlyMemory<byte>> ExpectedReplicaIds);
+
+public interface IMailboxClientReplicaAuthorizer
+{
+    bool IsConfigured { get; }
+
+    ValueTask<IReadOnlyList<ReadOnlyMemory<byte>>> SelectReplicaIdsAsync(
+        ulong epoch,
+        ReadOnlyMemory<byte> membershipCommitment,
+        ReadOnlyMemory<byte> placementCommitment,
+        CancellationToken cancellationToken);
+}
+
+public sealed class RejectAllMailboxClientReplicaAuthorizer : IMailboxClientReplicaAuthorizer
+{
+    public bool IsConfigured => false;
+
+    public ValueTask<IReadOnlyList<ReadOnlyMemory<byte>>> SelectReplicaIdsAsync(
+        ulong epoch,
+        ReadOnlyMemory<byte> membershipCommitment,
+        ReadOnlyMemory<byte> placementCommitment,
+        CancellationToken cancellationToken) =>
+        ValueTask.FromResult<IReadOnlyList<ReadOnlyMemory<byte>>>([]);
+}
 
 public interface IMailboxClientReplicaFanout
 {
@@ -72,7 +98,9 @@ public sealed class MailboxClientAdapterOptions
 
     public string DirectoryName { get; set; } = "mailbox-client-adapter-v1";
 
-    public string MembershipCommitment { get; set; } = "";
+    public string CurrentMembershipCommitment { get; set; } = "";
+
+    public string NextMembershipCommitment { get; set; } = "";
 
     public ulong CurrentEpoch { get; set; }
 
@@ -106,10 +134,11 @@ public sealed class MailboxClientAdapterOptions
             return;
         }
 
-        if (!TryDecodeFixedLowerHex(MembershipCommitment, 32, out _))
+        if (!TryDecodeFixedLowerHex(CurrentMembershipCommitment, 32, out _)
+            || !TryDecodeFixedLowerHex(NextMembershipCommitment, 32, out _))
         {
             throw new InvalidOperationException(
-                "MailboxClientAdapter:MembershipCommitment must be 32-byte lowercase hex.");
+                "MailboxClientAdapter epoch membership commitments must be 32-byte lowercase hex.");
         }
 
         EpochWindow().Validate();
@@ -125,10 +154,17 @@ public sealed class MailboxClientAdapterOptions
         NextExpiresAtUnixSeconds = NextExpiresAtUnixSeconds
     };
 
-    public byte[] GetMembershipCommitment() =>
-        TryDecodeFixedLowerHex(MembershipCommitment, 32, out var value)
+    public byte[] GetMembershipCommitment(ulong epoch)
+    {
+        var configured = epoch == CurrentEpoch
+            ? CurrentMembershipCommitment
+            : epoch == NextEpoch
+                ? NextMembershipCommitment
+                : "";
+        return TryDecodeFixedLowerHex(configured, 32, out var value)
             ? value
             : throw new InvalidOperationException("Mailbox membership commitment is invalid.");
+    }
 
     private static bool TryDecodeFixedLowerHex(string? value, int length, out byte[] decoded)
     {
@@ -171,6 +207,7 @@ public sealed record MailboxClientStoreResult(
 public sealed record MailboxClientAdapterStatus(
     bool Enabled,
     bool CapabilityVerifierConfigured,
+    bool ReplicaAuthorizerConfigured,
     bool ReplicaFanoutConfigured,
     bool Ready,
     string Reason);

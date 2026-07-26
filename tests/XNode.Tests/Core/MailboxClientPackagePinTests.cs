@@ -1,4 +1,6 @@
 using System.Security.Cryptography;
+using System.Text.Json;
+using System.Xml.Linq;
 
 namespace XNode.Tests.Core;
 
@@ -45,6 +47,32 @@ public sealed class MailboxClientPackagePinTests
             coreProject,
             StringComparison.Ordinal);
         Assert.DoesNotContain("0.3.0-p09c.451f3dc", coreProject, StringComparison.Ordinal);
+
+        var config = XDocument.Load(Path.Combine(root, "eng", "mailbox-client.NuGet.Config"));
+        var sources = config.Descendants("packageSource")
+            .ToDictionary(
+                element => element.Attribute("key")!.Value,
+                element => element.Elements("package")
+                    .Select(package => package.Attribute("pattern")!.Value)
+                    .ToArray(),
+                StringComparer.Ordinal);
+        Assert.Equal(
+            new[] { "Deep.Protocol", "Deep.Protocol.*" },
+            sources["mailbox-corrected"]);
+        Assert.DoesNotContain(
+            sources["nuget.org"],
+            static pattern => pattern is "*" or "Deep.Protocol" or "Deep.Protocol.*");
+
+        using var lockDocument = JsonDocument.Parse(File.ReadAllBytes(
+            Path.Combine(root, "src", "XNode.Core", "packages.lock.json")));
+        var packages = lockDocument.RootElement.GetProperty("dependencies").GetProperty("net10.0");
+        Assert.Equal(
+            "0.3.0-p09c2.f1a93c9",
+            packages.GetProperty("Deep.Protocol").GetProperty("resolved").GetString());
+        Assert.Equal(
+            "l4hjLbU50YI+gCtnLKh3cEax+J5rS5lbHwL/ko2DT5AuVS5YfoVFjabOyDav8LVX2YoXEv8E0qXul0O2HgmG4w==",
+            packages.GetProperty("Deep.Protocol").GetProperty("contentHash").GetString());
+        Assert.Contains("<RestoreLockedMode>true</RestoreLockedMode>", coreProject);
     }
 
     private static string FindRepositoryRoot()
