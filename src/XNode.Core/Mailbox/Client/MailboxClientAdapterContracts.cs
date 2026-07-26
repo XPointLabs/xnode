@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
 
 namespace XNode.Core.Mailbox.Client;
@@ -116,6 +117,10 @@ public sealed class MailboxClientAdapterOptions
 
     public int MaxOperationEntries { get; set; } = 100_000;
 
+    public int MaxCursorAuthorities { get; set; } = 4096;
+
+    public int MaxConcurrentSingleFlights { get; set; } = 1024;
+
     public void Validate()
     {
         if (string.IsNullOrWhiteSpace(DirectoryName)
@@ -124,7 +129,11 @@ public sealed class MailboxClientAdapterOptions
             || DirectoryName.Contains('/')
             || DirectoryName.Contains('\\')
             || DirectoryName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0
-            || MaxOperationEntries is < 1 or > 1_000_000)
+            || MaxOperationEntries is < 1 or > 1_000_000
+            || MaxCursorAuthorities is < 1 or > 100_000
+            || MaxCursorAuthorities > MaxOperationEntries
+            || MaxConcurrentSingleFlights is < 1 or > 100_000
+            || MaxConcurrentSingleFlights > MaxOperationEntries)
         {
             throw new InvalidOperationException("MailboxClientAdapter limits are invalid.");
         }
@@ -134,8 +143,9 @@ public sealed class MailboxClientAdapterOptions
             return;
         }
 
-        if (!TryDecodeFixedLowerHex(CurrentMembershipCommitment, 32, out _)
-            || !TryDecodeFixedLowerHex(NextMembershipCommitment, 32, out _))
+        if (!TryDecodeFixedLowerHex(NextMembershipCommitment, 32, out var next)
+            || !TryDecodeFixedLowerHex(CurrentMembershipCommitment, 32, out var current)
+            || CryptographicOperations.FixedTimeEquals(current, next))
         {
             throw new InvalidOperationException(
                 "MailboxClientAdapter epoch membership commitments must be 32-byte lowercase hex.");

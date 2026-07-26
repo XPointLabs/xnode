@@ -118,6 +118,14 @@ For each ported behavior:
 - E and E+1 have distinct configured membership commitments. TTL/size/blob validation is
   side-effect-free and precedes cursor reservation. Expired terminal/retryable/durable records
   are boundedly removed without rewinding either cursor or coordinator authorities.
+- E and E+1 commitments must also be cryptographically distinct; equal values are a
+  configuration error. Cursor authorities have an explicit bound. Authorities with no live
+  operation are compacted into a persisted retired high-water floor, so unique-mailbox churn
+  cannot grow the ledger forever and a returning mailbox can never reuse a cursor.
+- A process holds an exclusive file lease on the adapter directory for the ledger lifetime and
+  one adapter claim per ledger. A second runtime fails closed. In-memory single-flight entries
+  are separately admission-bounded, reference-counted across waiters and removed only after the
+  final waiter releases them.
 - `MRT1`/`MRP1`, `MAK1` durable tombstones, real capability-verifier composition and native
   peer-fanout transport remain mandatory before exposing any client mailbox route.
 

@@ -376,6 +376,15 @@ state/receipt combinations.
 E and E+1 use distinct membership commitments. Blob, size and remaining-TTL preflight occurs
 before reserving a cursor, and expired operation records are cleaned without reusing cursor or
 coordinator authorities. Conflicting operation-id reuse within an epoch/mailbox is rejected.
+The two commitments must differ. `maxCursorAuthorities` bounds live per-mailbox authorities;
+unused authorities compact into a durable retired cursor floor rather than remaining as
+unbounded dictionary keys. `maxConcurrentSingleFlights` bounds unique active operations while
+exact-operation waiters share one reference-counted entry.
+
+The ledger owns `.adapter.lock` with exclusive file sharing for its complete lifetime. A second
+ledger for the same directory, or a second adapter claim on one ledger, fails startup. Dispose
+the adapter first and ledger second during orderly shutdown; only then can a replacement runtime
+acquire the directory.
 
 Do not expose a store endpoint until the remaining retrieve/ack slice is complete. In particular,
 servers must return cursor-bound `MRP1`, persist `MAK1` tombstones, and must never infer or record

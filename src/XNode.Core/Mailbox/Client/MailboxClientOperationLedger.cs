@@ -35,11 +35,28 @@ public sealed record MailboxClientStoreReservation(
     MailboxClientCompletionReservation? Completion,
     ReadOnlyMemory<byte> CachedReceipt);
 
-internal sealed record MailboxClientLedgerDocument(
-    int SchemaVersion,
-    ulong NextCoordinatorSequence,
-    Dictionary<string, ulong> NextCursorByMailbox,
-    Dictionary<string, MailboxClientLedgerOperation> Operations);
+internal sealed class MailboxClientLedgerDocument
+{
+    public MailboxClientLedgerDocument(
+        int schemaVersion,
+        ulong nextCoordinatorSequence,
+        ulong retiredCursorFloor,
+        Dictionary<string, ulong> nextCursorByMailbox,
+        Dictionary<string, MailboxClientLedgerOperation> operations)
+    {
+        SchemaVersion = schemaVersion;
+        NextCoordinatorSequence = nextCoordinatorSequence;
+        RetiredCursorFloor = retiredCursorFloor;
+        NextCursorByMailbox = nextCursorByMailbox;
+        Operations = operations;
+    }
+
+    public int SchemaVersion { get; set; }
+    public ulong NextCoordinatorSequence { get; set; }
+    public ulong RetiredCursorFloor { get; set; }
+    public Dictionary<string, ulong> NextCursorByMailbox { get; set; }
+    public Dictionary<string, MailboxClientLedgerOperation> Operations { get; set; }
+}
 
 internal sealed record MailboxClientLedgerOperation(
     ulong Epoch,
@@ -59,17 +76,22 @@ internal sealed record MailboxClientLedgerOperation(
     string SecondReplicaReceipt,
     string Receipt);
 
-public sealed class MailboxClientOperationLedger
+public sealed class MailboxClientOperationLedger : IDisposable
 {
     private const int SchemaVersion = 2;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _directory;
     private readonly string _path;
     private readonly int _maxEntries;
+    private readonly int _maxCursorAuthorities;
     private readonly IMailboxStorageSecurity _security;
     private readonly IMailboxDurabilityBarrier _durability;
     private readonly IClock _clock;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly FileStream _directoryLease;
+    private readonly object _lifecycleGate = new();
+    private int _disposed;
+    private int _adapterClaimed;
 
     public MailboxClientOperationLedger(
         string dataDirectory,
@@ -82,19 +104,38 @@ public sealed class MailboxClientOperationLedger
         _directory = Path.Combine(dataDirectory, options.DirectoryName);
         _path = Path.Combine(_directory, "operations.json");
         _maxEntries = options.MaxOperationEntries;
+        _maxCursorAuthorities = options.MaxCursorAuthorities;
         _clock = clock ?? new SystemClock();
         _security = security ?? new MailboxStorageSecurity();
         _durability = durability ?? new MailboxDurabilityBarrier();
+        _security.SecureDirectory(_directory);
+        try
+        {
+            _directoryLease = new FileStream(
+                Path.Combine(_directory, ".adapter.lock"),
+                FileMode.OpenOrCreate,
+                FileAccess.ReadWrite,
+                FileShare.None,
+                1,
+                FileOptions.WriteThrough);
+        }
+        catch (IOException exception)
+        {
+            throw new InvalidOperationException(
+                "Another mailbox client ledger owns this directory.",
+                exception);
+        }
     }
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
+        ThrowIfDisposed();
         _security.SecureDirectory(_directory);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             var document = await LoadAsync(cancellationToken).ConfigureAwait(false);
-            var changed = RemoveExpired(document, NowUnixSeconds());
+            var changed = RemoveExpiredAndCompact(document, NowUnixSeconds());
             if (changed)
             {
                 await SaveAsync(document, cancellationToken).ConfigureAwait(false);
@@ -111,6 +152,22 @@ public sealed class MailboxClientOperationLedger
         }
     }
 
+    public IDisposable ClaimAdapter()
+    {
+        lock (_lifecycleGate)
+        {
+            ThrowIfDisposed();
+            if (_adapterClaimed != 0)
+            {
+                throw new InvalidOperationException(
+                    "A mailbox client adapter already owns this ledger.");
+            }
+
+            _adapterClaimed = 1;
+            return new AdapterClaim(this);
+        }
+    }
+
     public async Task<MailboxClientStoreReservation> ReserveStoreAsync(
         ulong epoch,
         ReadOnlyMemory<byte> operationId,
@@ -121,6 +178,7 @@ public sealed class MailboxClientOperationLedger
         ulong expiresAtUnixSeconds,
         CancellationToken cancellationToken)
     {
+        ThrowIfDisposed();
         var operationKey = BuildOperationKey(epoch, mailboxId.Span, operationId.Span);
         var mailboxKey = BuildMailboxKey(epoch, mailboxId.Span);
         var requestKey = ToLowerHex(requestDigest.Span, 32, nameof(requestDigest));
@@ -137,7 +195,7 @@ public sealed class MailboxClientOperationLedger
         try
         {
             var document = await LoadAsync(cancellationToken).ConfigureAwait(false);
-            var changed = RemoveExpired(document, NowUnixSeconds());
+            var changed = RemoveExpiredAndCompact(document, NowUnixSeconds());
             if (document.Operations.TryGetValue(operationKey, out var existing))
             {
                 if (!FixedHexEquals(existing.RequestDigest, requestKey))
@@ -158,7 +216,18 @@ public sealed class MailboxClientOperationLedger
                 throw new MailboxClientLedgerCapacityException();
             }
 
+            if (!document.NextCursorByMailbox.ContainsKey(mailboxKey)
+                && document.NextCursorByMailbox.Count >= _maxCursorAuthorities)
+            {
+                CompactUnusedCursorAuthorities(document);
+                if (document.NextCursorByMailbox.Count >= _maxCursorAuthorities)
+                {
+                    throw new MailboxClientLedgerCapacityException();
+                }
+            }
+
             document.NextCursorByMailbox.TryGetValue(mailboxKey, out var priorCursor);
+            priorCursor = Math.Max(priorCursor, document.RetiredCursorFloor);
             if (priorCursor == ulong.MaxValue)
             {
                 throw new MailboxClientLedgerCapacityException();
@@ -273,6 +342,7 @@ public sealed class MailboxClientOperationLedger
         ReadOnlyMemory<byte> secondReplicaReceipt,
         CancellationToken cancellationToken)
     {
+        ThrowIfDisposed();
         var first = Convert.ToBase64String(firstReplicaReceipt.Span);
         var second = Convert.ToBase64String(secondReplicaReceipt.Span);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -301,7 +371,7 @@ public sealed class MailboxClientOperationLedger
             }
 
             var sequence = document.NextCoordinatorSequence + 1;
-            document = document with { NextCoordinatorSequence = sequence };
+            document.NextCoordinatorSequence = sequence;
             operation = operation with
             {
                 State = "completing",
@@ -359,6 +429,7 @@ public sealed class MailboxClientOperationLedger
         Func<MailboxClientLedgerOperation, MailboxClientLedgerOperation> mutation,
         CancellationToken cancellationToken)
     {
+        ThrowIfDisposed();
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -382,6 +453,7 @@ public sealed class MailboxClientOperationLedger
             return new(
                 SchemaVersion,
                 0,
+                0,
                 new(StringComparer.Ordinal),
                 new(StringComparer.Ordinal));
         }
@@ -403,17 +475,14 @@ public sealed class MailboxClientOperationLedger
                 throw new InvalidDataException("Mailbox client operation ledger is empty.");
             }
 
-            document = document with
-            {
-                NextCursorByMailbox = new(
-                    document.NextCursorByMailbox ?? throw new InvalidDataException(
-                        "Mailbox cursor authority is missing."),
-                    StringComparer.Ordinal),
-                Operations = new(
-                    document.Operations ?? throw new InvalidDataException(
-                        "Mailbox operation authority is missing."),
-                    StringComparer.Ordinal)
-            };
+            document.NextCursorByMailbox = new(
+                document.NextCursorByMailbox ?? throw new InvalidDataException(
+                    "Mailbox cursor authority is missing."),
+                StringComparer.Ordinal);
+            document.Operations = new(
+                document.Operations ?? throw new InvalidDataException(
+                    "Mailbox operation authority is missing."),
+                StringComparer.Ordinal);
             ValidateDocument(document);
             return document;
         }
@@ -426,7 +495,8 @@ public sealed class MailboxClientOperationLedger
     private void ValidateDocument(MailboxClientLedgerDocument document)
     {
         if (document.SchemaVersion != SchemaVersion
-            || document.Operations.Count > _maxEntries)
+            || document.Operations.Count > _maxEntries
+            || document.NextCursorByMailbox.Count > _maxCursorAuthorities)
         {
             throw new InvalidDataException("Mailbox client operation ledger schema is invalid.");
         }
@@ -444,7 +514,8 @@ public sealed class MailboxClientOperationLedger
 
         foreach (var pair in document.Operations)
         {
-            var operation = pair.Value;
+            var operation = pair.Value
+                ?? throw new InvalidDataException("Mailbox operation authority contains null.");
             var mailboxKey = BuildMailboxKey(
                 operation.Epoch,
                 DecodeLowerHex(operation.MailboxId, 32));
@@ -456,6 +527,7 @@ public sealed class MailboxClientOperationLedger
             _ = DecodeLowerHex(operation.EnvelopeDigest, 32);
             if (operation.ExpectedReplicaIds is null
                 || operation.ExpectedReplicaIds.Length is < 2 or > 9
+                || operation.ExpectedReplicaIds.Any(static replica => replica is null)
                 || operation.ExpectedReplicaIds
                     .Select(replica => Convert.ToHexString(
                         DecodeLowerHex(replica, 32)).ToLowerInvariant())
@@ -494,8 +566,39 @@ public sealed class MailboxClientOperationLedger
 
     private static void ValidateState(MailboxClientLedgerOperation operation)
     {
+        if (operation.State is null
+            || operation.Disposition is null
+            || operation.Error is null
+            || operation.FirstReplicaReceipt is null
+            || operation.SecondReplicaReceipt is null
+            || operation.Receipt is null)
+        {
+            throw new InvalidDataException("Mailbox operation state contains null fields.");
+        }
+
+        var dispositionEmpty = operation.Disposition.Length == 0;
         var hasDisposition = operation.Disposition is "stored" or "duplicate";
         var hasAcceptedAt = operation.AcceptedAtUnixSeconds != 0;
+        if (!dispositionEmpty && !hasDisposition
+            || hasDisposition != hasAcceptedAt)
+        {
+            throw new InvalidDataException("Mailbox disposition/time pairing is invalid.");
+        }
+
+        if (operation.Error.Length != 0)
+        {
+            try
+            {
+                _ = CanonicalError(operation.Error);
+            }
+            catch (ArgumentException exception)
+            {
+                throw new InvalidDataException("Mailbox ledger error is non-canonical.", exception);
+            }
+        }
+
+        var rawCompletionEmpty = operation.FirstReplicaReceipt.Length == 0
+            && operation.SecondReplicaReceipt.Length == 0;
         var hasCompletion = operation.CoordinatorSequence != 0
             && IsCanonicalBase64(
                 operation.FirstReplicaReceipt,
@@ -503,42 +606,43 @@ public sealed class MailboxClientOperationLedger
             && IsCanonicalBase64(
                 operation.SecondReplicaReceipt,
                 MailboxReceiptV2Limits.MaximumReplicaLength);
+        var rawReceiptEmpty = operation.Receipt.Length == 0;
         var hasReceipt = IsCanonicalBase64(
             operation.Receipt,
             MailboxReceiptV2Limits.MaximumQuorumLength);
         switch (operation.State)
         {
             case "reserved":
-                if (operation.CoordinatorSequence != 0 || hasReceipt || !string.IsNullOrEmpty(operation.Error)
-                    || hasDisposition != hasAcceptedAt)
+                if (operation.CoordinatorSequence != 0 || !rawCompletionEmpty || !rawReceiptEmpty
+                    || operation.Error.Length != 0)
                 {
                     throw new InvalidDataException("Reserved mailbox operation is inconsistent.");
                 }
                 break;
             case "retryable":
                 if (!hasDisposition || !hasAcceptedAt || operation.CoordinatorSequence != 0
-                    || hasReceipt || string.IsNullOrEmpty(operation.Error))
+                    || !rawCompletionEmpty || !rawReceiptEmpty || operation.Error.Length == 0)
                 {
                     throw new InvalidDataException("Retryable mailbox operation is inconsistent.");
                 }
                 break;
             case "completing":
-                if (!hasDisposition || !hasAcceptedAt || !hasCompletion || hasReceipt
-                    || !string.IsNullOrEmpty(operation.Error))
+                if (!hasDisposition || !hasAcceptedAt || !hasCompletion || !rawReceiptEmpty
+                    || operation.Error.Length != 0)
                 {
                     throw new InvalidDataException("Completing mailbox operation is inconsistent.");
                 }
                 break;
             case "durable":
                 if (!hasDisposition || !hasAcceptedAt || !hasCompletion || !hasReceipt
-                    || !string.IsNullOrEmpty(operation.Error))
+                    || operation.Error.Length != 0)
                 {
                     throw new InvalidDataException("Durable mailbox operation is inconsistent.");
                 }
                 break;
             case "terminal":
-                if (operation.CoordinatorSequence != 0 || hasCompletion || hasReceipt
-                    || string.IsNullOrEmpty(operation.Error))
+                if (operation.CoordinatorSequence != 0 || !rawCompletionEmpty || hasCompletion
+                    || !rawReceiptEmpty || operation.Error.Length == 0)
                 {
                     throw new InvalidDataException("Terminal mailbox operation is inconsistent.");
                 }
@@ -548,7 +652,9 @@ public sealed class MailboxClientOperationLedger
         }
     }
 
-    private static bool RemoveExpired(MailboxClientLedgerDocument document, ulong nowUnixSeconds)
+    private static bool RemoveExpiredAndCompact(
+        MailboxClientLedgerDocument document,
+        ulong nowUnixSeconds)
     {
         var expired = document.Operations
             .Where(pair => pair.Value.ExpiresAtUnixSeconds < nowUnixSeconds)
@@ -559,7 +665,34 @@ public sealed class MailboxClientOperationLedger
             document.Operations.Remove(key);
         }
 
-        return expired.Length != 0;
+        var compacted = CompactUnusedCursorAuthorities(document);
+        return expired.Length != 0 || compacted;
+    }
+
+    private static bool CompactUnusedCursorAuthorities(MailboxClientLedgerDocument document)
+    {
+        var liveScopes = document.Operations.Values
+            .Select(operation => BuildMailboxKey(
+                operation.Epoch,
+                DecodeLowerHex(operation.MailboxId, 32)))
+            .ToHashSet(StringComparer.Ordinal);
+        var retired = document.NextCursorByMailbox
+            .Where(pair => !liveScopes.Contains(pair.Key))
+            .ToArray();
+        if (retired.Length == 0)
+        {
+            return false;
+        }
+
+        var floor = document.RetiredCursorFloor;
+        foreach (var authority in retired)
+        {
+            floor = Math.Max(floor, authority.Value);
+            document.NextCursorByMailbox.Remove(authority.Key);
+        }
+
+        document.RetiredCursorFloor = floor;
+        return true;
     }
 
     private async Task SaveAsync(
@@ -587,7 +720,7 @@ public sealed class MailboxClientOperationLedger
                 stream.Flush(flushToDisk: true);
             }
 
-            File.Move(temporary, _path, overwrite: true);
+            await ReplaceAtomicallyAsync(temporary, cancellationToken).ConfigureAwait(false);
             _security.SecureFile(_path);
             _durability.FlushFileAndParentDirectory(_path);
         }
@@ -596,6 +729,29 @@ public sealed class MailboxClientOperationLedger
             if (File.Exists(temporary))
             {
                 File.Delete(temporary);
+            }
+        }
+    }
+
+    private async Task ReplaceAtomicallyAsync(
+        string temporary,
+        CancellationToken cancellationToken)
+    {
+        const int maximumAttempts = 4;
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                File.Move(temporary, _path, overwrite: true);
+                return;
+            }
+            catch (Exception exception) when (
+                OperatingSystem.IsWindows()
+                && attempt < maximumAttempts
+                && exception is IOException or UnauthorizedAccessException)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(5 * attempt), cancellationToken)
+                    .ConfigureAwait(false);
             }
         }
     }
@@ -674,9 +830,9 @@ public sealed class MailboxClientOperationLedger
         return Convert.ToHexString(value).ToLowerInvariant();
     }
 
-    private static byte[] DecodeLowerHex(string value, int length)
+    private static byte[] DecodeLowerHex(string? value, int length)
     {
-        if (!IsLowerHex(value, length * 2))
+        if (value is null || !IsLowerHex(value, length * 2))
         {
             throw new InvalidDataException("Mailbox ledger hex field is non-canonical.");
         }
@@ -690,8 +846,9 @@ public sealed class MailboxClientOperationLedger
         return decoded;
     }
 
-    private static bool IsLowerHex(string value, int? length = null) =>
-        (length is null || value.Length == length)
+    private static bool IsLowerHex(string? value, int? length = null) =>
+        value is not null
+        && (length is null || value.Length == length)
         && value.All(static character =>
             character is >= '0' and <= '9' or >= 'a' and <= 'f');
 
@@ -757,6 +914,50 @@ public sealed class MailboxClientOperationLedger
             "terminal" => MailboxClientLedgerState.Terminal,
             _ => throw new InvalidDataException("Mailbox state is invalid.")
         };
+
+    public void Dispose()
+    {
+        lock (_lifecycleGate)
+        {
+            if (_disposed != 0)
+            {
+                return;
+            }
+
+            if (_adapterClaimed != 0)
+            {
+                throw new InvalidOperationException(
+                    "Cannot release a mailbox ledger while an adapter owns it.");
+            }
+
+            _disposed = 1;
+            _directoryLease.Dispose();
+            _gate.Dispose();
+        }
+        GC.SuppressFinalize(this);
+    }
+
+    private void ThrowIfDisposed()
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+    }
+
+    private sealed class AdapterClaim(MailboxClientOperationLedger owner) : IDisposable
+    {
+        private MailboxClientOperationLedger? _owner = owner;
+
+        public void Dispose()
+        {
+            var current = Interlocked.Exchange(ref _owner, null);
+            if (current is not null)
+            {
+                lock (current._lifecycleGate)
+                {
+                    current._adapterClaimed = 0;
+                }
+            }
+        }
+    }
 }
 
 public sealed class MailboxClientOperationConflictException : Exception;

@@ -1,10 +1,9 @@
-using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
 
 namespace XNode.Core.Mailbox.Client;
 
-public sealed class MailboxClientStoreAdapter
+public sealed class MailboxClientStoreAdapter : IDisposable
 {
     private readonly MailboxClientAdapterOptions _options;
     private readonly ReplicatedMailboxOptions _storeOptions;
@@ -15,8 +14,13 @@ public sealed class MailboxClientStoreAdapter
     private readonly IMailboxClientReplicaFanout _fanout;
     private readonly MailboxClientReceiptCrypto _crypto;
     private readonly IClock _clock;
-    private readonly ConcurrentDictionary<string, SemaphoreSlim> _singleFlights =
+    private readonly Dictionary<string, SingleFlightEntry> _singleFlights =
         new(StringComparer.Ordinal);
+    private readonly object _singleFlightsGate = new();
+    private readonly int _maxSingleFlights;
+    private readonly IDisposable _adapterClaim;
+    private int _disposed;
+    private int _activeInitializations;
 
     public MailboxClientStoreAdapter(
         MailboxClientAdapterOptions options,
@@ -35,11 +39,13 @@ public sealed class MailboxClientStoreAdapter
         _storeOptions = storeOptions;
         _store = store;
         _ledger = ledger;
+        _adapterClaim = ledger.ClaimAdapter();
         _verifier = verifier;
         _replicaAuthorizer = replicaAuthorizer;
         _fanout = fanout;
         _crypto = crypto;
         _clock = clock ?? new SystemClock();
+        _maxSingleFlights = options.MaxConcurrentSingleFlights;
     }
 
     public MailboxClientAdapterStatus Status
@@ -71,9 +77,17 @@ public sealed class MailboxClientStoreAdapter
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
-        if (_options.Enabled)
+        RetainInitialization();
+        try
         {
-            await _ledger.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            if (_options.Enabled)
+            {
+                await _ledger.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            ReleaseInitialization();
         }
     }
 
@@ -81,6 +95,7 @@ public sealed class MailboxClientStoreAdapter
         ReadOnlyMemory<byte> canonicalStoreRequest,
         CancellationToken cancellationToken = default)
     {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         var status = Status;
         if (!status.Enabled)
         {
@@ -168,10 +183,19 @@ public sealed class MailboxClientStoreAdapter
             request.Epoch,
             request.Envelope.MailboxId.Bytes.Span,
             request.OperationId.Span);
-        var singleFlight = _singleFlights.GetOrAdd(operationKey, static _ => new SemaphoreSlim(1, 1));
-        await singleFlight.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var singleFlight = TryRetainSingleFlight(operationKey);
+        if (singleFlight is null)
+        {
+            return Failure(
+                MailboxClientStoreStatus.Rejected,
+                "single-flight-capacity");
+        }
+
+        var entered = false;
         try
         {
+            await singleFlight.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            entered = true;
             return await StoreSingleFlightAsync(
                 requestDigest,
                 request,
@@ -184,7 +208,12 @@ public sealed class MailboxClientStoreAdapter
         }
         finally
         {
-            singleFlight.Release();
+            if (entered)
+            {
+                singleFlight.Gate.Release();
+            }
+
+            ReleaseSingleFlight(operationKey, singleFlight);
         }
     }
 
@@ -690,6 +719,94 @@ public sealed class MailboxClientStoreAdapter
         MailboxClientStoreStatus status,
         string error) =>
         MailboxClientStoreResult.Failure(status, error);
+
+    private SingleFlightEntry? TryRetainSingleFlight(string operationKey)
+    {
+        lock (_singleFlightsGate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            if (_singleFlights.TryGetValue(operationKey, out var existing))
+            {
+                existing.Users++;
+                return existing;
+            }
+
+            if (_singleFlights.Count >= _maxSingleFlights)
+            {
+                return null;
+            }
+
+            var created = new SingleFlightEntry { Users = 1 };
+            _singleFlights.Add(operationKey, created);
+            return created;
+        }
+    }
+
+    private void ReleaseSingleFlight(string operationKey, SingleFlightEntry entry)
+    {
+        lock (_singleFlightsGate)
+        {
+            entry.Users--;
+            if (entry.Users == 0)
+            {
+                if (!_singleFlights.Remove(operationKey, out var removed)
+                    || !ReferenceEquals(removed, entry))
+                {
+                    throw new InvalidOperationException(
+                        "Mailbox single-flight ownership is corrupt.");
+                }
+
+                entry.Gate.Dispose();
+            }
+        }
+    }
+
+    private void RetainInitialization()
+    {
+        lock (_singleFlightsGate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            _activeInitializations++;
+        }
+    }
+
+    private void ReleaseInitialization()
+    {
+        lock (_singleFlightsGate)
+        {
+            _activeInitializations--;
+        }
+    }
+
+    public void Dispose()
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            return;
+        }
+
+        lock (_singleFlightsGate)
+        {
+            if (_singleFlights.Count != 0 || _activeInitializations != 0)
+            {
+                throw new InvalidOperationException(
+                    "Cannot release a mailbox adapter while operations are active.");
+            }
+
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            {
+                _adapterClaim.Dispose();
+            }
+        }
+
+        GC.SuppressFinalize(this);
+    }
+
+    private sealed class SingleFlightEntry
+    {
+        public SemaphoreSlim Gate { get; } = new(1, 1);
+        public int Users { get; set; }
+    }
 
     private sealed class DeferredReplayGuard : IMailboxCapabilityReplayGuard
     {
