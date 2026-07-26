@@ -298,3 +298,44 @@ Known bottlenecks and remediation plan are emitted in C3 artifacts:
   - add authenticated direct-peer health measurements before enabling any adaptive failure scoring
   - add supervisor restart jitter to reduce synchronized storms
   - enforce ingress concurrency budget/backpressure at saturation
+
+## Replicated Encrypted Mailbox (Dormant)
+
+The internal XNode-to-XNode replication endpoint is disabled by default. Do not enable it in
+production until client AEAD, rotating/blinded mailbox identifiers, membership-based placement
+and authenticated retrieval have a reviewed cross-repository contract.
+
+```json
+{
+  "mailbox": {
+    "enabled": false,
+    "directoryName": "mailbox-v1",
+    "maxBlobBytes": 81920,
+    "maxStoredBlobs": 100000,
+    "minimumTtl": "00:01:00",
+    "maximumTtl": "7.00:00:00",
+    "replicationFactor": 3,
+    "writeQuorum": 2,
+    "peerTimeout": "00:00:05",
+    "allowInsecureHttpPeerTransport": false
+  }
+}
+```
+
+When enabled, `POST /api/peer/mailbox/replica` is available only on the peer RPC listener.
+Requests must be signed by a fresh registered XNode and are replay guarded. The `/status`
+mailbox section reports only aggregate receiver counters; it never reports mailbox/blob
+identifiers or ciphertext.
+
+Plain HTTP is rejected by default because it exposes otherwise opaque mailbox metadata.
+`allowInsecureHttpPeerTransport=true` is a development-only escape hatch for an isolated
+Docker network or a deployment where an authenticated outer transport terminates immediately
+in front of XNode.
+
+Operational bounds:
+
+- ciphertext is canonical base64 and its SHA-256 digest must equal `blobId`;
+- TTL and ciphertext size are rejected outside configured bounds;
+- writes are atomic and duplicate writes are idempotent;
+- expired or corrupt entries are purged during initialization and capacity recovery;
+- peer timeouts and invalid node receipts fail closed and do not count toward write quorum.

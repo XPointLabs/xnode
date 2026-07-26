@@ -1,6 +1,7 @@
 ﻿using XNode;
 using XNode.Core;
 using XNode.Core.Onion;
+using XNode.Core.Mailbox;
 using System.Text.Json;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Http.Features;
@@ -30,6 +31,15 @@ var registrationOptions = builder.Configuration.GetSection("RegistryRegistration
     ?? new RegistryRegistrationOptions();
 var membershipArtifactOptions = builder.Configuration.GetSection("MembershipArtifact")
     .Get<MembershipRouteArtifactOptions>() ?? new MembershipRouteArtifactOptions();
+var mailboxOptions = builder.Configuration.GetSection("Mailbox")
+    .Get<ReplicatedMailboxOptions>() ?? new ReplicatedMailboxOptions();
+mailboxOptions.Validate();
+if (mailboxOptions.Enabled
+    && ((long)mailboxOptions.MaxBlobBytes * 4 / 3) + 4096 > runtimeOptions.MaxPeerRequestBodyBytes)
+{
+    throw new InvalidOperationException(
+        "Runtime:MaxPeerRequestBodyBytes is too small for the configured mailbox blob limit.");
+}
 
 VlessProfileGuard.Validate(vlessOptions, builder.Environment.IsDevelopment());
 
@@ -57,6 +67,7 @@ builder.Services.AddSingleton(storageRpcOptions);
 builder.Services.AddSingleton(heartbeatOptions);
 builder.Services.AddSingleton(registrationOptions);
 builder.Services.AddSingleton(membershipArtifactOptions);
+builder.Services.AddSingleton(mailboxOptions);
 builder.Services.AddSingleton<MembershipRouteArtifactPublisher>();
 builder.Services.AddSingleton(new NodeDbOptions
 {
@@ -65,6 +76,21 @@ builder.Services.AddSingleton(new NodeDbOptions
     IsRelay = nodeOptions.IsRelay
 });
 builder.Services.AddSingleton<NodeDb>();
+builder.Services.AddSingleton(provider => new ReplicatedMailboxStore(
+    nodeOptions.DataDirectory,
+    mailboxOptions,
+    provider.GetRequiredService<IClock>()));
+builder.Services.AddHostedService<MailboxStoreHostedService>();
+builder.Services.AddSingleton<MailboxReplicaReplayGuard>();
+builder.Services.AddSingleton<IMailboxPeerAuthorizer, NodeDbMailboxPeerAuthorizer>();
+builder.Services.AddSingleton(provider => new MailboxReplicaReceiver(
+    nodeOptions.GetRouterId(),
+    nodeOptions.GetEd25519PrivateKey(),
+    mailboxOptions,
+    provider.GetRequiredService<ReplicatedMailboxStore>(),
+    provider.GetRequiredService<IMailboxPeerAuthorizer>(),
+    provider.GetRequiredService<MailboxReplicaReplayGuard>(),
+    provider.GetRequiredService<IClock>()));
 builder.Services.AddSingleton<PathSelector>();
 builder.Services.AddSingleton<IStorageBackend>(provider =>
     string.IsNullOrWhiteSpace(registryBootstrapOptions.BaseUrl)
@@ -79,6 +105,8 @@ builder.Services.AddSingleton<ISessionStorageRpcBackend>(_ =>
         ? new DisabledSessionStorageRpcBackend()
         : new HttpSessionStorageRpcBackend(new HttpClient(), storageRpcOptions));
 builder.Services.AddHttpClient<IOnionPeerClient, HttpOnionPeerClient>()
+    .ConfigurePrimaryHttpMessageHandler(() => OnionPeerHttpHandler.Create(runtimeOptions));
+builder.Services.AddHttpClient<IMailboxReplicaPeerClient, HttpMailboxReplicaPeerClient>()
     .ConfigurePrimaryHttpMessageHandler(() => OnionPeerHttpHandler.Create(runtimeOptions));
 builder.Services.AddSingleton<ILocalRelayContactProvider, LocalRelayContactProvider>();
 builder.Services.AddSingleton<RouterRuntime>();
@@ -126,6 +154,7 @@ app.Use(async (context, next) =>
 
     var path = context.Request.Path;
     var allowed = path.Equals("/api/peer/onion")
+        || path.Equals("/api/peer/mailbox/replica")
         || path.Equals("/health/live")
         || path.Equals("/health/ready")
         || (path.Equals("/api/staking/quorum/sign")
@@ -143,7 +172,9 @@ app.Use(async (context, next) =>
 app.Use(async (context, next) =>
 {
     var path = context.Request.Path;
-    if (path.Equals("/api/session/rpc") || path.Equals("/api/peer/onion"))
+    if (path.Equals("/api/session/rpc")
+        || path.Equals("/api/peer/onion")
+        || path.Equals("/api/peer/mailbox/replica"))
     {
         var maxBodyBytes = Math.Max(1, runtimeOptions.MaxPeerRequestBodyBytes);
         if (context.Request.ContentLength is > 0 and var contentLength && contentLength > maxBodyBytes)
@@ -183,13 +214,26 @@ app.MapGet("/health/ready", (IRouterRuntime runtime, IXraySupervisor xray) =>
         : Results.Json(new { ready = false, status, xray = xrayStatus }, statusCode: StatusCodes.Status503ServiceUnavailable);
 });
 
-app.MapGet("/status", (IRouterRuntime runtime, IXraySupervisor xray, RegistryPayloadFactory registryPayloadFactory) =>
+app.MapGet("/status", (
+    IRouterRuntime runtime,
+    IXraySupervisor xray,
+    RegistryPayloadFactory registryPayloadFactory,
+    ReplicatedMailboxOptions mailbox,
+    IServiceProvider services) =>
 {
+    object mailboxStatus = mailbox.Enabled
+        ? new
+        {
+            enabled = true,
+            receiver = services.GetRequiredService<MailboxReplicaReceiver>().Metrics
+        }
+        : new { enabled = false };
     return Results.Ok(new
     {
         router = runtime.Status,
         xray = xray.Status,
-        registryPayload = registryPayloadFactory.Create()
+        registryPayload = registryPayloadFactory.Create(),
+        mailbox = mailboxStatus
     });
 });
 
@@ -315,6 +359,32 @@ app.MapPost("/api/peer/onion", async (
     return Results.Ok(response);
 }).RequireRateLimiting("peer-onion");
 
+app.MapPost("/api/peer/mailbox/replica", async (
+    SignedMailboxReplicaRequest request,
+    ReplicatedMailboxOptions options,
+    IServiceProvider services,
+    HttpContext context,
+    CancellationToken cancellationToken) =>
+{
+    if (!options.Enabled
+        || context.Connection.LocalPort != peerRpcListenUri.Port
+        || (!context.Request.IsHttps && !options.AllowInsecureHttpPeerTransport))
+    {
+        return Results.NotFound();
+    }
+
+    var receiver = services.GetRequiredService<MailboxReplicaReceiver>();
+    var result = await receiver.ReceiveAsync(request, cancellationToken);
+    return result.Status switch
+    {
+        MailboxReplicaReceiveStatus.Accepted => Results.Ok(result.Receipt),
+        MailboxReplicaReceiveStatus.Unauthorized => Results.Unauthorized(),
+        MailboxReplicaReceiveStatus.Replay => Results.Conflict(),
+        MailboxReplicaReceiveStatus.Rejected => Results.BadRequest(),
+        _ => Results.NotFound()
+    };
+}).RequireRateLimiting("peer-onion");
+
 app.Run();
 
 public sealed class RouterRuntimeHostedService : IHostedService
@@ -329,6 +399,25 @@ public sealed class RouterRuntimeHostedService : IHostedService
     public Task StartAsync(CancellationToken cancellationToken) => _runtime.StartAsync(cancellationToken);
 
     public Task StopAsync(CancellationToken cancellationToken) => _runtime.StopAsync(cancellationToken);
+}
+
+public sealed class MailboxStoreHostedService : IHostedService
+{
+    private readonly ReplicatedMailboxOptions _options;
+    private readonly ReplicatedMailboxStore _store;
+
+    public MailboxStoreHostedService(
+        ReplicatedMailboxOptions options,
+        ReplicatedMailboxStore store)
+    {
+        _options = options;
+        _store = store;
+    }
+
+    public Task StartAsync(CancellationToken cancellationToken) =>
+        _options.Enabled ? _store.InitializeAsync(cancellationToken) : Task.CompletedTask;
+
+    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }
 
 public partial class Program

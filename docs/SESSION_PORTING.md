@@ -67,6 +67,24 @@ For each ported behavior:
 - Production publication remains disabled until an external signer/indexer generates the artifact.
   Deterministic signers are permitted only for an explicitly mounted Docker development fixture.
 
+## Replicated Encrypted Mailbox Primitive V1
+
+- XNode owns an internal authenticated peer replication protocol for opaque encrypted blobs.
+  It does not define the client-facing mailbox discovery/retrieval contract.
+- A write is successful only after the configured number of distinct storage-router receipts
+  verifies against the exact mailbox id, blob digest and expiry. Missing, timed-out or invalid
+  receipts never count toward quorum.
+- The blob id is the SHA-256 digest of the canonical base64-decoded ciphertext. Replays are
+  idempotent; a conflicting representation or payload fails closed.
+- Sender and storage-node identities are self-certifying Ed25519 router identities. The receiver
+  additionally requires the sender to be present and fresh in the locally verified registered
+  relay catalog.
+- Mailbox ids are opaque, rotating client-derived values. They are not account identifiers.
+  No mailbox id, blob id or ciphertext is written to application metrics or logs.
+- The primitive is disabled by default. Enabling peer storage before a reviewed client AEAD,
+  blinded mailbox-id derivation, placement and authenticated retrieval contract exists is not a
+  production activation.
+
 ## Stop-The-Line Conditions
 
 - A release build or rehearsal can pass with mocked transport.
