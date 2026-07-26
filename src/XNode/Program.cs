@@ -33,6 +33,10 @@ var membershipArtifactOptions = builder.Configuration.GetSection("MembershipArti
     .Get<MembershipRouteArtifactOptions>() ?? new MembershipRouteArtifactOptions();
 var mailboxOptions = builder.Configuration.GetSection("Mailbox")
     .Get<ReplicatedMailboxOptions>() ?? new ReplicatedMailboxOptions();
+var mailboxClientActivationOptions = builder.Configuration.GetSection("MailboxClient")
+    .Get<MailboxClientActivationOptions>() ?? new MailboxClientActivationOptions();
+var mailboxClientActivationStatus = MailboxClientActivationGuard.EnsureDormant(
+    mailboxClientActivationOptions);
 mailboxOptions.Validate();
 if (mailboxOptions.Enabled
     && ((long)mailboxOptions.MaxBlobBytes * 4 / 3) + 4096 > runtimeOptions.MaxPeerRequestBodyBytes)
@@ -68,6 +72,8 @@ builder.Services.AddSingleton(heartbeatOptions);
 builder.Services.AddSingleton(registrationOptions);
 builder.Services.AddSingleton(membershipArtifactOptions);
 builder.Services.AddSingleton(mailboxOptions);
+builder.Services.AddSingleton(mailboxClientActivationOptions);
+builder.Services.AddSingleton(mailboxClientActivationStatus);
 builder.Services.AddSingleton<MembershipRouteArtifactPublisher>();
 builder.Services.AddSingleton(new NodeDbOptions
 {
@@ -204,7 +210,10 @@ app.MapGet("/", () => Results.Redirect("/status"));
 
 app.MapGet("/health/live", () => Results.Ok(new { ok = true }));
 
-app.MapGet("/health/ready", (IRouterRuntime runtime, IXraySupervisor xray) =>
+app.MapGet("/health/ready", (
+    IRouterRuntime runtime,
+    IXraySupervisor xray,
+    MailboxClientActivationStatus mailboxClient) =>
 {
     var status = runtime.Status;
     var xrayStatus = xray.Status;
@@ -216,8 +225,16 @@ app.MapGet("/health/ready", (IRouterRuntime runtime, IXraySupervisor xray) =>
 
     var ready = status.State == "running" && transportReady;
     return ready
-        ? Results.Ok(new { ready = true, degraded = xrayStatus.Degraded, transportMode = xrayStatus.Mode })
-        : Results.Json(new { ready = false, status, xray = xrayStatus }, statusCode: StatusCodes.Status503ServiceUnavailable);
+        ? Results.Ok(new
+        {
+            ready = true,
+            degraded = xrayStatus.Degraded,
+            transportMode = xrayStatus.Mode,
+            mailboxClient
+        })
+        : Results.Json(
+            new { ready = false, status, xray = xrayStatus, mailboxClient },
+            statusCode: StatusCodes.Status503ServiceUnavailable);
 });
 
 app.MapGet("/status", (
@@ -225,6 +242,7 @@ app.MapGet("/status", (
     IXraySupervisor xray,
     RegistryPayloadFactory registryPayloadFactory,
     ReplicatedMailboxOptions mailbox,
+    MailboxClientActivationStatus mailboxClient,
     IServiceProvider services) =>
 {
     object mailboxStatus = mailbox.Enabled
@@ -239,7 +257,8 @@ app.MapGet("/status", (
         router = runtime.Status,
         xray = xray.Status,
         registryPayload = registryPayloadFactory.Create(),
-        mailbox = mailboxStatus
+        mailbox = mailboxStatus,
+        mailboxClient
     });
 });
 

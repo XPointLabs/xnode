@@ -156,6 +156,9 @@ For each ported behavior:
   `maxOperationEntries` charges stores, ACK operations and every ACK item.
 - Real capability-verifier composition, native store/tombstone peer transport, and a reviewed
   public ACK response contract remain mandatory before exposing any client mailbox route.
+- Runtime activation preflight is recorded in
+  `docs/adr/0006-mailbox-client-activation-blocker.md`. `MailboxClient:Enabled=true` now fails host
+  construction; configuration cannot substitute for the missing reviewed A-E contracts.
 
 ## Stop-The-Line Conditions
 

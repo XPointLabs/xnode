@@ -418,6 +418,22 @@ ACK operation records and each ACK item.
 
 Do not expose any client mailbox endpoint yet. There is still no runtime/HTTP composition, real
 production verifier, native tombstone transport, or finalized aggregate ACK wire response.
+The activation decision and exact missing contracts are frozen in
+`docs/adr/0006-mailbox-client-activation-blocker.md`.
+
+`MailboxClient` is a fail-closed activation guard, not an operational feature flag:
+
+```json
+{
+  "MailboxClient": {
+    "enabled": false
+  }
+}
+```
+
+Setting it to `true` from JSON, environment variables or command-line configuration prevents host
+construction. `/status` and `/health/ready` report Store/Retrieve/Acknowledge as `not-ready`,
+with reject-all/disabled dependencies; no client mailbox route is mapped.
 
 Pinned offline package closure under `vendor/mailbox-client-package-corrected`:
 
