@@ -56,6 +56,17 @@ For each ported behavior:
 - Public direct storage RPCs do not traverse their advertised relay route. Their downstream HTTP outcomes and public path reports are therefore never used as relay-health evidence; churn blocking remains disabled until direct, authenticated peer-health measurements exist.
 - A future quorum-backed catalog checkpoint may replace the current registered-catalog authorization source. Route trust v1 does not implement a Merkle or on-chain catalog checkpoint.
 
+## Membership Route Publication V1
+
+- The public artifact endpoint serves only opaque bytes from a configured file. It receives no
+  mailbox/placement target and XNode does not inspect member topology.
+- Missing or invalid publication configuration fails closed with `503`; no unsigned catalog is
+  synthesized from `NodeDb`.
+- Clients must quorum-verify the P04 membership envelope, every canonical MRL1 inclusion proof,
+  validity and monotonic LKG state before local route selection.
+- Production publication remains disabled until an external signer/indexer generates the artifact.
+  Deterministic signers are permitted only for an explicitly mounted Docker development fixture.
+
 ## Stop-The-Line Conditions
 
 - A release build or rehearsal can pass with mocked transport.

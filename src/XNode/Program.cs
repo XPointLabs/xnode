@@ -28,6 +28,8 @@ var heartbeatOptions = builder.Configuration.GetSection("RegistryHeartbeat").Get
     ?? new RegistrationHeartbeatOptions();
 var registrationOptions = builder.Configuration.GetSection("RegistryRegistration").Get<RegistryRegistrationOptions>()
     ?? new RegistryRegistrationOptions();
+var membershipArtifactOptions = builder.Configuration.GetSection("MembershipArtifact")
+    .Get<MembershipRouteArtifactOptions>() ?? new MembershipRouteArtifactOptions();
 
 VlessProfileGuard.Validate(vlessOptions, builder.Environment.IsDevelopment());
 
@@ -54,6 +56,8 @@ builder.Services.AddSingleton(registryBootstrapOptions);
 builder.Services.AddSingleton(storageRpcOptions);
 builder.Services.AddSingleton(heartbeatOptions);
 builder.Services.AddSingleton(registrationOptions);
+builder.Services.AddSingleton(membershipArtifactOptions);
+builder.Services.AddSingleton<MembershipRouteArtifactPublisher>();
 builder.Services.AddSingleton(new NodeDbOptions
 {
     DataDirectory = nodeOptions.DataDirectory,
@@ -202,6 +206,36 @@ app.MapGet("/api/network/contact", (ILocalRelayContactProvider contactProvider) 
         return Results.Problem(ex.Message, statusCode: StatusCodes.Status503ServiceUnavailable);
     }
 });
+
+app.MapGet("/api/network/membership-route-catalog", async (
+    MembershipRouteArtifactPublisher publisher,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var artifact = await publisher.ReadAsync(cancellationToken);
+        return artifact is null
+            ? Results.Problem(
+                "No quorum-signed membership route artifact is configured.",
+                statusCode: StatusCodes.Status503ServiceUnavailable)
+            : Results.File(
+                artifact,
+                "application/vnd.deep.membership-route-catalog",
+                enableRangeProcessing: false);
+    }
+    catch (InvalidDataException)
+    {
+        return Results.Problem(
+            "The configured membership route artifact is invalid.",
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+    catch (InvalidOperationException)
+    {
+        return Results.Problem(
+            "Membership route artifact publication is misconfigured.",
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+}).RequireRateLimiting("peer-onion");
 
 app.MapPost("/api/staking/quorum/sign", async (
     QuorumSignatureRequest request,

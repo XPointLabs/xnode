@@ -15,6 +15,17 @@ The registry payload advertises the transport parameters clients need:
 
 Clients should consume `/api/bootstrap/client` or the registry record instead of asking operators to type VLESS settings manually.
 
+## Quorum-signed membership artifact
+
+`GET /api/network/membership-route-catalog` publishes a prebuilt artifact as opaque bytes. Set
+`MembershipArtifact__ArtifactPath` only to an artifact produced by the external membership signer
+pipeline. XNode does not sign, parse, edit, or synthesize it. If the setting is empty, the file is
+missing, or its bounded read fails, the endpoint returns `503`.
+
+For local Docker development only, mount a deterministic fixture read-only and point
+`MembershipArtifact__ArtifactPath` at that mount. Never put an online/offline signer private key,
+seed, or mnemonic in XNode configuration.
+
 ## Install
 
 1. Publish the service for Linux:
