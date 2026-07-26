@@ -1,12 +1,14 @@
-﻿using XNode;
-using XNode.Core;
-using XNode.Core.Onion;
-using XNode.Core.Mailbox;
 using System.Text.Json;
 using System.Threading.RateLimiting;
+using Deep.Protocol.DeepExtension.MailboxCapabilities;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.RateLimiting;
+using XNode;
+using XNode.Core;
+using XNode.Core.Mailbox;
+using XNode.Core.Mailbox.Client;
 using XNode.Core.NodeDb;
+using XNode.Core.Onion;
 using XNode.Core.Paths;
 using XNode.Core.Runtime;
 using XNode.Core.Session;
@@ -74,6 +76,20 @@ builder.Services.AddSingleton(membershipArtifactOptions);
 builder.Services.AddSingleton(mailboxOptions);
 builder.Services.AddSingleton(mailboxClientActivationOptions);
 builder.Services.AddSingleton(mailboxClientActivationStatus);
+// P03B2 is registered only as a dormant internal dependency. No client/peer route resolves it,
+// and the reject-all authority/revocation ports keep it not-ready until external trust exists.
+builder.Services.AddSingleton<
+    IMailboxCapabilityAuthoritySource,
+    RejectAllMailboxCapabilityAuthoritySource>();
+builder.Services.AddSingleton<
+    IMailboxCapabilityRevocationPolicy,
+    RejectAllMailboxCapabilityRevocationPolicy>();
+builder.Services.AddSingleton<
+    IMailboxAuthenticatedCapabilityCrypto,
+    SodiumMailboxCapabilityCrypto>();
+builder.Services.AddSingleton(provider => new DurableMailboxCapabilityReplayJournal(
+    nodeOptions.DataDirectory));
+builder.Services.AddSingleton<MailboxAuthenticatedCapabilityRuntime>();
 builder.Services.AddSingleton<MembershipRouteArtifactPublisher>();
 builder.Services.AddSingleton(new NodeDbOptions
 {

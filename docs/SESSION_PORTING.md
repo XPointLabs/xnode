@@ -88,11 +88,20 @@ For each ported behavior:
 
 ## Client Mailbox Adapter V1 (Dormant)
 
-- The first client-facing adapter slice consumes only the pinned corrected
-  `Deep.Protocol 0.3.0-p09c2.f1a93c9` closure. The superseded
-  `0.3.0-p09c.451f3dc` package is forbidden.
+- The runtime consumes only the four-package P03B2 closure
+  `Deep.Protocol`, `Deep.Protocol.Abstractions`, `Deep.Protocol.MembershipRoutes` and
+  `Deep.Protocol.Protobuf` at `0.3.0-p03b2.a34e726`, produced from exact source commit
+  `a34e726bd60d762ac9f76c2ebf5456b266d8186e`.
+- Strict `MAU2` decoding plus Ed25519 `MCG2`/`MCP2` verification is registered only as a dormant
+  internal dependency. Issuer lifecycle/generation authority and revocation policy are injected
+  trust boundaries and default to fail-closed. No attacker-supplied grant becomes authority.
+- The protocol replay state machine is backed by an exclusive, durable atomic journal below
+  `Node.DataDirectory`. Exact completed retries return the cached canonical outcome; exact
+  pending retries remain in-flight; conflicts, stale counters and a higher counter blocked by a
+  pending predecessor fail closed. Crash recovery must explicitly complete the exact pending
+  claim.
 - The adapter has no HTTP route and remains unreachable in the runtime composition. Its default
-  capability verifier and replica fanout dependencies fail closed.
+  issuer/revocation authority and replica fanout dependencies fail closed.
 - The store boundary accepts only a canonical `MST1` frame and persists the complete canonical
   `MEO1` bytes as the opaque payload in the existing crash-safe replica store.
 - A capability verifier must atomically and durably enforce replay and attest the exact
@@ -154,11 +163,13 @@ For each ported behavior:
 - Ledger schema v3 adds canonical blob, placement and membership bindings plus ACK journals.
   Schema v2 is rejected fail-closed rather than migrated because it cannot prove those bindings.
   `maxOperationEntries` charges stores, ACK operations and every ACK item.
-- Real capability-verifier composition, native store/tombstone peer transport, and a reviewed
-  public ACK response contract remain mandatory before exposing any client mailbox route.
+- Production issuer/revocation/key distribution, membership-bound placement, native
+  store/tombstone peer transport, and a reviewed public ingress/ACK response contract remain
+  mandatory before exposing any client mailbox route.
 - Runtime activation preflight is recorded in
   `docs/adr/0006-mailbox-client-activation-blocker.md`. `MailboxClient:Enabled=true` now fails host
-  construction; configuration cannot substitute for the missing reviewed A-E contracts.
+  construction; configuration cannot substitute for the missing reviewed runtime authorities
+  and B-E contracts.
 
 ## Stop-The-Line Conditions
 

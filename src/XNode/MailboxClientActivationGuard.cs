@@ -15,7 +15,14 @@ public sealed record MailboxClientActivationStatus(
     string Store,
     string Retrieve,
     string Acknowledge,
-    string Reason);
+    string Reason)
+{
+    public bool StrictMau2DecoderRegistered { get; init; }
+    public bool Ed25519CapabilityVerifierRegistered { get; init; }
+    public bool DurableReplayJournalRegistered { get; init; }
+    public string IssuerAuthority { get; init; } = "unconfigured";
+    public string RevocationPolicy { get; init; } = "unconfigured";
+}
 
 public static class MailboxClientActivationGuard
 {
@@ -28,7 +35,7 @@ public static class MailboxClientActivationGuard
         if (options.Enabled)
         {
             throw new InvalidOperationException(
-                "MailboxClient activation is blocked until the reviewed A-E protocol " +
+                "MailboxClient activation is blocked until the remaining B-E runtime " +
                 "contracts in ADR 0006 are pinned and implemented.");
         }
 
@@ -36,12 +43,19 @@ public static class MailboxClientActivationGuard
             Enabled: false,
             ClientRoutesMapped: false,
             LegacyV1TranslationEnabled: false,
-            CapabilityVerifier: "reject-all",
+            CapabilityVerifier: "p03b2-internal-not-ready",
             StoreFanout: "disabled",
             TombstoneFanout: "disabled",
             Store: "not-ready",
             Retrieve: "not-ready",
             Acknowledge: "not-ready",
-            Reason: BlockedReason);
+            Reason: BlockedReason)
+        {
+            StrictMau2DecoderRegistered = true,
+            Ed25519CapabilityVerifierRegistered = true,
+            DurableReplayJournalRegistered = true,
+            IssuerAuthority = "unconfigured",
+            RevocationPolicy = "reject-all"
+        };
     }
 }

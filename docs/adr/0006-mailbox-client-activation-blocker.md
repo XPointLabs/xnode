@@ -11,9 +11,10 @@ replica protocol to `MRR2`, or accept configuration as activation authority.
 `MailboxClient:Enabled` is explicitly `false`. Any configuration provider, including environment
 variables or command-line configuration, that sets it to `true` stops host construction with a
 fail-closed error. `/status` and `/health/ready` expose only non-sensitive dormant readiness:
-Store, Retrieve and Acknowledge are each `not-ready`; the verifier is `reject-all`; store and
-tombstone fanouts are `disabled`. Because the feature is unavailable, its not-ready state does
-not make the otherwise healthy legacy router unready.
+Store, Retrieve and Acknowledge are each `not-ready`; strict MAU2 and Ed25519 verification plus
+the durable replay journal are registered internally, while issuer authority is `unconfigured`,
+revocation is `reject-all`, and store/tombstone fanouts are `disabled`. Because the feature is
+unavailable, its not-ready state does not make the otherwise healthy legacy router unready.
 
 The only mapped mailbox HTTP route remains `/api/peer/mailbox/replica` on the peer listener. It is
 the existing authenticated legacy JSON store primitive and is not a client route or a canonical
@@ -21,15 +22,15 @@ V2 fanout.
 
 ## Evidence for the blocker
 
-- P03B `MCP1` validates canonical structure, domain, lifecycle, time and replay-decision shape.
-  Its domain bytes and optional admission authorization are opaque caller input. The contract
-  explicitly provides no producer, derivation, authentication, key lifecycle or production
-  replay implementation. A node therefore cannot distinguish an issued capability from
-  attacker-chosen well-formed bytes.
+- P03B2 now freezes Ed25519 issuer-signed MCG2 grants, holder-signed MCP2 presentations, strict
+  MAU2 typed request binding and an atomic replay state machine. XNode vendors that exact closure,
+  verifies the signatures through the protocol codec and durably implements the replay port.
+  It still has no production issuer/key distribution, rotation/LKG or revocation source; the
+  injected defaults therefore reject every grant.
 - `deep-client-shared` exposes `IOpaqueMailboxCapabilityProvider` as a production trust boundary
   but ships no production implementation.
-- P09C defines canonical `MEO1`/`MST1`/`MRT1`/`MRP1`/`MAK1` and native `MRR2`/`MQR2`, but no
-  networking, DI or aggregate ACK response frame.
+- P03B2 includes canonical client/peer frames and MAR1 aggregate ACK, but intentionally supplies
+  no networking, runtime ingress, key custody, membership catalog acquisition or activation.
 - XNode's P04 publisher returns an already-produced opaque artifact. XNode has no production P04
   verifier with durable last-known-good state and no commitment-bound deterministic
   placement-to-replica selector. `NodeDbMailboxPeerAuthorizer` proves only that a fresh,
@@ -44,17 +45,17 @@ V2 fanout.
 
 ## Required contracts before returning to XNode
 
-### A. Capability issuer and verifier
+### A. Capability issuer and verifier (contract/runtime adapter delivered; authority blocked)
 
-A reviewed producer/verifier contract must select a cryptographic construction and canonical
-transcript. Verification must bind the exact canonical `MCP1`, capability domain, outer operation
-type and ID, epoch, blinded mailbox ID, placement commitment, canonical request digest, issuer/key
-identifier, validity, lifecycle and revocation state. It must define deposit sharing without
-revealing retrieve or master material and must prohibit raw Session/user identifiers.
+P03B2 selects Ed25519 and binds the exact MCG2/MCP2/MAU2 transcript, operation, request digest,
+epoch, placement and membership commitments, issuer lifecycle/generation, validity, revocation
+query and replay counter. XNode supplies a strict decoder/verifier adapter and a durable atomic
+replay journal: exact completed retries return the cached canonical outcome; pending crash state
+requires explicit exact recovery; conflict and stale replay fail closed.
 
-The same contract must define a durable atomic replay/idempotency key, comparison statement,
-cached-outcome rules, CAS/crash semantics, retention and epoch rollover. Parsing `MCP1` is not
-authorization.
+The remaining blocker is the externally provisioned production authority: issuer key custody and
+distribution, rotation/LKG/equivocation policy, durable revocation input and client grant
+production. The runtime must not derive any of those from an untrusted grant.
 
 ### B. Membership and placement authority
 
@@ -94,17 +95,16 @@ client ACK, durable outbox and delivered state stated explicitly.
 
 ## Current dependency pins
 
-- XNode activation baseline:
-  `c7d7462cf99f95e72d04072539232883ccea0ec4`.
 - Runtime mailbox contract source:
-  `deep-protocol` `f1a93c9460fa92bb6a1f514bb5266e45ee9c6ff2`.
+  `deep-protocol` `a34e726bd60d762ac9f76c2ebf5456b266d8186e`.
 - Runtime package closure:
-  `Deep.Protocol`, `Deep.Protocol.Abstractions` and `Deep.Protocol.Protobuf`
-  `0.3.0-p09c2.f1a93c9`.
+  `Deep.Protocol`, `Deep.Protocol.Abstractions`, `Deep.Protocol.MembershipRoutes` and
+  `Deep.Protocol.Protobuf` `0.3.0-p03b2.a34e726`.
 - Package SHA-256:
-  `6fb5c0f5e05ed5ef78e962c7ed515dec2656dd50f5f201fd68ff1cf29821ca23`,
-  `b48cfe11bc1481b1f210c25a02aa6f96c50937d79165fe76889b6564d2a91804`,
-  `8f27c94281ad70edd70f9e6c1876a9b9ec37abdc180a92eb7ea9009098cb3668`.
+  `fb98b4d3d65949d7dbf7e420031d06dd2a84cb377235ae5f02f15e0c35ab033e`,
+  `8d2e17ed6c31144ed35e3ca0d3ad7a52ce90a0f5f4239a29213ebeca01c0613a`,
+  `f2bc7b6fd105a5d89f4cf29d07dfda2975db62274e5dfa0021f7c45f8ded5491`,
+  `59f844b747f82fec06e2ab84f89991ce42df52cdb110da04b58a185a218b845f`.
 - P14C3 remains isolated in `XNode.ProfileGenerator`:
   `Deep.Protocol.ProfileCarrier 0.2.0-p14.69a712a`, source
   `69a712a894b024a09859096025c2bb8fe68a642e`, package SHA-256
@@ -117,8 +117,8 @@ activation authority.
 
 ## Exit criteria
 
-Activation may be reconsidered only after contracts A-E and P10B are pinned, implemented and
-independently reviewed. The next XNode iteration must then add real implementations behind the
-existing interfaces, bounded client/peer ingress, per-operation health, failover and complete
+Activation may be reconsidered only after the production authorities remaining in A, contracts
+B-E and P10B are pinned, implemented and independently reviewed. A later XNode iteration must
+then add bounded client/peer ingress, per-operation health, failover and complete
 crash/restart/replay/equivocation/HTTP/mobile/Windows evidence while keeping the feature flag off
 until all gates pass.

@@ -19,13 +19,18 @@ public sealed class MailboxClientActivationGuardTests
         Assert.False(status.Enabled);
         Assert.False(status.ClientRoutesMapped);
         Assert.False(status.LegacyV1TranslationEnabled);
-        Assert.Equal("reject-all", status.CapabilityVerifier);
+        Assert.Equal("p03b2-internal-not-ready", status.CapabilityVerifier);
         Assert.Equal("disabled", status.StoreFanout);
         Assert.Equal("disabled", status.TombstoneFanout);
         Assert.Equal("not-ready", status.Store);
         Assert.Equal("not-ready", status.Retrieve);
         Assert.Equal("not-ready", status.Acknowledge);
         Assert.Equal(MailboxClientActivationGuard.BlockedReason, status.Reason);
+        Assert.True(status.StrictMau2DecoderRegistered);
+        Assert.True(status.Ed25519CapabilityVerifierRegistered);
+        Assert.True(status.DurableReplayJournalRegistered);
+        Assert.Equal("unconfigured", status.IssuerAuthority);
+        Assert.Equal("reject-all", status.RevocationPolicy);
 
         var verifier = new RejectAllMailboxClientCapabilityVerifier();
         Assert.False(verifier.IsConfigured);
@@ -91,6 +96,14 @@ public sealed class MailboxClientActivationGuardTests
             .GetBoolean());
         Assert.Contains(
             nameof(MailboxClientActivationGuard.EnsureDormant),
+            hostSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            nameof(MailboxAuthenticatedCapabilityRuntime),
+            hostSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            nameof(DurableMailboxCapabilityReplayJournal),
             hostSource,
             StringComparison.Ordinal);
     }

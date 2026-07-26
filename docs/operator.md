@@ -433,18 +433,29 @@ The activation decision and exact missing contracts are frozen in
 
 Setting it to `true` from JSON, environment variables or command-line configuration prevents host
 construction. `/status` and `/health/ready` report Store/Retrieve/Acknowledge as `not-ready`,
-with reject-all/disabled dependencies; no client mailbox route is mapped.
+with the internal P03B2 verifier present but issuer/revocation authority unconfigured and all
+fanouts disabled; no client mailbox route is mapped.
 
-Pinned offline package closure under `vendor/mailbox-client-package-corrected`:
+Pinned offline package closure under `vendor/mailbox-client-p03b2`, produced from
+`deep-protocol` commit `a34e726bd60d762ac9f76c2ebf5456b266d8186e`:
 
-- `Deep.Protocol.0.3.0-p09c2.f1a93c9.nupkg` —
-  `6fb5c0f5e05ed5ef78e962c7ed515dec2656dd50f5f201fd68ff1cf29821ca23`
-- `Deep.Protocol.Abstractions.0.3.0-p09c2.f1a93c9.nupkg` —
-  `b48cfe11bc1481b1f210c25a02aa6f96c50937d79165fe76889b6564d2a91804`
-- `Deep.Protocol.Protobuf.0.3.0-p09c2.f1a93c9.nupkg` —
-  `8f27c94281ad70edd70f9e6c1876a9b9ec37abdc180a92eb7ea9009098cb3668`
+- `Deep.Protocol.0.3.0-p03b2.a34e726.nupkg` —
+  `fb98b4d3d65949d7dbf7e420031d06dd2a84cb377235ae5f02f15e0c35ab033e`
+- `Deep.Protocol.Abstractions.0.3.0-p03b2.a34e726.nupkg` —
+  `8d2e17ed6c31144ed35e3ca0d3ad7a52ce90a0f5f4239a29213ebeca01c0613a`
+- `Deep.Protocol.MembershipRoutes.0.3.0-p03b2.a34e726.nupkg` —
+  `f2bc7b6fd105a5d89f4cf29d07dfda2975db62274e5dfa0021f7c45f8ded5491`
+- `Deep.Protocol.Protobuf.0.3.0-p03b2.a34e726.nupkg` —
+  `59f844b747f82fec06e2ab84f89991ce42df52cdb110da04b58a185a218b845f`
 
-The older `0.3.0-p09c.451f3dc` package must never be introduced into this repository.
 `eng/mailbox-client.NuGet.Config` maps `Deep.Protocol` and `Deep.Protocol.*` exclusively to this
 offline feed. Relevant projects restore in locked mode and commit `packages.lock.json` content
 hashes; nuget.org has no wildcard mapping capable of resolving a Deep protocol package.
+
+The dormant replay journal is stored below
+`<Node.DataDirectory>/mailbox-capability-replay-v2/replay.json`, which resolves to the existing
+`/state` volume in survival containers. It uses an exclusive process lease, same-directory
+write-through replacement and file/parent durability barriers. A crash after reservation leaves
+an explicit `Pending` record; it is never silently retried as new, and only recovery with the
+exact claim can complete it. Diagnostics expose counts only, never issuer, serial, operation,
+request or capability bytes.

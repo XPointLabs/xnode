@@ -26,23 +26,31 @@
       },
       "Deep.Protocol": {
         "type": "Transitive",
-        "resolved": "0.3.0-p09c2.f1a93c9",
-        "contentHash": "l4hjLbU50YI+gCtnLKh3cEax+J5rS5lbHwL/ko2DT5AuVS5YfoVFjabOyDav8LVX2YoXEv8E0qXul0O2HgmG4w==",
+        "resolved": "0.3.0-p03b2.a34e726",
+        "contentHash": "YlwA11Tf7FLoYoA5vKgzTMJKvuy+qRprJUBzNZ90WY8SSef7R/d1UpVbZxgoZfRLek+k484YCdRuhUZVezcliQ==",
         "dependencies": {
-          "Deep.Protocol.Abstractions": "0.3.0-p09c2.f1a93c9",
-          "Deep.Protocol.Protobuf": "0.3.0-p09c2.f1a93c9",
+          "Deep.Protocol.Abstractions": "0.3.0-p03b2.a34e726",
+          "Deep.Protocol.Protobuf": "0.3.0-p03b2.a34e726",
           "Sodium.Core": "1.4.1"
         }
       },
       "Deep.Protocol.Abstractions": {
         "type": "Transitive",
-        "resolved": "0.3.0-p09c2.f1a93c9",
-        "contentHash": "W/z1ijHo2Q7ISOAgh+majIKzehl4e+DTqJ2R+YAIQrRgXzgAWcVdj4aEAj2OZQNJqluk9vvG320psWvp08lW/g=="
+        "resolved": "0.3.0-p03b2.a34e726",
+        "contentHash": "cdEYe2SaB+LutOr+yL6yLYbgpL4xtapKi2oUbVqK/rQptnGK4EkY8NZpjBk7Y/B5a1bkbV/+XKucOdxIAEy9rg=="
+      },
+      "Deep.Protocol.MembershipRoutes": {
+        "type": "Transitive",
+        "resolved": "0.3.0-p03b2.a34e726",
+        "contentHash": "ClmDFkbe6KJBCtFHZPQoUHgu8bnVBDBPL3HWE7oHIIGIrLK5t4HBbjOKr0ePAYfNmGff8j5njk11SoFmae05qw==",
+        "dependencies": {
+          "Deep.Protocol": "0.3.0-p03b2.a34e726"
+        }
       },
       "Deep.Protocol.Protobuf": {
         "type": "Transitive",
-        "resolved": "0.3.0-p09c2.f1a93c9",
-        "contentHash": "tz4tXQpmniMaXKlaWFe7vkISwCxu64jJh6iZYZiCK0eKE41aNYZhxPoaHeAvAQRzFHI20RkAYetC3KkfTlVpIQ==",
+        "resolved": "0.3.0-p03b2.a34e726",
+        "contentHash": "xLJBbLcgy26xiZYVIA42zIcrypAne2cCKDgJDiRP6y7lyu3EIsGgdd+bcaGw9KvDcrSfPA515hyjvHX09vCC+A==",
         "dependencies": {
           "Google.Protobuf": "3.32.1"
         }
@@ -117,7 +125,8 @@
       "xnode.core": {
         "type": "Project",
         "dependencies": {
-          "Deep.Protocol": "[0.3.0-p09c2.f1a93c9, 0.3.0-p09c2.f1a93c9]",
+          "Deep.Protocol": "[0.3.0-p03b2.a34e726, 0.3.0-p03b2.a34e726]",
+          "Deep.Protocol.MembershipRoutes": "[0.3.0-p03b2.a34e726, 0.3.0-p03b2.a34e726]",
           "Microsoft.Extensions.Logging.Abstractions": "[8.0.0, )",
           "Rebex.Elliptic.Ed25519": "[1.2.2, )",
           "Sodium.Core": "[1.4.1, )"
