@@ -7,9 +7,11 @@
 
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
+    <RestoreAdditionalProjectSources>$(MSBuildThisFileDirectory)..\..\vendor\mailbox-client-package-corrected;$(RestoreAdditionalProjectSources)</RestoreAdditionalProjectSources>
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Deep.Protocol" Version="[0.3.0-p09c2.f1a93c9]" />
     <PackageReference Include="coverlet.collector" Version="6.0.4" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="xunit" Version="2.9.3" />

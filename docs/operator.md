@@ -351,3 +351,31 @@ Operational bounds:
 - file data and metadata are flushed before a receipt; parent directories are fsynced where the
   host filesystem supports it;
 - peer timeouts and invalid node receipts fail closed and do not count toward write quorum.
+
+### Dormant canonical client adapter
+
+The source tree contains a deliberately uncomposed store-only adapter for the canonical
+`MST1`/`MEO1` contract. It is not mapped to HTTP and therefore cannot be enabled by configuration
+alone. This is intentional: production composition requires both a reviewed
+`IMailboxClientCapabilityVerifier` and a native `MRR2` peer fanout implementation.
+
+The adapter reports separate states for disabled, missing verifier and missing fanout. When used
+in a test composition it reserves the operation/request binding and monotonic cursor durably
+before fanout, persists the full opaque `MEO1`, verifies two distinct context-bound `MRR2`
+receipts, and returns a canonical `MQR2`. Exact completed retries are served from the durable
+ledger. Conflicting operation-id reuse is rejected.
+
+Do not expose a store endpoint until the remaining retrieve/ack slice is complete. In particular,
+servers must return cursor-bound `MRP1`, persist `MAK1` tombstones, and must never infer or record
+the client-side `Delivered` state.
+
+Pinned offline package closure under `vendor/mailbox-client-package-corrected`:
+
+- `Deep.Protocol.0.3.0-p09c2.f1a93c9.nupkg` —
+  `6fb5c0f5e05ed5ef78e962c7ed515dec2656dd50f5f201fd68ff1cf29821ca23`
+- `Deep.Protocol.Abstractions.0.3.0-p09c2.f1a93c9.nupkg` —
+  `b48cfe11bc1481b1f210c25a02aa6f96c50937d79165fe76889b6564d2a91804`
+- `Deep.Protocol.Protobuf.0.3.0-p09c2.f1a93c9.nupkg` —
+  `8f27c94281ad70edd70f9e6c1876a9b9ec37abdc180a92eb7ea9009098cb3668`
+
+The older `0.3.0-p09c.451f3dc` package must never be introduced into this repository.

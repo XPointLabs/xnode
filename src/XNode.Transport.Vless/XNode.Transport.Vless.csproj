@@ -10,6 +10,7 @@
   </ItemGroup>
 
   <PropertyGroup>
+    <RestoreAdditionalProjectSources>$(MSBuildThisFileDirectory)..\..\vendor\mailbox-client-package-corrected;$(RestoreAdditionalProjectSources)</RestoreAdditionalProjectSources>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>

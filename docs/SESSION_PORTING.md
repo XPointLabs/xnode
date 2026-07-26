@@ -86,6 +86,29 @@ For each ported behavior:
   blinded mailbox-id derivation, placement and authenticated retrieval contract exists is not a
   production activation.
 
+## Client Mailbox Adapter V1 (Dormant, Store Slice)
+
+- The first client-facing adapter slice consumes only the pinned corrected
+  `Deep.Protocol 0.3.0-p09c2.f1a93c9` closure. The superseded
+  `0.3.0-p09c.451f3dc` package is forbidden.
+- The adapter has no HTTP route and remains unreachable in the runtime composition. Its default
+  capability verifier and replica fanout dependencies fail closed.
+- The store boundary accepts only a canonical `MST1` frame and persists the complete canonical
+  `MEO1` bytes as the opaque payload in the existing crash-safe replica store.
+- A capability verifier must independently return the exact epoch, blinded mailbox id,
+  SHA-256 placement commitment and allowed operation. The adapter compares every field in
+  constant time where applicable. Merely parsing an opaque capability is never authorization.
+- Operation id, request digest and a strictly increasing mailbox cursor are durably reserved
+  before any local store or replica fanout. Exact completed retries return the persisted `MQR2`;
+  a conflicting request under the same operation id fails closed.
+- Replica responses count only after native `MRR2` signature and complete context verification.
+  The coordinator emits native `MQR2` binding operation, epoch, cursor, blinded mailbox,
+  placement, membership, envelope digest and expiry.
+- No node seed, retrieve capability, master secret, account identifier or plaintext is persisted
+  in the adapter ledger or returned by its contracts.
+- `MRT1`/`MRP1`, `MAK1` durable tombstones, real capability-verifier composition and native
+  peer-fanout transport remain mandatory before exposing any client mailbox route.
+
 ## Stop-The-Line Conditions
 
 - A release build or rehearsal can pass with mocked transport.
