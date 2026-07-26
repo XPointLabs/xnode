@@ -489,10 +489,15 @@ public sealed class RouterRuntime : IRouterRuntime
         {
             layer = OnionCrypto.DecryptForNode(onionRequest.Envelope, GetOnionKeys().PrivateKey);
         }
-        catch (Exception e) when (e is FormatException or ArgumentException or InvalidOperationException)
+        catch (Exception e) when (e is
+            FormatException or
+            ArgumentException or
+            InvalidOperationException or
+            CryptographicException or
+            JsonException)
         {
             Interlocked.Increment(ref _rpcFailures);
-            return SessionRpcResponse.Fail(request.Id, $"onion-decrypt-failed:{e.Message}");
+            return SessionRpcResponse.Fail(request.Id, "onion-decrypt-failed");
         }
 
         if (GetJsonByteCount(layer) > _runtimeOptions.MaxOnionLayerBytes)

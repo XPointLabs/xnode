@@ -1,5 +1,12 @@
 ﻿using System.Text.Json;
 using XNode.Core;
+using System.Net;
+using System.Net.Http.Json;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 using XNode.Core.NodeDb;
 using XNode.Core.Onion;
 using XNode.Core.Paths;
@@ -422,6 +429,217 @@ public sealed class RouterRuntimeIntegrationTests
             {
                 Directory.Delete(root, recursive: true);
             }
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Runtime_OnionAuthenticationFailure_IsCanonicalAndDoesNotStopRuntime(
+        bool encryptForWrongKey)
+    {
+        var root = NewTempDirectory();
+        RouterRuntime? runtime = null;
+        try
+        {
+            var node = NodeOptions(root);
+            runtime = CreateRuntime(
+                root,
+                node,
+                new FakeStorageBackend(),
+                new RouterRuntimeOptions
+                {
+                    BootstrapFromStorage = false,
+                    RequireSignedRelayContacts = false
+                });
+            await runtime.StartAsync(CancellationToken.None);
+
+            var recipient = encryptForWrongKey
+                ? PublicKeyBox.GenerateKeyPair().PublicKey
+                : OnionCrypto.DeriveNodeKeysFromEd25519Seed(node.GetEd25519PrivateKey()).PublicKey;
+            var envelope = OnionCrypto.EncryptForNode(
+                recipient,
+                new OnionLayer("unsupported", null, null, null, null, null, null));
+            if (!encryptForWrongKey)
+            {
+                var ciphertext = Convert.FromBase64String(envelope.Ciphertext);
+                ciphertext[^1] ^= 0x01;
+                envelope = envelope with { Ciphertext = Convert.ToBase64String(ciphertext) };
+            }
+
+            var beforeFailures = runtime.Status.Metrics.RpcFailures;
+            var request = new SessionRpcRequest(
+                encryptForWrongKey ? "wrong-key" : "tampered",
+                "onion_request",
+                JsonSerializer.SerializeToElement(new OnionRequest(envelope), SessionRpc.JsonOptions),
+                new string('a', 64));
+            var response = await runtime.HandleRpcAsync(request, CancellationToken.None);
+
+            Assert.False(response.Success);
+            Assert.Null(response.Result);
+            Assert.Equal("onion-decrypt-failed", response.Error);
+            Assert.DoesNotContain("CryptographicException", response.Error, StringComparison.Ordinal);
+            Assert.DoesNotContain("PublicKeyBox", response.Error, StringComparison.Ordinal);
+            Assert.Equal(beforeFailures + 1, runtime.Status.Metrics.RpcFailures);
+            Assert.True(SessionRpcResponseAuthenticator.Verify(request, response, TestData.Now));
+
+            var ping = await runtime.HandleRpcAsync(
+                new SessionRpcRequest(
+                    "healthy-after-invalid-onion",
+                    "path_ping",
+                    JsonSerializer.SerializeToElement(new { }, SessionRpc.JsonOptions)),
+                CancellationToken.None);
+            Assert.True(ping.Success);
+            Assert.Equal("running", runtime.Status.State);
+        }
+        finally
+        {
+            if (runtime is not null)
+            {
+                await runtime.StopAsync(CancellationToken.None);
+            }
+
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Runtime_MalformedOnionEnvelope_UsesSameCanonicalFailure()
+    {
+        var root = NewTempDirectory();
+        RouterRuntime? runtime = null;
+        try
+        {
+            var node = NodeOptions(root);
+            runtime = CreateRuntime(
+                root,
+                node,
+                new FakeStorageBackend(),
+                new RouterRuntimeOptions
+                {
+                    BootstrapFromStorage = false,
+                    RequireSignedRelayContacts = false
+                });
+            await runtime.StartAsync(CancellationToken.None);
+
+            const string malformedSecret = "not-base64-secret-sentinel";
+            var request = new SessionRpcRequest(
+                "malformed",
+                "onion_request",
+                JsonSerializer.SerializeToElement(
+                    new OnionRequest(new OnionEnvelope(
+                        OnionCrypto.EnvelopeVersion,
+                        malformedSecret,
+                        malformedSecret,
+                        malformedSecret)),
+                    SessionRpc.JsonOptions));
+            var response = await runtime.HandleRpcAsync(request, CancellationToken.None);
+
+            Assert.False(response.Success);
+            Assert.Equal("onion-decrypt-failed", response.Error);
+            Assert.DoesNotContain(malformedSecret, response.Error, StringComparison.Ordinal);
+            Assert.Equal(1, runtime.Status.Metrics.RpcFailures);
+        }
+        finally
+        {
+            if (runtime is not null)
+            {
+                await runtime.StopAsync(CancellationToken.None);
+            }
+
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task HttpSessionRpc_OnionAuthenticationFailure_ReturnsBoundedJsonWithoutDiagnosticLeak(
+        bool encryptForWrongKey)
+    {
+        var root = NewTempDirectory();
+        RouterRuntime? runtime = null;
+        try
+        {
+            var node = NodeOptions(root);
+            runtime = CreateRuntime(
+                root,
+                node,
+                new FakeStorageBackend(),
+                new RouterRuntimeOptions
+                {
+                    BootstrapFromStorage = false,
+                    RequireSignedRelayContacts = false
+                });
+            await runtime.StartAsync(CancellationToken.None);
+
+            var recipient = encryptForWrongKey
+                ? PublicKeyBox.GenerateKeyPair().PublicKey
+                : OnionCrypto.DeriveNodeKeysFromEd25519Seed(node.GetEd25519PrivateKey()).PublicKey;
+            var envelope = OnionCrypto.EncryptForNode(
+                recipient,
+                new OnionLayer("unsupported", null, null, null, null, null, null));
+            if (!encryptForWrongKey)
+            {
+                var ciphertext = Convert.FromBase64String(envelope.Ciphertext);
+                ciphertext[^1] ^= 0x01;
+                envelope = envelope with { Ciphertext = Convert.ToBase64String(ciphertext) };
+            }
+
+            var request = new SessionRpcRequest(
+                encryptForWrongKey ? "http-wrong-key" : "http-tampered",
+                "onion_request",
+                JsonSerializer.SerializeToElement(new OnionRequest(envelope), SessionRpc.JsonOptions),
+                new string('b', 64));
+
+            using var factory = new RuntimeWebApplicationFactory(runtime);
+            using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+            {
+                AllowAutoRedirect = false
+            });
+            using var response = await client.PostAsJsonAsync(
+                "/api/session/rpc",
+                request,
+                SessionRpc.JsonOptions);
+            var body = await response.Content.ReadAsStringAsync();
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
+            Assert.InRange(body.Length, 1, 4096);
+            var rpc = JsonSerializer.Deserialize<SessionRpcResponse>(body, SessionRpc.JsonOptions);
+            Assert.NotNull(rpc);
+            Assert.Equal(request.Id, rpc.Id);
+            Assert.False(rpc.Success);
+            Assert.Null(rpc.Result);
+            Assert.Equal("onion-decrypt-failed", rpc.Error);
+            Assert.DoesNotContain("CryptographicException", body, StringComparison.Ordinal);
+            Assert.DoesNotContain("PublicKeyBox", body, StringComparison.Ordinal);
+            Assert.DoesNotContain("RouterRuntime", body, StringComparison.Ordinal);
+            Assert.DoesNotContain(envelope.Ciphertext, body, StringComparison.Ordinal);
+            Assert.DoesNotContain(envelope.EphemeralPublicKey, body, StringComparison.Ordinal);
+
+            using var healthyResponse = await client.PostAsJsonAsync(
+                "/api/session/rpc",
+                new SessionRpcRequest(
+                    "http-healthy-after-invalid-onion",
+                    "path_ping",
+                    JsonSerializer.SerializeToElement(new { }, SessionRpc.JsonOptions)),
+                SessionRpc.JsonOptions);
+            var healthy = await healthyResponse.Content.ReadFromJsonAsync<SessionRpcResponse>(
+                SessionRpc.JsonOptions);
+            Assert.Equal(HttpStatusCode.OK, healthyResponse.StatusCode);
+            Assert.NotNull(healthy);
+            Assert.True(healthy.Success);
+            Assert.Equal("running", runtime.Status.State);
+        }
+        finally
+        {
+            if (runtime is not null)
+            {
+                await runtime.StopAsync(CancellationToken.None);
+            }
+
+            Directory.Delete(root, recursive: true);
         }
     }
 
@@ -906,6 +1124,21 @@ public sealed class RouterRuntimeIntegrationTests
                     "onion_request",
                     JsonSerializer.SerializeToElement(request, SessionRpc.JsonOptions)),
                 cancellationToken);
+        }
+    }
+
+    private sealed class RuntimeWebApplicationFactory(IRouterRuntime runtime)
+        : WebApplicationFactory<Program>
+    {
+        protected override void ConfigureWebHost(IWebHostBuilder builder)
+        {
+            builder.UseEnvironment("Development");
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IHostedService>();
+                services.RemoveAll<IRouterRuntime>();
+                services.AddSingleton(runtime);
+            });
         }
     }
 
