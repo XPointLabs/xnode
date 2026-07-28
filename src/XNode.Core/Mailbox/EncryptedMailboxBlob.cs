@@ -15,7 +15,8 @@ public static class EncryptedMailboxBlobValidator
         DateTimeOffset now,
         ReplicatedMailboxOptions options,
         out byte[] ciphertext,
-        out string error)
+        out string error,
+        TimeSpan? minimumTtlOverride = null)
     {
         ciphertext = [];
         error = "invalid-mailbox-blob";
@@ -54,7 +55,8 @@ public static class EncryptedMailboxBlobValidator
             return false;
         }
 
-        if (ttl < options.MinimumTtl || ttl > options.MaximumTtl)
+        if (ttl < (minimumTtlOverride ?? options.MinimumTtl)
+            || ttl > options.MaximumTtl)
         {
             ciphertext = [];
             error = "mailbox-blob-ttl-rejected";

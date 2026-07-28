@@ -22,11 +22,16 @@ public sealed record MailboxClientActivationStatus(
     public bool DurableReplayJournalRegistered { get; init; }
     public string IssuerAuthority { get; init; } = "unconfigured";
     public string RevocationPolicy { get; init; } = "unconfigured";
+    public bool PeerRuntimeReady { get; init; }
+    public string PeerWire { get; init; } = "unconfigured";
+    public string PlacementAuthority { get; init; } = "dormant";
+    public string ClientIngress { get; init; } = "dormant";
 }
 
 public static class MailboxClientActivationGuard
 {
-    public const string BlockedReason = "mailbox-client-protocol-contracts-unavailable";
+    public const string BlockedReason =
+        "peer-runtime-ready-client-authorities-and-ingress-dormant";
 
     public static MailboxClientActivationStatus EnsureDormant(
         MailboxClientActivationOptions options)
@@ -35,15 +40,15 @@ public static class MailboxClientActivationGuard
         if (options.Enabled)
         {
             throw new InvalidOperationException(
-                "MailboxClient activation is blocked until the remaining B-E runtime " +
-                "contracts in ADR 0006 are pinned and implemented.");
+                "MailboxClient activation requires reviewed issuer, placement and revocation " +
+                "authorities plus the public client ingress contract; all remain reject-all.");
         }
 
         return new(
             Enabled: false,
             ClientRoutesMapped: false,
             LegacyV1TranslationEnabled: false,
-            CapabilityVerifier: "p03b2-internal-not-ready",
+            CapabilityVerifier: "p10b3-internal-reject-all",
             StoreFanout: "disabled",
             TombstoneFanout: "disabled",
             Store: "not-ready",
@@ -54,8 +59,12 @@ public static class MailboxClientActivationGuard
             StrictMau2DecoderRegistered = true,
             Ed25519CapabilityVerifierRegistered = true,
             DurableReplayJournalRegistered = true,
-            IssuerAuthority = "unconfigured",
-            RevocationPolicy = "reject-all"
+            IssuerAuthority = "dormant-reject-all",
+            RevocationPolicy = "dormant-reject-all",
+            PeerRuntimeReady = true,
+            PeerWire = "prq2-mrr2-mqr3",
+            PlacementAuthority = "client-dormant-reject-all",
+            ClientIngress = "dormant-unmapped"
         };
     }
 }

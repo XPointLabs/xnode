@@ -19,7 +19,7 @@ public sealed class MailboxClientActivationGuardTests
         Assert.False(status.Enabled);
         Assert.False(status.ClientRoutesMapped);
         Assert.False(status.LegacyV1TranslationEnabled);
-        Assert.Equal("p03b2-internal-not-ready", status.CapabilityVerifier);
+        Assert.Equal("p10b3-internal-reject-all", status.CapabilityVerifier);
         Assert.Equal("disabled", status.StoreFanout);
         Assert.Equal("disabled", status.TombstoneFanout);
         Assert.Equal("not-ready", status.Store);
@@ -29,8 +29,12 @@ public sealed class MailboxClientActivationGuardTests
         Assert.True(status.StrictMau2DecoderRegistered);
         Assert.True(status.Ed25519CapabilityVerifierRegistered);
         Assert.True(status.DurableReplayJournalRegistered);
-        Assert.Equal("unconfigured", status.IssuerAuthority);
-        Assert.Equal("reject-all", status.RevocationPolicy);
+        Assert.Equal("dormant-reject-all", status.IssuerAuthority);
+        Assert.Equal("dormant-reject-all", status.RevocationPolicy);
+        Assert.True(status.PeerRuntimeReady);
+        Assert.Equal("prq2-mrr2-mqr3", status.PeerWire);
+        Assert.Equal("client-dormant-reject-all", status.PlacementAuthority);
+        Assert.Equal("dormant-unmapped", status.ClientIngress);
 
         var verifier = new RejectAllMailboxClientCapabilityVerifier();
         Assert.False(verifier.IsConfigured);
@@ -66,7 +70,7 @@ public sealed class MailboxClientActivationGuardTests
     }
 
     [Fact]
-    public void ProgramMapsOnlyLegacyPeerMailboxRouteAndCannotComposeClientAdapter()
+    public void ProgramMapsOnlyCanonicalPeerMailboxRoutesAndCannotComposeClientAdapter()
     {
         var root = FindRepositoryRoot();
         var hostDirectory = Path.Combine(root, "src", "XNode");
@@ -75,14 +79,22 @@ public sealed class MailboxClientActivationGuardTests
             Directory.GetFiles(hostDirectory, "*.cs", SearchOption.AllDirectories)
                 .Order(StringComparer.Ordinal)
                 .Select(File.ReadAllText));
-        var mailboxRoutes = Regex.Matches(
-                hostSource,
-                "Map(?:Get|Post|Put|Delete)\\(\"([^\"]*mailbox[^\"]*)\"",
-                RegexOptions.CultureInvariant)
-            .Select(static match => match.Groups[1].Value)
-            .ToArray();
-
-        Assert.Equal(["/api/peer/mailbox/replica"], mailboxRoutes);
+        Assert.DoesNotContain(
+            "/api/peer/mailbox/replica",
+            hostSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            nameof(MailboxWireHttpContract.PeerStoreRoute),
+            hostSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            nameof(MailboxWireHttpContract.PeerTombstoneRoute),
+            hostSource,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "SignedMailboxReplicaRequest",
+            hostSource,
+            StringComparison.Ordinal);
         Assert.DoesNotContain(
             nameof(MailboxClientStoreAdapter),
             hostSource,
@@ -106,10 +118,14 @@ public sealed class MailboxClientActivationGuardTests
             nameof(DurableMailboxCapabilityReplayJournal),
             hostSource,
             StringComparison.Ordinal);
+        Assert.Contains(
+            "onionPeerReplay = \"volatile-explicit-debt\"",
+            hostSource,
+            StringComparison.Ordinal);
     }
 
     [Fact]
-    public void LegacyJsonPeerClientIsNotACanonicalV2FanoutOrTombstoneTransport()
+    public void CanonicalPeerClientDoesNotActivateDormantPublicClientFanout()
     {
         var hostTypes = typeof(Program).Assembly.GetTypes()
             .Where(static type => type is { IsAbstract: false, IsInterface: false })

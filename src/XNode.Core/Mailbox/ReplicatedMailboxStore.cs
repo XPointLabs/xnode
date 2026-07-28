@@ -60,14 +60,29 @@ public sealed class ReplicatedMailboxStore
 
     public async Task<MailboxPutResult> PutAsync(
         EncryptedMailboxBlob blob,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        await PutAsync(blob, minimumTtlOverride: null, cancellationToken).ConfigureAwait(false);
+
+    public async Task<MailboxPutResult> PutPeerAsync(
+        EncryptedMailboxBlob blob,
+        CancellationToken cancellationToken = default) =>
+        await PutAsync(
+            blob,
+            TimeSpan.FromMilliseconds(1),
+            cancellationToken).ConfigureAwait(false);
+
+    private async Task<MailboxPutResult> PutAsync(
+        EncryptedMailboxBlob blob,
+        TimeSpan? minimumTtlOverride,
+        CancellationToken cancellationToken)
     {
         if (!EncryptedMailboxBlobValidator.TryValidate(
                 blob,
                 _clock.UtcNow,
                 _options,
                 out _,
-                out var validationError))
+                out var validationError,
+                minimumTtlOverride))
         {
             return new MailboxPutResult(MailboxPutDisposition.Rejected, validationError);
         }

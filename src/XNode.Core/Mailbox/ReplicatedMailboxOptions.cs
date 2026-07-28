@@ -16,57 +16,64 @@ public sealed class ReplicatedMailboxOptions
 
     public TimeSpan MaximumTtl { get; set; } = TimeSpan.FromDays(7);
 
-    public int ReplicationFactor { get; set; } = 3;
+    // P10B3 freezes exactly two selected replicas and a 2-of-2 durable quorum.
+    public int ReplicationFactor { get; set; } = 2;
 
     public int WriteQuorum { get; set; } = 2;
 
     public TimeSpan PeerTimeout { get; set; } = TimeSpan.FromSeconds(5);
 
-    public int MaxReplayEntriesPerPeer { get; set; } = 2048;
+    public string PeerReplayDirectoryName { get; set; } = "mailbox-peer-replay-v2";
 
-    public int MaxReplicaRequestsPerPeerPerMinute { get; set; } = 240;
+    public string PeerMutationDirectoryName { get; set; } = "mailbox-peer-mutations-v2";
 
-    public int MaxReplayPeerStates { get; set; } = 4096;
+    public int MaxPeerReplayRecords { get; set; } = 100_000;
 
-    public TimeSpan ReplayRetention { get; set; } = TimeSpan.FromMinutes(5);
+    public int MaxPeerReplayRecordsPerRouterPairEpoch { get; set; } = 20_000;
 
-    public TimeSpan ReplayReservationTimeout { get; set; } = TimeSpan.FromMinutes(2);
+    public int MaxPeerReplayGcBatch { get; set; } = 1024;
+
+    public int MaxPeerMutationRecords { get; set; } = 100_000;
 
     public bool AllowInsecureHttpPeerTransport { get; set; }
 
     public void Validate()
     {
-        if (string.IsNullOrWhiteSpace(DirectoryName)
-            || Path.IsPathRooted(DirectoryName)
-            || DirectoryName is "." or ".."
-            || DirectoryName.Contains('/')
-            || DirectoryName.Contains('\\')
-            || DirectoryName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
-        {
-            throw new InvalidOperationException("Mailbox:DirectoryName must be a relative directory name.");
-        }
-
-        if (MaxBlobBytes is < 1024 or > 1024 * 1024
+        if (!IsSafeDirectoryName(DirectoryName)
+            || !IsSafeDirectoryName(PeerReplayDirectoryName)
+            || !IsSafeDirectoryName(PeerMutationDirectoryName)
+            || string.Equals(DirectoryName, PeerReplayDirectoryName, StringComparison.Ordinal)
+            || string.Equals(DirectoryName, PeerMutationDirectoryName, StringComparison.Ordinal)
+            || string.Equals(
+                PeerReplayDirectoryName,
+                PeerMutationDirectoryName,
+                StringComparison.Ordinal)
+            || MaxBlobBytes is < 81920 or > 1024 * 1024
             || MaxStoredBlobs <= 0
             || MaxRecoveryScanFiles < MaxStoredBlobs
             || MaxRecoveryScanFiles > 2_000_000
             || MinimumTtl <= TimeSpan.Zero
             || MaximumTtl < MinimumTtl
-            || MaximumTtl > TimeSpan.FromDays(30)
-            || ReplicationFactor is < 1 or > 9
-            || WriteQuorum is < 1
-            || WriteQuorum > ReplicationFactor
+            || MaximumTtl > TimeSpan.FromDays(7)
+            || ReplicationFactor != 2
+            || WriteQuorum != 2
             || PeerTimeout <= TimeSpan.Zero
             || PeerTimeout > TimeSpan.FromMinutes(1)
-            || MaxReplayEntriesPerPeer is < 1 or > 100_000
-            || MaxReplicaRequestsPerPeerPerMinute is < 1 or > 100_000
-            || MaxReplayPeerStates is < 1 or > 100_000
-            || ReplayRetention < TimeSpan.FromMinutes(1)
-            || ReplayRetention > TimeSpan.FromHours(1)
-            || ReplayReservationTimeout < PeerTimeout
-            || ReplayReservationTimeout > ReplayRetention)
+            || MaxPeerReplayRecords is < 1 or > 1_000_000
+            || MaxPeerReplayRecordsPerRouterPairEpoch is < 1 or > 1_000_000
+            || MaxPeerReplayRecordsPerRouterPairEpoch > MaxPeerReplayRecords
+            || MaxPeerReplayGcBatch is < 1 or > 1024
+            || MaxPeerMutationRecords is < 1 or > 1_000_000)
         {
             throw new InvalidOperationException("Replicated mailbox limits are invalid.");
         }
     }
+
+    private static bool IsSafeDirectoryName(string? value) =>
+        !string.IsNullOrWhiteSpace(value)
+        && !Path.IsPathRooted(value)
+        && value is not ("." or "..")
+        && !value.Contains('/')
+        && !value.Contains('\\')
+        && value.IndexOfAny(Path.GetInvalidFileNameChars()) < 0;
 }

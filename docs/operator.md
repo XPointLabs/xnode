@@ -299,11 +299,10 @@ Known bottlenecks and remediation plan are emitted in C3 artifacts:
   - add supervisor restart jitter to reduce synchronized storms
   - enforce ingress concurrency budget/backpressure at saturation
 
-## Replicated Encrypted Mailbox (Dormant)
+## Canonical P10C peer mailbox runtime
 
-The internal XNode-to-XNode replication endpoint is disabled by default. Do not enable it in
-production until client AEAD, rotating/blinded mailbox identifiers, membership-based placement
-and authenticated retrieval have a reviewed cross-repository contract.
+The XNode peer listener implements the P10B3 binary wire only. It is disabled by default and
+must not be confused with public client-mailbox activation.
 
 ```json
 {
@@ -315,42 +314,68 @@ and authenticated retrieval have a reviewed cross-repository contract.
     "maxRecoveryScanFiles": 200000,
     "minimumTtl": "00:01:00",
     "maximumTtl": "7.00:00:00",
-    "replicationFactor": 3,
+    "replicationFactor": 2,
     "writeQuorum": 2,
     "peerTimeout": "00:00:05",
-    "maxReplayEntriesPerPeer": 2048,
-    "maxReplicaRequestsPerPeerPerMinute": 240,
-    "maxReplayPeerStates": 4096,
-    "replayRetention": "00:05:00",
-    "replayReservationTimeout": "00:02:00",
+    "peerReplayDirectoryName": "mailbox-peer-replay-v2",
+    "peerMutationDirectoryName": "mailbox-peer-mutations-v2",
+    "maxPeerReplayRecords": 100000,
+    "maxPeerReplayRecordsPerRouterPairEpoch": 20000,
+    "maxPeerReplayGcBatch": 1024,
+    "maxPeerMutationRecords": 100000,
     "allowInsecureHttpPeerTransport": false
+  },
+  "MailboxPeerAuthority": {
+    "currentEpoch": 0,
+    "currentMembershipCommitment": "",
+    "currentEpochExpiresAtUnixSeconds": 0,
+    "nextEpoch": 0,
+    "nextMembershipCommitment": "",
+    "nextEpochExpiresAtUnixSeconds": 0
   }
 }
 ```
 
-When enabled, `POST /api/peer/mailbox/replica` is available only on the peer RPC listener.
-Requests must be signed by a fresh registered XNode and are replay guarded. The `/status`
-mailbox section reports only aggregate receiver counters; it never reports mailbox/blob
-identifiers or ciphertext.
+Enabling `Mailbox` also requires an authoritative current epoch/commitment/retirement time and
+optionally a cryptographically distinct E+1 entry. The only mailbox peer routes are:
+
+- `POST /api/peer/mailbox/v2/store`;
+- `POST /api/peer/mailbox/v2/tombstone`.
+
+Both accept exact raw `PRQ2` with `application/vnd.deep.mailbox.prq2` and return exact signed
+`MRR2` with `application/vnd.deep.mailbox.mrr2`. The removed
+`/api/peer/mailbox/replica` JSON route returns 404. The canonical routes return 404 on the public
+API listener.
 
 Plain HTTP is rejected by default because it exposes otherwise opaque mailbox metadata.
 `allowInsecureHttpPeerTransport=true` is a development-only escape hatch for an isolated
 Docker network or a deployment where an authenticated outer transport terminates immediately
 in front of XNode.
 
-Operational bounds:
+Operational invariants:
 
-- ciphertext is canonical base64 and its SHA-256 digest must equal `blobId`;
-- TTL and ciphertext size are rejected outside configured bounds;
-- writes are atomic and duplicate writes are idempotent;
-- exact signed-request retries return the cached receipt after the first durable write;
-- admission quotas are isolated per registered sender and stale reservations are recoverable;
-- expired, corrupt and stale temporary entries are purged during bounded startup recovery;
+- PRQ1, MQR2, JSON and cross-operation frames are rejected; no translation exists;
+- both RIP1/MIP1 proofs must verify Storage role/capability, exact router signing keys, epoch and
+  the configured membership commitment;
+- Store binds the exact canonical MEO1 placement preimage; Tombstone must resolve the identical
+  durable Store context;
+- created-at has zero future skew and at most the protocol's fixed past-age window;
+- replay is reserved before mutation in an exclusive crash-safe journal; an exact completed retry
+  returns the cached verified MRR2 and a pending crash claim resumes idempotently;
+- replay GC uses the authoritative epoch retirement time plus the protocol-fixed seven-day
+  retention and deletes only a bounded batch;
+- logical tombstones are durable before best-effort ciphertext deletion; startup retries cleanup;
+- the sender coordinator accepts only the exact local and recipient MIP1-keyed MRR2 pair and
+  emits native PRQ2-only MQR3. One receipt, timeout or invalid evidence is never quorum;
+- request body, content type/encoding, 15-second deadline, 32-request concurrency and
+  120/minute verified-sender limits come from `MailboxWireHttpContract`;
 - Windows ACLs are replaced and verified as service-account-only; Unix modes are verified as
   `0700` for directories and `0600` for files;
-- file data and metadata are flushed before a receipt; parent directories are fsynced where the
-  host filesystem supports it;
-- peer timeouts and invalid node receipts fail closed and do not count toward write quorum.
+- metrics and status contain counts only: no router id, membership capability, mailbox, placement
+  route, operation id, ciphertext or receipt bytes are logged or labeled.
+
+Ordinary onion peer replay remains process-memory-only. `/status` reports
+`onionPeerReplay=volatile-explicit-debt`; P10C does not claim durable onion replay.
 
 ### Dormant canonical client adapter
 
@@ -358,6 +383,10 @@ The source tree contains a deliberately uncomposed adapter for canonical `MST1`/
 `MRT1`/`MRP1`, and `MAK1` processing. It is not mapped to HTTP and therefore cannot be enabled
 by configuration alone. Production composition still requires a reviewed capability verifier,
 native store/tombstone peer fanout, and a reviewed public ACK response contract.
+
+The adapter ledger below still describes its pre-activation internal MQR2 evidence. It is not a
+public or peer wire path. P10B3's MQR3 and ordered MAR1 APIs must replace that internal completion
+surface when the client composition is reviewed; no MQR2-to-MQR3 transcode is permitted.
 
 The adapter reports `StoreReady`, `RetrieveReady`, and `AcknowledgeReady` independently;
 aggregate `Ready` is true only when all three are ready. Status also exposes durable-replay and
@@ -406,8 +435,8 @@ state. Every item completes as a native Tombstone `MRR2` quorum and a native `MQ
 resume or return persisted, reverified bytes through the latest item expiry, including
 multi-item ACKs with staggered TTLs. A new operation id for an already tombstoned cursor is
 rejected and cannot create another journal or fanout. Retrieval emits no receipt, and the dormant API
-returns an internal per-item receipt list because the protocol has no aggregate ACK frame. The
-node never infers or persists client-side `Delivered`.
+returns an internal per-item receipt list because this dormant adapter has not adopted P10B3
+ordered MAR1. The node never infers or persists client-side `Delivered`.
 
 Physical ciphertext cleanup is bounded after a durable ACK and repeated on initialization.
 Deletion failure does not roll back a logical tombstone or ACK receipt; the ledger marks the blob
@@ -416,8 +445,9 @@ v3 is intentionally incompatible with v2, whose records lack the canonical blob/
 membership evidence needed for safe retrieval and tombstones. Operation capacity counts stores,
 ACK operation records and each ACK item.
 
-Do not expose any client mailbox endpoint yet. There is still no runtime/HTTP composition, real
-production verifier, native tombstone transport, or finalized aggregate ACK wire response.
+Do not expose any client mailbox endpoint yet. Canonical peer Store/Tombstone transport now
+exists, but it is not composed into the dormant client adapters; production issuer/revocation/
+placement authorities and the reviewed MQR3/MAR1 public ingress response contract are absent.
 The activation decision and exact missing contracts are frozen in
 `docs/adr/0006-mailbox-client-activation-blocker.md`.
 
@@ -433,24 +463,24 @@ The activation decision and exact missing contracts are frozen in
 
 Setting it to `true` from JSON, environment variables or command-line configuration prevents host
 construction. `/status` and `/health/ready` report Store/Retrieve/Acknowledge as `not-ready`,
-with the internal P03B2 verifier present but issuer/revocation authority unconfigured and all
-fanouts disabled; no client mailbox route is mapped.
+with the P10B3 peer runtime marked ready while client issuer, placement and revocation authorities
+remain dormant/reject-all and client ingress remains unmapped.
 
-Pinned offline package closure under `vendor/mailbox-client-p03b2`, produced from
-`deep-protocol` commit `a34e726bd60d762ac9f76c2ebf5456b266d8186e`:
+Pinned offline runtime package closure under `vendor/mailbox-peer-p10b3`, produced from accepted
+`deep-protocol` source `60ce2e3a5140f245d6bcfecf60fa456c26ffe730`:
 
-- `Deep.Protocol.0.3.0-p03b2.a34e726.nupkg` —
-  `fb98b4d3d65949d7dbf7e420031d06dd2a84cb377235ae5f02f15e0c35ab033e`
-- `Deep.Protocol.Abstractions.0.3.0-p03b2.a34e726.nupkg` —
-  `8d2e17ed6c31144ed35e3ca0d3ad7a52ce90a0f5f4239a29213ebeca01c0613a`
-- `Deep.Protocol.MembershipRoutes.0.3.0-p03b2.a34e726.nupkg` —
-  `f2bc7b6fd105a5d89f4cf29d07dfda2975db62274e5dfa0021f7c45f8ded5491`
-- `Deep.Protocol.Protobuf.0.3.0-p03b2.a34e726.nupkg` —
-  `59f844b747f82fec06e2ab84f89991ce42df52cdb110da04b58a185a218b845f`
+- `Deep.Protocol.0.3.0-p10b3.60ce2e3.nupkg` —
+  `588a889f362a618bd06b8277fd4afc8b6c64ec37797f4cdf291af1865f0fd779`
+- `Deep.Protocol.Abstractions.0.3.0-p10b3.60ce2e3.nupkg` —
+  `af23f03aade18ee726d5a6345e2a613c91fbea0bf62d3d0431dd629062e603bd`
+- `Deep.Protocol.MembershipRoutes.0.3.0-p10b3.60ce2e3.nupkg` —
+  `16f4a0dd0c33461d85ed15bf69268e4b78b70617c059aa60d3b662d922155b96`
+- `Deep.Protocol.Protobuf.0.3.0-p10b3.60ce2e3.nupkg` —
+  `ec5478d4ebc03fba3a97a4e0675b0fbdac4bd43c4503ed39033e1b6e469f1250`
 
-`eng/mailbox-client.NuGet.Config` maps `Deep.Protocol` and `Deep.Protocol.*` exclusively to this
-offline feed. Relevant projects restore in locked mode and commit `packages.lock.json` content
-hashes; nuget.org has no wildcard mapping capable of resolving a Deep protocol package.
+Core/runtime/test projects resolve the exact P10B3 version from the local feed in locked mode.
+`XNode.ProfileGenerator` and its tests remain isolated on the exact older P04/ProfileCarrier
+closure because that carrier requires it.
 
 The dormant replay journal is stored below
 `<Node.DataDirectory>/mailbox-capability-replay-v2/replay.json`, which resolves to the existing

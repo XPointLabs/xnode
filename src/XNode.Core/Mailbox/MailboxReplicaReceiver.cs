@@ -1,434 +1,575 @@
+using System.Security.Cryptography;
+using Deep.Protocol.DeepExtension.MailboxCapabilities;
+using Deep.Protocol.DeepExtension.MembershipRoutes;
+
 namespace XNode.Core.Mailbox;
 
-public interface IMailboxPeerAuthorizer
+public sealed class MailboxPeerAuthorityOptions
 {
-    bool IsAuthorized(RouterId routerId, DateTimeOffset now);
+    public ulong CurrentEpoch { get; set; }
+    public string CurrentMembershipCommitment { get; set; } = "";
+    public ulong CurrentEpochExpiresAtUnixSeconds { get; set; }
+    public ulong NextEpoch { get; set; }
+    public string NextMembershipCommitment { get; set; } = "";
+    public ulong NextEpochExpiresAtUnixSeconds { get; set; }
+
+    public void Validate(bool required)
+    {
+        if (!required
+            && CurrentEpoch == 0
+            && NextEpoch == 0
+            && string.IsNullOrEmpty(CurrentMembershipCommitment)
+            && string.IsNullOrEmpty(NextMembershipCommitment))
+        {
+            return;
+        }
+
+        if (CurrentEpoch == 0
+            || CurrentEpochExpiresAtUnixSeconds == 0
+            || !TryCommitment(CurrentMembershipCommitment, out var current)
+            || NextEpoch == 0
+                && (NextEpochExpiresAtUnixSeconds != 0
+                    || !string.IsNullOrEmpty(NextMembershipCommitment))
+            || NextEpoch != 0
+                && (NextEpoch != CurrentEpoch + 1
+                    || NextEpochExpiresAtUnixSeconds == 0
+                    || !TryCommitment(NextMembershipCommitment, out var next)
+                    || CryptographicOperations.FixedTimeEquals(current, next)))
+        {
+            throw new InvalidOperationException(
+                "MailboxPeerAuthority must pin the current membership epoch and an optional " +
+                "cryptographically distinct E+1 commitment.");
+        }
+    }
+
+    public bool TryGetEpoch(
+        ulong epoch,
+        out byte[] membershipCommitment,
+        out ulong expiresAtUnixSeconds)
+    {
+        membershipCommitment = [];
+        var encoded = epoch == CurrentEpoch
+            ? CurrentMembershipCommitment
+            : epoch == NextEpoch
+                ? NextMembershipCommitment
+                : "";
+        expiresAtUnixSeconds = epoch == CurrentEpoch
+            ? CurrentEpochExpiresAtUnixSeconds
+            : epoch == NextEpoch
+                ? NextEpochExpiresAtUnixSeconds
+                : 0;
+        return expiresAtUnixSeconds != 0
+            && TryCommitment(encoded, out membershipCommitment);
+    }
+
+    private static bool TryCommitment(string? encoded, out byte[] value)
+    {
+        value = [];
+        if (encoded is null
+            || encoded.Length != 64
+            || encoded.Any(character =>
+                character is not (>= '0' and <= '9' or >= 'a' and <= 'f')))
+        {
+            return false;
+        }
+
+        value = Convert.FromHexString(encoded);
+        return value.AsSpan().IndexOfAnyExcept((byte)0) >= 0;
+    }
 }
 
-public enum MailboxReplicaReceiveStatus
+public interface IMailboxPeerRequestPolicyResolver
 {
-    Accepted,
-    Disabled,
-    Unauthorized,
-    Replay,
-    RateLimited,
-    Rejected
+    MailboxPeerWireVerificationPolicyV2? Resolve(
+        MailboxPeerWireRequestV2 request,
+        MailboxPeerReplicationOperation expectedOperation,
+        ulong nowUnixSeconds);
 }
 
-public sealed record MailboxReplicaReceiveResult(
-    MailboxReplicaReceiveStatus Status,
-    MailboxWriteReceipt? Receipt = null,
-    string Error = "");
-
-public sealed record MailboxReplicaReceiverMetricsSnapshot(
-    long Accepted,
-    long Stored,
-    long Duplicates,
-    long IdempotentReplays,
-    long Unauthorized,
-    long Replays,
-    long RateLimited,
-    long Rejected);
-
-public sealed class MailboxReplicaReceiver
+public sealed class MailboxPeerRequestPolicyResolver : IMailboxPeerRequestPolicyResolver
 {
-    private readonly RouterId _localRouterId;
-    private readonly string _privateKeySeedHex;
-    private readonly ReplicatedMailboxOptions _options;
-    private readonly ReplicatedMailboxStore _store;
-    private readonly IMailboxPeerAuthorizer _authorizer;
-    private readonly MailboxReplicaReplayGuard _replayGuard;
-    private readonly IClock _clock;
-    private long _accepted;
-    private long _stored;
-    private long _duplicates;
-    private long _idempotentReplays;
-    private long _unauthorized;
-    private long _replays;
-    private long _rateLimited;
-    private long _rejected;
+    private readonly byte[] _localRouterId;
+    private readonly byte[] _localSigningPublicKey;
+    private readonly MailboxPeerAuthorityOptions _authority;
+    private readonly MailboxPeerMutationStore _mutations;
 
-    public MailboxReplicaReceiver(
+    public MailboxPeerRequestPolicyResolver(
         RouterId localRouterId,
         string privateKeySeedHex,
-        ReplicatedMailboxOptions options,
-        ReplicatedMailboxStore store,
-        IMailboxPeerAuthorizer authorizer,
-        MailboxReplicaReplayGuard replayGuard,
-        IClock? clock = null)
+        MailboxPeerAuthorityOptions authority,
+        MailboxPeerMutationStore mutations)
     {
-        options.Validate();
-        _localRouterId = localRouterId;
-        _privateKeySeedHex = privateKeySeedHex;
-        _options = options;
-        _store = store;
-        _authorizer = authorizer;
-        _replayGuard = replayGuard;
-        _clock = clock ?? new SystemClock();
+        _localRouterId = localRouterId.ToBytes();
+        _authority = authority;
+        _mutations = mutations;
+        var crypto = new SodiumMailboxPeerReplicationCrypto();
+        _localSigningPublicKey = crypto.GetPublicKey(DecodeSeed(privateKeySeedHex));
     }
 
-    public MailboxReplicaReceiverMetricsSnapshot Metrics => new(
-        Interlocked.Read(ref _accepted),
-        Interlocked.Read(ref _stored),
-        Interlocked.Read(ref _duplicates),
-        Interlocked.Read(ref _idempotentReplays),
-        Interlocked.Read(ref _unauthorized),
-        Interlocked.Read(ref _replays),
-        Interlocked.Read(ref _rateLimited),
-        Interlocked.Read(ref _rejected));
-
-    public async Task<MailboxReplicaReceiveResult> ReceiveAsync(
-        SignedMailboxReplicaRequest request,
-        CancellationToken cancellationToken = default)
+    public MailboxPeerWireVerificationPolicyV2? Resolve(
+        MailboxPeerWireRequestV2 request,
+        MailboxPeerReplicationOperation expectedOperation,
+        ulong nowUnixSeconds)
     {
-        if (!_options.Enabled)
+        ArgumentNullException.ThrowIfNull(request);
+        if (request.Operation != expectedOperation
+            || !Fixed(request.RecipientRouterId.Span, _localRouterId)
+            || !Fixed(
+                request.RecipientMembershipProof.SigningPublicKey.Span,
+                _localSigningPublicKey)
+            || !_authority.TryGetEpoch(
+                request.Epoch,
+                out var authoritativeMembership,
+                out var epochExpiresAt)
+            || !Fixed(request.MembershipCommitment.Span, authoritativeMembership))
         {
-            return new MailboxReplicaReceiveResult(MailboxReplicaReceiveStatus.Disabled);
+            return null;
         }
 
-        var now = _clock.UtcNow;
-        if (!RouterId.TryParse(request.SenderRouterId, out var sender)
-            || !RouterId.TryParse(request.RecipientRouterId, out var recipient)
-            || recipient != _localRouterId
-            || !MailboxReplicationProtocol.VerifyRequest(request, now)
-            || !_authorizer.IsAuthorized(sender, now))
-        {
-            Interlocked.Increment(ref _unauthorized);
-            return new MailboxReplicaReceiveResult(MailboxReplicaReceiveStatus.Unauthorized);
-        }
-
-        if (!EncryptedMailboxBlobValidator.TryValidate(
-                request.Blob,
-                now,
-                _options,
-                out _,
-                out var validationError))
-        {
-            Interlocked.Increment(ref _rejected);
-            return new MailboxReplicaReceiveResult(
-                MailboxReplicaReceiveStatus.Rejected,
-                Error: validationError);
-        }
-
-        MailboxReplayExecutionResult execution;
+        MembershipRouteDescriptor sender;
+        MembershipRouteDescriptor recipient;
         try
         {
-            execution = await _replayGuard.ExecuteAsync(
-                sender,
-                request,
-                async token =>
-                {
-                    var result = await _store.PutAsync(request.Blob, token).ConfigureAwait(false);
-                    if (result.Disposition == MailboxPutDisposition.Rejected)
-                    {
-                        throw new MailboxReplicaRejectedException(result.Error);
-                    }
-
-                    Interlocked.Increment(ref result.Disposition == MailboxPutDisposition.Stored
-                        ? ref _stored
-                        : ref _duplicates);
-                    return MailboxReplicationProtocol.SignReceipt(
-                        _localRouterId,
-                        _privateKeySeedHex,
-                        request.Blob,
-                        now,
-                        result.Disposition);
-                },
-                now,
-                cancellationToken).ConfigureAwait(false);
+            sender = MailboxReplicaRouteProofCodec.Decode(
+                request.SenderMembershipProof.CanonicalInclusionProof.Span).Descriptor;
+            recipient = MailboxReplicaRouteProofCodec.Decode(
+                request.RecipientMembershipProof.CanonicalInclusionProof.Span).Descriptor;
         }
-        catch (MailboxReplicaRejectedException exception)
+        catch (MembershipRouteDescriptorException)
         {
-            Interlocked.Increment(ref _rejected);
-            return new MailboxReplicaReceiveResult(
-                MailboxReplicaReceiveStatus.Rejected,
-                Error: exception.Message);
+            return null;
         }
 
-        switch (execution.Status)
+        epochExpiresAt = Math.Min(
+            epochExpiresAt,
+            Math.Min(sender.ValidUntilUnixSeconds, recipient.ValidUntilUnixSeconds));
+        BlindedPlacementId placementId;
+        if (request.Operation == MailboxPeerReplicationOperation.Store)
         {
-            case MailboxReplayExecutionStatus.Completed:
-                Interlocked.Increment(ref _accepted);
-                if (execution.WasCached)
-                {
-                    Interlocked.Increment(ref _idempotentReplays);
-                }
-
-                return new MailboxReplicaReceiveResult(
-                    MailboxReplicaReceiveStatus.Accepted,
-                    execution.Receipt);
-            case MailboxReplayExecutionStatus.RateLimited:
-                Interlocked.Increment(ref _rateLimited);
-                return new MailboxReplicaReceiveResult(
-                    MailboxReplicaReceiveStatus.RateLimited,
-                    Error: "mailbox-peer-rate-limited");
-            default:
-                Interlocked.Increment(ref _replays);
-                return new MailboxReplicaReceiveResult(MailboxReplicaReceiveStatus.Replay);
-        }
-    }
-
-    private sealed class MailboxReplicaRejectedException : Exception
-    {
-        public MailboxReplicaRejectedException(string message)
-            : base(message)
-        {
-        }
-    }
-}
-
-public enum MailboxReplayExecutionStatus
-{
-    Completed,
-    Conflict,
-    RateLimited
-}
-
-public sealed record MailboxReplayExecutionResult(
-    MailboxReplayExecutionStatus Status,
-    MailboxWriteReceipt? Receipt = null,
-    bool WasCached = false);
-
-public sealed class MailboxReplicaReplayGuard
-{
-    private readonly object _gate = new();
-    private readonly Dictionary<RouterId, SenderReplayState> _senders = [];
-    private readonly int _maximumEntriesPerSender;
-    private readonly int _maximumReservationsPerWindow;
-    private readonly int _maximumSenderStates;
-    private readonly TimeSpan _retention;
-    private readonly TimeSpan _reservationTimeout;
-    private readonly TimeSpan _rateWindow;
-
-    public MailboxReplicaReplayGuard(
-        int maximumEntriesPerSender = 2048,
-        int maximumReservationsPerWindow = 240,
-        int maximumSenderStates = 4096,
-        TimeSpan? retention = null,
-        TimeSpan? reservationTimeout = null,
-        TimeSpan? rateWindow = null)
-    {
-        var normalizedRetention = retention ?? TimeSpan.FromMinutes(5);
-        var normalizedReservationTimeout = reservationTimeout ?? TimeSpan.FromMinutes(2);
-        var normalizedRateWindow = rateWindow ?? TimeSpan.FromMinutes(1);
-        if (maximumEntriesPerSender <= 0
-            || maximumReservationsPerWindow <= 0
-            || maximumSenderStates <= 0
-            || normalizedRetention <= TimeSpan.Zero
-            || normalizedReservationTimeout <= TimeSpan.Zero
-            || normalizedReservationTimeout > normalizedRetention
-            || normalizedRateWindow <= TimeSpan.Zero)
-        {
-            throw new ArgumentOutOfRangeException(nameof(maximumEntriesPerSender));
-        }
-
-        _maximumEntriesPerSender = maximumEntriesPerSender;
-        _maximumReservationsPerWindow = maximumReservationsPerWindow;
-        _maximumSenderStates = maximumSenderStates;
-        _retention = normalizedRetention;
-        _reservationTimeout = normalizedReservationTimeout;
-        _rateWindow = normalizedRateWindow;
-    }
-
-    public async Task<MailboxReplayExecutionResult> ExecuteAsync(
-        RouterId sender,
-        SignedMailboxReplicaRequest request,
-        Func<CancellationToken, Task<MailboxWriteReceipt>> operation,
-        DateTimeOffset now,
-        CancellationToken cancellationToken)
-    {
-        var fingerprint = MailboxReplicationProtocol.ComputeRequestFingerprint(request);
-        while (true)
-        {
-            ReplayEntry? ownerEntry = null;
-            Task<MailboxWriteReceipt?>? existing = null;
-            lock (_gate)
-            {
-                var state = GetOrCreateSenderState(sender, now);
-                if (state is null)
-                {
-                    return new MailboxReplayExecutionResult(MailboxReplayExecutionStatus.RateLimited);
-                }
-
-                Prune(state, now);
-                state.LastAccess = now;
-                if (state.Entries.TryGetValue(request.Nonce, out var entry))
-                {
-                    if (!string.Equals(entry.Fingerprint, fingerprint, StringComparison.Ordinal))
-                    {
-                        return new MailboxReplayExecutionResult(MailboxReplayExecutionStatus.Conflict);
-                    }
-
-                    existing = entry.Completion.Task;
-                }
-                else
-                {
-                    ResetRateWindowIfNeeded(state, now);
-                    if (state.ReservationsInWindow >= _maximumReservationsPerWindow
-                        || !EnsureSenderCapacity(state))
-                    {
-                        return new MailboxReplayExecutionResult(MailboxReplayExecutionStatus.RateLimited);
-                    }
-
-                    ownerEntry = new ReplayEntry(fingerprint, now, state.RateWindowStartedAt);
-                    state.Entries.Add(request.Nonce, ownerEntry);
-                    state.ReservationsInWindow++;
-                }
-            }
-
-            if (existing is not null)
-            {
-                var cached = await existing.WaitAsync(cancellationToken).ConfigureAwait(false);
-                if (cached is not null)
-                {
-                    return new MailboxReplayExecutionResult(
-                        MailboxReplayExecutionStatus.Completed,
-                        cached,
-                        WasCached: true);
-                }
-
-                // The prior durable write failed or was cancelled and released its reservation.
-                continue;
-            }
-
-            try
-            {
-                var receipt = await operation(cancellationToken).ConfigureAwait(false);
-                lock (_gate)
-                {
-                    ownerEntry!.CompletedAt = now;
-                    ownerEntry.Completion.TrySetResult(receipt);
-                }
-
-                return new MailboxReplayExecutionResult(
-                    MailboxReplayExecutionStatus.Completed,
-                    receipt);
-            }
-            catch
-            {
-                lock (_gate)
-                {
-                    if (_senders.TryGetValue(sender, out var state)
-                        && state.Entries.TryGetValue(request.Nonce, out var current)
-                        && ReferenceEquals(current, ownerEntry))
-                    {
-                        state.Entries.Remove(request.Nonce);
-                        if (state.RateWindowStartedAt == ownerEntry!.RateWindowStartedAt
-                            && state.ReservationsInWindow > 0)
-                        {
-                            state.ReservationsInWindow--;
-                        }
-                    }
-
-                    ownerEntry!.Completion.TrySetResult(null);
-                }
-
-                throw;
-            }
-        }
-    }
-
-    private SenderReplayState? GetOrCreateSenderState(RouterId sender, DateTimeOffset now)
-    {
-        if (_senders.TryGetValue(sender, out var existing))
-        {
-            return existing;
-        }
-
-        if (_senders.Count >= _maximumSenderStates)
-        {
-            foreach (var state in _senders.Values)
-            {
-                Prune(state, now);
-            }
-
-            var evictable = _senders
-                .Where(pair => pair.Value.Entries.Values.All(entry => entry.Completion.Task.IsCompleted))
-                .OrderBy(pair => pair.Value.LastAccess)
-                .FirstOrDefault();
-            if (evictable.Value is null)
+            if (request.Payload.Length < 80
+                || !request.Payload.Span[..4].SequenceEqual("MEO1"u8))
             {
                 return null;
             }
 
-            _senders.Remove(evictable.Key);
+            placementId = new BlindedPlacementId(request.Payload.Span.Slice(48, 32));
+        }
+        else if (!_mutations.TryResolveTombstonePlacement(request, out placementId))
+        {
+            return null;
         }
 
-        var newState = new SenderReplayState(now);
-        _senders.Add(sender, newState);
-        return newState;
+        return new MailboxPeerWireVerificationPolicyV2
+        {
+            ExpectedOperation = expectedOperation,
+            Epoch = request.Epoch,
+            OperationId = request.OperationId.ToArray(),
+            SenderRouterId = request.SenderRouterId.ToArray(),
+            RecipientRouterId = _localRouterId.ToArray(),
+            MembershipCommitment = authoritativeMembership,
+            PlacementCommitment = request.PlacementCommitment.ToArray(),
+            PlacementId = placementId,
+            NowUnixSeconds = nowUnixSeconds,
+            EpochExpiresAtUnixSeconds = epochExpiresAt
+        };
     }
 
-    private void Prune(SenderReplayState state, DateTimeOffset now)
+    private static byte[] DecodeSeed(string value)
     {
-        foreach (var pair in state.Entries.ToArray())
+        if (value.Length != 64 || !value.All(Uri.IsHexDigit))
         {
-            var entry = pair.Value;
-            var expired = entry.Completion.Task.IsCompleted
-                ? now - (entry.CompletedAt ?? entry.CreatedAt) >= _retention
-                : now - entry.CreatedAt >= _reservationTimeout;
-            if (!expired)
+            throw new InvalidOperationException("The local Ed25519 seed is invalid.");
+        }
+
+        return Convert.FromHexString(value);
+    }
+
+    private static bool Fixed(ReadOnlySpan<byte> left, ReadOnlySpan<byte> right) =>
+        left.Length == right.Length
+        && CryptographicOperations.FixedTimeEquals(left, right);
+}
+
+public enum MailboxPeerReceiveStatus
+{
+    Accepted,
+    Disabled,
+    Malformed,
+    AuthenticationFailed,
+    AuthorizationFailed,
+    Conflict,
+    RateLimited,
+    DependencyUnavailable
+}
+
+public sealed record MailboxPeerReceiveResult(
+    MailboxPeerReceiveStatus Status,
+    ReadOnlyMemory<byte> CanonicalResponse,
+    bool WasCached = false);
+
+public sealed record MailboxPeerReceiverMetricsSnapshot(
+    long Accepted,
+    long Stored,
+    long Duplicates,
+    long Tombstones,
+    long IdempotentReplays,
+    long AuthenticationFailures,
+    long AuthorizationFailures,
+    long Conflicts,
+    long RateLimited,
+    long Rejected,
+    long DependencyFailures);
+
+public sealed class MailboxReplicaReceiver
+{
+    private readonly byte[] _privateKeySeed;
+    private readonly ReplicatedMailboxOptions _options;
+    private readonly MailboxPeerMutationStore _mutations;
+    private readonly IMailboxPeerRequestPolicyResolver _policyResolver;
+    private readonly IMailboxReplicaMembershipProofVerifier _membershipVerifier;
+    private readonly IMailboxPeerReplayJournal _replayJournal;
+    private readonly SodiumMailboxPeerReplicationCrypto _crypto = new();
+    private readonly IClock _clock;
+    private readonly MailboxPeerRateLimiter _rateLimiter = new();
+    private readonly SemaphoreSlim _executionGate = new(1, 1);
+    private long _accepted;
+    private long _stored;
+    private long _duplicates;
+    private long _tombstones;
+    private long _idempotentReplays;
+    private long _authenticationFailures;
+    private long _authorizationFailures;
+    private long _conflicts;
+    private long _rateLimited;
+    private long _rejected;
+    private long _dependencyFailures;
+
+    public MailboxReplicaReceiver(
+        string privateKeySeedHex,
+        ReplicatedMailboxOptions options,
+        MailboxPeerMutationStore mutations,
+        IMailboxPeerRequestPolicyResolver policyResolver,
+        IMailboxReplicaMembershipProofVerifier membershipVerifier,
+        IMailboxPeerReplayJournal replayJournal,
+        IClock? clock = null)
+    {
+        options.Validate();
+        _privateKeySeed = Convert.FromHexString(privateKeySeedHex);
+        if (_privateKeySeed.Length != 32)
+        {
+            throw new InvalidOperationException("The mailbox peer Ed25519 seed is invalid.");
+        }
+
+        _options = options;
+        _mutations = mutations;
+        _policyResolver = policyResolver;
+        _membershipVerifier = membershipVerifier;
+        _replayJournal = replayJournal;
+        _clock = clock ?? new SystemClock();
+    }
+
+    public MailboxPeerReceiverMetricsSnapshot Metrics => new(
+        Interlocked.Read(ref _accepted),
+        Interlocked.Read(ref _stored),
+        Interlocked.Read(ref _duplicates),
+        Interlocked.Read(ref _tombstones),
+        Interlocked.Read(ref _idempotentReplays),
+        Interlocked.Read(ref _authenticationFailures),
+        Interlocked.Read(ref _authorizationFailures),
+        Interlocked.Read(ref _conflicts),
+        Interlocked.Read(ref _rateLimited),
+        Interlocked.Read(ref _rejected),
+        Interlocked.Read(ref _dependencyFailures));
+
+    public async Task<MailboxPeerReceiveResult> ReceiveAsync(
+        ReadOnlyMemory<byte> canonicalRequest,
+        MailboxPeerReplicationOperation expectedOperation,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_options.Enabled)
+        {
+            return Failure(MailboxPeerReceiveStatus.Disabled);
+        }
+
+        await _executionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            MailboxPeerWireRequestV2 decoded;
+            try
             {
-                continue;
+                decoded = MailboxPeerWireV2Codec.Decode(canonicalRequest.Span);
+            }
+            catch (MailboxPeerReplicationException)
+            {
+                Interlocked.Increment(ref _rejected);
+                return Failure(MailboxPeerReceiveStatus.Malformed);
             }
 
-            state.Entries.Remove(pair.Key);
-            entry.Completion.TrySetResult(null);
+            var now = checked((ulong)_clock.UtcNow.ToUnixTimeSeconds());
+            var policy = _policyResolver.Resolve(decoded, expectedOperation, now);
+            if (policy is null)
+            {
+                Interlocked.Increment(ref _authorizationFailures);
+                return Failure(MailboxPeerReceiveStatus.AuthorizationFailed);
+            }
+
+            VerifiedMailboxPeerWireRequestV2 verified;
+            try
+            {
+                // Authenticate the sender and both MIP1 proofs before using the sender id as a
+                // rate-limit partition. This validation journal has no durable side effects.
+                _ = MailboxPeerWireV2Codec.VerifyAndReserve(
+                    canonicalRequest.Span,
+                    policy,
+                    _crypto,
+                    _membershipVerifier,
+                    ValidationOnlyReplayJournal.Instance);
+                if (!_rateLimiter.TryAcquire(decoded.SenderRouterId.Span, now))
+                {
+                    Interlocked.Increment(ref _rateLimited);
+                    return Failure(MailboxPeerReceiveStatus.RateLimited);
+                }
+
+                verified = MailboxPeerWireV2Codec.VerifyAndReserve(
+                    canonicalRequest.Span,
+                    policy,
+                    _crypto,
+                    _membershipVerifier,
+                    _replayJournal);
+            }
+            catch (MailboxPeerReplayCapacityException)
+            {
+                Interlocked.Increment(ref _rateLimited);
+                return Failure(MailboxPeerReceiveStatus.RateLimited);
+            }
+            catch (MailboxPeerReplicationException exception)
+            {
+                return ProtocolFailure(exception.Error);
+            }
+            catch (MailboxReceiptException)
+            {
+                Interlocked.Increment(ref _dependencyFailures);
+                return Failure(MailboxPeerReceiveStatus.DependencyUnavailable);
+            }
+
+            if (verified.ReplayDisposition == MailboxPeerReplayDisposition.IdempotentCompleted)
+            {
+                Interlocked.Increment(ref _accepted);
+                Interlocked.Increment(ref _idempotentReplays);
+                return new(
+                    MailboxPeerReceiveStatus.Accepted,
+                    verified.CachedResponse.ToArray(),
+                    WasCached: true);
+            }
+
+            MailboxPeerMutationResult mutation;
+            try
+            {
+                mutation = await _mutations.ApplyAsync(
+                    verified,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException
+                    or InvalidDataException or MailboxPeerMutationCapacityException)
+            {
+                Interlocked.Increment(ref _dependencyFailures);
+                return Failure(MailboxPeerReceiveStatus.DependencyUnavailable);
+            }
+
+            if (!string.IsNullOrEmpty(mutation.Error))
+            {
+                var contextRejected = mutation.Error.Contains(
+                        "context",
+                        StringComparison.Ordinal)
+                    || string.Equals(
+                        mutation.Error,
+                        "mailbox-peer-tombstone-target-missing",
+                        StringComparison.Ordinal);
+                if (contextRejected)
+                {
+                    Interlocked.Increment(ref _authorizationFailures);
+                }
+                else
+                {
+                    Interlocked.Increment(ref _dependencyFailures);
+                }
+                return Failure(contextRejected
+                    ? MailboxPeerReceiveStatus.AuthorizationFailed
+                    : MailboxPeerReceiveStatus.DependencyUnavailable);
+            }
+
+            var acceptedAt = verified.ReplayClaim.ReservedAtUnixSeconds;
+            var unsigned =
+                MailboxPeerWireV2Codec.CreateUnsignedDurableResponseAfterPersistence(
+                    verified,
+                    mutation.Disposition,
+                    acceptedAt,
+                    acceptedAt);
+            var signed = _crypto.SignReplicaResponse(unsigned, _privateKeySeed);
+            var canonicalResponse = MailboxReceiptV2Codec.EncodeReplica(signed);
+            _ = MailboxPeerWireV2Codec.VerifyReplicaResponse(
+                canonicalResponse,
+                verified,
+                _crypto);
+
+            try
+            {
+                if (verified.ReplayDisposition == MailboxPeerReplayDisposition.NewReserved)
+                {
+                    MailboxPeerWireV2Codec.CompleteAtomically(
+                        verified,
+                        canonicalResponse,
+                        _crypto,
+                        _replayJournal);
+                }
+                else
+                {
+                    // A persisted pending claim has no in-memory owner after restart. The
+                    // mutation is idempotently recovered above and the exact response completes it.
+                    _replayJournal.CompleteAtomically(
+                        verified.ReplayClaim,
+                        canonicalResponse);
+                }
+
+                _ = _replayJournal.CollectExpired(now, _options.MaxPeerReplayGcBatch);
+            }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException
+                    or InvalidDataException)
+            {
+                Interlocked.Increment(ref _dependencyFailures);
+                return Failure(MailboxPeerReceiveStatus.DependencyUnavailable);
+            }
+
+            Interlocked.Increment(ref _accepted);
+            switch (mutation.Disposition)
+            {
+                case MailboxReplicaDisposition.Stored:
+                    Interlocked.Increment(ref _stored);
+                    break;
+                case MailboxReplicaDisposition.Duplicate:
+                    Interlocked.Increment(ref _duplicates);
+                    break;
+                case MailboxReplicaDisposition.Tombstone:
+                    Interlocked.Increment(ref _tombstones);
+                    break;
+            }
+
+            return new(MailboxPeerReceiveStatus.Accepted, canonicalResponse);
         }
-    }
-
-    private bool EnsureSenderCapacity(SenderReplayState state)
-    {
-        return state.Entries.Count < _maximumEntriesPerSender;
-    }
-
-    private void ResetRateWindowIfNeeded(SenderReplayState state, DateTimeOffset now)
-    {
-        if (now - state.RateWindowStartedAt >= _rateWindow)
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            state.RateWindowStartedAt = now;
-            state.ReservationsInWindow = 0;
+            Interlocked.Increment(ref _dependencyFailures);
+            return Failure(MailboxPeerReceiveStatus.DependencyUnavailable);
+        }
+        finally
+        {
+            _executionGate.Release();
         }
     }
 
-    private sealed class SenderReplayState
+    private MailboxPeerReceiveResult ProtocolFailure(MailboxPeerReplicationError error)
     {
-        public SenderReplayState(DateTimeOffset now)
+        var status = error switch
         {
-            LastAccess = now;
-            RateWindowStartedAt = now;
+            MailboxPeerReplicationError.InvalidSignature =>
+                MailboxPeerReceiveStatus.AuthenticationFailed,
+            MailboxPeerReplicationError.InvalidMembershipProof
+                or MailboxPeerReplicationError.BindingMismatch =>
+                MailboxPeerReceiveStatus.AuthorizationFailed,
+            MailboxPeerReplicationError.ReplayConflict
+                or MailboxPeerReplicationError.ExpiredOrStale =>
+                MailboxPeerReceiveStatus.Conflict,
+            _ => MailboxPeerReceiveStatus.Malformed
+        };
+        switch (status)
+        {
+            case MailboxPeerReceiveStatus.AuthenticationFailed:
+                Interlocked.Increment(ref _authenticationFailures);
+                break;
+            case MailboxPeerReceiveStatus.AuthorizationFailed:
+                Interlocked.Increment(ref _authorizationFailures);
+                break;
+            case MailboxPeerReceiveStatus.Conflict:
+                Interlocked.Increment(ref _conflicts);
+                break;
+            default:
+                Interlocked.Increment(ref _rejected);
+                break;
         }
 
-        public Dictionary<string, ReplayEntry> Entries { get; } = new(StringComparer.Ordinal);
-
-        public DateTimeOffset LastAccess { get; set; }
-
-        public DateTimeOffset RateWindowStartedAt { get; set; }
-
-        public int ReservationsInWindow { get; set; }
+        return Failure(status);
     }
 
-    private sealed class ReplayEntry
+    private static MailboxPeerReceiveResult Failure(MailboxPeerReceiveStatus status) =>
+        new(status, ReadOnlyMemory<byte>.Empty);
+
+    private sealed class MailboxPeerRateLimiter
     {
-        public ReplayEntry(
-            string fingerprint,
-            DateTimeOffset createdAt,
-            DateTimeOffset rateWindowStartedAt)
+        private readonly object _gate = new();
+        private readonly Dictionary<string, Window> _windows = new(StringComparer.Ordinal);
+
+        public bool TryAcquire(ReadOnlySpan<byte> senderRouterId, ulong nowUnixSeconds)
         {
-            Fingerprint = fingerprint;
-            CreatedAt = createdAt;
-            RateWindowStartedAt = rateWindowStartedAt;
+            var key = Convert.ToHexString(SHA256.HashData(senderRouterId));
+            lock (_gate)
+            {
+                if (_windows.Count >= 4096)
+                {
+                    foreach (var expired in _windows
+                                 .Where(pair =>
+                                     nowUnixSeconds >= pair.Value.StartedAt + 60)
+                                 .Select(pair => pair.Key)
+                                 .ToArray())
+                    {
+                        _windows.Remove(expired);
+                    }
+                }
+
+                if (!_windows.TryGetValue(key, out var window))
+                {
+                    if (_windows.Count >= 4096)
+                    {
+                        return false;
+                    }
+
+                    window = new Window(nowUnixSeconds, 0);
+                }
+                else if (nowUnixSeconds >= window.StartedAt + 60)
+                {
+                    window = new Window(nowUnixSeconds, 0);
+                }
+
+                if (window.Count >= MailboxWireHttpContract.PeerStore.RequestsPerMinute)
+                {
+                    return false;
+                }
+
+                _windows[key] = window with { Count = window.Count + 1 };
+                return true;
+            }
         }
 
-        public string Fingerprint { get; }
+        private sealed record Window(ulong StartedAt, int Count);
+    }
 
-        public DateTimeOffset CreatedAt { get; }
+    private sealed class ValidationOnlyReplayJournal : IMailboxPeerReplayJournal
+    {
+        public static ValidationOnlyReplayJournal Instance { get; } = new();
 
-        public DateTimeOffset RateWindowStartedAt { get; }
+        public MailboxPeerReplayEvaluation EvaluateAndReserve(MailboxPeerReplayClaim claim) =>
+            new()
+            {
+                State = MailboxPeerReplayState.NewReserved,
+                CachedResponse = ReadOnlyMemory<byte>.Empty
+            };
 
-        public DateTimeOffset? CompletedAt { get; set; }
+        public void CompleteAtomically(
+            MailboxPeerReplayClaim claim,
+            ReadOnlyMemory<byte> canonicalMrr2Response) =>
+            throw new NotSupportedException();
 
-        public TaskCompletionSource<MailboxWriteReceipt?> Completion { get; } =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int CollectExpired(ulong nowUnixSeconds, int maximumRecords) =>
+            throw new NotSupportedException();
     }
 }

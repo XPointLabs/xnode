@@ -1,205 +1,203 @@
-using System.Collections.Concurrent;
 using System.Security.Cryptography;
-using Sodium;
-using XNode;
+using Deep.Protocol.DeepExtension.MailboxCapabilities;
+using Deep.Protocol.DeepExtension.MembershipRoutes;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 using XNode.Core;
 using XNode.Core.Mailbox;
-using XNode.Core.Runtime;
 
 namespace XNode.IntegrationTests.Runtime;
 
 public sealed class ReplicatedMailboxIntegrationTests : IDisposable
 {
-    private readonly string _root = Path.Combine(
-        Path.GetTempPath(),
-        $"xnode-mailbox-integration-{Guid.NewGuid():N}");
-    private readonly FixedClock _clock = new(
-        new DateTimeOffset(2026, 7, 26, 12, 0, 0, TimeSpan.Zero));
+    private readonly string _root =
+        Path.Combine(Path.GetTempPath(), $"xnode-prq2-integration-{Guid.NewGuid():N}");
 
     [Fact]
-    public async Task ThreeNodeWrite_PersistsTwoReplicas_WhenOneNodeIsUnavailable()
+    public async Task Coordinator_RequiresExactTwoOfTwoAndEmitsVerifiedMqr3()
     {
-        var identities = new[] { Identity(1), Identity(2), Identity(3) };
-        var options = new ReplicatedMailboxOptions
-        {
-            Enabled = true,
-            ReplicationFactor = 3,
-            WriteQuorum = 2,
-            PeerTimeout = TimeSpan.FromSeconds(1)
-        };
-        var stores = identities.ToDictionary(
-            identity => identity.Id,
-            identity => new ReplicatedMailboxStore(
-                Path.Combine(_root, identity.Id.Value),
-                options,
-                _clock));
-        var authorizer = new AllowPeers(identities.Select(identity => identity.Id));
-        var receivers = identities.Skip(1).ToDictionary(
-            identity => identity.Id,
-            identity => new MailboxReplicaReceiver(
-                identity.Id,
-                identity.Seed,
-                options,
-                stores[identity.Id],
-                authorizer,
-                new MailboxReplicaReplayGuard(),
-                _clock));
-        var client = new InMemoryPeerClient(receivers, unavailable: identities[2].Id);
-        var coordinator = new MailboxReplicationCoordinator(
-            identities[0].Id,
-            identities[0].Seed,
-            options,
-            stores[identities[0].Id],
-            client,
-            _clock);
-        var blob = Blob([10, 20, 30, 40]);
+        var fixture = new Fixture(_root);
+        using var recipient = await fixture.OpenRecipientAsync();
+        using var sender = await fixture.OpenSenderAsync(
+            new ReceiverPeerClient(recipient.Receiver));
 
-        var result = await coordinator.PutAsync(blob,
-        [
-            new MailboxReplicaPeer(identities[1].Id, "https://node-2/api/peer/mailbox/replica"),
-            new MailboxReplicaPeer(identities[2].Id, "https://node-3/api/peer/mailbox/replica")
-        ]);
+        var result = await sender.Coordinator.ReplicateAsync(
+            fixture.RecipientPeer,
+            fixture.CanonicalStore,
+            fixture.Policy);
 
-        Assert.True(result.QuorumAchieved);
-        Assert.Equal(2, result.Receipts.Count);
-        Assert.Single(await stores[identities[0].Id].ReadAsync(blob.MailboxId, 10));
-        Assert.Single(await stores[identities[1].Id].ReadAsync(blob.MailboxId, 10));
-        Assert.Empty(await stores[identities[2].Id].ReadAsync(blob.MailboxId, 10));
-
-        var duplicate = await coordinator.PutAsync(blob,
-        [
-            new MailboxReplicaPeer(identities[1].Id, "https://node-2/api/peer/mailbox/replica"),
-            new MailboxReplicaPeer(identities[2].Id, "https://node-3/api/peer/mailbox/replica")
-        ]);
-        Assert.True(duplicate.QuorumAchieved);
-        Assert.Equal(1, coordinator.Metrics.Duplicates);
-        Assert.Equal(1, receivers[identities[1].Id].Metrics.Duplicates);
+        Assert.Equal(MailboxPeerQuorumStatus.Durable, result.Status);
+        Assert.Equal(2, result.DurableReplicaCount);
+        Assert.Equal(776, result.CanonicalMqr3.Length);
+        var verified = MailboxPeerWireV2Codec.VerifyAndReserve(
+            fixture.CanonicalStore,
+            fixture.Policy,
+            fixture.Crypto,
+            fixture.MembershipVerifier,
+            sender.Journal);
+        var quorum = MailboxPeerWireV2Codec.VerifyDurableQuorumResponse(
+            result.CanonicalMqr3.Span,
+            verified,
+            fixture.Crypto);
+        Assert.Equal(2, quorum.ReplicaReceipts.Count);
+        Assert.Equal(
+            new[] { fixture.SenderId.Value, fixture.RecipientId.Value }.Order(StringComparer.Ordinal),
+            quorum.ReplicaReceipts
+                .Select(receipt => Convert.ToHexString(receipt.ReplicaId.Span).ToLowerInvariant())
+                .Order(StringComparer.Ordinal));
     }
 
     [Fact]
-    public async Task Receiver_FailsClosedForUnregisteredPeerAndTamperedCiphertext()
+    public async Task PartialFailure_IsNeverQuorumAndExactRetryCanResume()
     {
-        var sender = Identity(1);
-        var receiverIdentity = Identity(2);
-        var options = new ReplicatedMailboxOptions { Enabled = true };
-        var store = new ReplicatedMailboxStore(_root, options, _clock);
-        var receiver = new MailboxReplicaReceiver(
-            receiverIdentity.Id,
-            receiverIdentity.Seed,
-            options,
-            store,
-            new AllowPeers([]),
-            new MailboxReplicaReplayGuard(),
-            _clock);
-        var blob = Blob([1, 2, 3]);
-        var request = MailboxReplicationProtocol.SignRequest(
-            sender.Id,
-            receiverIdentity.Id,
-            sender.Seed,
-            blob,
-            _clock.UtcNow);
+        var fixture = new Fixture(_root);
+        var switchable = new SwitchablePeerClient();
+        using var sender = await fixture.OpenSenderAsync(switchable);
 
-        Assert.Equal(
-            MailboxReplicaReceiveStatus.Unauthorized,
-            (await receiver.ReceiveAsync(request)).Status);
+        var partial = await sender.Coordinator.ReplicateAsync(
+            fixture.RecipientPeer,
+            fixture.CanonicalStore,
+            fixture.Policy);
 
-        var authorized = new MailboxReplicaReceiver(
-            receiverIdentity.Id,
-            receiverIdentity.Seed,
-            options,
-            store,
-            new AllowPeers([sender.Id]),
-            new MailboxReplicaReplayGuard(),
-            _clock);
-        Assert.Equal(
-            MailboxReplicaReceiveStatus.Unauthorized,
-            (await authorized.ReceiveAsync(request with
+        Assert.Equal(MailboxPeerQuorumStatus.PartialFailure, partial.Status);
+        Assert.Equal(1, partial.DurableReplicaCount);
+        Assert.True(partial.CanonicalMqr3.IsEmpty);
+
+        using var recipient = await fixture.OpenRecipientAsync();
+        switchable.Receiver = recipient.Receiver;
+        var resumed = await sender.Coordinator.ReplicateAsync(
+            fixture.RecipientPeer,
+            fixture.CanonicalStore,
+            fixture.Policy);
+        Assert.Equal(MailboxPeerQuorumStatus.Durable, resumed.Status);
+        Assert.Equal(2, resumed.DurableReplicaCount);
+    }
+
+    [Fact]
+    public async Task DeadlineOrInvalidMrr2_CountsOnlyTheLocalReplica()
+    {
+        var timeoutFixture = new Fixture(Path.Combine(_root, "timeout"));
+        var timeoutOptions = timeoutFixture.Options;
+        timeoutOptions.PeerTimeout = TimeSpan.FromMilliseconds(50);
+        using (var sender = await timeoutFixture.OpenSenderAsync(new HangingPeerClient()))
+        {
+            var timedOut = await sender.Coordinator.ReplicateAsync(
+                timeoutFixture.RecipientPeer,
+                timeoutFixture.CanonicalStore,
+                timeoutFixture.Policy);
+            Assert.Equal(MailboxPeerQuorumStatus.PartialFailure, timedOut.Status);
+            Assert.Equal(1, timedOut.DurableReplicaCount);
+        }
+
+        var invalidFixture = new Fixture(Path.Combine(_root, "invalid"));
+        using var invalidSender = await invalidFixture.OpenSenderAsync(
+            new ConstantPeerClient(new byte[MailboxPeerWireV2Limits.Ed25519ReplicaResponseLength]));
+        var invalid = await invalidSender.Coordinator.ReplicateAsync(
+            invalidFixture.RecipientPeer,
+            invalidFixture.CanonicalStore,
+            invalidFixture.Policy);
+        Assert.Equal(MailboxPeerQuorumStatus.PartialFailure, invalid.Status);
+        Assert.Equal(1, invalid.DurableReplicaCount);
+    }
+
+    [Fact]
+    public async Task HttpPeerClient_UsesOnlyCanonicalPathsMediaAndExactMrr2Length()
+    {
+        var fixture = new Fixture(_root);
+        var responseBytes = Enumerable.Repeat(
+            (byte)0x5a,
+            MailboxPeerWireV2Limits.Ed25519ReplicaResponseLength).ToArray();
+        var handler = new CaptureHandler(responseBytes);
+        var client = new HttpMailboxReplicaPeerClient(
+            new HttpClient(handler),
+            new XNode.Core.Runtime.RouterRuntimeOptions
             {
-                Blob = request.Blob with { Ciphertext = Convert.ToBase64String([9, 9, 9]) }
-            })).Status);
-        Assert.Empty(await store.ReadAsync(blob.MailboxId, 10));
-    }
+                AllowPrivatePeerEndpoints = true,
+                AllowLoopbackPeerEndpoints = true
+            },
+            new ReplicatedMailboxOptions
+            {
+                Enabled = true,
+                AllowInsecureHttpPeerTransport = true
+            });
+        var peer = new MailboxReplicaPeer(
+            fixture.RecipientId,
+            $"http://127.0.0.1:8081{MailboxWireHttpContract.PeerStoreRoute}");
 
-    [Fact]
-    public async Task HttpPeerClient_RejectsPrivateEndpointBeforeNetworkAccess()
-    {
-        var sender = Identity(1);
-        var peer = Identity(2);
-        var handler = new CountingHandler(new HttpResponseMessage(System.Net.HttpStatusCode.OK));
-        using var http = new HttpClient(handler);
-        var client = new HttpMailboxReplicaPeerClient(
-            http,
-            new RouterRuntimeOptions(),
-            new ReplicatedMailboxOptions());
-        var request = MailboxReplicationProtocol.SignRequest(
-            sender.Id,
-            peer.Id,
-            sender.Seed,
-            Blob([1, 2, 3]),
-            _clock.UtcNow);
-
-        await Assert.ThrowsAsync<HttpRequestException>(() => client.PutAsync(
-            new MailboxReplicaPeer(peer.Id, "http://10.1.2.3:8081/api/peer/mailbox/replica"),
-            request,
-            CancellationToken.None));
-        Assert.Equal(0, handler.Requests);
-    }
-
-    [Fact]
-    public async Task HttpPeerClient_RejectsPlainHttpByDefault()
-    {
-        var sender = Identity(1);
-        var peer = Identity(2);
-        var handler = new CountingHandler(new HttpResponseMessage(System.Net.HttpStatusCode.OK));
-        using var http = new HttpClient(handler);
-        var client = new HttpMailboxReplicaPeerClient(
-            http,
-            new RouterRuntimeOptions(),
-            new ReplicatedMailboxOptions());
-        var request = MailboxReplicationProtocol.SignRequest(
-            sender.Id,
-            peer.Id,
-            sender.Seed,
-            Blob([1, 2, 3]),
-            _clock.UtcNow);
-
-        await Assert.ThrowsAsync<HttpRequestException>(() => client.PutAsync(
-            new MailboxReplicaPeer(peer.Id, "http://8.8.8.8/api/peer/mailbox/replica"),
-            request,
-            CancellationToken.None));
-        Assert.Equal(0, handler.Requests);
-    }
-
-    [Fact]
-    public async Task HttpPeerClient_BoundsChunkedResponseWithoutTrustingContentLength()
-    {
-        var sender = Identity(1);
-        var peer = Identity(2);
-        var content = new StreamContent(new MemoryStream(new byte[1025]));
-        content.Headers.ContentLength = null;
-        var handler = new CountingHandler(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
-        {
-            Content = content
-        });
-        using var http = new HttpClient(handler);
-        var client = new HttpMailboxReplicaPeerClient(
-            http,
-            new RouterRuntimeOptions { MaxPeerRequestBodyBytes = 1024 },
-            new ReplicatedMailboxOptions());
-        var request = MailboxReplicationProtocol.SignRequest(
-            sender.Id,
-            peer.Id,
-            sender.Seed,
-            Blob([1, 2, 3]),
-            _clock.UtcNow);
-
-        var receipt = await client.PutAsync(
-            new MailboxReplicaPeer(peer.Id, "https://8.8.8.8/api/peer/mailbox/replica"),
-            request,
+        var result = await client.SendAsync(
+            peer,
+            MailboxPeerReplicationOperation.Store,
+            fixture.CanonicalStore,
             CancellationToken.None);
 
-        Assert.Null(receipt);
-        Assert.Equal(1, handler.Requests);
+        Assert.Equal(responseBytes, result?.ToArray());
+        Assert.Equal(MailboxWireHttpContract.PeerStoreRoute, handler.SeenUri?.AbsolutePath);
+        Assert.Equal(
+            MailboxWireHttpContract.Prq2ContentType,
+            handler.SeenContentType);
+        Assert.Equal(fixture.CanonicalStore.Length, handler.SeenContentLength);
+        await Assert.ThrowsAsync<HttpRequestException>(() =>
+            client.SendAsync(
+                peer with { Endpoint = "http://127.0.0.1:8081/api/peer/mailbox/replica" },
+                MailboxPeerReplicationOperation.Store,
+                fixture.CanonicalStore,
+                CancellationToken.None));
+    }
+
+    [Fact]
+    public void HttpPreflight_EnforcesContentLengthMediaEncodingAndOperationBounds()
+    {
+        var contract = MailboxWireHttpContract.PeerStore;
+        var context = new DefaultHttpContext();
+        Assert.Equal(
+            MailboxHttpFailure.MissingContentLength,
+            MailboxPeerHttpRequestValidator.Validate(context.Request, contract));
+
+        context.Request.ContentLength = contract.MinimumRequestBytes;
+        context.Request.ContentType = "application/json";
+        Assert.Equal(
+            MailboxHttpFailure.UnsupportedContentTypeOrEncoding,
+            MailboxPeerHttpRequestValidator.Validate(context.Request, contract));
+
+        context.Request.ContentType = contract.RequestContentType;
+        context.Request.Headers.ContentEncoding = "gzip";
+        Assert.Equal(
+            MailboxHttpFailure.UnsupportedContentTypeOrEncoding,
+            MailboxPeerHttpRequestValidator.Validate(context.Request, contract));
+
+        context.Request.Headers.Remove("Content-Encoding");
+        context.Request.ContentLength = contract.MinimumRequestBytes - 1;
+        Assert.Equal(
+            MailboxHttpFailure.MalformedCanonicalBody,
+            MailboxPeerHttpRequestValidator.Validate(context.Request, contract));
+        context.Request.ContentLength = contract.MaximumRequestBytes + 1;
+        Assert.Equal(
+            MailboxHttpFailure.PayloadTooLarge,
+            MailboxPeerHttpRequestValidator.Validate(context.Request, contract));
+        context.Request.ContentLength = contract.MaximumRequestBytes;
+        Assert.Null(MailboxPeerHttpRequestValidator.Validate(context.Request, contract));
+    }
+
+    [Fact]
+    public async Task LegacyEndpointIs404AndCanonicalPeerRoutesAreNotPublicListenerRoutes()
+    {
+        using var factory = new NoHostedServicesFactory();
+        using var client = factory.CreateClient(
+            new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+
+        using var legacy = await client.PostAsync(
+            "/api/peer/mailbox/replica",
+            new ByteArrayContent([]));
+        using var canonical = await client.PostAsync(
+            MailboxWireHttpContract.PeerStoreRoute,
+            new ByteArrayContent([]));
+
+        Assert.Equal(System.Net.HttpStatusCode.NotFound, legacy.StatusCode);
+        Assert.Equal(System.Net.HttpStatusCode.NotFound, canonical.StatusCode);
     }
 
     public void Dispose()
@@ -210,97 +208,310 @@ public sealed class ReplicatedMailboxIntegrationTests : IDisposable
         }
     }
 
-    private EncryptedMailboxBlob Blob(byte[] ciphertext)
+    private sealed class Fixture
     {
-        var mailboxId = Convert.ToHexString(SHA256.HashData("opaque-rotating-mailbox"u8.ToArray()))
-            .ToLowerInvariant();
-        var blobId = Convert.ToHexString(SHA256.HashData(ciphertext)).ToLowerInvariant();
-        return new EncryptedMailboxBlob(
-            mailboxId,
-            blobId,
-            _clock.UtcNow.AddHours(1).ToUnixTimeMilliseconds(),
-            Convert.ToBase64String(ciphertext));
-    }
+        private readonly string _root;
+        private readonly byte[] _senderSeed = Range(0x10, 32);
+        private readonly byte[] _recipientSeed = Range(0x50, 32);
+        private readonly FixedClock _clock = new(
+            new DateTimeOffset(2026, 7, 28, 8, 0, 0, TimeSpan.Zero));
 
-    private static IdentityData Identity(byte value)
-    {
-        var seed = Enumerable.Repeat(value, 32).ToArray();
-        var pair = PublicKeyAuth.GenerateKeyPair(seed);
-        return new IdentityData(
-            RouterId.FromBytes(pair.PublicKey),
-            Convert.ToHexString(seed).ToLowerInvariant());
-    }
-
-    private sealed record IdentityData(RouterId Id, string Seed);
-
-    private sealed class FixedClock : IClock
-    {
-        public FixedClock(DateTimeOffset now)
+        public Fixture(string root)
         {
-            UtcNow = now;
+            _root = root;
+            Crypto = new SodiumMailboxPeerReplicationCrypto();
+            SenderId = RouterId.FromBytes(Crypto.GetPublicKey(_senderSeed));
+            RecipientId = RouterId.FromBytes(Crypto.GetPublicKey(_recipientSeed));
+            var descriptors = new[]
+            {
+                Descriptor(SenderId, Crypto.GetPublicKey(_senderSeed), "https://sender.test"),
+                Descriptor(RecipientId, Crypto.GetPublicKey(_recipientSeed), "https://recipient.test")
+            };
+            var commitment = MembershipRouteDescriptorCodec.ComputeRoot(descriptors);
+            var inclusion = MembershipRouteDescriptorCodec.BuildProofs(descriptors);
+            var senderProof = Proof(descriptors[0], inclusion[0], commitment);
+            var recipientProof = Proof(descriptors[1], inclusion[1], commitment);
+            Envelope = new MailboxEncryptedEnvelope
+            {
+                Epoch = 7,
+                MailboxId = new BlindedMailboxId(Range(0xc0, 32)),
+                PlacementId = new BlindedPlacementId(Range(0xa0, 32)),
+                OperationId = Range(0x70, 16),
+                DeduplicationDigest = SHA256.HashData(Range(1, 64)),
+                CreatedAtUnixSeconds = Now - 30,
+                ExpiresAtUnixSeconds = Now + 3600,
+                Ciphertext = Range(1, 64)
+            };
+            var payload = MailboxClientCodec.EncodeEncryptedEnvelope(Envelope);
+            var unsigned = new MailboxPeerWireRequestV2
+            {
+                Operation = MailboxPeerReplicationOperation.Store,
+                Epoch = 7,
+                OperationId = Envelope.OperationId,
+                SenderRouterId = SenderId.ToBytes(),
+                RecipientRouterId = RecipientId.ToBytes(),
+                MembershipCommitment = commitment,
+                PlacementCommitment = MailboxPlacementCommitment.Compute(Envelope.PlacementId),
+                BlindedMailboxId = Envelope.MailboxId.Bytes,
+                Cursor = 42,
+                CreatedAtUnixSeconds = Now,
+                ExpiresAtUnixSeconds = Envelope.ExpiresAtUnixSeconds,
+                ReplayNonce = Range(0x30, 32),
+                PayloadDigest = SHA256.HashData(payload),
+                Payload = payload,
+                SenderMembershipProof = senderProof,
+                RecipientMembershipProof = recipientProof,
+                Signature = ReadOnlyMemory<byte>.Empty
+            };
+            CanonicalStore = MailboxPeerWireV2Codec.Encode(
+                Crypto.SignRequest(unsigned, _senderSeed));
+            Options = new ReplicatedMailboxOptions
+            {
+                Enabled = true,
+                MinimumTtl = TimeSpan.FromSeconds(1),
+                MaxPeerReplayRecords = 64,
+                MaxPeerReplayRecordsPerRouterPairEpoch = 32,
+                MaxPeerMutationRecords = 64
+            };
+            Authority = new MailboxPeerAuthorityOptions
+            {
+                CurrentEpoch = 7,
+                CurrentMembershipCommitment =
+                    Convert.ToHexString(commitment).ToLowerInvariant(),
+                CurrentEpochExpiresAtUnixSeconds = Now + 7200
+            };
+            Policy = new MailboxPeerWireVerificationPolicyV2
+            {
+                ExpectedOperation = MailboxPeerReplicationOperation.Store,
+                Epoch = 7,
+                OperationId = Envelope.OperationId,
+                SenderRouterId = SenderId.ToBytes(),
+                RecipientRouterId = RecipientId.ToBytes(),
+                MembershipCommitment = commitment,
+                PlacementCommitment = unsigned.PlacementCommitment,
+                PlacementId = Envelope.PlacementId,
+                NowUnixSeconds = Now,
+                EpochExpiresAtUnixSeconds = Now + 7200
+            };
+            RecipientPeer = new MailboxReplicaPeer(
+                RecipientId,
+                $"https://recipient.test{MailboxWireHttpContract.PeerStoreRoute}");
         }
 
-        public DateTimeOffset UtcNow { get; }
-    }
+        public SodiumMailboxPeerReplicationCrypto Crypto { get; }
+        public MembershipRoutesMailboxReplicaProofVerifier MembershipVerifier { get; } = new();
+        public RouterId SenderId { get; }
+        public RouterId RecipientId { get; }
+        public MailboxEncryptedEnvelope Envelope { get; }
+        public byte[] CanonicalStore { get; }
+        public ReplicatedMailboxOptions Options { get; }
+        public MailboxPeerAuthorityOptions Authority { get; }
+        public MailboxPeerWireVerificationPolicyV2 Policy { get; }
+        public MailboxReplicaPeer RecipientPeer { get; }
+        private ulong Now => checked((ulong)_clock.UtcNow.ToUnixTimeSeconds());
 
-    private sealed class AllowPeers : IMailboxPeerAuthorizer
-    {
-        private readonly IReadOnlySet<RouterId> _allowed;
-
-        public AllowPeers(IEnumerable<RouterId> allowed)
+        public async Task<RecipientRuntime> OpenRecipientAsync()
         {
-            _allowed = allowed.ToHashSet();
+            var root = Path.Combine(_root, "recipient");
+            Directory.CreateDirectory(root);
+            var blobs = new ReplicatedMailboxStore(root, Options, _clock);
+            await blobs.InitializeAsync();
+            var mutations = new MailboxPeerMutationStore(root, Options, blobs);
+            await mutations.InitializeAsync();
+            var journal = new DurableMailboxPeerReplayJournal(root, Options);
+            var policy = new MailboxPeerRequestPolicyResolver(
+                RecipientId,
+                Convert.ToHexString(_recipientSeed),
+                Authority,
+                mutations);
+            var receiver = new MailboxReplicaReceiver(
+                Convert.ToHexString(_recipientSeed),
+                Options,
+                mutations,
+                policy,
+                MembershipVerifier,
+                journal,
+                _clock);
+            return new RecipientRuntime(mutations, journal, receiver);
         }
 
-        public bool IsAuthorized(RouterId routerId, DateTimeOffset now) => _allowed.Contains(routerId);
-    }
-
-    private sealed class InMemoryPeerClient : IMailboxReplicaPeerClient
-    {
-        private readonly IReadOnlyDictionary<RouterId, MailboxReplicaReceiver> _receivers;
-        private readonly RouterId _unavailable;
-        private readonly ConcurrentDictionary<string, byte> _seen = new();
-
-        public InMemoryPeerClient(
-            IReadOnlyDictionary<RouterId, MailboxReplicaReceiver> receivers,
-            RouterId unavailable)
+        public async Task<SenderRuntime> OpenSenderAsync(IMailboxReplicaPeerClient client)
         {
-            _receivers = receivers;
-            _unavailable = unavailable;
+            var root = Path.Combine(_root, "sender");
+            Directory.CreateDirectory(root);
+            var blobs = new ReplicatedMailboxStore(root, Options, _clock);
+            await blobs.InitializeAsync();
+            var mutations = new MailboxPeerMutationStore(root, Options, blobs);
+            await mutations.InitializeAsync();
+            var journal = new DurableMailboxPeerReplayJournal(root, Options);
+            var coordinator = new MailboxReplicationCoordinator(
+                SenderId,
+                Convert.ToHexString(_senderSeed),
+                Options,
+                mutations,
+                client,
+                MembershipVerifier,
+                journal);
+            return new SenderRuntime(mutations, journal, coordinator);
         }
 
-        public async Task<MailboxWriteReceipt?> PutAsync(
+        private MembershipRouteDescriptor Descriptor(
+            RouterId id,
+            byte[] signingKey,
+            string endpoint) => new()
+        {
+            RouterId = id.ToBytes(),
+            Ed25519PublicKey = signingKey,
+            X25519PublicKey = SHA256.HashData(signingKey),
+            RpcEndpoint = endpoint,
+            Roles = MembershipRouteRole.Storage,
+            Capabilities = MembershipRouteCapability.Storage,
+            Epoch = 7,
+            ValidFromUnixSeconds = Now - 60,
+            ValidUntilUnixSeconds = Now + 7200
+        };
+
+        private static MailboxReplicaMembershipProof Proof(
+            MembershipRouteDescriptor descriptor,
+            MembershipRouteInclusionProof proof,
+            byte[] commitment) => new()
+        {
+            ReplicaId = descriptor.RouterId,
+            SigningPublicKey = descriptor.Ed25519PublicKey,
+            Epoch = descriptor.Epoch,
+            MembershipCommitment = commitment,
+            CanonicalInclusionProof = MailboxReplicaRouteProofCodec.Encode(descriptor, proof)
+        };
+
+        private static byte[] Range(int start, int length) =>
+            Enumerable.Range(start, length)
+                .Select(value => unchecked((byte)value))
+                .ToArray();
+    }
+
+    private sealed record RecipientRuntime(
+        MailboxPeerMutationStore Mutations,
+        DurableMailboxPeerReplayJournal Journal,
+        MailboxReplicaReceiver Receiver) : IDisposable
+    {
+        public void Dispose()
+        {
+            Journal.Dispose();
+            Mutations.Dispose();
+        }
+    }
+
+    private sealed record SenderRuntime(
+        MailboxPeerMutationStore Mutations,
+        DurableMailboxPeerReplayJournal Journal,
+        MailboxReplicationCoordinator Coordinator) : IDisposable
+    {
+        public void Dispose()
+        {
+            Journal.Dispose();
+            Mutations.Dispose();
+        }
+    }
+
+    private sealed class ReceiverPeerClient(MailboxReplicaReceiver receiver)
+        : IMailboxReplicaPeerClient
+    {
+        public async Task<ReadOnlyMemory<byte>?> SendAsync(
             MailboxReplicaPeer peer,
-            SignedMailboxReplicaRequest request,
+            MailboxPeerReplicationOperation operation,
+            ReadOnlyMemory<byte> canonicalPrq2,
             CancellationToken cancellationToken)
         {
-            if (peer.RouterId == _unavailable)
-            {
-                throw new HttpRequestException("simulated unavailable node");
-            }
-
-            _seen.TryAdd($"{peer.RouterId}:{request.Blob.BlobId}", 0);
-            return (await _receivers[peer.RouterId].ReceiveAsync(request, cancellationToken)).Receipt;
+            var result = await receiver.ReceiveAsync(canonicalPrq2, operation, cancellationToken);
+            return result.Status == MailboxPeerReceiveStatus.Accepted
+                ? result.CanonicalResponse
+                : null;
         }
     }
 
-    private sealed class CountingHandler : HttpMessageHandler
+    private sealed class SwitchablePeerClient : IMailboxReplicaPeerClient
     {
-        private readonly HttpResponseMessage _response;
+        public MailboxReplicaReceiver? Receiver { get; set; }
 
-        public CountingHandler(HttpResponseMessage response)
+        public async Task<ReadOnlyMemory<byte>?> SendAsync(
+            MailboxReplicaPeer peer,
+            MailboxPeerReplicationOperation operation,
+            ReadOnlyMemory<byte> canonicalPrq2,
+            CancellationToken cancellationToken)
         {
-            _response = response;
-        }
+            if (Receiver is null)
+            {
+                return null;
+            }
 
-        public int Requests { get; private set; }
+            var result = await Receiver.ReceiveAsync(canonicalPrq2, operation, cancellationToken);
+            return result.Status == MailboxPeerReceiveStatus.Accepted
+                ? result.CanonicalResponse
+                : null;
+        }
+    }
+
+    private sealed class HangingPeerClient : IMailboxReplicaPeerClient
+    {
+        public async Task<ReadOnlyMemory<byte>?> SendAsync(
+            MailboxReplicaPeer peer,
+            MailboxPeerReplicationOperation operation,
+            ReadOnlyMemory<byte> canonicalPrq2,
+            CancellationToken cancellationToken)
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return null;
+        }
+    }
+
+    private sealed class ConstantPeerClient(byte[] response) : IMailboxReplicaPeerClient
+    {
+        public Task<ReadOnlyMemory<byte>?> SendAsync(
+            MailboxReplicaPeer peer,
+            MailboxPeerReplicationOperation operation,
+            ReadOnlyMemory<byte> canonicalPrq2,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<ReadOnlyMemory<byte>?>(response);
+    }
+
+    private sealed class CaptureHandler(byte[] response) : HttpMessageHandler
+    {
+        public Uri? SeenUri { get; private set; }
+        public string? SeenContentType { get; private set; }
+        public long? SeenContentLength { get; private set; }
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-            Requests++;
-            return Task.FromResult(_response);
+            SeenUri = request.RequestUri;
+            SeenContentType = request.Content?.Headers.ContentType?.ToString();
+            SeenContentLength = request.Content?.Headers.ContentLength;
+            var message = new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(response)
+            };
+            message.Content.Headers.ContentType =
+                new System.Net.Http.Headers.MediaTypeHeaderValue(
+                    MailboxWireHttpContract.Mrr2ContentType);
+            return Task.FromResult(message);
+        }
+    }
+
+    private sealed class FixedClock(DateTimeOffset now) : IClock
+    {
+        public DateTimeOffset UtcNow { get; } = now;
+    }
+
+    private sealed class NoHostedServicesFactory : WebApplicationFactory<Program>
+    {
+        protected override void ConfigureWebHost(IWebHostBuilder builder)
+        {
+            builder.UseEnvironment("Development");
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IHostedService>();
+            });
         }
     }
 }

@@ -67,31 +67,39 @@ For each ported behavior:
 - Production publication remains disabled until an external signer/indexer generates the artifact.
   Deterministic signers are permitted only for an explicitly mounted Docker development fixture.
 
-## Replicated Encrypted Mailbox Primitive V1
+## Canonical P10C peer mailbox runtime
 
-- XNode owns an internal authenticated peer replication protocol for opaque encrypted blobs.
-  It does not define the client-facing mailbox discovery/retrieval contract.
-- A write is successful only after the configured number of distinct storage-router receipts
-  verifies against the exact mailbox id, blob digest and expiry. Missing, timed-out or invalid
-  receipts never count toward quorum.
-- The blob id is the SHA-256 digest of the canonical base64-decoded ciphertext. Replays are
-  transactionally idempotent: exact signed-request retries return the cached receipt only after
-  durable storage, while a conflicting request with the same sender nonce fails closed.
-- Sender and storage-node identities are self-certifying Ed25519 router identities. The receiver
-  additionally requires the sender to be present and fresh in the locally verified registered
-  relay catalog.
-- Mailbox ids are opaque, rotating client-derived values. They are not account identifiers.
-  No mailbox id, blob id or ciphertext is written to application metrics or logs.
-- The primitive is disabled by default. Enabling peer storage before a reviewed client AEAD,
-  blinded mailbox-id derivation, placement and authenticated retrieval contract exists is not a
-  production activation.
+- The peer listener accepts only canonical P10B3 PRQ2 Store/Tombstone bytes on the two protocol
+  routes and returns only native signed durable MRR2. The legacy JSON route is removed; PRQ1,
+  MQR2 and cross-operation frames fail closed.
+- The configured epoch commitment is the authority anchor. Both RIP1/MIP1 proofs must bind exact
+  router ids, independent Ed25519 keys, Storage role/capability, epoch and commitment. Store also
+  binds the exact MEO1 placement preimage; Tombstone resolves the identical durable Store context.
+- PRQ2 CreatedAt permits zero future skew. Replay is durably Pending before mutation; exact
+  completed retries return the cached reverified MRR2, conflicts fail closed, and pending crash
+  claims recover idempotently.
+- Replay collection follows the protocol state machine and begins only after authoritative epoch
+  retirement plus seven days. Both collection and journal capacities are bounded.
+- Store reservations, blobs and logical tombstones use write-through atomic replacement and
+  parent-directory durability barriers. Logical tombstone precedes best-effort deletion and
+  startup retries cleanup.
+- The sender coordinator requires the exact two selected MIP1-keyed replicas, so quorum is 2-of-2,
+  and emits only PRQ2-domain MQR3. Partial failure, deadline or invalid evidence never succeeds.
+- HTTP routes, media types, body bounds, status codes, 15-second deadlines, concurrency 32 and
+  120/minute verified-sender admission come from P10B3 constants.
+- No identity, capability, route/placement value, mailbox id, ciphertext or receipt bytes enter
+  logs or metric labels. Ordinary onion replay remains explicitly volatile debt.
+- Peer runtime readiness is not client activation. Public mailbox ingress remains unmapped.
 
 ## Client Mailbox Adapter V1 (Dormant)
 
-- The runtime consumes only the four-package P03B2 closure
+- The dormant adapter ledger still uses its pre-activation internal MQR2 completion evidence.
+  It is unreachable and is not accepted on the P10C peer wire. Reviewed public composition must
+  replace it with P10B3 MQR3 and exact MAK1-order MAR1, never transcode MQR2.
+- The runtime consumes only the four-package P10B3 closure
   `Deep.Protocol`, `Deep.Protocol.Abstractions`, `Deep.Protocol.MembershipRoutes` and
-  `Deep.Protocol.Protobuf` at `0.3.0-p03b2.a34e726`, produced from exact source commit
-  `a34e726bd60d762ac9f76c2ebf5456b266d8186e`.
+  `Deep.Protocol.Protobuf` at `0.3.0-p10b3.60ce2e3`, produced from accepted source
+  `60ce2e3a5140f245d6bcfecf60fa456c26ffe730`.
 - Strict `MAU2` decoding plus Ed25519 `MCG2`/`MCP2` verification is registered only as a dormant
   internal dependency. Issuer lifecycle/generation authority and revocation policy are injected
   trust boundaries and default to fail-closed. No attacker-supplied grant becomes authority.
@@ -163,9 +171,9 @@ For each ported behavior:
 - Ledger schema v3 adds canonical blob, placement and membership bindings plus ACK journals.
   Schema v2 is rejected fail-closed rather than migrated because it cannot prove those bindings.
   `maxOperationEntries` charges stores, ACK operations and every ACK item.
-- Production issuer/revocation/key distribution, membership-bound placement, native
-  store/tombstone peer transport, and a reviewed public ingress/ACK response contract remain
-  mandatory before exposing any client mailbox route.
+- Production issuer/revocation/key distribution, membership-bound client placement, composition
+  of the canonical peer transport into the dormant client adapters, MQR3/MAR1 public responses,
+  and a reviewed public ingress contract remain mandatory before exposing any client mailbox route.
 - Runtime activation preflight is recorded in
   `docs/adr/0006-mailbox-client-activation-blocker.md`. `MailboxClient:Enabled=true` now fails host
   construction; configuration cannot substitute for the missing reviewed runtime authorities
