@@ -243,7 +243,22 @@ public sealed class DurableMailboxPeerReplayJournal : IMailboxPeerReplayJournal,
             using var stream = File.OpenRead(path);
             var persisted = JsonSerializer.Deserialize<PersistedReplay>(stream, JsonOptions)
                 ?? throw new InvalidDataException("A PRQ2 replay journal record is empty.");
-            _ = persisted.Snapshot();
+            var snapshot = persisted.Snapshot();
+            _ = MailboxPeerReplayStateMachine.IsCollectable(snapshot, 0);
+            if (snapshot.Status == MailboxPeerReplayRecordStatus.Completed)
+            {
+                var receipt = MailboxReceiptV2Codec.DecodeReplica(
+                    snapshot.CanonicalResponse.Span);
+                var canonical = MailboxReceiptV2Codec.EncodeReplica(receipt);
+                if (!CryptographicOperations.FixedTimeEquals(
+                        canonical,
+                        snapshot.CanonicalResponse.Span))
+                {
+                    throw new InvalidDataException(
+                        "The cached MRR2 response is not canonical.");
+                }
+            }
+
             if (persisted.Schema != SchemaVersion
                 || !IsLowerHex(persisted.PartitionKey, 32))
             {
@@ -254,7 +269,7 @@ public sealed class DurableMailboxPeerReplayJournal : IMailboxPeerReplayJournal,
         }
         catch (Exception exception) when (
             exception is IOException or JsonException or FormatException
-                or MailboxPeerReplicationException)
+                or MailboxPeerReplicationException or MailboxReceiptException)
         {
             throw new InvalidDataException(
                 "The PRQ2 replay journal is corrupt and cannot be opened.",

@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text.Json.Nodes;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
 using Deep.Protocol.DeepExtension.MembershipRoutes;
 using Microsoft.AspNetCore.Hosting;
@@ -292,6 +293,72 @@ public sealed class ReplicatedMailboxIntegrationTests : IDisposable
         Assert.Equal("failed", readiness.Status);
     }
 
+    [Theory]
+    [InlineData("replay")]
+    [InlineData("mutation")]
+    public async Task PeerReadiness_RejectsFutureRetainedSemanticCorruption(
+        string journalKind)
+    {
+        var fixture = new Fixture(_root);
+        using (var runtime = await fixture.OpenRecipientAsync())
+        {
+            Assert.Equal(
+                MailboxPeerReceiveStatus.Accepted,
+                (await runtime.Receiver.ReceiveAsync(
+                    fixture.CanonicalStore,
+                    MailboxPeerReplicationOperation.Store)).Status);
+        }
+
+        var root = Path.Combine(_root, "recipient");
+        var directory = journalKind == "replay"
+            ? fixture.Options.PeerReplayDirectoryName
+            : fixture.Options.PeerMutationDirectoryName;
+        var path = Assert.Single(Directory.EnumerateFiles(
+            Path.Combine(root, directory),
+            "*.json"));
+        var record = Assert.IsType<JsonObject>(JsonNode.Parse(await File.ReadAllTextAsync(path)));
+        if (journalKind == "replay")
+        {
+            record["canonicalResponse"] = Convert.ToBase64String(
+                new byte[MailboxPeerWireV2Limits.Ed25519ReplicaResponseLength]);
+        }
+        else
+        {
+            record["retainUntilUnixSeconds"] =
+                record["retainUntilUnixSeconds"]!.GetValue<ulong>() + 1;
+        }
+
+        await File.WriteAllTextAsync(path, record.ToJsonString());
+        var services = new ServiceCollection();
+        services.AddSingleton<IClock>(fixture.Clock);
+        services.AddSingleton(fixture.Options);
+        services.AddSingleton(provider => new ReplicatedMailboxStore(
+            root,
+            fixture.Options,
+            provider.GetRequiredService<IClock>()));
+        services.AddSingleton(provider => new DurableMailboxPeerReplayJournal(
+            root,
+            fixture.Options,
+            provider.GetRequiredService<IClock>()));
+        services.AddSingleton(provider => new MailboxPeerMutationStore(
+            root,
+            fixture.Options,
+            provider.GetRequiredService<ReplicatedMailboxStore>(),
+            provider.GetRequiredService<IClock>()));
+        using var provider = services.BuildServiceProvider();
+        await provider.GetRequiredService<ReplicatedMailboxStore>().InitializeAsync();
+        var readiness = new MailboxPeerRuntimeReadiness();
+        var hosted = new MailboxPeerStoreHostedService(
+            fixture.Options,
+            provider,
+            readiness);
+
+        await Assert.ThrowsAsync<InvalidDataException>(() =>
+            hosted.StartAsync(CancellationToken.None));
+        Assert.False(readiness.Ready);
+        Assert.Equal("failed", readiness.Status);
+    }
+
     [Fact]
     public async Task LegacyEndpointIs404AndCanonicalPeerRoutesAreNotPublicListenerRoutes()
     {
@@ -427,6 +494,7 @@ public sealed class ReplicatedMailboxIntegrationTests : IDisposable
         public byte[] CanonicalStore { get; }
         public ReplicatedMailboxOptions Options { get; }
         public MailboxPeerAuthorityOptions Authority { get; }
+        public FixedClock Clock => _clock;
         public MailboxPeerWireVerificationPolicyV2 Policy { get; }
         public MailboxReplicaPeer RecipientPeer { get; }
         private ulong Now => checked((ulong)_clock.UtcNow.ToUnixTimeSeconds());

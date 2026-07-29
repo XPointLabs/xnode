@@ -378,10 +378,14 @@ Operational invariants:
 - replay GC uses the authoritative epoch retirement time plus the protocol-fixed seven-day
 - replay startup and every sender/receiver reserve path run priority-ordered bounded collection
   before reporting capacity, so a full journal containing retired completed state remains live;
+- every replay record is semantically validated at startup even when its retention boundary is in
+  the future: the P10B3 state machine must accept its status/timestamp/epoch/retention ordering,
+  Pending carries no response, and Completed carries an exact canonical MRR2-domain response;
 - each Store mutation has one durable record with expiry/retention metadata. Pending Store is
   exclusive to its exact replay nonce. Tombstone advances that same record through
   `tombstone-pending` to `tombstoned`, so no two-file gap can admit a duplicate Store; startup
-  reconciles deletion and bounded GC removes only state past its live/replay boundary;
+  validates exact epoch-plus-seven-day retention and state-specific nonce/timestamp fields,
+  reconciles deletion, and bounded GC removes only state past its live/replay boundary;
 - the sender coordinator accepts only the exact local and recipient MIP1-keyed MRR2 pair and
   the recipient endpoint must exactly match its verified RIP1 RPC endpoint plus the operation
   route, and emits native PRQ2-only MQR3. One receipt, timeout or invalid evidence is never quorum;

@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text.Json.Nodes;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
 using Deep.Protocol.DeepExtension.MembershipRoutes;
 using XNode.Core;
@@ -544,6 +545,113 @@ public sealed class ReplicatedMailboxTests : IDisposable
         Assert.Equal(
             MailboxPeerReplayState.NewReserved,
             runtime.Journal.EvaluateAndReserve(next).State);
+    }
+
+    [Theory]
+    [InlineData("status")]
+    [InlineData("response-domain")]
+    [InlineData("timestamp-order")]
+    [InlineData("retention")]
+    public async Task FutureRetainedReplayCorruption_FailsConstructor(
+        string corruption)
+    {
+        var fixture = new PeerFixture(_root);
+        using (var runtime = await fixture.OpenRecipientAsync())
+        {
+            Assert.Equal(
+                MailboxPeerReceiveStatus.Accepted,
+                (await runtime.Receiver.ReceiveAsync(
+                    fixture.CanonicalStore,
+                    MailboxPeerReplicationOperation.Store)).Status);
+        }
+
+        var options = PeerFixture.Options();
+        var path = Assert.Single(Directory.EnumerateFiles(
+            Path.Combine(_root, options.PeerReplayDirectoryName),
+            "*.json"));
+        var record = Assert.IsType<JsonObject>(JsonNode.Parse(await File.ReadAllTextAsync(path)));
+        switch (corruption)
+        {
+            case "status":
+                record["status"] = 99;
+                break;
+            case "response-domain":
+                record["canonicalResponse"] = Convert.ToBase64String(
+                    new byte[MailboxPeerWireV2Limits.Ed25519ReplicaResponseLength]);
+                break;
+            case "timestamp-order":
+                record["expiresAtUnixSeconds"] =
+                    record["createdAtUnixSeconds"]!.GetValue<ulong>();
+                break;
+            case "retention":
+                record["retainUntilUnixSeconds"] =
+                    record["retainUntilUnixSeconds"]!.GetValue<ulong>() + 1;
+                break;
+            default:
+                throw new InvalidOperationException("Unknown corruption.");
+        }
+
+        await File.WriteAllTextAsync(path, record.ToJsonString());
+        Assert.Throws<InvalidDataException>(() =>
+            new DurableMailboxPeerReplayJournal(
+                _root,
+                options,
+                fixture.Clock));
+    }
+
+    [Theory]
+    [InlineData("epoch-lifetime")]
+    [InlineData("retention")]
+    [InlineData("state-fields")]
+    [InlineData("timestamp-order")]
+    public async Task FutureRetainedMutationCorruption_FailsConstructor(
+        string corruption)
+    {
+        var fixture = new PeerFixture(_root);
+        using (var runtime = await fixture.OpenRecipientAsync())
+        {
+            Assert.Equal(
+                MailboxPeerReceiveStatus.Accepted,
+                (await runtime.Receiver.ReceiveAsync(
+                    fixture.CanonicalStore,
+                    MailboxPeerReplicationOperation.Store)).Status);
+        }
+
+        var options = PeerFixture.Options();
+        var path = Assert.Single(Directory.EnumerateFiles(
+            Path.Combine(_root, options.PeerMutationDirectoryName),
+            "*.json"));
+        var record = Assert.IsType<JsonObject>(JsonNode.Parse(await File.ReadAllTextAsync(path)));
+        switch (corruption)
+        {
+            case "epoch-lifetime":
+                record["expiresAtUnixSeconds"] =
+                    record["epochExpiresAtUnixSeconds"]!.GetValue<ulong>() + 1;
+                break;
+            case "retention":
+                record["retainUntilUnixSeconds"] =
+                    record["retainUntilUnixSeconds"]!.GetValue<ulong>() + 1;
+                break;
+            case "state-fields":
+                record["tombstoneReplayNonce"] =
+                    Convert.ToHexString(PeerFixture.Range(0x91, 32)).ToLowerInvariant();
+                break;
+            case "timestamp-order":
+                record["storeReservedAtUnixSeconds"] =
+                    record["expiresAtUnixSeconds"]!.GetValue<ulong>();
+                break;
+            default:
+                throw new InvalidOperationException("Unknown corruption.");
+        }
+
+        await File.WriteAllTextAsync(path, record.ToJsonString());
+        var blobs = new ReplicatedMailboxStore(_root, options, fixture.Clock);
+        Assert.Throws<InvalidDataException>(() =>
+            new MailboxPeerMutationStore(
+                _root,
+                options,
+                blobs,
+                fixture.Clock));
     }
 
     [Fact]

@@ -82,10 +82,14 @@ For each ported behavior:
   claims recover idempotently.
 - Replay collection follows the protocol state machine and begins only after authoritative epoch
   retirement plus seven days. Priority-ordered bounded collection runs at startup, before reserve
-  capacity, and in sender/receiver completion paths.
+  capacity, and in sender/receiver completion paths. Startup applies the same state-machine
+  semantic validation to every record, including future-retained records, and requires Completed
+  cache bytes to be exact canonical MRR2 rather than merely length-shaped.
 - Store and Tombstone share one durable mutation record carrying expiry/replay-retention state.
   Pending Store belongs to one exact replay identity; Tombstone moves through a recoverable
-  `tombstone-pending` state. Bounded mutation GC cannot retain dead state for process lifetime.
+  `tombstone-pending` state. Startup requires expiry within the epoch, exact fixed retention, and
+  state-specific timestamp/nonce fields. Bounded mutation GC cannot prematurely delete live state
+  or retain corrupt/dead state for process lifetime.
 - Journal/blob replacement uses write-through atomic replacement and parent-directory barriers.
   Windows uses write-through rename plus recoverable `.deleted` tombstones; Unix fsyncs the parent.
 - The sender coordinator requires the exact two selected MIP1-keyed replicas, so quorum is 2-of-2,

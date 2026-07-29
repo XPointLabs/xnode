@@ -30,8 +30,12 @@ remain dormant/reject-all. A configuration value is not activation authority.
   caches only verified exact MRR2 bytes after durable mutation, and recovers Pending after restart.
 - Replay scope and collection use the P10B3 state machine. Priority-ordered bounded collection runs
   before capacity at startup and on sender/receiver reserve/completion paths.
+- Eager replay loading applies P10B3 semantic invariants to every record regardless of future
+  retention and accepts cached completion bytes only as canonical MRR2-domain responses.
 - A Store/Tombstone pair uses one durable expiry/retention record. Pending Store is exclusive to
   its exact replay identity; Tombstone is a recoverable state transition, not a two-file update.
+  Expiry must remain within the epoch, retention is exactly the protocol-fixed interval, and
+  state-specific timestamps/nonces cannot be populated in the wrong phase.
 - Mutation GC is bounded and considers only records beyond their live/replay-retention boundary.
 - The HTTP layer requires exact media type, no content encoding, bounded Content-Length, a
   protocol deadline no greater than 15 seconds, host-global and per-operation pre-auth

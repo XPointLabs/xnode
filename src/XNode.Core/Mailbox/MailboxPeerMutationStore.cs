@@ -28,7 +28,7 @@ public interface IMailboxPeerMutationFaultInjector
 /// </summary>
 public sealed class MailboxPeerMutationStore : IDisposable
 {
-    private const int SchemaVersion = 2;
+    private const int SchemaVersion = 3;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _directory;
     private readonly ReplicatedMailboxOptions _options;
@@ -320,6 +320,10 @@ public sealed class MailboxPeerMutationStore : IDisposable
         var record = Read(path);
         if (!record.MatchesTombstoneTarget(request)
             || record.State == "pending"
+            || record.EpochExpiresAtUnixSeconds
+                != verified.ReplayClaim.EpochExpiresAtUnixSeconds
+            || record.RetainUntilUnixSeconds
+                != verified.ReplayClaim.RetainUntilUnixSeconds
             || record.State is "tombstone-pending" or "tombstoned"
                 && !record.MatchesTombstoneOperation(request))
         {
@@ -565,11 +569,15 @@ public sealed class MailboxPeerMutationStore : IDisposable
         public string EnvelopeDigest { get; init; } = "";
         public string ReplayNonce { get; init; } = "";
         public string BlobId { get; init; } = "";
+        public ulong StoreCreatedAtUnixSeconds { get; init; }
+        public ulong StoreReservedAtUnixSeconds { get; init; }
         public ulong ExpiresAtUnixSeconds { get; init; }
         public ulong EpochExpiresAtUnixSeconds { get; init; }
         public ulong RetainUntilUnixSeconds { get; init; }
         public string TombstoneOperationId { get; init; } = "";
         public string TombstoneReplayNonce { get; init; } = "";
+        public ulong TombstoneCreatedAtUnixSeconds { get; init; }
+        public ulong TombstoneReservedAtUnixSeconds { get; init; }
 
         public static PersistedMutation StorePending(
             VerifiedMailboxPeerWireRequestV2 verified,
@@ -589,6 +597,8 @@ public sealed class MailboxPeerMutationStore : IDisposable
                 EnvelopeDigest = Hex(envelope.DeduplicationDigest.Span),
                 ReplayNonce = Hex(request.ReplayNonce.Span),
                 BlobId = Hex(SHA256.HashData(request.Payload.Span)),
+                StoreCreatedAtUnixSeconds = request.CreatedAtUnixSeconds,
+                StoreReservedAtUnixSeconds = verified.ReplayClaim.ReservedAtUnixSeconds,
                 ExpiresAtUnixSeconds = request.ExpiresAtUnixSeconds,
                 EpochExpiresAtUnixSeconds = verified.ReplayClaim.EpochExpiresAtUnixSeconds,
                 RetainUntilUnixSeconds = verified.ReplayClaim.RetainUntilUnixSeconds
@@ -603,12 +613,9 @@ public sealed class MailboxPeerMutationStore : IDisposable
                 State = "tombstone-pending",
                 TombstoneOperationId = Hex(request.OperationId.Span),
                 TombstoneReplayNonce = Hex(request.ReplayNonce.Span),
-                EpochExpiresAtUnixSeconds = Math.Max(
-                    EpochExpiresAtUnixSeconds,
-                    verified.ReplayClaim.EpochExpiresAtUnixSeconds),
-                RetainUntilUnixSeconds = Math.Max(
-                    RetainUntilUnixSeconds,
-                    verified.ReplayClaim.RetainUntilUnixSeconds)
+                TombstoneCreatedAtUnixSeconds = request.CreatedAtUnixSeconds,
+                TombstoneReservedAtUnixSeconds =
+                    verified.ReplayClaim.ReservedAtUnixSeconds
             };
         }
 
@@ -618,6 +625,7 @@ public sealed class MailboxPeerMutationStore : IDisposable
             Schema == SchemaVersion
             && Epoch == request.Epoch
             && Cursor == request.Cursor
+            && StoreCreatedAtUnixSeconds == request.CreatedAtUnixSeconds
             && ExpiresAtUnixSeconds == request.ExpiresAtUnixSeconds
             && FixedHex(OperationId, request.OperationId.Span)
             && FixedHex(MailboxId, request.BlindedMailboxId.Span)
@@ -636,7 +644,8 @@ public sealed class MailboxPeerMutationStore : IDisposable
 
         public bool MatchesTombstoneOperation(MailboxPeerWireRequestV2 request) =>
             FixedHex(TombstoneOperationId, request.OperationId.Span)
-            && FixedHex(TombstoneReplayNonce, request.ReplayNonce.Span);
+            && FixedHex(TombstoneReplayNonce, request.ReplayNonce.Span)
+            && TombstoneCreatedAtUnixSeconds == request.CreatedAtUnixSeconds;
 
         public void Validate()
         {
@@ -645,9 +654,15 @@ public sealed class MailboxPeerMutationStore : IDisposable
                     or "tombstone-pending" or "tombstoned")
                 || Epoch == 0
                 || Cursor == 0
+                || StoreCreatedAtUnixSeconds == 0
+                || StoreReservedAtUnixSeconds < StoreCreatedAtUnixSeconds
+                || StoreReservedAtUnixSeconds >= ExpiresAtUnixSeconds
                 || ExpiresAtUnixSeconds == 0
                 || EpochExpiresAtUnixSeconds == 0
-                || RetainUntilUnixSeconds < EpochExpiresAtUnixSeconds
+                || ExpiresAtUnixSeconds > EpochExpiresAtUnixSeconds
+                || !HasExactRetention(
+                    EpochExpiresAtUnixSeconds,
+                    RetainUntilUnixSeconds)
                 || !IsHex(OperationId, 16)
                 || !IsHex(MailboxId, 32)
                 || !IsHex(PlacementId, 32)
@@ -656,9 +671,20 @@ public sealed class MailboxPeerMutationStore : IDisposable
                 || !IsHex(EnvelopeDigest, 32)
                 || !IsHex(ReplayNonce, 32)
                 || !IsHex(BlobId, 32)
+                || State is "pending" or "completed"
+                    && (!string.IsNullOrEmpty(TombstoneOperationId)
+                        || !string.IsNullOrEmpty(TombstoneReplayNonce)
+                        || TombstoneCreatedAtUnixSeconds != 0
+                        || TombstoneReservedAtUnixSeconds != 0)
                 || State is "tombstone-pending" or "tombstoned"
                     && (!IsHex(TombstoneOperationId, 16)
-                        || !IsHex(TombstoneReplayNonce, 32)))
+                        || !IsHex(TombstoneReplayNonce, 32)
+                        || TombstoneCreatedAtUnixSeconds < StoreCreatedAtUnixSeconds
+                        || TombstoneReservedAtUnixSeconds
+                            < TombstoneCreatedAtUnixSeconds
+                        || TombstoneReservedAtUnixSeconds
+                            < StoreReservedAtUnixSeconds
+                        || TombstoneReservedAtUnixSeconds >= ExpiresAtUnixSeconds))
             {
                 throw new InvalidDataException("A PRQ2 mutation record is malformed.");
             }
@@ -668,6 +694,22 @@ public sealed class MailboxPeerMutationStore : IDisposable
             value is not null
             && value.Length == bytes * 2
             && value.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f');
+
+        private static bool HasExactRetention(
+            ulong epochExpiresAtUnixSeconds,
+            ulong retainUntilUnixSeconds)
+        {
+            try
+            {
+                return retainUntilUnixSeconds == checked(
+                    epochExpiresAtUnixSeconds
+                    + MailboxPeerWireV2Limits.ReplayRetentionSeconds);
+            }
+            catch (OverflowException)
+            {
+                return false;
+            }
+        }
     }
 }
 
