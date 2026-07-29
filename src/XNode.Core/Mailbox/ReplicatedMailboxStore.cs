@@ -148,7 +148,7 @@ public sealed class ReplicatedMailboxStore
                     stream.Flush(flushToDisk: true);
                 }
 
-                File.Move(temporaryPath, finalPath, overwrite: false);
+                _durability.ReplaceFile(temporaryPath, finalPath);
                 _storedBlobCount++;
                 _storageSecurity.SecureFile(finalPath);
                 _durability.FlushFileAndParentDirectory(finalPath);
@@ -275,9 +275,8 @@ public sealed class ReplicatedMailboxStore
             }
 
             EnsureStoredBlobCount();
-            File.Delete(path);
+            _durability.DeleteFile(path);
             _storedBlobCount = Math.Max(0, _storedBlobCount - 1);
-            _durability.FlushParentDirectory(path);
             return true;
         }
         finally
@@ -345,7 +344,7 @@ public sealed class ReplicatedMailboxStore
                 continue;
             }
 
-            File.Delete(path);
+            _durability.DeleteFile(path);
             removed++;
         }
 

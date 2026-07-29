@@ -9,21 +9,37 @@ public sealed record MailboxPeerMutationResult(
     MailboxReplicaDisposition Disposition,
     string Error = "");
 
+public enum MailboxPeerMutationFaultPoint
+{
+    StoreReserved,
+    TombstoneReserved,
+    TombstoneBlobDeleted
+}
+
+public interface IMailboxPeerMutationFaultInjector
+{
+    void Inject(MailboxPeerMutationFaultPoint point);
+}
+
 /// <summary>
-/// Durable local PRQ2 mutation boundary. Store reservations make crash disposition deterministic;
-/// tombstones are journaled before best-effort physical blob deletion.
+/// Durable local PRQ2 mutation boundary. One record owns the Store and its optional Tombstone,
+/// avoiding a two-file transactional gap. Records carry protocol retirement metadata and are
+/// collected only after their replay/live-state retention boundary.
 /// </summary>
 public sealed class MailboxPeerMutationStore : IDisposable
 {
-    private const int SchemaVersion = 1;
+    private const int SchemaVersion = 2;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _directory;
     private readonly ReplicatedMailboxOptions _options;
     private readonly ReplicatedMailboxStore _blobStore;
+    private readonly IClock _clock;
     private readonly IMailboxStorageSecurity _security;
     private readonly IMailboxDurabilityBarrier _durability;
+    private readonly IMailboxPeerMutationFaultInjector? _faults;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly FileStream _lease;
+    private readonly PriorityQueue<string, ulong> _collectionQueue = new();
     private int _recordCount;
     private int _disposed;
 
@@ -31,15 +47,19 @@ public sealed class MailboxPeerMutationStore : IDisposable
         string dataDirectory,
         ReplicatedMailboxOptions options,
         ReplicatedMailboxStore blobStore,
+        IClock? clock = null,
         IMailboxStorageSecurity? security = null,
-        IMailboxDurabilityBarrier? durability = null)
+        IMailboxDurabilityBarrier? durability = null,
+        IMailboxPeerMutationFaultInjector? faults = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(dataDirectory);
         options.Validate();
         _options = options;
         _blobStore = blobStore;
+        _clock = clock ?? new SystemClock();
         _security = security ?? new MailboxStorageSecurity();
         _durability = durability ?? new MailboxDurabilityBarrier();
+        _faults = faults;
         _directory = Path.Combine(dataDirectory, options.PeerMutationDirectoryName);
         _security.SecureDirectory(_directory);
         var leasePath = Path.Combine(_directory, ".lease");
@@ -63,38 +83,8 @@ public sealed class MailboxPeerMutationStore : IDisposable
         try
         {
             _security.SecureFile(leasePath);
-            foreach (var temporary in Directory.EnumerateFiles(_directory, "*.tmp"))
-            {
-                File.Delete(temporary);
-            }
-
-            var records = Directory.EnumerateFiles(_directory, "*.json")
-                .Take(options.MaxPeerMutationRecords + 1)
-                .ToArray();
-            if (records.Length > options.MaxPeerMutationRecords)
-            {
-                throw new InvalidOperationException(
-                    "The PRQ2 mutation journal capacity is exceeded.");
-            }
-
-            foreach (var path in records)
-            {
-                var record = Read(path);
-                if (!string.Equals(
-                        Path.GetFileNameWithoutExtension(path),
-                        RecordKey(
-                            record.Kind,
-                            record.Epoch,
-                            record.MailboxId,
-                            record.EnvelopeDigest),
-                        StringComparison.Ordinal))
-                {
-                    throw new InvalidDataException(
-                        "A PRQ2 mutation record filename is inconsistent.");
-                }
-            }
-
-            _recordCount = records.Length;
+            PurgeTemporaryFiles();
+            LoadAndValidateIndex();
         }
         catch
         {
@@ -114,7 +104,7 @@ public sealed class MailboxPeerMutationStore : IDisposable
                          .Take(_options.MaxPeerMutationRecords))
             {
                 var record = Read(path);
-                if (record.Kind != "store" || record.State != "tombstoned")
+                if (record.State is not ("tombstone-pending" or "tombstoned"))
                 {
                     continue;
                 }
@@ -123,7 +113,16 @@ public sealed class MailboxPeerMutationStore : IDisposable
                     record.MailboxId,
                     record.BlobId,
                     cancellationToken).ConfigureAwait(false);
+                if (record.State == "tombstone-pending")
+                {
+                    Write(path, record with { State = "tombstoned" });
+                }
             }
+
+            _ = await CollectExpiredUnderGateAsync(
+                checked((ulong)_clock.UtcNow.ToUnixTimeSeconds()),
+                _options.MaxPeerMutationGcBatch,
+                cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -156,16 +155,10 @@ public sealed class MailboxPeerMutationStore : IDisposable
             }
 
             var record = Read(path);
-            if (record.Kind != "store"
-                || record.State is not ("completed" or "tombstoned")
-                || record.Epoch != request.Epoch
-                || !FixedHex(record.MailboxId, request.BlindedMailboxId.Span)
-                || !FixedHex(record.EnvelopeDigest, request.Payload.Span)
-                || !FixedHex(record.MembershipCommitment, request.MembershipCommitment.Span)
-                || !FixedHex(record.PlacementCommitment, request.PlacementCommitment.Span)
-                || record.Cursor != request.Cursor
-                || record.State == "tombstoned"
-                    && !FixedHex(record.TombstoneOperationId, request.OperationId.Span))
+            if (!record.MatchesTombstoneTarget(request)
+                || record.State == "pending"
+                || record.State is "tombstone-pending" or "tombstoned"
+                    && !record.MatchesTombstoneOperation(request))
             {
                 return false;
             }
@@ -188,9 +181,34 @@ public sealed class MailboxPeerMutationStore : IDisposable
         try
         {
             ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            _ = await CollectExpiredUnderGateAsync(
+                verified.ReplayClaim.ReservedAtUnixSeconds,
+                _options.MaxPeerMutationGcBatch,
+                cancellationToken).ConfigureAwait(false);
             return verified.Request.Operation == MailboxPeerReplicationOperation.Store
                 ? await StoreUnderGateAsync(verified, cancellationToken).ConfigureAwait(false)
                 : await TombstoneUnderGateAsync(verified, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<int> CollectExpiredAsync(
+        ulong nowUnixSeconds,
+        int maximumRecords,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateBatch(maximumRecords);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            return await CollectExpiredUnderGateAsync(
+                nowUnixSeconds,
+                maximumRecords,
+                cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -224,29 +242,35 @@ public sealed class MailboxPeerMutationStore : IDisposable
         var firstLogicalStore = !File.Exists(path);
         if (firstLogicalStore)
         {
-            EnsureCapacity();
-            record = PersistedMutation.StorePending(request, envelope);
+            await EnsureCapacityUnderGateAsync(
+                verified.ReplayClaim.ReservedAtUnixSeconds,
+                cancellationToken).ConfigureAwait(false);
+            record = PersistedMutation.StorePending(verified, envelope);
             Write(path, record);
             _recordCount++;
+            _collectionQueue.Enqueue(path, record.RetainUntilUnixSeconds);
+            _faults?.Inject(MailboxPeerMutationFaultPoint.StoreReserved);
         }
         else
         {
             record = Read(path);
-            if (!record.MatchesStore(request, envelope) || record.State == "tombstoned")
+            if (!record.MatchesStoreContext(request, envelope)
+                || record.State is "tombstone-pending" or "tombstoned"
+                || record.State == "pending"
+                    && !FixedHex(record.ReplayNonce, request.ReplayNonce.Span))
             {
-                return new MailboxPeerMutationResult(
-                    MailboxReplicaDisposition.Stored,
-                    "mailbox-peer-store-context-conflict");
+                return ContextConflict(MailboxReplicaDisposition.Stored, "store");
             }
 
-            firstLogicalStore = record.State == "pending"
-                || FixedHex(record.ReplayNonce, request.ReplayNonce.Span);
+            // A crash after the durable Store reservation must recreate the original Stored
+            // receipt only for that exact replay identity. A later nonce is merely Duplicate.
+            firstLogicalStore = FixedHex(record.ReplayNonce, request.ReplayNonce.Span);
         }
 
         long expiresAtUnixMs;
         try
         {
-            expiresAtUnixMs = checked((long)request.ExpiresAtUnixSeconds * 1000L);
+            expiresAtUnixMs = checked((long)record.ExpiresAtUnixSeconds * 1000L);
         }
         catch (OverflowException)
         {
@@ -256,8 +280,8 @@ public sealed class MailboxPeerMutationStore : IDisposable
         }
 
         var blob = new EncryptedMailboxBlob(
-            Hex(request.BlindedMailboxId.Span),
-            Hex(SHA256.HashData(request.Payload.Span)),
+            record.MailboxId,
+            record.BlobId,
             expiresAtUnixMs,
             Convert.ToBase64String(request.Payload.Span));
         var stored = await _blobStore.PutPeerAsync(blob, cancellationToken).ConfigureAwait(false);
@@ -270,8 +294,7 @@ public sealed class MailboxPeerMutationStore : IDisposable
 
         if (record.State == "pending")
         {
-            record = record with { State = "completed", BlobId = blob.BlobId };
-            Write(path, record);
+            Write(path, record with { State = "completed" });
         }
 
         return new MailboxPeerMutationResult(
@@ -285,72 +308,126 @@ public sealed class MailboxPeerMutationStore : IDisposable
         CancellationToken cancellationToken)
     {
         var request = verified.Request;
-        var storePath = StorePath(
+        var path = StorePath(
             request.Epoch,
             request.BlindedMailboxId.Span,
             request.Payload.Span);
-        if (!File.Exists(storePath))
+        if (!File.Exists(path))
         {
-            return new MailboxPeerMutationResult(
-                MailboxReplicaDisposition.Tombstone,
-                "mailbox-peer-tombstone-target-missing");
+            return ContextConflict(MailboxReplicaDisposition.Tombstone, "tombstone-target-missing");
         }
 
-        var store = Read(storePath);
-        if (store.Kind != "store"
-            || store.State == "pending"
-            || !store.MatchesTombstoneTarget(request)
-            || store.State == "tombstoned"
-                && !FixedHex(store.TombstoneOperationId, request.OperationId.Span))
+        var record = Read(path);
+        if (!record.MatchesTombstoneTarget(request)
+            || record.State == "pending"
+            || record.State is "tombstone-pending" or "tombstoned"
+                && !record.MatchesTombstoneOperation(request))
         {
-            return new MailboxPeerMutationResult(
-                MailboxReplicaDisposition.Tombstone,
-                "mailbox-peer-tombstone-context-conflict");
+            return ContextConflict(MailboxReplicaDisposition.Tombstone, "tombstone");
         }
 
-        var tombstonePath = TombstonePath(
-            request.Epoch,
-            request.BlindedMailboxId.Span,
-            request.Payload.Span);
-        PersistedMutation tombstone;
-        if (File.Exists(tombstonePath))
+        if (record.State == "completed")
         {
-            tombstone = Read(tombstonePath);
-            if (!tombstone.MatchesTombstone(request))
-            {
-                return new MailboxPeerMutationResult(
-                    MailboxReplicaDisposition.Tombstone,
-                    "mailbox-peer-tombstone-operation-conflict");
-            }
-        }
-        else
-        {
-            EnsureCapacity();
-            tombstone = PersistedMutation.TombstonePending(request, store.PlacementId);
-            Write(tombstonePath, tombstone);
-            _recordCount++;
-        }
-
-        if (store.State != "tombstoned")
-        {
-            store = store with
-            {
-                State = "tombstoned",
-                TombstoneOperationId = Hex(request.OperationId.Span)
-            };
-            Write(storePath, store);
+            record = record.BeginTombstone(verified);
+            Write(path, record);
+            _collectionQueue.Enqueue(path, record.RetainUntilUnixSeconds);
+            _faults?.Inject(MailboxPeerMutationFaultPoint.TombstoneReserved);
         }
 
         _ = await _blobStore.DeleteExactAsync(
-            store.MailboxId,
-            store.BlobId,
+            record.MailboxId,
+            record.BlobId,
             cancellationToken).ConfigureAwait(false);
-        if (tombstone.State != "completed")
+        _faults?.Inject(MailboxPeerMutationFaultPoint.TombstoneBlobDeleted);
+        if (record.State == "tombstone-pending")
         {
-            Write(tombstonePath, tombstone with { State = "completed" });
+            Write(path, record with { State = "tombstoned" });
         }
 
         return new MailboxPeerMutationResult(MailboxReplicaDisposition.Tombstone);
+    }
+
+    private async Task EnsureCapacityUnderGateAsync(
+        ulong nowUnixSeconds,
+        CancellationToken cancellationToken)
+    {
+        if (_recordCount < _options.MaxPeerMutationRecords)
+        {
+            return;
+        }
+
+        _ = await CollectExpiredUnderGateAsync(
+            nowUnixSeconds,
+            _options.MaxPeerMutationGcBatch,
+            cancellationToken).ConfigureAwait(false);
+        if (_recordCount >= _options.MaxPeerMutationRecords)
+        {
+            throw new MailboxPeerMutationCapacityException();
+        }
+    }
+
+    private async Task<int> CollectExpiredUnderGateAsync(
+        ulong nowUnixSeconds,
+        int maximumRecords,
+        CancellationToken cancellationToken)
+    {
+        ValidateBatch(maximumRecords);
+        var removed = 0;
+        var examined = 0;
+        while (examined < maximumRecords
+               && _collectionQueue.TryPeek(out _, out var retainUntil)
+               && retainUntil <= nowUnixSeconds)
+        {
+            var path = _collectionQueue.Dequeue();
+            examined++;
+            if (!File.Exists(path))
+            {
+                continue;
+            }
+
+            var record = Read(path);
+            if (record.RetainUntilUnixSeconds > nowUnixSeconds)
+            {
+                _collectionQueue.Enqueue(path, record.RetainUntilUnixSeconds);
+                continue;
+            }
+
+            _ = await _blobStore.DeleteExactAsync(
+                record.MailboxId,
+                record.BlobId,
+                cancellationToken).ConfigureAwait(false);
+            _durability.DeleteFile(path);
+            _recordCount--;
+            removed++;
+        }
+
+        return removed;
+    }
+
+    private void LoadAndValidateIndex()
+    {
+        var records = Directory.EnumerateFiles(_directory, "*.json")
+            .Take(_options.MaxPeerMutationRecords + 1)
+            .ToArray();
+        if (records.Length > _options.MaxPeerMutationRecords)
+        {
+            throw new InvalidOperationException("The PRQ2 mutation journal capacity is exceeded.");
+        }
+
+        foreach (var path in records)
+        {
+            var record = Read(path);
+            if (!string.Equals(
+                    Path.GetFileNameWithoutExtension(path),
+                    RecordKey(record.Epoch, record.MailboxId, record.EnvelopeDigest),
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidDataException("A PRQ2 mutation record filename is inconsistent.");
+            }
+
+            _recordCount++;
+            _collectionQueue.Enqueue(path, record.RetainUntilUnixSeconds);
+        }
     }
 
     private PersistedMutation Read(string path)
@@ -397,7 +474,7 @@ public sealed class MailboxPeerMutationStore : IDisposable
             }
 
             _security.SecureFile(temporaryPath);
-            File.Move(temporaryPath, finalPath, overwrite: true);
+            _durability.ReplaceFile(temporaryPath, finalPath);
             _security.SecureFile(finalPath);
             _durability.FlushFileAndParentDirectory(finalPath);
         }
@@ -410,44 +487,51 @@ public sealed class MailboxPeerMutationStore : IDisposable
         }
     }
 
-    private void EnsureCapacity()
+    private void PurgeTemporaryFiles()
     {
-        if (_recordCount >= _options.MaxPeerMutationRecords)
+        foreach (var path in Directory.EnumerateFiles(_directory, "*.tmp"))
         {
-            throw new MailboxPeerMutationCapacityException();
+            File.Delete(path);
+        }
+
+        foreach (var path in Directory.EnumerateFiles(_directory, "*.deleted"))
+        {
+            File.Delete(path);
         }
     }
 
     private string StorePath(ulong epoch, ReadOnlySpan<byte> mailbox, ReadOnlySpan<byte> digest) =>
-        Path.Combine(_directory, $"{RecordKey("store", epoch, mailbox, digest)}.json");
-
-    private string TombstonePath(
-        ulong epoch,
-        ReadOnlySpan<byte> mailbox,
-        ReadOnlySpan<byte> digest) =>
-        Path.Combine(_directory, $"{RecordKey("tombstone", epoch, mailbox, digest)}.json");
+        Path.Combine(_directory, $"{RecordKey(epoch, mailbox, digest)}.json");
 
     private static string RecordKey(
-        string kind,
         ulong epoch,
         string mailbox,
         string digest) =>
-        RecordKey(kind, epoch, Convert.FromHexString(mailbox), Convert.FromHexString(digest));
+        RecordKey(epoch, Convert.FromHexString(mailbox), Convert.FromHexString(digest));
 
     private static string RecordKey(
-        string kind,
         ulong epoch,
         ReadOnlySpan<byte> mailbox,
         ReadOnlySpan<byte> digest)
     {
-        var kindBytes = kind == "store" ? "store"u8 : "tombstone"u8;
-        var bytes = new byte[1 + kindBytes.Length + 8 + 64];
-        bytes[0] = checked((byte)kindBytes.Length);
-        kindBytes.CopyTo(bytes.AsSpan(1));
-        BinaryPrimitives.WriteUInt64BigEndian(bytes.AsSpan(1 + kindBytes.Length), epoch);
-        mailbox.CopyTo(bytes.AsSpan(1 + kindBytes.Length + 8));
-        digest.CopyTo(bytes.AsSpan(1 + kindBytes.Length + 40));
+        var bytes = new byte[8 + 64];
+        BinaryPrimitives.WriteUInt64BigEndian(bytes, epoch);
+        mailbox.CopyTo(bytes.AsSpan(8));
+        digest.CopyTo(bytes.AsSpan(40));
         return Hex(SHA256.HashData(bytes));
+    }
+
+    private static MailboxPeerMutationResult ContextConflict(
+        MailboxReplicaDisposition disposition,
+        string kind) =>
+        new(disposition, $"mailbox-peer-{kind}-context-conflict");
+
+    private static void ValidateBatch(int maximumRecords)
+    {
+        if (maximumRecords is <= 0 or > 1024)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maximumRecords));
+        }
     }
 
     private static string Hex(ReadOnlySpan<byte> value) =>
@@ -470,7 +554,6 @@ public sealed class MailboxPeerMutationStore : IDisposable
     private sealed record PersistedMutation
     {
         public int Schema { get; init; } = SchemaVersion;
-        public string Kind { get; init; } = "";
         public string State { get; init; } = "";
         public ulong Epoch { get; init; }
         public ulong Cursor { get; init; }
@@ -482,49 +565,60 @@ public sealed class MailboxPeerMutationStore : IDisposable
         public string EnvelopeDigest { get; init; } = "";
         public string ReplayNonce { get; init; } = "";
         public string BlobId { get; init; } = "";
+        public ulong ExpiresAtUnixSeconds { get; init; }
+        public ulong EpochExpiresAtUnixSeconds { get; init; }
+        public ulong RetainUntilUnixSeconds { get; init; }
         public string TombstoneOperationId { get; init; } = "";
+        public string TombstoneReplayNonce { get; init; } = "";
 
         public static PersistedMutation StorePending(
-            MailboxPeerWireRequestV2 request,
-            MailboxEncryptedEnvelope envelope) => new()
+            VerifiedMailboxPeerWireRequestV2 verified,
+            MailboxEncryptedEnvelope envelope)
         {
-            Kind = "store",
-            State = "pending",
-            Epoch = request.Epoch,
-            Cursor = request.Cursor,
-            OperationId = Hex(request.OperationId.Span),
-            MailboxId = Hex(request.BlindedMailboxId.Span),
-            PlacementId = Hex(envelope.PlacementId.Bytes.Span),
-            PlacementCommitment = Hex(request.PlacementCommitment.Span),
-            MembershipCommitment = Hex(request.MembershipCommitment.Span),
-            EnvelopeDigest = Hex(envelope.DeduplicationDigest.Span),
-            ReplayNonce = Hex(request.ReplayNonce.Span)
-        };
+            var request = verified.Request;
+            return new()
+            {
+                State = "pending",
+                Epoch = request.Epoch,
+                Cursor = request.Cursor,
+                OperationId = Hex(request.OperationId.Span),
+                MailboxId = Hex(request.BlindedMailboxId.Span),
+                PlacementId = Hex(envelope.PlacementId.Bytes.Span),
+                PlacementCommitment = Hex(request.PlacementCommitment.Span),
+                MembershipCommitment = Hex(request.MembershipCommitment.Span),
+                EnvelopeDigest = Hex(envelope.DeduplicationDigest.Span),
+                ReplayNonce = Hex(request.ReplayNonce.Span),
+                BlobId = Hex(SHA256.HashData(request.Payload.Span)),
+                ExpiresAtUnixSeconds = request.ExpiresAtUnixSeconds,
+                EpochExpiresAtUnixSeconds = verified.ReplayClaim.EpochExpiresAtUnixSeconds,
+                RetainUntilUnixSeconds = verified.ReplayClaim.RetainUntilUnixSeconds
+            };
+        }
 
-        public static PersistedMutation TombstonePending(
-            MailboxPeerWireRequestV2 request,
-            string placementId) => new()
+        public PersistedMutation BeginTombstone(VerifiedMailboxPeerWireRequestV2 verified)
         {
-            Kind = "tombstone",
-            State = "pending",
-            Epoch = request.Epoch,
-            Cursor = request.Cursor,
-            OperationId = Hex(request.OperationId.Span),
-            MailboxId = Hex(request.BlindedMailboxId.Span),
-            PlacementId = placementId,
-            PlacementCommitment = Hex(request.PlacementCommitment.Span),
-            MembershipCommitment = Hex(request.MembershipCommitment.Span),
-            EnvelopeDigest = Hex(request.Payload.Span),
-            ReplayNonce = Hex(request.ReplayNonce.Span)
-        };
+            var request = verified.Request;
+            return this with
+            {
+                State = "tombstone-pending",
+                TombstoneOperationId = Hex(request.OperationId.Span),
+                TombstoneReplayNonce = Hex(request.ReplayNonce.Span),
+                EpochExpiresAtUnixSeconds = Math.Max(
+                    EpochExpiresAtUnixSeconds,
+                    verified.ReplayClaim.EpochExpiresAtUnixSeconds),
+                RetainUntilUnixSeconds = Math.Max(
+                    RetainUntilUnixSeconds,
+                    verified.ReplayClaim.RetainUntilUnixSeconds)
+            };
+        }
 
-        public bool MatchesStore(
+        public bool MatchesStoreContext(
             MailboxPeerWireRequestV2 request,
             MailboxEncryptedEnvelope envelope) =>
-            Kind == "store"
-            && Schema == SchemaVersion
+            Schema == SchemaVersion
             && Epoch == request.Epoch
             && Cursor == request.Cursor
+            && ExpiresAtUnixSeconds == request.ExpiresAtUnixSeconds
             && FixedHex(OperationId, request.OperationId.Span)
             && FixedHex(MailboxId, request.BlindedMailboxId.Span)
             && FixedHex(PlacementId, envelope.PlacementId.Bytes.Span)
@@ -533,33 +627,27 @@ public sealed class MailboxPeerMutationStore : IDisposable
             && FixedHex(EnvelopeDigest, envelope.DeduplicationDigest.Span);
 
         public bool MatchesTombstoneTarget(MailboxPeerWireRequestV2 request) =>
-            Kind == "store"
-            && Epoch == request.Epoch
+            Epoch == request.Epoch
             && Cursor == request.Cursor
             && FixedHex(MailboxId, request.BlindedMailboxId.Span)
             && FixedHex(PlacementCommitment, request.PlacementCommitment.Span)
             && FixedHex(MembershipCommitment, request.MembershipCommitment.Span)
             && FixedHex(EnvelopeDigest, request.Payload.Span);
 
-        public bool MatchesTombstone(MailboxPeerWireRequestV2 request) =>
-            Kind == "tombstone"
-            && Epoch == request.Epoch
-            && Cursor == request.Cursor
-            && FixedHex(OperationId, request.OperationId.Span)
-            && FixedHex(MailboxId, request.BlindedMailboxId.Span)
-            && FixedHex(PlacementCommitment, request.PlacementCommitment.Span)
-            && FixedHex(MembershipCommitment, request.MembershipCommitment.Span)
-            && FixedHex(EnvelopeDigest, request.Payload.Span);
+        public bool MatchesTombstoneOperation(MailboxPeerWireRequestV2 request) =>
+            FixedHex(TombstoneOperationId, request.OperationId.Span)
+            && FixedHex(TombstoneReplayNonce, request.ReplayNonce.Span);
 
         public void Validate()
         {
-            var validState = Kind == "store"
-                ? State is "pending" or "completed" or "tombstoned"
-                : Kind == "tombstone" && State is "pending" or "completed";
             if (Schema != SchemaVersion
-                || !validState
+                || State is not ("pending" or "completed"
+                    or "tombstone-pending" or "tombstoned")
                 || Epoch == 0
                 || Cursor == 0
+                || ExpiresAtUnixSeconds == 0
+                || EpochExpiresAtUnixSeconds == 0
+                || RetainUntilUnixSeconds < EpochExpiresAtUnixSeconds
                 || !IsHex(OperationId, 16)
                 || !IsHex(MailboxId, 32)
                 || !IsHex(PlacementId, 32)
@@ -567,9 +655,10 @@ public sealed class MailboxPeerMutationStore : IDisposable
                 || !IsHex(MembershipCommitment, 32)
                 || !IsHex(EnvelopeDigest, 32)
                 || !IsHex(ReplayNonce, 32)
-                || Kind == "store" && State != "pending" && !IsHex(BlobId, 32)
-                || Kind == "store" && State == "tombstoned"
-                    && !IsHex(TombstoneOperationId, 16))
+                || !IsHex(BlobId, 32)
+                || State is "tombstone-pending" or "tombstoned"
+                    && (!IsHex(TombstoneOperationId, 16)
+                        || !IsHex(TombstoneReplayNonce, 32)))
             {
                 throw new InvalidDataException("A PRQ2 mutation record is malformed.");
             }

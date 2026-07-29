@@ -119,13 +119,16 @@ builder.Services.AddHostedService<MailboxStoreHostedService>();
 builder.Services.AddSingleton(provider => new MailboxPeerMutationStore(
     nodeOptions.DataDirectory,
     mailboxOptions,
-    provider.GetRequiredService<ReplicatedMailboxStore>()));
+    provider.GetRequiredService<ReplicatedMailboxStore>(),
+    provider.GetRequiredService<IClock>()));
+builder.Services.AddSingleton<MailboxPeerRuntimeReadiness>();
 builder.Services.AddSingleton<MailboxPeerStoreHostedService>();
 builder.Services.AddHostedService(provider =>
     provider.GetRequiredService<MailboxPeerStoreHostedService>());
 builder.Services.AddSingleton<DurableMailboxPeerReplayJournal>(provider => new(
     nodeOptions.DataDirectory,
-    mailboxOptions));
+    mailboxOptions,
+    provider.GetRequiredService<IClock>()));
 builder.Services.AddSingleton<IMailboxPeerReplayJournal>(provider =>
     provider.GetRequiredService<DurableMailboxPeerReplayJournal>());
 builder.Services.AddSingleton<IMailboxReplicaMembershipProofVerifier,
@@ -208,6 +211,14 @@ var app = builder.Build();
 
 app.Use(async (context, next) =>
 {
+    if ((context.Request.Path.Equals(MailboxWireHttpContract.PeerStoreRoute)
+            || context.Request.Path.Equals(MailboxWireHttpContract.PeerTombstoneRoute))
+        && !HttpMethods.IsPost(context.Request.Method))
+    {
+        context.Response.StatusCode = StatusCodes.Status404NotFound;
+        return;
+    }
+
     if (context.Connection.LocalPort != peerRpcListenUri.Port)
     {
         await next(context);
@@ -265,6 +276,8 @@ app.MapGet("/health/live", () => Results.Ok(new { ok = true }));
 app.MapGet("/health/ready", (
     IRouterRuntime runtime,
     IXraySupervisor xray,
+    ReplicatedMailboxOptions mailbox,
+    MailboxPeerRuntimeReadiness mailboxPeer,
     MailboxClientActivationStatus mailboxClient) =>
 {
     var status = runtime.Status;
@@ -275,17 +288,26 @@ app.MapGet("/health/ready", (
         concreteRuntime.SetXrayReady(transportReady);
     }
 
-    var ready = status.State == "running" && transportReady;
+    var mailboxPeerReady = !mailbox.Enabled || mailboxPeer.Ready;
+    var ready = status.State == "running" && transportReady && mailboxPeerReady;
     return ready
         ? Results.Ok(new
         {
             ready = true,
             degraded = xrayStatus.Degraded,
             transportMode = xrayStatus.Mode,
+            mailboxPeer = mailboxPeer.Status,
             mailboxClient
         })
         : Results.Json(
-            new { ready = false, status, xray = xrayStatus, mailboxClient },
+            new
+            {
+                ready = false,
+                status,
+                xray = xrayStatus,
+                mailboxPeer = mailboxPeer.Status,
+                mailboxClient
+            },
             statusCode: StatusCodes.Status503ServiceUnavailable);
 });
 
@@ -294,6 +316,7 @@ app.MapGet("/status", (
     IXraySupervisor xray,
     RegistryPayloadFactory registryPayloadFactory,
     ReplicatedMailboxOptions mailbox,
+    MailboxPeerRuntimeReadiness mailboxPeer,
     MailboxClientActivationStatus mailboxClient,
     IServiceProvider services) =>
 {
@@ -301,7 +324,7 @@ app.MapGet("/status", (
         ? new
         {
             enabled = true,
-            peerRuntime = "ready",
+            peerRuntime = mailboxPeer.Status,
             wire = "prq2-mrr2-mqr3",
             receiver = services.GetRequiredService<MailboxReplicaReceiver>().Metrics
         }
@@ -485,16 +508,12 @@ static async Task<IResult> HandleMailboxPeerAsync(
         return Results.NotFound();
     }
 
-    var preflight = MailboxPeerHttpRequestValidator.Validate(context.Request, contract);
-    if (preflight is not null)
-    {
-        return Results.StatusCode(
-            MailboxWireHttpContract.StatusCode(preflight.Value));
-    }
-
-    var contentLength = context.Request.ContentLength!.Value;
     var limiter = services.GetRequiredService<MailboxPeerIngressLimiter>();
-    if (!limiter.TryEnter(out var lease))
+    var clock = services.GetRequiredService<IClock>();
+    if (!limiter.TryEnter(
+            operation,
+            checked((ulong)clock.UtcNow.ToUnixTimeSeconds()),
+            out var lease))
     {
         return Results.StatusCode(
             MailboxWireHttpContract.StatusCode(
@@ -507,6 +526,14 @@ static async Task<IResult> HandleMailboxPeerAsync(
         deadline.CancelAfter(TimeSpan.FromSeconds(contract.RequestTimeoutSeconds));
         try
         {
+            var preflight = MailboxPeerHttpRequestValidator.Validate(context.Request, contract);
+            if (preflight is not null)
+            {
+                return Results.StatusCode(
+                    MailboxWireHttpContract.StatusCode(preflight.Value));
+            }
+
+            var contentLength = context.Request.ContentLength!.Value;
             var body = new byte[checked((int)contentLength)];
             await context.Request.Body.ReadExactlyAsync(body, deadline.Token);
             var receiver = services.GetRequiredService<MailboxReplicaReceiver>();
@@ -589,41 +616,142 @@ public sealed class MailboxStoreHostedService : IHostedService
 public sealed class MailboxPeerStoreHostedService : IHostedService
 {
     private readonly ReplicatedMailboxOptions _options;
-    private readonly MailboxPeerMutationStore _store;
+    private readonly IServiceProvider _services;
+    private readonly MailboxPeerRuntimeReadiness _readiness;
 
     public MailboxPeerStoreHostedService(
         ReplicatedMailboxOptions options,
-        MailboxPeerMutationStore store)
+        IServiceProvider services,
+        MailboxPeerRuntimeReadiness readiness)
     {
         _options = options;
-        _store = store;
+        _services = services;
+        _readiness = readiness;
     }
 
-    public Task StartAsync(CancellationToken cancellationToken) =>
-        _options.Enabled ? _store.InitializeAsync(cancellationToken) : Task.CompletedTask;
+    public async Task StartAsync(CancellationToken cancellationToken)
+    {
+        if (!_options.Enabled)
+        {
+            _readiness.MarkReady("disabled");
+            return;
+        }
+
+        try
+        {
+            // Resolve both durable journals at host startup so lease/corruption failures prevent
+            // readiness instead of surfacing on the first authenticated peer request.
+            _ = _services.GetRequiredService<DurableMailboxPeerReplayJournal>();
+            var store = _services.GetRequiredService<MailboxPeerMutationStore>();
+            await store.InitializeAsync(cancellationToken);
+            _ = _services.GetRequiredService<MailboxReplicaReceiver>();
+            _ = _services.GetRequiredService<MailboxReplicationCoordinator>();
+            _readiness.MarkReady("ready");
+        }
+        catch
+        {
+            _readiness.MarkFailed();
+            throw;
+        }
+    }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }
 
 public sealed class MailboxPeerIngressLimiter
 {
-    private readonly SemaphoreSlim _semaphore = new(
-        MailboxWireHttpContract.PeerStore.MaximumConcurrentRequests,
-        MailboxWireHttpContract.PeerStore.MaximumConcurrentRequests);
+    private readonly object _rateGate = new();
+    private readonly EndpointAdmission _store = new(MailboxWireHttpContract.PeerStore);
+    private readonly EndpointAdmission _tombstone = new(MailboxWireHttpContract.PeerTombstone);
+    private readonly SemaphoreSlim _globalConcurrency = new(
+        checked(
+            MailboxWireHttpContract.PeerStore.MaximumConcurrentRequests
+            + MailboxWireHttpContract.PeerTombstone.MaximumConcurrentRequests));
+    private ulong _globalWindowStartedAt;
+    private int _globalWindowCount;
 
-    public bool TryEnter(out IDisposable lease)
+    public bool TryEnter(
+        MailboxPeerReplicationOperation operation,
+        ulong nowUnixSeconds,
+        out IDisposable lease)
     {
-        if (!_semaphore.Wait(0))
+        var endpoint = operation == MailboxPeerReplicationOperation.Store
+            ? _store
+            : operation == MailboxPeerReplicationOperation.Tombstone
+                ? _tombstone
+                : throw new ArgumentOutOfRangeException(nameof(operation));
+        lock (_rateGate)
+        {
+            ResetWindowIfExpired(
+                ref _globalWindowStartedAt,
+                ref _globalWindowCount,
+                nowUnixSeconds);
+            endpoint.ResetWindowIfExpired(nowUnixSeconds);
+            var globalLimit = checked(
+                MailboxWireHttpContract.PeerStore.RequestsPerMinute
+                + MailboxWireHttpContract.PeerTombstone.RequestsPerMinute);
+            if (_globalWindowCount >= globalLimit || !endpoint.HasRatePermit)
+            {
+                lease = EmptyLease.Instance;
+                return false;
+            }
+
+            _globalWindowCount++;
+            endpoint.ConsumeRatePermit();
+        }
+
+        if (!_globalConcurrency.Wait(0))
         {
             lease = EmptyLease.Instance;
             return false;
         }
 
-        lease = new Releaser(_semaphore);
+        if (!endpoint.Concurrency.Wait(0))
+        {
+            _globalConcurrency.Release();
+            lease = EmptyLease.Instance;
+            return false;
+        }
+
+        lease = new Releaser(_globalConcurrency, endpoint.Concurrency);
         return true;
     }
 
-    private sealed class Releaser(SemaphoreSlim semaphore) : IDisposable
+    private static void ResetWindowIfExpired(
+        ref ulong startedAt,
+        ref int count,
+        ulong nowUnixSeconds)
+    {
+        if (startedAt == 0 || nowUnixSeconds >= startedAt + 60)
+        {
+            startedAt = nowUnixSeconds;
+            count = 0;
+        }
+    }
+
+    private sealed class EndpointAdmission(MailboxHttpEndpointContract contract)
+    {
+        private ulong _windowStartedAt;
+        private int _windowCount;
+
+        public SemaphoreSlim Concurrency { get; } = new(
+            contract.MaximumConcurrentRequests,
+            contract.MaximumConcurrentRequests);
+
+        public bool HasRatePermit => _windowCount < contract.RequestsPerMinute;
+
+        public void ConsumeRatePermit() => _windowCount++;
+
+        public void ResetWindowIfExpired(ulong nowUnixSeconds) =>
+            MailboxPeerIngressLimiter.ResetWindowIfExpired(
+                ref _windowStartedAt,
+                ref _windowCount,
+                nowUnixSeconds);
+    }
+
+    private sealed class Releaser(
+        SemaphoreSlim globalConcurrency,
+        SemaphoreSlim endpointConcurrency) : IDisposable
     {
         private int _disposed;
 
@@ -631,7 +759,8 @@ public sealed class MailboxPeerIngressLimiter
         {
             if (Interlocked.Exchange(ref _disposed, 1) == 0)
             {
-                semaphore.Release();
+                endpointConcurrency.Release();
+                globalConcurrency.Release();
             }
         }
     }
@@ -642,6 +771,27 @@ public sealed class MailboxPeerIngressLimiter
         public void Dispose()
         {
         }
+    }
+}
+
+public sealed class MailboxPeerRuntimeReadiness
+{
+    private volatile bool _ready;
+    private string _status = "starting";
+
+    public bool Ready => _ready;
+    public string Status => Volatile.Read(ref _status);
+
+    public void MarkReady(string status)
+    {
+        Volatile.Write(ref _status, status);
+        _ready = true;
+    }
+
+    public void MarkFailed()
+    {
+        _ready = false;
+        Volatile.Write(ref _status, "failed");
     }
 }
 

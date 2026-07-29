@@ -35,6 +35,8 @@ public sealed class ReplicatedMailboxOptions
 
     public int MaxPeerMutationRecords { get; set; } = 100_000;
 
+    public int MaxPeerMutationGcBatch { get; set; } = 1024;
+
     public bool AllowInsecureHttpPeerTransport { get; set; }
 
     public void Validate()
@@ -42,12 +44,18 @@ public sealed class ReplicatedMailboxOptions
         if (!IsSafeDirectoryName(DirectoryName)
             || !IsSafeDirectoryName(PeerReplayDirectoryName)
             || !IsSafeDirectoryName(PeerMutationDirectoryName)
-            || string.Equals(DirectoryName, PeerReplayDirectoryName, StringComparison.Ordinal)
-            || string.Equals(DirectoryName, PeerMutationDirectoryName, StringComparison.Ordinal)
+            || string.Equals(
+                DirectoryName,
+                PeerReplayDirectoryName,
+                StringComparison.OrdinalIgnoreCase)
+            || string.Equals(
+                DirectoryName,
+                PeerMutationDirectoryName,
+                StringComparison.OrdinalIgnoreCase)
             || string.Equals(
                 PeerReplayDirectoryName,
                 PeerMutationDirectoryName,
-                StringComparison.Ordinal)
+                StringComparison.OrdinalIgnoreCase)
             || MaxBlobBytes is < 81920 or > 1024 * 1024
             || MaxStoredBlobs <= 0
             || MaxRecoveryScanFiles < MaxStoredBlobs
@@ -58,12 +66,13 @@ public sealed class ReplicatedMailboxOptions
             || ReplicationFactor != 2
             || WriteQuorum != 2
             || PeerTimeout <= TimeSpan.Zero
-            || PeerTimeout > TimeSpan.FromMinutes(1)
+            || PeerTimeout > TimeSpan.FromSeconds(15)
             || MaxPeerReplayRecords is < 1 or > 1_000_000
             || MaxPeerReplayRecordsPerRouterPairEpoch is < 1 or > 1_000_000
             || MaxPeerReplayRecordsPerRouterPairEpoch > MaxPeerReplayRecords
             || MaxPeerReplayGcBatch is < 1 or > 1024
-            || MaxPeerMutationRecords is < 1 or > 1_000_000)
+            || MaxPeerMutationRecords is < 1 or > 1_000_000
+            || MaxPeerMutationGcBatch is < 1 or > 1024)
         {
             throw new InvalidOperationException("Replicated mailbox limits are invalid.");
         }

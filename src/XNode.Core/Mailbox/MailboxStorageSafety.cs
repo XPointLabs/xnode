@@ -128,10 +128,24 @@ public interface IMailboxDurabilityBarrier
     void FlushFileAndParentDirectory(string path);
 
     void FlushParentDirectory(string deletedPath);
+
+    void ReplaceFile(string temporaryPath, string finalPath)
+    {
+        File.Move(temporaryPath, finalPath, overwrite: true);
+    }
+
+    void DeleteFile(string path)
+    {
+        File.Delete(path);
+        FlushParentDirectory(path);
+    }
 }
 
 public sealed class MailboxDurabilityBarrier : IMailboxDurabilityBarrier
 {
+    private const uint MoveFileReplaceExisting = 0x1;
+    private const uint MoveFileWriteThrough = 0x8;
+
     public void FlushFileAndParentDirectory(string path)
     {
         using (var handle = File.OpenHandle(
@@ -158,6 +172,50 @@ public sealed class MailboxDurabilityBarrier : IMailboxDurabilityBarrier
             FlushUnixDirectory(Path.GetDirectoryName(deletedPath)
                 ?? throw new InvalidOperationException("Mailbox file has no parent directory."));
         }
+    }
+
+    public void ReplaceFile(string temporaryPath, string finalPath)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            if (!MoveFileEx(
+                    temporaryPath,
+                    finalPath,
+                    MoveFileReplaceExisting | MoveFileWriteThrough))
+            {
+                throw new Win32Exception(Marshal.GetLastPInvokeError());
+            }
+
+            return;
+        }
+
+        File.Move(temporaryPath, finalPath, overwrite: true);
+    }
+
+    public void DeleteFile(string path)
+    {
+        if (!File.Exists(path))
+        {
+            FlushParentDirectory(path);
+            return;
+        }
+
+        if (OperatingSystem.IsWindows())
+        {
+            var deletedPath = $"{path}.{Guid.NewGuid():N}.deleted";
+            if (!MoveFileEx(path, deletedPath, MoveFileWriteThrough))
+            {
+                throw new Win32Exception(Marshal.GetLastPInvokeError());
+            }
+
+            // The write-through rename is the durable logical deletion. A crash may leave this
+            // anonymous tombstone, which peer-journal startup removes before accepting traffic.
+            File.Delete(deletedPath);
+            return;
+        }
+
+        File.Delete(path);
+        FlushParentDirectory(path);
     }
 
     private static void FlushUnixDirectory(string directory)
@@ -194,4 +252,9 @@ public sealed class MailboxDurabilityBarrier : IMailboxDurabilityBarrier
 
     [DllImport("libc", EntryPoint = "close")]
     private static extern int Close(int descriptor);
+
+    [SupportedOSPlatform("windows")]
+    [DllImport("kernel32.dll", EntryPoint = "MoveFileExW", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool MoveFileEx(string existingPath, string newPath, uint flags);
 }

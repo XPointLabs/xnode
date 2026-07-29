@@ -18,15 +18,17 @@ public sealed class DurableMailboxPeerReplayJournal : IMailboxPeerReplayJournal,
     private readonly ReplicatedMailboxOptions _options;
     private readonly IMailboxStorageSecurity _security;
     private readonly IMailboxDurabilityBarrier _durability;
+    private readonly IClock _clock;
     private readonly FileStream _lease;
     private readonly Dictionary<string, int> _partitionCounts = new(StringComparer.Ordinal);
-    private readonly Queue<string> _collectionQueue = new();
+    private readonly PriorityQueue<string, ulong> _collectionQueue = new();
     private int _recordCount;
     private int _disposed;
 
     public DurableMailboxPeerReplayJournal(
         string dataDirectory,
         ReplicatedMailboxOptions options,
+        IClock? clock = null,
         IMailboxStorageSecurity? security = null,
         IMailboxDurabilityBarrier? durability = null)
     {
@@ -35,6 +37,7 @@ public sealed class DurableMailboxPeerReplayJournal : IMailboxPeerReplayJournal,
         _options = options;
         _security = security ?? new MailboxStorageSecurity();
         _durability = durability ?? new MailboxDurabilityBarrier();
+        _clock = clock ?? new SystemClock();
         _directory = Path.Combine(dataDirectory, options.PeerReplayDirectoryName);
         _security.SecureDirectory(_directory);
         var leasePath = Path.Combine(_directory, ".lease");
@@ -60,6 +63,9 @@ public sealed class DurableMailboxPeerReplayJournal : IMailboxPeerReplayJournal,
             _security.SecureFile(leasePath);
             PurgeTemporaryFiles();
             LoadAndValidateIndex();
+            _ = CollectExpired(
+                checked((ulong)_clock.UtcNow.ToUnixTimeSeconds()),
+                _options.MaxPeerReplayGcBatch);
         }
         catch
         {
@@ -74,6 +80,9 @@ public sealed class DurableMailboxPeerReplayJournal : IMailboxPeerReplayJournal,
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            _ = CollectExpiredUnderGate(
+                claim.ReservedAtUnixSeconds,
+                _options.MaxPeerReplayGcBatch);
             var scope = Hex(claim.ScopeKey.Span);
             var path = RecordPath(scope);
             var current = File.Exists(path) ? Read(path).Snapshot() : null;
@@ -95,7 +104,7 @@ public sealed class DurableMailboxPeerReplayJournal : IMailboxPeerReplayJournal,
             Write(path, PersistedReplay.From(partition, next));
             _recordCount++;
             _partitionCounts[partition] = _partitionCounts.GetValueOrDefault(partition) + 1;
-            _collectionQueue.Enqueue(path);
+            _collectionQueue.Enqueue(path, next.RetainUntilUnixSeconds);
             return evaluation;
         }
     }
@@ -135,42 +144,7 @@ public sealed class DurableMailboxPeerReplayJournal : IMailboxPeerReplayJournal,
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed != 0, this);
-            var removed = 0;
-            var examined = 0;
-            while (examined < maximumRecords && _collectionQueue.Count != 0)
-            {
-                var path = _collectionQueue.Dequeue();
-                examined++;
-                if (!File.Exists(path))
-                {
-                    continue;
-                }
-
-                var persisted = Read(path);
-                if (!MailboxPeerReplayStateMachine.IsCollectable(
-                        persisted.Snapshot(),
-                        nowUnixSeconds))
-                {
-                    _collectionQueue.Enqueue(path);
-                    continue;
-                }
-
-                File.Delete(path);
-                _durability.FlushParentDirectory(path);
-                _recordCount--;
-                var remaining = _partitionCounts[persisted.PartitionKey] - 1;
-                if (remaining == 0)
-                {
-                    _partitionCounts.Remove(persisted.PartitionKey);
-                }
-                else
-                {
-                    _partitionCounts[persisted.PartitionKey] = remaining;
-                }
-                removed++;
-            }
-
-            return removed;
+            return CollectExpiredUnderGate(nowUnixSeconds, maximumRecords);
         }
     }
 
@@ -186,8 +160,10 @@ public sealed class DurableMailboxPeerReplayJournal : IMailboxPeerReplayJournal,
 
     private void LoadAndValidateIndex()
     {
+        var maximumStartupRecords = checked(
+            _options.MaxPeerReplayRecords + _options.MaxPeerReplayGcBatch + 1);
         foreach (var path in Directory.EnumerateFiles(_directory, "*.json")
-                     .Take(_options.MaxPeerReplayRecords + 1))
+                     .Take(maximumStartupRecords))
         {
             var persisted = Read(path);
             var scope = Hex(persisted.Snapshot().ScopeKey.Span);
@@ -202,7 +178,46 @@ public sealed class DurableMailboxPeerReplayJournal : IMailboxPeerReplayJournal,
             _recordCount++;
             _partitionCounts[persisted.PartitionKey] =
                 _partitionCounts.GetValueOrDefault(persisted.PartitionKey) + 1;
-            _collectionQueue.Enqueue(path);
+            _collectionQueue.Enqueue(path, persisted.RetainUntilUnixSeconds);
+        }
+    }
+
+    private int CollectExpiredUnderGate(ulong nowUnixSeconds, int maximumRecords)
+    {
+        var removed = 0;
+        var examined = 0;
+        while (examined < maximumRecords
+               && _collectionQueue.TryPeek(out _, out var retainUntil)
+               && retainUntil <= nowUnixSeconds)
+        {
+            var path = _collectionQueue.Dequeue();
+            examined++;
+            if (!File.Exists(path))
+            {
+                continue;
+            }
+
+            var persisted = Read(path);
+            if (!MailboxPeerReplayStateMachine.IsCollectable(
+                    persisted.Snapshot(),
+                    nowUnixSeconds))
+            {
+                _collectionQueue.Enqueue(path, persisted.RetainUntilUnixSeconds);
+                continue;
+            }
+
+            _durability.DeleteFile(path);
+            _recordCount--;
+            var remaining = _partitionCounts[persisted.PartitionKey] - 1;
+            if (remaining == 0)
+            {
+                _partitionCounts.Remove(persisted.PartitionKey);
+            }
+            else
+            {
+                _partitionCounts[persisted.PartitionKey] = remaining;
+            }
+            removed++;
         }
 
         if (_recordCount > _options.MaxPeerReplayRecords
@@ -211,6 +226,8 @@ public sealed class DurableMailboxPeerReplayJournal : IMailboxPeerReplayJournal,
         {
             throw new InvalidOperationException("The PRQ2 replay journal capacity is exceeded.");
         }
+
+        return removed;
     }
 
     private PersistedReplay Read(string path)
@@ -263,7 +280,7 @@ public sealed class DurableMailboxPeerReplayJournal : IMailboxPeerReplayJournal,
             }
 
             _security.SecureFile(temporaryPath);
-            File.Move(temporaryPath, finalPath, overwrite: true);
+            _durability.ReplaceFile(temporaryPath, finalPath);
             _security.SecureFile(finalPath);
             _durability.FlushFileAndParentDirectory(finalPath);
         }
@@ -279,6 +296,11 @@ public sealed class DurableMailboxPeerReplayJournal : IMailboxPeerReplayJournal,
     private void PurgeTemporaryFiles()
     {
         foreach (var path in Directory.EnumerateFiles(_directory, "*.tmp"))
+        {
+            File.Delete(path);
+        }
+
+        foreach (var path in Directory.EnumerateFiles(_directory, "*.deleted"))
         {
             File.Delete(path);
         }

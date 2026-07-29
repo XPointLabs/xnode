@@ -1,5 +1,7 @@
 using System.Net.Http.Headers;
+using System.Security.Cryptography;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
+using Deep.Protocol.DeepExtension.MembershipRoutes;
 using XNode.Core.Mailbox;
 using XNode.Core.Runtime;
 
@@ -32,8 +34,32 @@ public sealed class HttpMailboxReplicaPeerClient : IMailboxReplicaPeerClient
             : operation == MailboxPeerReplicationOperation.Tombstone
                 ? MailboxWireHttpContract.PeerTombstone
                 : throw new ArgumentOutOfRangeException(nameof(operation));
+        MailboxPeerWireRequestV2 decoded;
+        MembershipRouteDescriptor recipientDescriptor;
+        try
+        {
+            decoded = MailboxPeerWireV2Codec.Decode(canonicalPrq2.Span);
+            recipientDescriptor = MailboxReplicaRouteProofCodec.Decode(
+                decoded.RecipientMembershipProof.CanonicalInclusionProof.Span).Descriptor;
+        }
+        catch (Exception exception) when (
+            exception is MailboxPeerReplicationException or MembershipRouteDescriptorException)
+        {
+            throw new HttpRequestException("Invalid canonical PRQ2 peer request.", exception);
+        }
+
         if (canonicalPrq2.Length < contract.MinimumRequestBytes
             || canonicalPrq2.Length > contract.MaximumRequestBytes
+            || decoded.Operation != operation
+            || !Fixed(decoded.RecipientRouterId.Span, peer.RouterId.ToBytes())
+            || !Fixed(recipientDescriptor.RouterId.Span, decoded.RecipientRouterId.Span)
+            || !Fixed(
+                recipientDescriptor.Ed25519PublicKey.Span,
+                decoded.RecipientMembershipProof.SigningPublicKey.Span)
+            || !MailboxPeerEndpointBinding.IsExact(
+                recipientDescriptor.RpcEndpoint,
+                peer.Endpoint,
+                contract.Route)
             || !Uri.TryCreate(peer.Endpoint.Trim(), UriKind.Absolute, out var uri)
             || !PeerEndpointPolicy.TryValidateUri(
                 uri,
@@ -94,4 +120,8 @@ public sealed class HttpMailboxReplicaPeerClient : IMailboxReplicaPeerClient
 
         return result;
     }
+
+    private static bool Fixed(ReadOnlySpan<byte> left, ReadOnlySpan<byte> right) =>
+        left.Length == right.Length
+        && CryptographicOperations.FixedTimeEquals(left, right);
 }

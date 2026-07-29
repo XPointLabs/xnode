@@ -75,21 +75,28 @@ For each ported behavior:
 - The configured epoch commitment is the authority anchor. Both RIP1/MIP1 proofs must bind exact
   router ids, independent Ed25519 keys, Storage role/capability, epoch and commitment. Store also
   binds the exact MEO1 placement preimage; Tombstone resolves the identical durable Store context.
+  A configured placement-commitment allowlist authorizes exactly two distinct router ids, and the
+  sender binds the outbound route to the verified recipient RIP1 endpoint.
 - PRQ2 CreatedAt permits zero future skew. Replay is durably Pending before mutation; exact
   completed retries return the cached reverified MRR2, conflicts fail closed, and pending crash
   claims recover idempotently.
 - Replay collection follows the protocol state machine and begins only after authoritative epoch
-  retirement plus seven days. Both collection and journal capacities are bounded.
-- Store reservations, blobs and logical tombstones use write-through atomic replacement and
-  parent-directory durability barriers. Logical tombstone precedes best-effort deletion and
-  startup retries cleanup.
+  retirement plus seven days. Priority-ordered bounded collection runs at startup, before reserve
+  capacity, and in sender/receiver completion paths.
+- Store and Tombstone share one durable mutation record carrying expiry/replay-retention state.
+  Pending Store belongs to one exact replay identity; Tombstone moves through a recoverable
+  `tombstone-pending` state. Bounded mutation GC cannot retain dead state for process lifetime.
+- Journal/blob replacement uses write-through atomic replacement and parent-directory barriers.
+  Windows uses write-through rename plus recoverable `.deleted` tombstones; Unix fsyncs the parent.
 - The sender coordinator requires the exact two selected MIP1-keyed replicas, so quorum is 2-of-2,
   and emits only PRQ2-domain MQR3. Partial failure, deadline or invalid evidence never succeeds.
-- HTTP routes, media types, body bounds, status codes, 15-second deadlines, concurrency 32 and
-  120/minute verified-sender admission come from P10B3 constants.
+- Host-global and per-operation pre-auth rate/concurrency admission precedes parse/crypto. HTTP
+  routes, media types, body bounds, status codes, at-most-15-second deadlines and verified-sender
+  admission come from P10B3 constants. Wrong methods on peer paths are invariant 404.
 - No identity, capability, route/placement value, mailbox id, ciphertext or receipt bytes enter
   logs or metric labels. Ordinary onion replay remains explicitly volatile debt.
-- Peer runtime readiness is not client activation. Public mailbox ingress remains unmapped.
+- Peer journal leases/corruption are eagerly checked and included in readiness. Peer runtime
+  readiness is not client activation. Public mailbox ingress remains unmapped.
 
 ## Client Mailbox Adapter V1 (Dormant)
 

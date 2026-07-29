@@ -323,6 +323,7 @@ must not be confused with public client-mailbox activation.
     "maxPeerReplayRecordsPerRouterPairEpoch": 20000,
     "maxPeerReplayGcBatch": 1024,
     "maxPeerMutationRecords": 100000,
+    "maxPeerMutationGcBatch": 1024,
     "allowInsecureHttpPeerTransport": false
   },
   "MailboxPeerAuthority": {
@@ -331,13 +332,23 @@ must not be confused with public client-mailbox activation.
     "currentEpochExpiresAtUnixSeconds": 0,
     "nextEpoch": 0,
     "nextMembershipCommitment": "",
-    "nextEpochExpiresAtUnixSeconds": 0
+    "nextEpochExpiresAtUnixSeconds": 0,
+    "placementSelections": [
+      {
+        "epoch": 0,
+        "placementCommitment": "64-lowercase-hex",
+        "firstRouterId": "64-lowercase-hex",
+        "secondRouterId": "64-lowercase-hex"
+      }
+    ]
   }
 }
 ```
 
-Enabling `Mailbox` also requires an authoritative current epoch/commitment/retirement time and
-optionally a cryptographically distinct E+1 entry. The only mailbox peer routes are:
+Enabling `Mailbox` also requires an authoritative current epoch/commitment/retirement time,
+optionally a cryptographically distinct E+1 entry, and at least one exact placement-commitment to
+two-distinct-router selection. Replace the illustrative zero/placeholder values above; they are
+not an enableable configuration. The only mailbox peer routes are:
 
 - `POST /api/peer/mailbox/v2/store`;
 - `POST /api/peer/mailbox/v2/tombstone`.
@@ -345,7 +356,7 @@ optionally a cryptographically distinct E+1 entry. The only mailbox peer routes 
 Both accept exact raw `PRQ2` with `application/vnd.deep.mailbox.prq2` and return exact signed
 `MRR2` with `application/vnd.deep.mailbox.mrr2`. The removed
 `/api/peer/mailbox/replica` JSON route returns 404. The canonical routes return 404 on the public
-API listener.
+API listener. Any non-POST method on either canonical path also returns 404.
 
 Plain HTTP is rejected by default because it exposes otherwise opaque mailbox metadata.
 `allowInsecureHttpPeerTransport=true` is a development-only escape hatch for an isolated
@@ -356,21 +367,34 @@ Operational invariants:
 
 - PRQ1, MQR2, JSON and cross-operation frames are rejected; no translation exists;
 - both RIP1/MIP1 proofs must verify Storage role/capability, exact router signing keys, epoch and
-  the configured membership commitment;
+  the configured membership commitment; sender/recipient RouterIds are distinct identities,
+  distinct from their independently bound and mutually distinct signing keys;
 - Store binds the exact canonical MEO1 placement preimage; Tombstone must resolve the identical
-  durable Store context;
+  durable Store context; the exact router pair must be present in the authoritative placement
+  selection allowlist;
 - created-at has zero future skew and at most the protocol's fixed past-age window;
 - replay is reserved before mutation in an exclusive crash-safe journal; an exact completed retry
   returns the cached verified MRR2 and a pending crash claim resumes idempotently;
 - replay GC uses the authoritative epoch retirement time plus the protocol-fixed seven-day
-  retention and deletes only a bounded batch;
-- logical tombstones are durable before best-effort ciphertext deletion; startup retries cleanup;
+- replay startup and every sender/receiver reserve path run priority-ordered bounded collection
+  before reporting capacity, so a full journal containing retired completed state remains live;
+- each Store mutation has one durable record with expiry/retention metadata. Pending Store is
+  exclusive to its exact replay nonce. Tombstone advances that same record through
+  `tombstone-pending` to `tombstoned`, so no two-file gap can admit a duplicate Store; startup
+  reconciles deletion and bounded GC removes only state past its live/replay boundary;
 - the sender coordinator accepts only the exact local and recipient MIP1-keyed MRR2 pair and
-  emits native PRQ2-only MQR3. One receipt, timeout or invalid evidence is never quorum;
-- request body, content type/encoding, 15-second deadline, 32-request concurrency and
-  120/minute verified-sender limits come from `MailboxWireHttpContract`;
+  the recipient endpoint must exactly match its verified RIP1 RPC endpoint plus the operation
+  route, and emits native PRQ2-only MQR3. One receipt, timeout or invalid evidence is never quorum;
+- host-global and per-operation fixed-window/concurrency admission happens before body parsing or
+  cryptography. Request body, content type/encoding, at-most-15-second deadline, per-operation
+  concurrency/rate and 120/minute verified-sender limits come from `MailboxWireHttpContract`;
+- replay and mutation leases plus full corruption validation are resolved during hosted startup
+  and are included in `/health/ready`; the first peer request is never the readiness probe;
 - Windows ACLs are replaced and verified as service-account-only; Unix modes are verified as
   `0700` for directories and `0600` for files;
+- on Windows, journal replacement uses `MoveFileExW(REPLACE_EXISTING|WRITE_THROUGH)`. Durable
+  deletion first write-through-renames to an anonymous `.deleted` tombstone, which startup
+  removes after a crash. Unix replacement/deletion fsyncs the file and parent directory;
 - metrics and status contain counts only: no router id, membership capability, mailbox, placement
   route, operation id, ciphertext or receipt bytes are logged or labeled.
 

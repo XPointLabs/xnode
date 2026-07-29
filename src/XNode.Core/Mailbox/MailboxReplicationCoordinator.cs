@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
+using Deep.Protocol.DeepExtension.MembershipRoutes;
 
 namespace XNode.Core.Mailbox;
 
@@ -50,7 +51,8 @@ public sealed class MailboxReplicationCoordinator
     private readonly IMailboxReplicaMembershipProofVerifier _membershipVerifier;
     private readonly IMailboxPeerReplayJournal _journal;
     private readonly SodiumMailboxPeerReplicationCrypto _crypto = new();
-    private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly SemaphoreSlim[] _executionGates =
+        Enumerable.Range(0, 64).Select(_ => new SemaphoreSlim(1, 1)).ToArray();
     private long _attempts;
     private long _durableQuorums;
     private long _partialFailures;
@@ -69,13 +71,9 @@ public sealed class MailboxReplicationCoordinator
         options.Validate();
         _localRouterId = localRouterId.ToBytes();
         _privateKeySeed = Convert.FromHexString(privateKeySeedHex);
-        if (_privateKeySeed.Length != 32
-            || !CryptographicOperations.FixedTimeEquals(
-                _crypto.GetPublicKey(_privateKeySeed),
-                _localRouterId))
+        if (_privateKeySeed.Length != 32)
         {
-            throw new InvalidOperationException(
-                "The mailbox coordinator identity does not match its Ed25519 seed.");
+            throw new InvalidOperationException("The mailbox coordinator Ed25519 seed is invalid.");
         }
 
         _options = options;
@@ -104,7 +102,9 @@ public sealed class MailboxReplicationCoordinator
             return Failure(MailboxPeerQuorumStatus.Disabled);
         }
 
-        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var requestDigest = SHA256.HashData(canonicalPrq2.Span);
+        var executionGate = _executionGates[requestDigest[0] % _executionGates.Length];
+        await executionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             VerifiedMailboxPeerWireRequestV2 verified;
@@ -115,12 +115,16 @@ public sealed class MailboxReplicationCoordinator
                         decoded.SenderRouterId.Span,
                         _localRouterId)
                     || !decoded.RecipientRouterId.Span.SequenceEqual(
-                        recipient.RouterId.ToBytes()))
+                        recipient.RouterId.ToBytes())
+                    || !TryValidateIdentityAndEndpointBinding(decoded, recipient))
                 {
                     Interlocked.Increment(ref _rejected);
                     return Failure(MailboxPeerQuorumStatus.Unauthorized);
                 }
 
+                _ = _journal.CollectExpired(
+                    exactPolicy.NowUnixSeconds,
+                    _options.MaxPeerReplayGcBatch);
                 verified = MailboxPeerWireV2Codec.VerifyAndReserve(
                     canonicalPrq2.Span,
                     exactPolicy,
@@ -139,6 +143,13 @@ public sealed class MailboxReplicationCoordinator
             {
                 Interlocked.Increment(ref _rejected);
                 return Failure(MailboxPeerQuorumStatus.Rejected);
+            }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException
+                    or InvalidDataException or InvalidOperationException)
+            {
+                Interlocked.Increment(ref _partialFailures);
+                return Failure(MailboxPeerQuorumStatus.PartialFailure);
             }
 
             MailboxPeerMutationResult mutation;
@@ -228,6 +239,10 @@ public sealed class MailboxReplicationCoordinator
                     _journal.CompleteAtomically(verified.ReplayClaim, remoteBytes.Value);
                 }
 
+                _ = _journal.CollectExpired(
+                    exactPolicy.NowUnixSeconds,
+                    _options.MaxPeerReplayGcBatch);
+
                 var unsignedQuorum =
                     MailboxPeerWireV2Codec.CreateUnsignedDurableQuorumResponse(
                         verified,
@@ -273,10 +288,92 @@ public sealed class MailboxReplicationCoordinator
         }
         finally
         {
-            _gate.Release();
+            executionGate.Release();
         }
     }
 
     private static MailboxPeerQuorumResult Failure(MailboxPeerQuorumStatus status) =>
         new(status, ReadOnlyMemory<byte>.Empty, DurableReplicaCount: 0);
+
+    private bool TryValidateIdentityAndEndpointBinding(
+        MailboxPeerWireRequestV2 request,
+        MailboxReplicaPeer recipientPeer)
+    {
+        if (Fixed(request.SenderRouterId.Span, request.RecipientRouterId.Span)
+            || Fixed(
+                request.SenderMembershipProof.SigningPublicKey.Span,
+                request.RecipientMembershipProof.SigningPublicKey.Span)
+            || !Fixed(
+                request.SenderMembershipProof.SigningPublicKey.Span,
+                _crypto.GetPublicKey(_privateKeySeed))
+            || !Fixed(
+                request.SenderMembershipProof.ReplicaId.Span,
+                request.SenderRouterId.Span)
+            || !Fixed(
+                request.RecipientMembershipProof.ReplicaId.Span,
+                request.RecipientRouterId.Span))
+        {
+            return false;
+        }
+
+        try
+        {
+            var sender = MailboxReplicaRouteProofCodec.Decode(
+                request.SenderMembershipProof.CanonicalInclusionProof.Span).Descriptor;
+            var recipient = MailboxReplicaRouteProofCodec.Decode(
+                request.RecipientMembershipProof.CanonicalInclusionProof.Span).Descriptor;
+            if (!Fixed(sender.RouterId.Span, request.SenderRouterId.Span)
+                || !Fixed(recipient.RouterId.Span, request.RecipientRouterId.Span)
+                || !Fixed(
+                    sender.Ed25519PublicKey.Span,
+                    request.SenderMembershipProof.SigningPublicKey.Span)
+                || !Fixed(
+                    recipient.Ed25519PublicKey.Span,
+                    request.RecipientMembershipProof.SigningPublicKey.Span))
+            {
+                return false;
+            }
+
+            var contract = request.Operation == MailboxPeerReplicationOperation.Store
+                ? MailboxWireHttpContract.PeerStore
+                : MailboxWireHttpContract.PeerTombstone;
+            return MailboxPeerEndpointBinding.IsExact(
+                recipient.RpcEndpoint,
+                recipientPeer.Endpoint,
+                contract.Route);
+        }
+        catch (MembershipRouteDescriptorException)
+        {
+            return false;
+        }
+    }
+
+    private static bool Fixed(ReadOnlySpan<byte> left, ReadOnlySpan<byte> right) =>
+        left.Length == right.Length
+        && CryptographicOperations.FixedTimeEquals(left, right);
+}
+
+public static class MailboxPeerEndpointBinding
+{
+    public static bool IsExact(string trustedRpcEndpoint, string requestedEndpoint, string route)
+    {
+        if (!Uri.TryCreate(trustedRpcEndpoint?.Trim(), UriKind.Absolute, out var trusted)
+            || !Uri.TryCreate(requestedEndpoint?.Trim(), UriKind.Absolute, out var requested)
+            || !string.IsNullOrEmpty(trusted.Query)
+            || !string.IsNullOrEmpty(trusted.Fragment)
+            || !string.IsNullOrEmpty(trusted.UserInfo)
+            || !string.IsNullOrEmpty(requested.Query)
+            || !string.IsNullOrEmpty(requested.Fragment)
+            || !string.IsNullOrEmpty(requested.UserInfo)
+            || trusted.Scheme != requested.Scheme
+            || trusted.Port != requested.Port
+            || !string.Equals(trusted.Host, requested.Host, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(requested.AbsolutePath, route, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return trusted.AbsolutePath is "" or "/"
+            || string.Equals(trusted.AbsolutePath, route, StringComparison.Ordinal);
+    }
 }

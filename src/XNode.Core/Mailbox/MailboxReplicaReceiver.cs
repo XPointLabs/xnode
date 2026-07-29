@@ -12,6 +12,7 @@ public sealed class MailboxPeerAuthorityOptions
     public ulong NextEpoch { get; set; }
     public string NextMembershipCommitment { get; set; } = "";
     public ulong NextEpochExpiresAtUnixSeconds { get; set; }
+    public List<MailboxPeerPlacementSelection> PlacementSelections { get; set; } = [];
 
     public void Validate(bool required)
     {
@@ -19,7 +20,8 @@ public sealed class MailboxPeerAuthorityOptions
             && CurrentEpoch == 0
             && NextEpoch == 0
             && string.IsNullOrEmpty(CurrentMembershipCommitment)
-            && string.IsNullOrEmpty(NextMembershipCommitment))
+            && string.IsNullOrEmpty(NextMembershipCommitment)
+            && PlacementSelections.Count == 0)
         {
             return;
         }
@@ -34,12 +36,43 @@ public sealed class MailboxPeerAuthorityOptions
                 && (NextEpoch != CurrentEpoch + 1
                     || NextEpochExpiresAtUnixSeconds == 0
                     || !TryCommitment(NextMembershipCommitment, out var next)
-                    || CryptographicOperations.FixedTimeEquals(current, next)))
+                    || CryptographicOperations.FixedTimeEquals(current, next))
+            || PlacementSelections.Count == 0
+            || PlacementSelections.Any(selection =>
+                !selection.IsValidFor(CurrentEpoch, NextEpoch))
+            || PlacementSelections
+                .GroupBy(
+                    selection => $"{selection.Epoch}:{selection.PlacementCommitment}",
+                    StringComparer.Ordinal)
+                .Any(group => group.Count() != 1))
         {
             throw new InvalidOperationException(
                 "MailboxPeerAuthority must pin the current membership epoch and an optional " +
                 "cryptographically distinct E+1 commitment.");
         }
+    }
+
+    public bool IsSelectedReplicaPair(
+        ulong epoch,
+        ReadOnlySpan<byte> placementCommitment,
+        ReadOnlySpan<byte> senderRouterId,
+        ReadOnlySpan<byte> recipientRouterId)
+    {
+        foreach (var selection in PlacementSelections)
+        {
+            if (selection.Epoch != epoch
+                || !FixedHex(selection.PlacementCommitment, placementCommitment))
+            {
+                continue;
+            }
+
+            var first = Convert.FromHexString(selection.FirstRouterId);
+            var second = Convert.FromHexString(selection.SecondRouterId);
+            return Fixed(first, senderRouterId) && Fixed(second, recipientRouterId)
+                || Fixed(first, recipientRouterId) && Fixed(second, senderRouterId);
+        }
+
+        return false;
     }
 
     public bool TryGetEpoch(
@@ -76,6 +109,52 @@ public sealed class MailboxPeerAuthorityOptions
         value = Convert.FromHexString(encoded);
         return value.AsSpan().IndexOfAnyExcept((byte)0) >= 0;
     }
+
+    private static bool FixedHex(string encoded, ReadOnlySpan<byte> expected)
+    {
+        try
+        {
+            return Fixed(Convert.FromHexString(encoded), expected);
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+    }
+
+    private static bool Fixed(ReadOnlySpan<byte> left, ReadOnlySpan<byte> right) =>
+        left.Length == right.Length
+        && CryptographicOperations.FixedTimeEquals(left, right);
+}
+
+public sealed class MailboxPeerPlacementSelection
+{
+    public ulong Epoch { get; set; }
+    public string PlacementCommitment { get; set; } = "";
+    public string FirstRouterId { get; set; } = "";
+    public string SecondRouterId { get; set; } = "";
+
+    internal bool IsValidFor(ulong currentEpoch, ulong nextEpoch)
+    {
+        if (Epoch == 0
+            || Epoch != currentEpoch && (nextEpoch == 0 || Epoch != nextEpoch)
+            || !IsNonZeroLowerHex(PlacementCommitment, 32)
+            || !IsNonZeroLowerHex(FirstRouterId, 32)
+            || !IsNonZeroLowerHex(SecondRouterId, 32))
+        {
+            return false;
+        }
+
+        var first = Convert.FromHexString(FirstRouterId);
+        var second = Convert.FromHexString(SecondRouterId);
+        return !CryptographicOperations.FixedTimeEquals(first, second);
+    }
+
+    private static bool IsNonZeroLowerHex(string? value, int bytes) =>
+        value is not null
+        && value.Length == bytes * 2
+        && value.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f')
+        && Convert.FromHexString(value).AsSpan().IndexOfAnyExcept((byte)0) >= 0;
 }
 
 public interface IMailboxPeerRequestPolicyResolver
@@ -114,6 +193,10 @@ public sealed class MailboxPeerRequestPolicyResolver : IMailboxPeerRequestPolicy
         ArgumentNullException.ThrowIfNull(request);
         if (request.Operation != expectedOperation
             || !Fixed(request.RecipientRouterId.Span, _localRouterId)
+            || Fixed(request.SenderRouterId.Span, request.RecipientRouterId.Span)
+            || Fixed(
+                request.SenderMembershipProof.SigningPublicKey.Span,
+                request.RecipientMembershipProof.SigningPublicKey.Span)
             || !Fixed(
                 request.RecipientMembershipProof.SigningPublicKey.Span,
                 _localSigningPublicKey)
@@ -140,6 +223,22 @@ public sealed class MailboxPeerRequestPolicyResolver : IMailboxPeerRequestPolicy
             return null;
         }
 
+        if (!Fixed(request.SenderMembershipProof.ReplicaId.Span, request.SenderRouterId.Span)
+            || !Fixed(
+                request.RecipientMembershipProof.ReplicaId.Span,
+                request.RecipientRouterId.Span)
+            || !Fixed(sender.RouterId.Span, request.SenderRouterId.Span)
+            || !Fixed(recipient.RouterId.Span, request.RecipientRouterId.Span)
+            || !Fixed(
+                sender.Ed25519PublicKey.Span,
+                request.SenderMembershipProof.SigningPublicKey.Span)
+            || !Fixed(
+                recipient.Ed25519PublicKey.Span,
+                request.RecipientMembershipProof.SigningPublicKey.Span))
+        {
+            return null;
+        }
+
         epochExpiresAt = Math.Min(
             epochExpiresAt,
             Math.Min(sender.ValidUntilUnixSeconds, recipient.ValidUntilUnixSeconds));
@@ -155,6 +254,15 @@ public sealed class MailboxPeerRequestPolicyResolver : IMailboxPeerRequestPolicy
             placementId = new BlindedPlacementId(request.Payload.Span.Slice(48, 32));
         }
         else if (!_mutations.TryResolveTombstonePlacement(request, out placementId))
+        {
+            return null;
+        }
+
+        if (!_authority.IsSelectedReplicaPair(
+                request.Epoch,
+                request.PlacementCommitment.Span,
+                request.SenderRouterId.Span,
+                request.RecipientRouterId.Span))
         {
             return null;
         }
@@ -230,7 +338,8 @@ public sealed class MailboxReplicaReceiver
     private readonly SodiumMailboxPeerReplicationCrypto _crypto = new();
     private readonly IClock _clock;
     private readonly MailboxPeerRateLimiter _rateLimiter = new();
-    private readonly SemaphoreSlim _executionGate = new(1, 1);
+    private readonly SemaphoreSlim[] _executionGates =
+        Enumerable.Range(0, 64).Select(_ => new SemaphoreSlim(1, 1)).ToArray();
     private long _accepted;
     private long _stored;
     private long _duplicates;
@@ -290,20 +399,26 @@ public sealed class MailboxReplicaReceiver
             return Failure(MailboxPeerReceiveStatus.Disabled);
         }
 
-        await _executionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        MailboxPeerWireRequestV2 decoded;
         try
         {
-            MailboxPeerWireRequestV2 decoded;
-            try
-            {
-                decoded = MailboxPeerWireV2Codec.Decode(canonicalRequest.Span);
-            }
-            catch (MailboxPeerReplicationException)
-            {
-                Interlocked.Increment(ref _rejected);
-                return Failure(MailboxPeerReceiveStatus.Malformed);
-            }
+            decoded = MailboxPeerWireV2Codec.Decode(canonicalRequest.Span);
+        }
+        catch (MailboxPeerReplicationException)
+        {
+            Interlocked.Increment(ref _rejected);
+            return Failure(MailboxPeerReceiveStatus.Malformed);
+        }
 
+        var scope = MailboxPeerReplayStateMachine.ComputeScopeKey(
+            decoded.SenderRouterId.Span,
+            decoded.RecipientRouterId.Span,
+            decoded.Epoch,
+            decoded.ReplayNonce.Span);
+        var executionGate = _executionGates[scope[0] % _executionGates.Length];
+        await executionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
             var now = checked((ulong)_clock.UtcNow.ToUnixTimeSeconds());
             var policy = _policyResolver.Resolve(decoded, expectedOperation, now);
             if (policy is null)
@@ -315,6 +430,7 @@ public sealed class MailboxReplicaReceiver
             VerifiedMailboxPeerWireRequestV2 verified;
             try
             {
+                _ = _replayJournal.CollectExpired(now, _options.MaxPeerReplayGcBatch);
                 // Authenticate the sender and both MIP1 proofs before using the sender id as a
                 // rate-limit partition. This validation journal has no durable side effects.
                 _ = MailboxPeerWireV2Codec.VerifyAndReserve(
@@ -346,6 +462,13 @@ public sealed class MailboxReplicaReceiver
                 return ProtocolFailure(exception.Error);
             }
             catch (MailboxReceiptException)
+            {
+                Interlocked.Increment(ref _dependencyFailures);
+                return Failure(MailboxPeerReceiveStatus.DependencyUnavailable);
+            }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException
+                    or InvalidDataException or InvalidOperationException)
             {
                 Interlocked.Increment(ref _dependencyFailures);
                 return Failure(MailboxPeerReceiveStatus.DependencyUnavailable);
@@ -464,7 +587,7 @@ public sealed class MailboxReplicaReceiver
         }
         finally
         {
-            _executionGate.Release();
+            executionGate.Release();
         }
     }
 

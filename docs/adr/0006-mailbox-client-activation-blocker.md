@@ -1,6 +1,6 @@
 # ADR 0006: P10C peer runtime ready; client mailbox activation remains fail-closed
 
-Status: accepted. Date: 2026-07-28. Human owner: **Mr. X**.
+Status: accepted. Date: 2026-07-29. Human owner: **Mr. X**.
 
 ## Decision
 
@@ -10,10 +10,12 @@ XNode adopts the accepted P10B3 contract from `deep-protocol` source
 
 The peer listener maps exact binary PRQ2 Store and Tombstone paths from
 `MailboxWireHttpContract`. It verifies the configured authoritative epoch commitment, both
-RIP1/MIP1 Storage proofs and keys, exact sender/recipient/operation/placement/context binding,
+RIP1/MIP1 Storage proofs and independent RouterId/signing-key identities, the configured exact
+two-router placement selection, exact sender/recipient/operation/placement/context binding,
 zero future skew, expiry and durable replay. Local Store and logical Tombstone mutations are
 crash-safe. Success returns only a native signed durable MRR2. The sender-side coordinator counts
-exactly the selected local and recipient receipts and emits only native PRQ2-domain MQR3.
+exactly the selected local and recipient receipts, binds the recipient endpoint to its verified
+RIP1 descriptor, and emits only native PRQ2-domain MQR3.
 
 The legacy JSON `SignedMailboxReplicaRequest` path is removed. There is no JSON translation,
 PRQ1 acceptance, MQR2 acceptance, or public client mailbox route.
@@ -26,12 +28,17 @@ remain dormant/reject-all. A configuration value is not activation authority.
 
 - The replay journal holds an exclusive process lease, atomically persists Pending before storage,
   caches only verified exact MRR2 bytes after durable mutation, and recovers Pending after restart.
-- Replay scope and collection use the P10B3 state machine. Collection begins only at authoritative
-  epoch retirement plus the fixed seven-day retention and is batch bounded.
-- Store mutation reservations make first-write disposition deterministic across crashes.
-- Tombstones are logical and durable before ciphertext deletion; startup retries cleanup.
+- Replay scope and collection use the P10B3 state machine. Priority-ordered bounded collection runs
+  before capacity at startup and on sender/receiver reserve/completion paths.
+- A Store/Tombstone pair uses one durable expiry/retention record. Pending Store is exclusive to
+  its exact replay identity; Tombstone is a recoverable state transition, not a two-file update.
+- Mutation GC is bounded and considers only records beyond their live/replay-retention boundary.
 - The HTTP layer requires exact media type, no content encoding, bounded Content-Length, a
-  15-second deadline, 32 concurrent peer requests and 120 requests/minute per verified sender.
+  protocol deadline no greater than 15 seconds, host-global and per-operation pre-auth
+  rate/concurrency admission, and 120 requests/minute per verified sender.
+- Durable leases and corruption validation run during hosted startup and gate readiness.
+- Windows persistence uses write-through rename and crash-recoverable anonymous delete
+  tombstones; Unix persistence fsyncs file and parent-directory metadata.
 - Metrics and status expose aggregate counters only. No identities, capabilities, route/
   placement values, operation ids, mailbox ids, ciphertext or receipt bytes are labels or logs.
 
