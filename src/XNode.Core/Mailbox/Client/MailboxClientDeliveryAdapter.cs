@@ -35,13 +35,8 @@ public sealed partial class MailboxClientStoreAdapter
                 status.RetrieveReason);
         }
 
-        if (!TryRetainDeliveryOperation())
-        {
-            return MailboxClientRetrieveResult.Failure(
-                MailboxClientRetrieveStatus.Rejected,
-                "delivery-operation-capacity");
-        }
-
+        var deliveryRetained = false;
+        MailboxCapabilityBinding? verifiedReservation = null;
         try
         {
             MailboxRetrieveRequest request;
@@ -65,6 +60,42 @@ public sealed partial class MailboxClientStoreAdapter
                 request.PlacementId);
             var membershipCommitment = _options.GetMembershipCommitment(request.Epoch);
             var requestDigest = SHA256.HashData(owned);
+            verifiedReservation = await _verifier.VerifyAsync(
+                owned,
+                MailboxClientOperation.Retrieve,
+                cancellationToken).ConfigureAwait(false);
+            if (!BindingMatches(
+                    verifiedReservation,
+                    MailboxClientOperation.Retrieve,
+                    request.Epoch,
+                    request.OperationId.Span,
+                    request.MailboxId.Bytes.Span,
+                    placementCommitment,
+                    membershipCommitment,
+                    requestDigest,
+                    request.RetrieveCapability))
+            {
+                if (verifiedReservation is not null)
+                {
+                    AbortCapability(verifiedReservation);
+                    verifiedReservation = null;
+                }
+
+                return MailboxClientRetrieveResult.Failure(
+                    MailboxClientRetrieveStatus.Unauthorized,
+                    "capability-binding-rejected");
+            }
+
+            if (!TryRetainDeliveryOperation())
+            {
+                AbortCapability(verifiedReservation);
+                verifiedReservation = null;
+                return MailboxClientRetrieveResult.Failure(
+                    MailboxClientRetrieveStatus.Rejected,
+                    "delivery-operation-capacity");
+            }
+
+            deliveryRetained = true;
             IReadOnlyList<ReadOnlyMemory<byte>> expectedReplicaIds;
             try
             {
@@ -77,6 +108,8 @@ public sealed partial class MailboxClientStoreAdapter
             }
             catch (ArgumentException)
             {
+                AbortCapability(verifiedReservation);
+                verifiedReservation = null;
                 return MailboxClientRetrieveResult.Failure(
                     MailboxClientRetrieveStatus.Unauthorized,
                     "replica-authority-invalid");
@@ -85,6 +118,8 @@ public sealed partial class MailboxClientStoreAdapter
             if (!expectedReplicaIds.Any(
                     id => id.Span.SequenceEqual(_crypto.LocalRouterId)))
             {
+                AbortCapability(verifiedReservation);
+                verifiedReservation = null;
                 return MailboxClientRetrieveResult.Failure(
                     MailboxClientRetrieveStatus.Unauthorized,
                     "local-replica-not-authorized");
@@ -97,6 +132,8 @@ public sealed partial class MailboxClientStoreAdapter
                     expectedReplicaIds,
                     out var continuation))
             {
+                AbortCapability(verifiedReservation);
+                verifiedReservation = null;
                 return MailboxClientRetrieveResult.Failure(
                     MailboxClientRetrieveStatus.Unauthorized,
                     "continuation-token-rejected");
@@ -105,6 +142,9 @@ public sealed partial class MailboxClientStoreAdapter
             MailboxClientRetrieveWindow window;
             try
             {
+                Observe(
+                    MailboxClientOperation.Retrieve,
+                    MailboxClientObservedAccess.LedgerRead);
                 window = await _ledger.ReadRetrieveCandidatesAsync(
                     request.Epoch,
                     request.MailboxId.Bytes,
@@ -115,6 +155,8 @@ public sealed partial class MailboxClientStoreAdapter
             }
             catch (MailboxClientContinuationException)
             {
+                AbortCapability(verifiedReservation);
+                verifiedReservation = null;
                 return MailboxClientRetrieveResult.Failure(
                     MailboxClientRetrieveStatus.Unauthorized,
                     "continuation-token-rejected");
@@ -123,6 +165,9 @@ public sealed partial class MailboxClientStoreAdapter
             var items = new List<MailboxRetrievedEnvelope>(window.Candidates.Count);
             foreach (var candidate in window.Candidates)
             {
+                Observe(
+                    MailboxClientOperation.Retrieve,
+                    MailboxClientObservedAccess.BlobRead);
                 var envelope = await ReadCandidateEnvelopeAsync(
                     request.Epoch,
                     request.MailboxId.Bytes,
@@ -131,6 +176,8 @@ public sealed partial class MailboxClientStoreAdapter
                     cancellationToken).ConfigureAwait(false);
                 if (envelope is null)
                 {
+                    AbortCapability(verifiedReservation);
+                    verifiedReservation = null;
                     return MailboxClientRetrieveResult.Failure(
                         MailboxClientRetrieveStatus.Rejected,
                         "mailbox-storage-corrupt");
@@ -151,6 +198,8 @@ public sealed partial class MailboxClientStoreAdapter
                 var hasMore = items.Count > selectedCount;
                 if (hasMore && selected.Length == 0)
                 {
+                    AbortCapability(verifiedReservation);
+                    verifiedReservation = null;
                     return MailboxClientRetrieveResult.Failure(
                         MailboxClientRetrieveStatus.Rejected,
                         "retrieve-page-byte-capacity");
@@ -173,6 +222,8 @@ public sealed partial class MailboxClientStoreAdapter
                 }
                 catch (InvalidOperationException)
                 {
+                    AbortCapability(verifiedReservation);
+                    verifiedReservation = null;
                     return MailboxClientRetrieveResult.Failure(
                         MailboxClientRetrieveStatus.Rejected,
                         "continuation-window-expired");
@@ -200,40 +251,31 @@ public sealed partial class MailboxClientStoreAdapter
                 }
             }
 
-            var verified = await _verifier.VerifyAsync(
-                owned,
-                MailboxClientOperation.Retrieve,
-                cancellationToken).ConfigureAwait(false);
-            if (!BindingMatches(
-                    verified,
-                    MailboxClientOperation.Retrieve,
-                    request.Epoch,
-                    request.OperationId.Span,
-                    request.MailboxId.Bytes.Span,
-                    placementCommitment,
-                    membershipCommitment,
-                    requestDigest,
-                    request.RetrieveCapability))
-            {
-                if (verified is not null)
-                {
-                    AbortCapability(verified);
-                }
-
-                return MailboxClientRetrieveResult.Failure(
-                    MailboxClientRetrieveStatus.Unauthorized,
-                    "capability-binding-rejected");
-            }
-
-            CompleteCapability(verified!, encodedPage);
+            CompleteCapability(verifiedReservation!, encodedPage);
+            verifiedReservation = null;
             return new(
                 MailboxClientRetrieveStatus.Success,
                 encodedPage,
                 "");
         }
+        catch (OperationCanceledException) when (
+            cancellationToken.IsCancellationRequested
+            && verifiedReservation is not null)
+        {
+            AbortCapability(verifiedReservation);
+            throw;
+        }
+        catch when (verifiedReservation is not null)
+        {
+            AbortCapability(verifiedReservation);
+            throw;
+        }
         finally
         {
-            ReleaseDeliveryOperation();
+            if (deliveryRetained)
+            {
+                ReleaseDeliveryOperation();
+            }
         }
     }
 
@@ -255,13 +297,8 @@ public sealed partial class MailboxClientStoreAdapter
                 status.AcknowledgeReason);
         }
 
-        if (!TryRetainDeliveryOperation())
-        {
-            return MailboxClientAckResult.Failure(
-                MailboxClientAckStatus.Rejected,
-                "delivery-operation-capacity");
-        }
-
+        var deliveryRetained = false;
+        MailboxCapabilityBinding? verifiedReservation = null;
         try
         {
             MailboxAckRequest request;
@@ -285,6 +322,42 @@ public sealed partial class MailboxClientStoreAdapter
             var placementCommitment = MailboxPlacementCommitment.Compute(
                 request.PlacementId);
             var membershipCommitment = _options.GetMembershipCommitment(request.Epoch);
+            verifiedReservation = await _verifier.VerifyAsync(
+                owned,
+                MailboxClientOperation.Acknowledge,
+                cancellationToken).ConfigureAwait(false);
+            if (!BindingMatches(
+                    verifiedReservation,
+                    MailboxClientOperation.Acknowledge,
+                    request.Epoch,
+                    request.OperationId.Span,
+                    request.MailboxId.Bytes.Span,
+                    placementCommitment,
+                    membershipCommitment,
+                    requestDigest,
+                    request.RetrieveCapability))
+            {
+                if (verifiedReservation is not null)
+                {
+                    AbortCapability(verifiedReservation);
+                    verifiedReservation = null;
+                }
+
+                return MailboxClientAckResult.Failure(
+                    MailboxClientAckStatus.Unauthorized,
+                    "capability-binding-rejected");
+            }
+
+            if (!TryRetainDeliveryOperation())
+            {
+                AbortCapability(verifiedReservation);
+                verifiedReservation = null;
+                return MailboxClientAckResult.Failure(
+                    MailboxClientAckStatus.Rejected,
+                    "delivery-operation-capacity");
+            }
+
+            deliveryRetained = true;
             IReadOnlyList<ReadOnlyMemory<byte>> expectedReplicaIds;
             try
             {
@@ -297,6 +370,8 @@ public sealed partial class MailboxClientStoreAdapter
             }
             catch (ArgumentException)
             {
+                AbortCapability(verifiedReservation);
+                verifiedReservation = null;
                 return MailboxClientAckResult.Failure(
                     MailboxClientAckStatus.Unauthorized,
                     "replica-authority-invalid");
@@ -306,6 +381,8 @@ public sealed partial class MailboxClientStoreAdapter
                 || !expectedReplicaIds.Take(2).Any(
                     id => id.Span.SequenceEqual(_crypto.LocalRouterId)))
             {
+                AbortCapability(verifiedReservation);
+                verifiedReservation = null;
                 return MailboxClientAckResult.Failure(
                     MailboxClientAckStatus.Unauthorized,
                     "local-replica-not-authorized");
@@ -317,6 +394,8 @@ public sealed partial class MailboxClientStoreAdapter
                     membershipCommitment,
                     expectedReplicaIds))
             {
+                AbortCapability(verifiedReservation);
+                verifiedReservation = null;
                 return MailboxClientAckResult.Failure(
                     MailboxClientAckStatus.Unauthorized,
                     "continuation-token-rejected");
@@ -325,6 +404,9 @@ public sealed partial class MailboxClientStoreAdapter
             MailboxClientAckReservation? existingReservation;
             try
             {
+                Observe(
+                    MailboxClientOperation.Acknowledge,
+                    MailboxClientObservedAccess.LedgerRead);
                 existingReservation = await _ledger.TryReadAckReservationAsync(
                     request.Epoch,
                     request.MailboxId.Bytes,
@@ -334,6 +416,8 @@ public sealed partial class MailboxClientStoreAdapter
             }
             catch (MailboxClientOperationConflictException)
             {
+                AbortCapability(verifiedReservation);
+                verifiedReservation = null;
                 return MailboxClientAckResult.Failure(
                     MailboxClientAckStatus.Conflict,
                     "operation-id-conflict");
@@ -344,6 +428,9 @@ public sealed partial class MailboxClientStoreAdapter
                 IReadOnlyList<MailboxClientRetrieveCandidate> targets;
                 try
                 {
+                    Observe(
+                        MailboxClientOperation.Acknowledge,
+                        MailboxClientObservedAccess.LedgerRead);
                     targets = await _ledger.ReadAckTargetsAsync(
                         request.Epoch,
                         request.MailboxId.Bytes,
@@ -354,6 +441,8 @@ public sealed partial class MailboxClientStoreAdapter
                 }
                 catch (MailboxClientAckTargetException)
                 {
+                    AbortCapability(verifiedReservation);
+                    verifiedReservation = null;
                     return MailboxClientAckResult.Failure(
                         MailboxClientAckStatus.Rejected,
                         "ack-target-mismatch");
@@ -366,6 +455,9 @@ public sealed partial class MailboxClientStoreAdapter
                         continue;
                     }
 
+                    Observe(
+                        MailboxClientOperation.Acknowledge,
+                        MailboxClientObservedAccess.BlobRead);
                     var envelope = await ReadCandidateEnvelopeAsync(
                         request.Epoch,
                         request.MailboxId.Bytes,
@@ -374,6 +466,8 @@ public sealed partial class MailboxClientStoreAdapter
                         cancellationToken).ConfigureAwait(false);
                     if (envelope is null)
                     {
+                        AbortCapability(verifiedReservation);
+                        verifiedReservation = null;
                         return MailboxClientAckResult.Failure(
                             MailboxClientAckStatus.Rejected,
                             "ack-target-storage-mismatch");
@@ -388,6 +482,8 @@ public sealed partial class MailboxClientStoreAdapter
             var singleFlight = TryRetainSingleFlight(operationKey);
             if (singleFlight is null)
             {
+                AbortCapability(verifiedReservation);
+                verifiedReservation = null;
                 return MailboxClientAckResult.Failure(
                     MailboxClientAckStatus.Rejected,
                     "single-flight-capacity");
@@ -398,13 +494,15 @@ public sealed partial class MailboxClientStoreAdapter
             {
                 await singleFlight.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
                 entered = true;
+                var verified = verifiedReservation!;
+                verifiedReservation = null;
                 return await AcknowledgeSingleFlightAsync(
-                    owned,
                     request,
                     requestDigest,
                     placementCommitment,
                     membershipCommitment,
                     expectedReplicaIds,
+                    verified,
                     cancellationToken).ConfigureAwait(false);
             }
             finally
@@ -417,49 +515,42 @@ public sealed partial class MailboxClientStoreAdapter
                 ReleaseSingleFlight(operationKey, singleFlight);
             }
         }
+        catch (OperationCanceledException) when (
+            cancellationToken.IsCancellationRequested
+            && verifiedReservation is not null)
+        {
+            AbortCapability(verifiedReservation);
+            throw;
+        }
+        catch when (verifiedReservation is not null)
+        {
+            AbortCapability(verifiedReservation);
+            throw;
+        }
         finally
         {
-            ReleaseDeliveryOperation();
+            if (deliveryRetained)
+            {
+                ReleaseDeliveryOperation();
+            }
         }
     }
 
     private async Task<MailboxClientAckResult> AcknowledgeSingleFlightAsync(
-        byte[] canonicalRequest,
         MailboxAckRequest request,
         byte[] requestDigest,
         byte[] placementCommitment,
         byte[] membershipCommitment,
         IReadOnlyList<ReadOnlyMemory<byte>> expectedReplicaIds,
+        MailboxCapabilityBinding verified,
         CancellationToken cancellationToken)
     {
-        var verified = await _verifier.VerifyAsync(
-            canonicalRequest,
-            MailboxClientOperation.Acknowledge,
-            cancellationToken).ConfigureAwait(false);
-        if (!BindingMatches(
-                verified,
-                MailboxClientOperation.Acknowledge,
-                request.Epoch,
-                request.OperationId.Span,
-                request.MailboxId.Bytes.Span,
-                placementCommitment,
-                membershipCommitment,
-                requestDigest,
-                request.RetrieveCapability))
-        {
-            if (verified is not null)
-            {
-                AbortCapability(verified);
-            }
-
-            return MailboxClientAckResult.Failure(
-                MailboxClientAckStatus.Unauthorized,
-                "capability-binding-rejected");
-        }
-
         MailboxClientAckReservation reservation;
         try
         {
+            Observe(
+                MailboxClientOperation.Acknowledge,
+                MailboxClientObservedAccess.LedgerMutation);
             reservation = await _ledger.ReserveAckAsync(
                 request.Epoch,
                 request.OperationId,
@@ -474,28 +565,28 @@ public sealed partial class MailboxClientStoreAdapter
         }
         catch (MailboxClientOperationConflictException)
         {
-            CompleteTerminal(verified!, "operation-id-conflict");
+            AbortCapability(verified);
             return MailboxClientAckResult.Failure(
                 MailboxClientAckStatus.Conflict,
                 "operation-id-conflict");
         }
         catch (MailboxClientLedgerCapacityException)
         {
-            CompleteTerminal(verified!, "operation-ledger-capacity");
+            AbortCapability(verified);
             return MailboxClientAckResult.Failure(
                 MailboxClientAckStatus.Rejected,
                 "operation-ledger-capacity");
         }
         catch (MailboxClientAckTargetException)
         {
-            CompleteTerminal(verified!, "ack-target-mismatch");
+            AbortCapability(verified);
             return MailboxClientAckResult.Failure(
                 MailboxClientAckStatus.Rejected,
                 "ack-target-mismatch");
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            AbortCapability(verified!);
+            AbortCapability(verified);
             throw;
         }
 
@@ -548,6 +639,9 @@ public sealed partial class MailboxClientStoreAdapter
                 }
 
                 completed.Add(resumed);
+                Observe(
+                    MailboxClientOperation.Acknowledge,
+                    MailboxClientObservedAccess.LedgerMutation);
                 reservation = await _ledger.ReserveAckAsync(
                     request.Epoch,
                     request.OperationId,
@@ -566,6 +660,9 @@ public sealed partial class MailboxClientStoreAdapter
             IReadOnlyList<ReadOnlyMemory<byte>> remoteReceipts;
             try
             {
+                Observe(
+                    MailboxClientOperation.Acknowledge,
+                    MailboxClientObservedAccess.PeerMutation);
                 remoteReceipts = await _tombstoneFanout.TombstoneAsync(
                     CopyTombstoneContext(context),
                     cancellationToken).ConfigureAwait(false);
@@ -606,6 +703,9 @@ public sealed partial class MailboxClientStoreAdapter
                     "durable-tombstone-quorum-not-reached");
             }
 
+            Observe(
+                MailboxClientOperation.Acknowledge,
+                MailboxClientObservedAccess.LedgerMutation);
             reservation = await _ledger.BeginAckCompletionAsync(
                 reservation.OperationKey,
                 item.Cursor,
@@ -694,6 +794,9 @@ public sealed partial class MailboxClientStoreAdapter
             return null;
         }
 
+        Observe(
+            MailboxClientOperation.Acknowledge,
+            MailboxClientObservedAccess.LedgerMutation);
         await _ledger.CompleteAckAsync(
             reservation.OperationKey,
             item.Cursor,

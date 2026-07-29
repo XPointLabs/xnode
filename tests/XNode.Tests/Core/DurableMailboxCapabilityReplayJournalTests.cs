@@ -1,4 +1,5 @@
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
+using XNode.Core;
 using XNode.Core.Mailbox;
 using XNode.Core.Mailbox.Client;
 
@@ -18,21 +19,21 @@ public sealed class DurableMailboxCapabilityReplayJournalTests : IDisposable
         {
             Assert.Equal(
                 MailboxCapabilityAtomicReplayState.NewReserved,
-                journal.EvaluateAndReserve(claim).State);
+                Evaluate(journal, claim).State);
             Assert.Equal(
                 MailboxCapabilityAtomicReplayState.PendingSame,
-                journal.EvaluateAndReserve(claim).State);
+                Evaluate(journal, claim).State);
             Assert.Equal(
                 MailboxCapabilityAtomicReplayState.Conflict,
-                journal.EvaluateAndReserve(
+                Evaluate(journal,
                     claim with { ClaimDigest = Bytes(0x12, 32) }).State);
             Assert.Equal(
                 MailboxCapabilityAtomicReplayState.StaleReplay,
-                journal.EvaluateAndReserve(
+                Evaluate(journal,
                     claim with { ReplayCounter = 6 }).State);
             Assert.Equal(
                 MailboxCapabilityAtomicReplayState.PendingPrior,
-                journal.EvaluateAndReserve(
+                Evaluate(journal,
                     claim with
                     {
                         ReplayCounter = 8,
@@ -40,17 +41,17 @@ public sealed class DurableMailboxCapabilityReplayJournalTests : IDisposable
                     }).State);
 
             journal.CompleteAtomically(claim, Bytes(0x91, 48));
-            var cached = journal.EvaluateAndReserve(claim);
+            var cached = Evaluate(journal, claim);
             Assert.Equal(MailboxCapabilityAtomicReplayState.CompletedSame, cached.State);
             Assert.Equal(Bytes(0x91, 48), cached.CachedOutcome.ToArray());
         }
 
         using var restarted = Journal();
-        var afterRestart = restarted.EvaluateAndReserve(claim);
+        var afterRestart = Evaluate(restarted, claim);
         Assert.Equal(MailboxCapabilityAtomicReplayState.CompletedSame, afterRestart.State);
         Assert.Equal(Bytes(0x91, 48), afterRestart.CachedOutcome.ToArray());
         Assert.Equal(
-            new MailboxCapabilityReplayJournalDiagnostics(1, 0, 1, 0, 99_999),
+            new MailboxCapabilityReplayJournalDiagnostics(1, 0, 1, 0, 99_999, 1_000),
             restarted.Diagnostics);
     }
 
@@ -63,19 +64,19 @@ public sealed class DurableMailboxCapabilityReplayJournalTests : IDisposable
             using var crashing = new DurableMailboxCapabilityReplayJournal(
                 _directory,
                 durability: new ThrowAfterMoveDurability());
-            _ = crashing.EvaluateAndReserve(claim);
+            _ = Evaluate(crashing, claim);
         });
 
         using var recovered = Journal();
         Assert.Equal(
             MailboxCapabilityAtomicReplayState.PendingSame,
-            recovered.EvaluateAndReserve(claim).State);
+            Evaluate(recovered, claim).State);
         Assert.Equal(1, recovered.Diagnostics.PendingCount);
 
         recovered.CompleteAtomically(claim, Bytes(0x92, 32));
         Assert.Equal(
             MailboxCapabilityAtomicReplayState.CompletedSame,
-            recovered.EvaluateAndReserve(claim).State);
+            Evaluate(recovered, claim).State);
     }
 
     [Fact]
@@ -97,7 +98,7 @@ public sealed class DurableMailboxCapabilityReplayJournalTests : IDisposable
     {
         var claim = Claim(counter: 3, claimByte: 0x31);
         using var journal = Journal();
-        _ = journal.EvaluateAndReserve(claim);
+        _ = Evaluate(journal, claim);
 
         var persisted = File.ReadAllText(Path.Combine(
             _directory,
@@ -131,9 +132,9 @@ public sealed class DurableMailboxCapabilityReplayJournalTests : IDisposable
         using var journal = new DurableMailboxCapabilityReplayJournal(
             _directory,
             new DurableMailboxCapabilityReplayJournalOptions { MaximumScopes = 1 });
-        _ = journal.EvaluateAndReserve(Claim(counter: 1, claimByte: 0x41));
+        _ = Evaluate(journal, Claim(counter: 1, claimByte: 0x41));
         Assert.Throws<InvalidOperationException>(() =>
-            journal.EvaluateAndReserve(Claim(
+            Evaluate(journal, Claim(
                 counter: 1,
                 claimByte: 0x42,
                 serialByte: 0x52)));
@@ -148,7 +149,7 @@ public sealed class DurableMailboxCapabilityReplayJournalTests : IDisposable
         {
             Assert.Equal(
                 MailboxCapabilityAtomicReplayState.NewReserved,
-                journal.EvaluateAndReserve(claim).State);
+                Evaluate(journal, claim).State);
             journal.AbortAtomically(claim);
             Assert.Equal(1, journal.Diagnostics.ReleasedCount);
         }
@@ -157,15 +158,15 @@ public sealed class DurableMailboxCapabilityReplayJournalTests : IDisposable
         {
             Assert.Equal(
                 MailboxCapabilityAtomicReplayState.StaleReplay,
-                restarted.EvaluateAndReserve(
+                Evaluate(restarted,
                     claim with { ReplayCounter = 6 }).State);
             Assert.Equal(
                 MailboxCapabilityAtomicReplayState.Conflict,
-                restarted.EvaluateAndReserve(
+                Evaluate(restarted,
                     claim with { ClaimDigest = Bytes(0x62, 32) }).State);
             Assert.Equal(
                 MailboxCapabilityAtomicReplayState.NewReserved,
-                restarted.EvaluateAndReserve(claim).State);
+                Evaluate(restarted, claim).State);
             restarted.AbortAtomically(claim);
         }
 
@@ -177,10 +178,10 @@ public sealed class DurableMailboxCapabilityReplayJournalTests : IDisposable
         };
         Assert.Equal(
             MailboxCapabilityAtomicReplayState.NewReserved,
-            restartedAgain.EvaluateAndReserve(higher).State);
+            Evaluate(restartedAgain, higher).State);
         Assert.Equal(
             MailboxCapabilityAtomicReplayState.StaleReplay,
-            restartedAgain.EvaluateAndReserve(claim).State);
+            Evaluate(restartedAgain, claim).State);
     }
 
     [Fact]
@@ -208,37 +209,164 @@ public sealed class DurableMailboxCapabilityReplayJournalTests : IDisposable
 
         Assert.Equal(MailboxCapabilityAtomicReplayState.NewReserved, replacement.State);
         Assert.Equal(
-            new MailboxCapabilityReplayJournalDiagnostics(1, 1, 0, 0, 0),
+            new MailboxCapabilityReplayJournalDiagnostics(
+                1,
+                1,
+                0,
+                0,
+                0,
+                retainedUntil + 1),
             journal.Diagnostics);
     }
 
     [Fact]
-    public void SchemaV1Records_MigrateFailClosedWithoutInventingCollectionBoundary()
+    public void SchemaV1AndV2Records_MigrateWithDurableTimeFloor()
     {
         var claim = Claim(counter: 4, claimByte: 0x75);
         using (var journal = Journal())
         {
-            _ = journal.EvaluateAndReserve(claim);
+            _ = Evaluate(journal, claim);
         }
 
         var path = Path.Combine(
             _directory,
             "mailbox-capability-replay-v2",
             "replay.json");
-        var persisted = File.ReadAllText(path)
-            .Replace("\"schemaVersion\":2", "\"schemaVersion\":1", StringComparison.Ordinal);
-        persisted = System.Text.RegularExpressions.Regex.Replace(
-            persisted,
-            ",\"retainUntilUnixSeconds\":18446744073709551615",
-            "");
-        File.WriteAllText(path, persisted);
+        var schema3 = File.ReadAllText(path);
+        foreach (var legacyVersion in new[] { 2, 1 })
+        {
+            var legacy = schema3
+                .Replace(
+                    "\"schemaVersion\":3",
+                    $"\"schemaVersion\":{legacyVersion}",
+                    StringComparison.Ordinal);
+            legacy = System.Text.RegularExpressions.Regex.Replace(
+                legacy,
+                ",\"acceptedTimeHighWatermarkUnixSeconds\":1000",
+                "");
+            if (legacyVersion == 1)
+            {
+                legacy = System.Text.RegularExpressions.Regex.Replace(
+                    legacy,
+                    ",\"retainUntilUnixSeconds\":18446744073709551615",
+                    "");
+            }
 
-        using var migrated = Journal();
+            File.WriteAllText(path, legacy);
+            using var migrated = new DurableMailboxCapabilityReplayJournal(
+                _directory,
+                clock: new FixedClock(2_000));
+            Assert.Equal(
+                MailboxCapabilityAtomicReplayState.PendingSame,
+                Evaluate(migrated, claim, nowUnixSeconds: 2_000).State);
+            Assert.Equal(2_000UL, migrated.Diagnostics.AcceptedTimeHighWatermarkUnixSeconds);
+            Assert.Equal(1, migrated.Diagnostics.PendingCount);
+        }
+    }
+
+    [Fact]
+    public void InterruptedSchemaV2Migration_RestartsFromAtomicSchemaV3Image()
+    {
+        var claim = Claim(counter: 5, claimByte: 0x76);
+        using (var journal = Journal())
+        {
+            _ = Evaluate(journal, claim);
+        }
+
+        var path = Path.Combine(
+            _directory,
+            "mailbox-capability-replay-v2",
+            "replay.json");
+        var legacy = File.ReadAllText(path)
+            .Replace("\"schemaVersion\":3", "\"schemaVersion\":2", StringComparison.Ordinal);
+        legacy = System.Text.RegularExpressions.Regex.Replace(
+            legacy,
+            ",\"acceptedTimeHighWatermarkUnixSeconds\":1000",
+            "");
+        File.WriteAllText(path, legacy);
+
+        Assert.Throws<IOException>(() =>
+        {
+            using var interrupted = new DurableMailboxCapabilityReplayJournal(
+                _directory,
+                durability: new ThrowAfterMoveDurability(),
+                clock: new FixedClock(2_000));
+        });
+
+        using var restarted = new DurableMailboxCapabilityReplayJournal(
+            _directory,
+            clock: new FixedClock(2_000));
+        Assert.Equal(3, ReadSchemaVersion(path));
+        Assert.Equal(2_000UL, restarted.Diagnostics.AcceptedTimeHighWatermarkUnixSeconds);
         Assert.Equal(
             MailboxCapabilityAtomicReplayState.PendingSame,
-            migrated.EvaluateAndReserve(claim).State);
-        Assert.Equal(0, migrated.CollectExpired(ulong.MaxValue));
-        Assert.Equal(1, migrated.Diagnostics.PendingCount);
+            Evaluate(restarted, claim, nowUnixSeconds: 2_000).State);
+    }
+
+    [Fact]
+    public void ConcurrentAcceptedTimes_NeverMoveDurableFloorBackwardOrLoseClaims()
+    {
+        using var journal = new DurableMailboxCapabilityReplayJournal(
+            _directory,
+            new DurableMailboxCapabilityReplayJournalOptions
+            {
+                MaximumScopes = 100
+            });
+
+        Parallel.For(0, 51, index =>
+        {
+            var value = checked((byte)(0x80 + index));
+            _ = journal.EvaluateAndReserve(
+                Claim(
+                    counter: 1,
+                    claimByte: value,
+                    serialByte: value),
+                nowUnixSeconds: checked((ulong)(2_000 + index)),
+                retainUntilUnixSeconds: ulong.MaxValue);
+        });
+
+        Assert.Equal(51, journal.Diagnostics.ScopeCount);
+        Assert.Equal(2_050UL, journal.Diagnostics.AcceptedTimeHighWatermarkUnixSeconds);
+    }
+
+    [Fact]
+    public void ConcurrentIdenticalAndConflictingClaims_HaveOneDurableWinner()
+    {
+        using var journal = Journal();
+        var claim = Claim(counter: 9, claimByte: 0x22);
+        var identical = new System.Collections.Concurrent.ConcurrentBag<
+            MailboxCapabilityAtomicReplayState>();
+        Parallel.For(0, 20, _ =>
+            identical.Add(Evaluate(journal, claim).State));
+        Assert.Equal(
+            1,
+            identical.Count(state =>
+                state == MailboxCapabilityAtomicReplayState.NewReserved));
+        Assert.Equal(
+            19,
+            identical.Count(state =>
+                state == MailboxCapabilityAtomicReplayState.PendingSame));
+
+        journal.AbortAtomically(claim);
+        var conflicts = new System.Collections.Concurrent.ConcurrentBag<
+            MailboxCapabilityAtomicReplayState>();
+        Parallel.For(0, 20, index =>
+        {
+            var contender = claim with
+            {
+                ReplayCounter = 10,
+                ClaimDigest = Bytes(checked((byte)(0x30 + index)), 32)
+            };
+            conflicts.Add(Evaluate(journal, contender).State);
+        });
+        Assert.Equal(
+            1,
+            conflicts.Count(state =>
+                state == MailboxCapabilityAtomicReplayState.NewReserved));
+        Assert.Equal(
+            19,
+            conflicts.Count(state =>
+                state == MailboxCapabilityAtomicReplayState.Conflict));
     }
 
     public void Dispose()
@@ -250,6 +378,15 @@ public sealed class DurableMailboxCapabilityReplayJournalTests : IDisposable
     }
 
     private DurableMailboxCapabilityReplayJournal Journal() => new(_directory);
+
+    private static MailboxCapabilityAtomicReplayEvaluation Evaluate(
+        DurableMailboxCapabilityReplayJournal journal,
+        MailboxCapabilityAtomicReplayClaim claim,
+        ulong nowUnixSeconds = 1_000) =>
+        journal.EvaluateAndReserve(
+            claim,
+            nowUnixSeconds,
+            retainUntilUnixSeconds: ulong.MaxValue);
 
     private static MailboxCapabilityAtomicReplayClaim Claim(
         ulong counter,
@@ -270,6 +407,12 @@ public sealed class DurableMailboxCapabilityReplayJournalTests : IDisposable
     private static byte[] Bytes(byte value, int length) =>
         Enumerable.Repeat(value, length).ToArray();
 
+    private static int ReadSchemaVersion(string path)
+    {
+        using var document = System.Text.Json.JsonDocument.Parse(File.ReadAllBytes(path));
+        return document.RootElement.GetProperty("schemaVersion").GetInt32();
+    }
+
     private sealed class ThrowAfterMoveDurability : IMailboxDurabilityBarrier
     {
         public void FlushFileAndParentDirectory(string path) =>
@@ -277,5 +420,11 @@ public sealed class DurableMailboxCapabilityReplayJournalTests : IDisposable
 
         public void FlushParentDirectory(string deletedPath) =>
             throw new IOException("simulated durability barrier crash");
+    }
+
+    private sealed class FixedClock(ulong nowUnixSeconds) : IClock
+    {
+        public DateTimeOffset UtcNow { get; } =
+            DateTimeOffset.FromUnixTimeSeconds(checked((long)nowUnixSeconds));
     }
 }

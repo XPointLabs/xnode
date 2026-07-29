@@ -124,6 +124,10 @@ For each ported behavior:
   claims remain rejected, and a higher counter may advance. Validity-aware bounded collection
   uses grant/authoritative epoch retirement plus the protocol-fixed seven-day replay retention,
   not issuer-key lifetime, and runs before capacity admission.
+- Replay schema v3 persists a monotonic accepted-time high-watermark. Verification and collection
+  never use an earlier effective time; rollback within 60 seconds uses the floor and larger
+  rollback fails closed. Atomic V1/V2 migration preserves records/counters, gives V1 records
+  infinite retention, and persists the injected migration time before activation.
 - The adapter has no production HTTP route. Its default issuer/revocation authority and replica
   fanout dependencies fail closed; only the explicit Development fixture maps routes.
 - The store boundary accepts only a canonical `MST1` frame and persists the complete canonical
@@ -169,6 +173,10 @@ For each ported behavior:
   retrieve and the matching non-final `MAK1`; signatures from any currently authorized replica
   support failover. A replica without the corresponding durable journal/blob state fails closed;
   the client may restart from cursor zero and deduplicate by envelope digest.
+- MRT1/MAK1 capability verification precedes delivery admission and every mailbox-specific
+  ledger/blob read. Clean validation/cancellation before durable work releases only NewReserved;
+  after ledger/storage/peer work starts, Pending survives cancellation or crash and exact retry
+  completes from the durable statement without duplicate fanout.
 - `MAK1` validates every cursor/digest target before a single mutation, then atomically journals
   the complete ACK and logical tombstones before local signing or peer fanout. Tombstoned
   envelopes disappear from retrieval immediately, including when quorum is unavailable.

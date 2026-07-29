@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
+using XNode.Core;
 using XNode.Core.Mailbox.Client;
 
 namespace XNode.Tests.Core;
@@ -194,6 +195,54 @@ public sealed class MailboxAuthenticatedCapabilityRuntimeTests : IDisposable
             higher.Capability.ReplayDisposition);
     }
 
+    [Fact]
+    public void ForwardCollectionThenRestartRollback_CannotRevalidateCollectedGrant()
+    {
+        var fixture = Frame();
+        var clock = new FixedClock(Now);
+        using (var journal = new DurableMailboxCapabilityReplayJournal(_directory))
+        {
+            var runtime = Runtime(fixture, journal, clock: clock);
+            var verified = runtime.Verify(fixture.Encoded);
+            runtime.Complete(verified, Bytes(0xe2, 32));
+            var collectedAt = journal.RetainUntilUnixSeconds(
+                fixture.Grant.ExpiresAtUnixSeconds) + 1;
+            clock.UtcNow = DateTimeOffset.FromUnixTimeSeconds(checked((long)collectedAt));
+            Assert.Equal(1, journal.CollectExpired(collectedAt));
+        }
+
+        clock.UtcNow = Now;
+        using var restarted = new DurableMailboxCapabilityReplayJournal(_directory);
+        var rolledBack = Runtime(fixture, restarted, clock: clock);
+        var error = Assert.Throws<MailboxAuthenticatedCapabilityException>(() =>
+            rolledBack.Verify(fixture.Encoded));
+        Assert.Equal(
+            MailboxAuthenticatedCapabilityError.InvalidReplayEvaluation,
+            error.Error);
+        Assert.Equal(0, restarted.Diagnostics.ScopeCount);
+    }
+
+    [Fact]
+    public void BoundedRollback_UsesDurableFloorAndCannotExtendGrantValidity()
+    {
+        var fixture = Frame();
+        var acceptedTime = fixture.Grant.ExpiresAtUnixSeconds + 1;
+        var clock = new FixedClock(
+            DateTimeOffset.FromUnixTimeSeconds(checked((long)acceptedTime)));
+        using var journal = new DurableMailboxCapabilityReplayJournal(_directory);
+        _ = journal.CollectExpired(acceptedTime);
+        clock.UtcNow = DateTimeOffset.FromUnixTimeSeconds(
+            checked((long)fixture.Grant.ExpiresAtUnixSeconds - 49));
+        var runtime = Runtime(fixture, journal, clock: clock);
+
+        Assert.Throws<MailboxAuthenticatedCapabilityException>(() =>
+            runtime.Verify(fixture.Encoded));
+        Assert.Equal(
+            acceptedTime,
+            journal.Diagnostics.AcceptedTimeHighWatermarkUnixSeconds);
+        Assert.Equal(0, journal.Diagnostics.ScopeCount);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_directory))
@@ -207,14 +256,15 @@ public sealed class MailboxAuthenticatedCapabilityRuntimeTests : IDisposable
         DurableMailboxCapabilityReplayJournal journal,
         ulong? minimumGeneration = null,
         MailboxCapabilityLifecycle? allowedLifecycle = null,
-        bool revoked = false) => new(
+        bool revoked = false,
+        IClock? clock = null) => new(
             new FixedAuthority(
                 fixture.Grant,
                 minimumGeneration ?? fixture.Grant.Generation,
                 allowedLifecycle ?? fixture.Grant.Lifecycle),
             new FixedRevocations(revoked),
             journal,
-            new FixedClock(Now));
+            clock ?? new FixedClock(Now));
 
     private static FrameFixture Frame(ulong replayCounter = 11)
     {

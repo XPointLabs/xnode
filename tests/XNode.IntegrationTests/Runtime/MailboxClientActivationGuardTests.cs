@@ -162,6 +162,15 @@ public sealed class MailboxClientActivationGuardTests
         Assert.DoesNotContain(
             typeof(HttpMailboxReplicaPeerClient).GetMethods(),
             method => method.ReturnType == typeof(MailboxReplicaReceiptV2));
+        Assert.DoesNotContain(
+            typeof(MailboxClientStoreAdapter).GetConstructors()
+                .SelectMany(static constructor => constructor.GetParameters()),
+            parameter => parameter.ParameterType.Name.Contains(
+                "Observer",
+                StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            typeof(MailboxClientStoreAdapter).GetProperties(),
+            property => property.Name.Contains("Observer", StringComparison.Ordinal));
     }
 
     [Fact]

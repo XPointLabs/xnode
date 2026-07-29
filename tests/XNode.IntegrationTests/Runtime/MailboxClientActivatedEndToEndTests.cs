@@ -78,6 +78,166 @@ public sealed class MailboxClientActivatedEndToEndTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task CrashAfterLedgerCompletionBeforeReplayCompletion_ResumesWithoutDuplicatePeerWork()
+    {
+        var fixture = await ActivatedFixture.OpenAsync(_root, _clock);
+        using (fixture)
+        {
+            var storeRequest = fixture.CreateStoreRequest(replayCounter: 1);
+            using (var first = await fixture.OpenCoordinatorAsync())
+            {
+                first.Adapter.RequestObserver = new ThrowOnceObserver(
+                    MailboxClientOperation.Store,
+                    MailboxClientObservedAccess.ReplayCompletion);
+                await Assert.ThrowsAsync<SimulatedCrashException>(() =>
+                    first.Adapter.StoreAsync(storeRequest));
+            }
+
+            Assert.Equal(1, fixture.PeerClient.StoreCalls);
+            byte[] ackRequest;
+            using (var restarted = await fixture.OpenCoordinatorAsync())
+            {
+                Assert.Equal(
+                    MailboxClientStoreStatus.Durable,
+                    (await restarted.Adapter.StoreAsync(storeRequest)).Status);
+                Assert.Equal(1, fixture.PeerClient.StoreCalls);
+                var retrieve = await restarted.Adapter.RetrieveAsync(
+                    fixture.CreateRetrieveRequest(replayCounter: 1));
+                var page = MailboxClientCodec.DecodeRetrievePage(
+                    retrieve.CanonicalPage.Span,
+                    fixture.DecodePolicy);
+                ackRequest = fixture.CreateAckRequest(
+                    Assert.Single(page.Items).ToAcknowledgement(),
+                    replayCounter: 2);
+                restarted.Adapter.RequestObserver = new ThrowOnceObserver(
+                    MailboxClientOperation.Acknowledge,
+                    MailboxClientObservedAccess.ReplayCompletion);
+                await Assert.ThrowsAsync<SimulatedCrashException>(() =>
+                    restarted.Adapter.AcknowledgeAsync(ackRequest));
+            }
+
+            Assert.Equal(1, fixture.PeerClient.TombstoneCalls);
+            using var restartedAgain = await fixture.OpenCoordinatorAsync();
+            Assert.Equal(
+                MailboxClientAckStatus.Durable,
+                (await restartedAgain.Adapter.AcknowledgeAsync(ackRequest)).Status);
+            Assert.Equal(1, fixture.PeerClient.TombstoneCalls);
+        }
+    }
+
+    [Fact]
+    public async Task CancellationBeforeStoreReservationReleasesButAfterAckReservationStaysPending()
+    {
+        var fixture = await ActivatedFixture.OpenAsync(_root, _clock);
+        using (fixture)
+        {
+            var storeRequest = fixture.CreateStoreRequest(replayCounter: 1);
+            using (var first = await fixture.OpenCoordinatorAsync())
+            using (var cancellation = new CancellationTokenSource())
+            {
+                first.Adapter.RequestObserver = new CancelOnceObserver(
+                    MailboxClientOperation.Store,
+                    MailboxClientObservedAccess.LedgerMutation,
+                    cancellation);
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                    first.Adapter.StoreAsync(storeRequest, cancellation.Token));
+            }
+
+            Assert.Equal(0, fixture.PeerClient.StoreCalls);
+            byte[] ackRequest;
+            using (var restarted = await fixture.OpenCoordinatorAsync())
+            {
+                Assert.Equal(
+                    MailboxClientStoreStatus.Durable,
+                    (await restarted.Adapter.StoreAsync(storeRequest)).Status);
+                var retrieve = await restarted.Adapter.RetrieveAsync(
+                    fixture.CreateRetrieveRequest(replayCounter: 1));
+                var page = MailboxClientCodec.DecodeRetrievePage(
+                    retrieve.CanonicalPage.Span,
+                    fixture.DecodePolicy);
+                ackRequest = fixture.CreateAckRequest(
+                    Assert.Single(page.Items).ToAcknowledgement(),
+                    replayCounter: 2);
+                using var cancellation = new CancellationTokenSource();
+                restarted.Adapter.RequestObserver = new CancelOnceObserver(
+                    MailboxClientOperation.Acknowledge,
+                    MailboxClientObservedAccess.PeerMutation,
+                    cancellation);
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                    restarted.Adapter.AcknowledgeAsync(
+                        ackRequest,
+                        cancellation.Token));
+            }
+
+            Assert.Equal(0, fixture.PeerClient.TombstoneCalls);
+            using var restartedAgain = await fixture.OpenCoordinatorAsync();
+            Assert.Equal(
+                MailboxClientAckStatus.Durable,
+                (await restartedAgain.Adapter.AcknowledgeAsync(ackRequest)).Status);
+            Assert.Equal(1, fixture.PeerClient.TombstoneCalls);
+        }
+    }
+
+    [Fact]
+    public async Task ForgedCanonicalMrt1AndMak1_PerformNoMailboxReadOrMutation()
+    {
+        var fixture = await ActivatedFixture.OpenAsync(_root, _clock);
+        using (fixture)
+        using (var runtime = await fixture.OpenCoordinatorAsync())
+        {
+            Assert.Equal(
+                MailboxClientStoreStatus.Durable,
+                (await runtime.Adapter.StoreAsync(
+                    fixture.CreateStoreRequest(replayCounter: 1))).Status);
+            var validRetrieve = fixture.CreateRetrieveRequest(replayCounter: 1);
+            var retrieved = await runtime.Adapter.RetrieveAsync(validRetrieve);
+            var page = MailboxClientCodec.DecodeRetrievePage(
+                retrieved.CanonicalPage.Span,
+                fixture.DecodePolicy);
+            var validAck = fixture.CreateAckRequest(
+                Assert.Single(page.Items).ToAcknowledgement(),
+                replayCounter: 2);
+            var observer = new RecordingObserver();
+            runtime.Adapter.RequestObserver = observer;
+
+            var forgedRetrieve = MailboxClientCodec.DecodeRetrieve(
+                validRetrieve,
+                fixture.DecodePolicy,
+                new AcceptingReplayGuard());
+            var retrieveInner =
+                forgedRetrieve.RetrieveCapability.DomainValue.Bytes.ToArray();
+            retrieveInner[^1] ^= 1;
+            var forgedAck = MailboxClientCodec.DecodeAck(
+                validAck,
+                fixture.DecodePolicy,
+                new AcceptingReplayGuard());
+            var ackInner = forgedAck.RetrieveCapability.DomainValue.Bytes.ToArray();
+            ackInner[^1] ^= 1;
+
+            var retrieveResult = await runtime.Adapter.RetrieveAsync(
+                MailboxClientCodec.EncodeRetrieve(forgedRetrieve with
+                {
+                    RetrieveCapability = forgedRetrieve.RetrieveCapability with
+                    {
+                        DomainValue = new RotatingRetrieveCapability(retrieveInner)
+                    }
+                }));
+            var ackResult = await runtime.Adapter.AcknowledgeAsync(
+                MailboxClientCodec.EncodeAck(forgedAck with
+                {
+                    RetrieveCapability = forgedAck.RetrieveCapability with
+                    {
+                        DomainValue = new RotatingRetrieveCapability(ackInner)
+                    }
+                }));
+
+            Assert.Equal(MailboxClientRetrieveStatus.Unauthorized, retrieveResult.Status);
+            Assert.Equal(MailboxClientAckStatus.Unauthorized, ackResult.Status);
+            Assert.Empty(observer.Accesses);
+        }
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_root))
@@ -564,5 +724,69 @@ public sealed class MailboxClientActivatedEndToEndTests : IDisposable
     private sealed class FixedClock(DateTimeOffset now) : IClock
     {
         public DateTimeOffset UtcNow { get; } = now;
+    }
+
+    private sealed class AcceptingReplayGuard : IMailboxCapabilityReplayGuard
+    {
+        public MailboxCapabilityReplayEvaluation Evaluate(
+            MailboxCapabilityReplayScope scope) => new()
+        {
+            Decision = MailboxCapabilityReplayDecision.AcceptedNew,
+            CachedOutcome = ReadOnlyMemory<byte>.Empty
+        };
+    }
+
+    private sealed class RecordingObserver : IMailboxClientRequestObserver
+    {
+        public List<(MailboxClientOperation Operation, MailboxClientObservedAccess Access)>
+            Accesses { get; } = [];
+
+        public void OnAccess(
+            MailboxClientOperation operation,
+            MailboxClientObservedAccess access) =>
+            Accesses.Add((operation, access));
+    }
+
+    private sealed class ThrowOnceObserver(
+        MailboxClientOperation operation,
+        MailboxClientObservedAccess access) : IMailboxClientRequestObserver
+    {
+        private int _thrown;
+
+        public void OnAccess(
+            MailboxClientOperation observedOperation,
+            MailboxClientObservedAccess observedAccess)
+        {
+            if (observedOperation == operation
+                && observedAccess == access
+                && Interlocked.Exchange(ref _thrown, 1) == 0)
+            {
+                throw new SimulatedCrashException();
+            }
+        }
+    }
+
+    private sealed class CancelOnceObserver(
+        MailboxClientOperation operation,
+        MailboxClientObservedAccess access,
+        CancellationTokenSource cancellation) : IMailboxClientRequestObserver
+    {
+        private int _cancelled;
+
+        public void OnAccess(
+            MailboxClientOperation observedOperation,
+            MailboxClientObservedAccess observedAccess)
+        {
+            if (observedOperation == operation
+                && observedAccess == access
+                && Interlocked.Exchange(ref _cancelled, 1) == 0)
+            {
+                cancellation.Cancel();
+            }
+        }
+    }
+
+    private sealed class SimulatedCrashException : Exception
+    {
     }
 }

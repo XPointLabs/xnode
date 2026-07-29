@@ -547,3 +547,17 @@ seven-day replay-retention interval. Collection precedes capacity admission; dia
 Pending,
 Completed, Released and remaining-capacity counts. Long-lived issuer-key validity does not pin
 expired individual grants, and issuer authorities must never reuse a capability serial.
+
+Replay schema v3 also stores the accepted wall-clock high-watermark. Capability validity and
+collection use `max(observedTime, durableFloor)`, and the floor never decreases. Rollback up to
+60 seconds is absorbed by the floor; larger rollback rejects capability verification until the
+clock recovers. V1/V2 journals migrate atomically at startup using the host clock: all replay
+records and counters survive, V1 records receive infinite retention, and startup cannot proceed
+through a partial migration.
+
+For MRT1 and MAK1, cryptographic capability verification occurs before delivery admission,
+replica-authority selection, continuation processing, or mailbox-specific ledger/blob access.
+Therefore a forged but canonically framed request cannot probe mailbox presence or spend storage
+I/O. Cancellation before the first durable effect releases only a new reservation. Cancellation
+after ACK reservation, local storage, or peer mutation preserves Pending; exact restart retry
+resumes the ledger and completes replay without duplicating remote work.

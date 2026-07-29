@@ -16,6 +16,8 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
     private readonly IMailboxClientTombstoneFanout _tombstoneFanout;
     private readonly MailboxClientReceiptCrypto _crypto;
     private readonly IClock _clock;
+    internal IMailboxClientRequestObserver RequestObserver { get; set; } =
+        new NullMailboxClientRequestObserver();
     private readonly Dictionary<string, SingleFlightEntry> _singleFlights =
         new(StringComparer.Ordinal);
     private readonly object _singleFlightsGate = new();
@@ -282,6 +284,9 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
         MailboxClientStoreReservation reservation;
         try
         {
+            Observe(
+                MailboxClientOperation.Store,
+                MailboxClientObservedAccess.LedgerMutation);
             reservation = await _ledger.ReserveStoreAsync(
                 request.Epoch,
                 request.OperationId,
@@ -297,12 +302,12 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
         }
         catch (MailboxClientOperationConflictException)
         {
-            CompleteTerminal(verified!, "operation-id-conflict");
+            AbortCapability(verified);
             return Failure(MailboxClientStoreStatus.Conflict, "operation-id-conflict");
         }
         catch (MailboxClientLedgerCapacityException)
         {
-            CompleteTerminal(verified!, "operation-ledger-capacity");
+            AbortCapability(verified);
             return Failure(MailboxClientStoreStatus.Rejected, "operation-ledger-capacity");
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -357,6 +362,9 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
 
         if (reservation.Disposition is null)
         {
+            Observe(
+                MailboxClientOperation.Store,
+                MailboxClientObservedAccess.BlobMutation);
             var localStore = await _store.PutAsync(blob, cancellationToken).ConfigureAwait(false);
             if (localStore.Disposition == MailboxPutDisposition.Rejected)
             {
@@ -389,6 +397,9 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
         IReadOnlyList<ReadOnlyMemory<byte>> remoteReceipts;
         try
         {
+            Observe(
+                MailboxClientOperation.Store,
+                MailboxClientObservedAccess.PeerMutation);
             remoteReceipts = await _fanout.StoreAsync(
                 CopyContext(context),
                 cancellationToken).ConfigureAwait(false);
@@ -461,6 +472,9 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
 
         var firstBytes = MailboxReceiptV2Codec.EncodeReplica(receiptsById[required[0]]);
         var secondBytes = MailboxReceiptV2Codec.EncodeReplica(receiptsById[required[1]]);
+        Observe(
+            MailboxClientOperation.Store,
+            MailboxClientObservedAccess.LedgerMutation);
         reservation = await _ledger.BeginCompletionAsync(
             reservation.OperationKey,
             firstBytes,
@@ -533,6 +547,9 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
             return Failure(MailboxClientStoreStatus.Rejected, "completion-quorum-invalid");
         }
 
+        Observe(
+            MailboxClientOperation.Store,
+            MailboxClientObservedAccess.LedgerMutation);
         await _ledger.CompleteStoreAsync(
             reservation.OperationKey,
             reservation.Completion.CoordinatorSequence,
@@ -822,18 +839,27 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
         if (_verifier is IMailboxClientCapabilityCompletion completion
             && binding.CompletionHandle is not null)
         {
+            Observe(
+                binding.AllowedOperation,
+                MailboxClientObservedAccess.ReplayCompletion);
             completion.Complete(binding.CompletionHandle, canonicalOutcome);
         }
     }
+
+    private void Observe(
+        MailboxClientOperation operation,
+        MailboxClientObservedAccess access) =>
+        RequestObserver.OnAccess(operation, access);
 
     private void CompleteTerminal(MailboxCapabilityBinding binding, string error) =>
         CompleteCapability(
             binding,
             Encoding.UTF8.GetBytes($"XNODE-MAILBOX-TERMINAL-V1\0{error}"));
 
-    private void AbortCapability(MailboxCapabilityBinding binding)
+    private void AbortCapability(MailboxCapabilityBinding? binding)
     {
-        if (_verifier is IMailboxClientCapabilityCompletion completion
+        if (binding is not null
+            && _verifier is IMailboxClientCapabilityCompletion completion
             && binding.CompletionHandle is not null)
         {
             completion.Abort(binding.CompletionHandle);

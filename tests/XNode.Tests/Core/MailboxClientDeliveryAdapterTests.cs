@@ -699,6 +699,37 @@ public sealed class MailboxClientDeliveryAdapterTests : IDisposable
     }
 
     [Fact]
+    public async Task ForgedCanonicalRetrieveAndAck_AreRejectedBeforeMailboxAccess()
+    {
+        var fixture = CreateFixture();
+        await StoreAsync(fixture.Adapter, Envelope(1, MailboxId));
+        var page = await RetrievePageAsync(fixture.Adapter, MailboxId);
+        fixture.Adapter.Dispose();
+        var wrong = Track(new MailboxClientStoreAdapter(
+            fixture.AdapterOptions,
+            fixture.StoreOptions,
+            fixture.Store,
+            fixture.Ledger,
+            new WrongDigestVerifier(fixture.Verifier),
+            fixture.Authorizer,
+            new StoreSigningFanout(fixture.RemoteCrypto),
+            fixture.LocalCrypto,
+            _clock,
+            fixture.Tombstones));
+        var observer = new RecordingRequestObserver();
+        wrong.RequestObserver = observer;
+
+        var retrieve = await wrong.RetrieveAsync(MailboxClientCodec.EncodeRetrieve(
+            RetrieveRequest(91, MailboxId, 10)));
+        var ack = await wrong.AcknowledgeAsync(MailboxClientCodec.EncodeAck(
+            AckRequest(92, MailboxId, [page.Items[0].ToAcknowledgement()])));
+
+        Assert.Equal(MailboxClientRetrieveStatus.Unauthorized, retrieve.Status);
+        Assert.Equal(MailboxClientAckStatus.Unauthorized, ack.Status);
+        Assert.Empty(observer.Accesses);
+    }
+
+    [Fact]
     public async Task VerifierWithoutDurableAtomicReplay_KeepsEveryOperationNotReady()
     {
         var fixture = CreateFixture();
@@ -1109,6 +1140,17 @@ public sealed class MailboxClientDeliveryAdapterTests : IDisposable
                 ? null
                 : binding with { CanonicalRequestDigest = Range(0x01, 32) };
         }
+    }
+
+    private sealed class RecordingRequestObserver : IMailboxClientRequestObserver
+    {
+        public List<(MailboxClientOperation Operation, MailboxClientObservedAccess Access)>
+            Accesses { get; } = [];
+
+        public void OnAccess(
+            MailboxClientOperation operation,
+            MailboxClientObservedAccess access) =>
+            Accesses.Add((operation, access));
     }
 
     private sealed class ReplayUnsafeVerifier(IMailboxClientCapabilityVerifier inner)

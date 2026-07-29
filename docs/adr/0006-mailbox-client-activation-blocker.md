@@ -61,6 +61,18 @@ operations remain pending for exact retry.
   records beyond that boundary and runs before capacity admission, so capacity diagnostics and
   recovery are truthful. Issuer-key lifetime does not extend per-grant replay storage; serial
   reuse remains forbidden by the issuer authority.
+- Replay schema v3 durably persists a monotonic accepted-time high-watermark before verification;
+  collection and record transitions atomically preserve or advance that floor. Verification uses
+  at least that time. Wall-clock rollback of at most 60 seconds is tolerated without moving the
+  floor backward; a larger rollback fails authentication closed. V1/V2 migration atomically
+  preserves every replay floor, assigns V1 infinite retention, and records the injected migration
+  clock before the journal is usable. An interrupted migration restarts from either the intact
+  legacy image or complete v3.
+- MRT1/MAK1 capability verification precedes delivery admission, replica selection,
+  continuation work and every mailbox-specific ledger/blob access. Clean failures before a
+  durable side effect release only a newly-created replay reservation. After ledger, storage or
+  peer work begins, cancellation/crash leaves Pending for exact restart recovery; a completed
+  ledger statement is reverified and finishes replay completion without duplicate fanout.
 - Replay scope and collection use the P10B3 state machine. Priority-ordered bounded collection runs
   before capacity at startup and on sender/receiver reserve/completion paths.
 - Eager replay loading applies P10B3 semantic invariants to every record regardless of future

@@ -46,6 +46,32 @@ public interface IMailboxClientCapabilityCompletion
     void Abort(object completionHandle);
 }
 
+internal enum MailboxClientObservedAccess
+{
+    LedgerRead = 1,
+    BlobRead = 2,
+    LedgerMutation = 3,
+    BlobMutation = 4,
+    PeerMutation = 5,
+    ReplayCompletion = 6
+}
+
+internal interface IMailboxClientRequestObserver
+{
+    void OnAccess(
+        MailboxClientOperation operation,
+        MailboxClientObservedAccess access);
+}
+
+internal sealed class NullMailboxClientRequestObserver : IMailboxClientRequestObserver
+{
+    public void OnAccess(
+        MailboxClientOperation operation,
+        MailboxClientObservedAccess access)
+    {
+    }
+}
+
 public sealed class RejectAllMailboxClientCapabilityVerifier : IMailboxClientCapabilityVerifier
 {
     public bool IsConfigured => false;

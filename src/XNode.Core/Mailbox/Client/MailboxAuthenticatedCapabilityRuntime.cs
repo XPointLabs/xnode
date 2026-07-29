@@ -140,17 +140,18 @@ public sealed class MailboxAuthenticatedCapabilityRuntime
                 "Mailbox capability epoch binding failed.");
         }
 
-        var policy = configured with
-        {
-            NowUnixSeconds = checked((ulong)_clock.UtcNow.ToUnixTimeSeconds())
-        };
+        var observedNow = checked((ulong)_clock.UtcNow.ToUnixTimeSeconds());
         var retainUntil = _replay.RetainUntilUnixSeconds(
             Math.Max(
                 grant.ExpiresAtUnixSeconds,
                 _authority.ReplayValidityEndsAt(query, grant)));
         var replayScope = _replay.CreateEvaluationScope(
-            policy.NowUnixSeconds,
+            observedNow,
             retainUntil);
+        var policy = configured with
+        {
+            NowUnixSeconds = replayScope.EffectiveNowUnixSeconds
+        };
         return MailboxAuthenticatedClientRequestCodec.Verify(
             canonicalMau2.Span,
             policy,
