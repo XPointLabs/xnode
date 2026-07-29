@@ -9,24 +9,24 @@ public sealed class MailboxClientPackagePinTests
     private static readonly IReadOnlyDictionary<string, string> Expected =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            ["Deep.Protocol.0.3.0-p10i.a9b7a10.nupkg"] =
-                "925106e6098fe03a9fc247c5be519a13783318bb349b3b8f3cebaa299b8d0a78",
-            ["Deep.Protocol.Abstractions.0.3.0-p10i.a9b7a10.nupkg"] =
-                "0daa36393ff1e048186ae90883d7e5aaef18bab345e7c1219fa770a1e17776a6",
-            ["Deep.Protocol.MembershipRoutes.0.3.0-p10i.a9b7a10.nupkg"] =
-                "cb7cf4b4319349fb8eea81ea700b411f6b3d81ba580aef6a44c4dd141f6dee7e",
-            ["Deep.Protocol.Protobuf.0.3.0-p10i.a9b7a10.nupkg"] =
-                "5583ede034a85cf514840c8db325a4cffb7cdb0ab840af8c6df7d34fb0c1bade"
+            ["Deep.Protocol.0.3.0-p10j.2886880.nupkg"] =
+                "a41c79124f1c62c2889e7b2ea4695956272aa16de1700206cade8993c1b44abe",
+            ["Deep.Protocol.Abstractions.0.3.0-p10j.2886880.nupkg"] =
+                "4508e67aba983e91c174c8ce796df654c06892680d65e14ff78bda4d553d542c",
+            ["Deep.Protocol.MembershipRoutes.0.3.0-p10j.2886880.nupkg"] =
+                "cdb3eb8a8b2889567a25e6db437a287fb12db86d29e0819c13c9adb5fbc02327",
+            ["Deep.Protocol.Protobuf.0.3.0-p10j.2886880.nupkg"] =
+                "c97025f5d1b44fd7a955e7b69614ea2c6cca499656ccf7930029cc740208eab7"
         };
 
     [Fact]
-    public void P10iPeerMailboxPackageClosure_IsExactAndRejectsNetworkSubstitution()
+    public void P10jPeerMailboxPackageClosure_IsExactAndRejectsNetworkSubstitution()
     {
         var root = FindRepositoryRoot();
         var packageDirectory = Path.Combine(
             root,
             "vendor",
-            "mailbox-peer-p10b3");
+            "mailbox-peer-p10j");
         var files = Directory.GetFiles(packageDirectory, "*.nupkg")
             .ToDictionary(static path => Path.GetFileName(path)!, StringComparer.Ordinal);
         Assert.Equal(Expected.Keys.Order(), files.Keys.Order());
@@ -45,11 +45,11 @@ public sealed class MailboxClientPackagePinTests
         var coreProject = File.ReadAllText(
             Path.Combine(root, "src", "XNode.Core", "XNode.Core.csproj"));
         Assert.Contains(
-            "Version=\"[0.3.0-p10i.a9b7a10]\"",
+            "Version=\"[0.3.0-p10j.2886880]\"",
             coreProject,
             StringComparison.Ordinal);
         Assert.Contains(
-            "Deep.Protocol.MembershipRoutes\" Version=\"[0.3.0-p10i.a9b7a10]\"",
+            "Deep.Protocol.MembershipRoutes\" Version=\"[0.3.0-p10j.2886880]\"",
             coreProject,
             StringComparison.Ordinal);
         Assert.DoesNotContain("p03b2", coreProject, StringComparison.OrdinalIgnoreCase);
@@ -64,7 +64,7 @@ public sealed class MailboxClientPackagePinTests
                 StringComparer.Ordinal);
         Assert.Equal(
             new[] { "Deep.Protocol", "Deep.Protocol.*" },
-            sources["mailbox-peer-p10b3"]);
+            sources["mailbox-peer-p10j"]);
         Assert.DoesNotContain(
             sources["nuget.org"],
             static pattern => pattern is "*" or "Deep.Protocol" or "Deep.Protocol.*");
@@ -73,20 +73,20 @@ public sealed class MailboxClientPackagePinTests
             Path.Combine(root, "src", "XNode.Core", "packages.lock.json")));
         var packages = lockDocument.RootElement.GetProperty("dependencies").GetProperty("net10.0");
         Assert.Equal(
-            "0.3.0-p10i.a9b7a10",
+            "0.3.0-p10j.2886880",
             packages.GetProperty("Deep.Protocol").GetProperty("resolved").GetString());
         Assert.Equal(
-            "Wp5hUJKUTmoJcC2NTJmbQR8SlUXhOk8Cuz2QcgCQv+R9a+Ll616yVTBXv7rDGUZSNLyNMI9ov6au2gZyXHG8ww==",
+            "8nktp5tV9oPxOZbq9g9YDq0I8tmkkqY4mdXP9hZgBEnZi1xlfPq6j6I/s1xUFt0+4/ModMlGv9X/RU0iJ/vFbw==",
             packages.GetProperty("Deep.Protocol").GetProperty("contentHash").GetString());
         Assert.Equal(
-            "0.3.0-p10i.a9b7a10",
+            "0.3.0-p10j.2886880",
             packages.GetProperty("Deep.Protocol.MembershipRoutes").GetProperty("resolved").GetString());
         Assert.Contains("<RestoreLockedMode>true</RestoreLockedMode>", coreProject);
 
         using var manifest = JsonDocument.Parse(File.ReadAllBytes(
             Path.Combine(packageDirectory, "package-manifest.json")));
         Assert.Equal(
-            "a9b7a10a555758d4b2e30707a70d271f010b6c30",
+            "2886880d4c2060cd819765c53c77a02e1c475ea8",
             manifest.RootElement.GetProperty("sourceCommit").GetString());
         Assert.Equal(
             Expected.Count,
