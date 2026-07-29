@@ -3,6 +3,7 @@ namespace XNode;
 public sealed class MailboxClientActivationOptions
 {
     public bool Enabled { get; set; }
+    public MailboxClientDevelopmentFixtureOptions DevelopmentFixture { get; set; } = new();
 }
 
 public sealed record MailboxClientActivationStatus(
@@ -67,4 +68,41 @@ public static class MailboxClientActivationGuard
             ClientIngress = "dormant-unmapped"
         };
     }
+
+    public static MailboxClientActivationStatus Starting() => Active(
+        "starting",
+        "initializing");
+
+    public static MailboxClientActivationStatus Ready() => Active(
+        "ready",
+        "ready");
+
+    public static MailboxClientActivationStatus Failed(string reason) => Active(
+        "not-ready",
+        reason);
+
+    private static MailboxClientActivationStatus Active(
+        string operationStatus,
+        string reason) => new(
+        Enabled: true,
+        ClientRoutesMapped: true,
+        LegacyV1TranslationEnabled: false,
+        CapabilityVerifier: "mau2-ed25519-durable-replay",
+        StoreFanout: "development-fixture-mrr2",
+        TombstoneFanout: "development-fixture-mrr2",
+        Store: operationStatus,
+        Retrieve: operationStatus,
+        Acknowledge: operationStatus,
+        Reason: reason)
+    {
+        StrictMau2DecoderRegistered = true,
+        Ed25519CapabilityVerifierRegistered = true,
+        DurableReplayJournalRegistered = true,
+        IssuerAuthority = "development-config-pinned",
+        RevocationPolicy = "development-config-pinned",
+        PeerRuntimeReady = true,
+        PeerWire = "prq2-mrr2-mqr3",
+        PlacementAuthority = "development-config-pinned",
+        ClientIngress = "canonical-mst1-mrt1-mak1"
+    };
 }

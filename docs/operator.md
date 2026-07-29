@@ -405,16 +405,14 @@ Operational invariants:
 Ordinary onion peer replay remains process-memory-only. `/status` reports
 `onionPeerReplay=volatile-explicit-debt`; P10C does not claim durable onion replay.
 
-### Dormant canonical client adapter
+### Canonical client adapter
 
-The source tree contains a deliberately uncomposed adapter for canonical `MST1`/`MEO1`,
-`MRT1`/`MRP1`, and `MAK1` processing. It is not mapped to HTTP and therefore cannot be enabled
-by configuration alone. Production composition still requires a reviewed capability verifier,
-native store/tombstone peer fanout, and a reviewed public ACK response contract.
+The source tree contains an adapter for canonical `MST1`/`MEO1`, `MRT1`/`MRP1`, and `MAK1`
+processing. It is mapped only by the explicit survival Development composition. Production
+composition still requires reviewed authority and key custody.
 
-The adapter ledger below still describes its pre-activation internal MQR2 evidence. It is not a
-public or peer wire path. P10B3's MQR3 and ordered MAR1 APIs must replace that internal completion
-surface when the client composition is reviewed; no MQR2-to-MQR3 transcode is permitted.
+The adapter ledger stores native MRR2 evidence and native MQR3 completion. Development ACK emits
+the exact MAK1-ordered MQR3 list in MAR1; no MQR2 transcode is permitted.
 
 The adapter reports `StoreReady`, `RetrieveReady`, and `AcknowledgeReady` independently;
 aggregate `Ready` is true only when all three are ready. Status also exposes durable-replay and
@@ -423,11 +421,11 @@ composition it reserves
 `(epoch, blindedMailboxId, operationId)`, request digest and a per-mailbox monotonic cursor before
 fanout, persists the full opaque `MEO1`, and accepts only the deterministic replica ids selected
 for the exact membership/placement context. Two native context-bound `MRR2` receipts and a
-separate global coordinator sequence are durably bound before `MQR2` signing.
+PRQ2-derived coordinator sequence are durably bound before `MQR3` signing.
 
 Exact concurrent retries are single-flight. Restart recovery either resumes the exact persisted
 completion statement or fails closed; one coordinator sequence cannot sign two statements.
-Cached `MQR2` bytes are not trusted as a cache hit: signatures, coordinator identity/sequence,
+Cached `MQR3` bytes are not trusted as a cache hit: signatures, coordinator identity/sequence,
 replica set and all request/membership bindings are reverified on every retry. Ledger loading
 rejects non-canonical keys/hex, duplicate or rewound cursors/sequences, and inconsistent
 state/receipt combinations.
@@ -459,12 +457,12 @@ deduplicate locally.
 
 `MAK1` reserves all targets and logical tombstones atomically before signing or fanout. Quorum
 failure therefore hides the ciphertext from later retrieval but leaves retryable durable journal
-state. Every item completes as a native Tombstone `MRR2` quorum and a native `MQR2`; exact retries
+state. Every item completes as a native Tombstone `MRR2` quorum and a native `MQR3`; exact retries
 resume or return persisted, reverified bytes through the latest item expiry, including
 multi-item ACKs with staggered TTLs. A new operation id for an already tombstoned cursor is
-rejected and cannot create another journal or fanout. Retrieval emits no receipt, and the dormant API
-returns an internal per-item receipt list because this dormant adapter has not adopted P10B3
-ordered MAR1. The node never infers or persists client-side `Delivered`.
+rejected and cannot create another journal or fanout. Retrieval emits MRP1, and Development ACK
+returns exact MAK1-ordered MQR3 receipts in MAR1. The node never infers or persists client-side
+`Delivered`.
 
 Physical ciphertext cleanup is bounded after a durable ACK and repeated on initialization.
 Deletion failure does not roll back a logical tombstone or ACK receipt; the ledger marks the blob
@@ -473,13 +471,12 @@ v3 is intentionally incompatible with v2, whose records lack the canonical blob/
 membership evidence needed for safe retrieval and tombstones. Operation capacity counts stores,
 ACK operation records and each ACK item.
 
-Do not expose any client mailbox endpoint yet. Canonical peer Store/Tombstone transport now
-exists, but it is not composed into the dormant client adapters; production issuer/revocation/
-placement authorities and the reviewed MQR3/MAR1 public ingress response contract are absent.
-The activation decision and exact missing contracts are frozen in
+Do not expose client mailbox endpoints in production. Production issuer/revocation/placement
+authorities and reviewed key custody remain absent. A survival-only Development composition
+exists for honest two-XNode interoperability testing. The activation decision is frozen in
 `docs/adr/0006-mailbox-client-activation-blocker.md`.
 
-`MailboxClient` is a fail-closed activation guard, not an operational feature flag:
+`MailboxClient` remains fail-closed by default:
 
 ```json
 {
@@ -490,9 +487,32 @@ The activation decision and exact missing contracts are frozen in
 ```
 
 Setting it to `true` from JSON, environment variables or command-line configuration prevents host
-construction. `/status` and `/health/ready` report Store/Retrieve/Acknowledge as `not-ready`,
-with the P10B3 peer runtime marked ready while client issuer, placement and revocation authorities
-remain dormant/reject-all and client ingress remains unmapped.
+construction in production. In Development it also requires `MailboxClientAdapter:Enabled=true`,
+`Mailbox:Enabled=true`, and an explicit `developmentFixture` containing a pinned 16-byte network
+id, issuer public key and generation/validity window, coordinator base URL, current/next
+placement ids and their SHA-256 commitments, two distinct replica ids and matching Ed25519 public
+keys, current/next local and remote canonical base64 MIP1 proofs, and revoked serials. E/E+1
+membership commitments and validity windows live in `MailboxClientAdapter`. The node key must
+match the local proof; there is no remote or client private-key field. Proof descriptors provide
+the remote peer RPC endpoint. `coordinatorUrl` must be an origin-only URL whose host and port
+exactly match `Node.PublicHost` and `Node.PublicPort`; it is intentionally independent from the
+container bind address in `Node.ApiListenUrl`. LAN HTTP is accepted only inside this explicit
+Development composition. `/status` and `/health/ready` expose
+`starting`, `ready`, or fail-closed startup state and never report enabled before the durable
+ledgers and adapter initialize.
+
+Client HTTP is binary-only:
+
+| Operation | POST route | Request | Success response | Success |
+|---|---|---|---|---|
+| Store | `/api/client/mailbox/v1/store` | `application/vnd.deep.mailbox.mst1` | `application/vnd.deep.mailbox.mqr3` | 200 |
+| Retrieve | `/api/client/mailbox/v1/retrieve` | `application/vnd.deep.mailbox.mrt1` | `application/vnd.deep.mailbox.mrp1` | 200 |
+| Acknowledge | `/api/client/mailbox/v1/acknowledge` | `application/vnd.deep.mailbox.mak1` | `application/vnd.deep.mailbox.mar1` | 200 |
+
+Failures have empty bodies: malformed 400, authentication 401, authorization 403, replay/
+idempotency conflict 409, missing length 411, too large 413, media type/encoding 415, admission
+429, dependency/quorum unavailable 503, and deadline 504. Exact byte limits, deadlines and
+admission ceilings come from `MailboxWireHttpContract`.
 
 Pinned offline runtime package closure under `vendor/mailbox-peer-p10b3`, produced from accepted
 `deep-protocol` source `60ce2e3a5140f245d6bcfecf60fa456c26ffe730`:

@@ -38,7 +38,7 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
         var result = await adapter.StoreAsync(encodedStore);
 
         Assert.Equal(MailboxClientStoreStatus.Durable, result.Status);
-        var quorum = MailboxReceiptV2Codec.DecodeDurableQuorum(result.DurableQuorumReceipt.Span);
+        var quorum = MailboxReceiptV3Codec.DecodeDurableQuorum(result.DurableQuorumReceipt.Span);
         Assert.Equal(1UL, quorum.FirstReplica.Cursor);
         Assert.Equal(1UL, quorum.SecondReplica.Cursor);
         Assert.False(quorum.FirstReplica.ReplicaId.Span.SequenceEqual(quorum.SecondReplica.ReplicaId.Span));
@@ -272,7 +272,7 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
             Convert.ToHexString(SHA256.HashData(result.DurableQuorumReceipt.Span))).Distinct());
         Assert.All(results, result => Assert.Equal(
             1UL,
-            MailboxReceiptV2Codec.DecodeDurableQuorum(
+            MailboxReceiptV3Codec.DecodeDurableQuorum(
                 result.DurableQuorumReceipt.Span).CoordinatorSequence));
     }
 
@@ -321,7 +321,7 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
         Assert.Equal(MailboxClientStoreStatus.Durable, recovered.Status);
         Assert.Equal(
             1UL,
-            MailboxReceiptV2Codec.DecodeDurableQuorum(
+            MailboxReceiptV3Codec.DecodeDurableQuorum(
                 recovered.DurableQuorumReceipt.Span).CoordinatorSequence);
     }
 
@@ -389,8 +389,8 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
         var second = await secondAdapter.StoreAsync(
             MailboxClientCodec.EncodeStore(Store(secondEnvelope)));
 
-        var firstReceipt = MailboxReceiptV2Codec.DecodeDurableQuorum(first.DurableQuorumReceipt.Span);
-        var secondReceipt = MailboxReceiptV2Codec.DecodeDurableQuorum(second.DurableQuorumReceipt.Span);
+        var firstReceipt = MailboxReceiptV3Codec.DecodeDurableQuorum(first.DurableQuorumReceipt.Span);
+        var secondReceipt = MailboxReceiptV3Codec.DecodeDurableQuorum(second.DurableQuorumReceipt.Span);
         Assert.Equal(1UL, firstReceipt.FirstReplica.Cursor);
         Assert.Equal(1UL, secondReceipt.FirstReplica.Cursor);
         Assert.Equal(1UL, firstReceipt.CoordinatorSequence);
@@ -566,7 +566,7 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
 
         Assert.Equal(MailboxClientStoreStatus.Durable, result.Status);
         Assert.Equal(NextMembershipCommitment, authorizer.SeenMembership);
-        var receipt = MailboxReceiptV2Codec.DecodeDurableQuorum(result.DurableQuorumReceipt.Span);
+        var receipt = MailboxReceiptV3Codec.DecodeDurableQuorum(result.DurableQuorumReceipt.Span);
         Assert.Equal(NextMembershipCommitment, receipt.FirstReplica.MembershipCommitment.ToArray());
     }
 
@@ -798,7 +798,7 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
         Assert.Equal(MailboxClientStoreStatus.Durable, result.Status);
         Assert.Equal(
             2UL,
-            MailboxReceiptV2Codec.DecodeDurableQuorum(
+            MailboxReceiptV3Codec.DecodeDurableQuorum(
                 result.DurableQuorumReceipt.Span).FirstReplica.Cursor);
         var ledgerJson = JsonNode.Parse(await File.ReadAllTextAsync(
             Path.Combine(_root, "mailbox-client-adapter-v1", "operations.json")))!.AsObject();

@@ -207,9 +207,11 @@ public sealed partial class MailboxClientStoreAdapter
                 };
                 try
                 {
+                    var encodedPage = MailboxClientCodec.EncodeRetrievePage(page);
+                    CompleteCapability(requestDigest, encodedPage);
                     return new(
                         MailboxClientRetrieveStatus.Success,
-                        MailboxClientCodec.EncodeRetrievePage(page),
+                        encodedPage,
                         "");
                 }
                 catch (MailboxClientException exception) when (
@@ -485,7 +487,10 @@ public sealed partial class MailboxClientStoreAdapter
         foreach (var initialItem in reservation.Items)
         {
             var item = reservation.Items.Single(candidate => candidate.Cursor == initialItem.Cursor);
-            var context = CreateTombstoneContext(reservation, item);
+            var context = CreateTombstoneContext(
+                reservation,
+                item,
+                request.PlacementId.Bytes);
             if (item.State == MailboxClientLedgerState.Durable)
             {
                 if (!VerifyAckCached(item, context, expectedReplicaIds))
@@ -531,11 +536,24 @@ public sealed partial class MailboxClientStoreAdapter
 
             var localReceipt = CreateLocalTombstoneReceipt(context);
             IReadOnlyList<ReadOnlyMemory<byte>> remoteReceipts;
+            ulong? canonicalCoordinatorSequence = null;
             try
             {
-                remoteReceipts = await _tombstoneFanout.TombstoneAsync(
-                    CopyTombstoneContext(context),
-                    cancellationToken).ConfigureAwait(false);
+                if (_tombstoneFanout is IMailboxClientCanonicalTombstoneFanout
+                    canonicalFanout)
+                {
+                    var canonical = await canonicalFanout.TombstoneCanonicalAsync(
+                        CopyTombstoneContext(context),
+                        cancellationToken).ConfigureAwait(false);
+                    remoteReceipts = canonical.ReplicaReceipts;
+                    canonicalCoordinatorSequence = canonical.CoordinatorSequence;
+                }
+                else
+                {
+                    remoteReceipts = await _tombstoneFanout.TombstoneAsync(
+                        CopyTombstoneContext(context),
+                        cancellationToken).ConfigureAwait(false);
+                }
             }
             catch (Exception exception) when (
                 exception is HttpRequestException or IOException or OperationCanceledException)
@@ -573,14 +591,25 @@ public sealed partial class MailboxClientStoreAdapter
                     "durable-tombstone-quorum-not-reached");
             }
 
-            reservation = await _ledger.BeginAckCompletionAsync(
-                reservation.OperationKey,
-                item.Cursor,
-                receipts.Value.First,
-                receipts.Value.Second,
-                cancellationToken).ConfigureAwait(false);
+            reservation = canonicalCoordinatorSequence is null
+                ? await _ledger.BeginAckCompletionAsync(
+                    reservation.OperationKey,
+                    item.Cursor,
+                    receipts.Value.First,
+                    receipts.Value.Second,
+                    cancellationToken).ConfigureAwait(false)
+                : await _ledger.BeginCanonicalAckCompletionAsync(
+                    reservation.OperationKey,
+                    item.Cursor,
+                    receipts.Value.First,
+                    receipts.Value.Second,
+                    canonicalCoordinatorSequence.Value,
+                    cancellationToken).ConfigureAwait(false);
             item = reservation.Items.Single(candidate => candidate.Cursor == item.Cursor);
-            context = CreateTombstoneContext(reservation, item);
+            context = CreateTombstoneContext(
+                reservation,
+                item,
+                request.PlacementId.Bytes);
             var receipt = await ResumeAckCompletionAsync(
                 reservation,
                 item,
@@ -601,6 +630,17 @@ public sealed partial class MailboxClientStoreAdapter
         // here and remains restart-recoverable if local storage is temporarily unavailable.
         await TryCleanupTombstonesAfterAckAsync(
             Math.Min(reservation.Items.Count, 100)).ConfigureAwait(false);
+        var canonicalAckOutcome = MailboxAggregateAckCodec.EncodeMqr3(
+            new MailboxAggregateAckResponse
+            {
+                Epoch = request.Epoch,
+                OperationId = request.OperationId.ToArray(),
+                TombstoneQuorums = completed
+                    .Select(static receipt =>
+                        (ReadOnlyMemory<byte>)receipt.DurableQuorumReceipt.ToArray())
+                    .ToArray()
+            });
+        CompleteCapability(requestDigest, canonicalAckOutcome);
         return new(MailboxClientAckStatus.Durable, completed, "");
     }
 
@@ -636,7 +676,7 @@ public sealed partial class MailboxClientStoreAdapter
         }
 
         var quorum = SignQuorum(first, second, item.Completion.CoordinatorSequence);
-        var encoded = MailboxReceiptV2Codec.EncodeDurableQuorum(quorum);
+        var encoded = MailboxReceiptV3Codec.EncodeDurableQuorum(quorum);
         if (!VerifyTombstoneQuorum(
                 encoded,
                 context,
@@ -739,11 +779,22 @@ public sealed partial class MailboxClientStoreAdapter
     {
         try
         {
-            var verified = MailboxReceiptV2Codec.VerifyDurableQuorum(
-                encoded,
-                _crypto,
-                TombstoneExpectation(context));
-            var actualIds = verified.ReplicaReceipts
+            var coordinator = MailboxReceiptV3Codec.DecodeDurableQuorum(encoded);
+            if (!VerifyTombstoneReplica(coordinator.FirstReplica, context)
+                || !VerifyTombstoneReplica(coordinator.SecondReplica, context)
+                || !_crypto.VerifyCoordinator(
+                    coordinator.CoordinatorId.Span,
+                    MailboxReceiptV3Codec.GetQuorumSigningBytes(coordinator),
+                    coordinator.Signature.Span))
+            {
+                return false;
+            }
+
+            var actualIds = new[]
+                {
+                    coordinator.FirstReplica,
+                    coordinator.SecondReplica
+                }
                 .Select(receipt => Convert.ToHexString(receipt.ReplicaId.Span).ToLowerInvariant())
                 .Order(StringComparer.Ordinal)
                 .ToArray();
@@ -751,8 +802,8 @@ public sealed partial class MailboxClientStoreAdapter
                 .Select(id => Convert.ToHexString(id.Span).ToLowerInvariant())
                 .Order(StringComparer.Ordinal)
                 .ToArray();
-            return verified.CoordinatorReceipt.CoordinatorSequence == coordinatorSequence
-                && verified.CoordinatorReceipt.CoordinatorId.Span.SequenceEqual(
+            return coordinator.CoordinatorSequence == coordinatorSequence
+                && coordinator.CoordinatorId.Span.SequenceEqual(
                     _crypto.LocalRouterId)
                 && actualIds.SequenceEqual(expectedIds, StringComparer.Ordinal);
         }
@@ -812,7 +863,8 @@ public sealed partial class MailboxClientStoreAdapter
 
     private static MailboxReplicaTombstoneContext CreateTombstoneContext(
         MailboxClientAckReservation reservation,
-        MailboxClientAckItemReservation item) =>
+        MailboxClientAckItemReservation item,
+        ReadOnlyMemory<byte> placementId) =>
         new(
             item.Cursor,
             reservation.Epoch,
@@ -825,7 +877,10 @@ public sealed partial class MailboxClientStoreAdapter
             reservation.AcceptedAtUnixSeconds,
             reservation.ExpectedReplicaIds
                 .Select(static id => (ReadOnlyMemory<byte>)id.ToArray())
-                .ToArray());
+                .ToArray())
+        {
+            BlindedPlacementId = placementId.ToArray()
+        };
 
     private static MailboxReplicaTombstoneContext CopyTombstoneContext(
         MailboxReplicaTombstoneContext context) =>
@@ -835,6 +890,7 @@ public sealed partial class MailboxClientStoreAdapter
             BlindedMailboxId = context.BlindedMailboxId.ToArray(),
             PlacementCommitment = context.PlacementCommitment.ToArray(),
             MembershipCommitment = context.MembershipCommitment.ToArray(),
+            BlindedPlacementId = context.BlindedPlacementId.ToArray(),
             EnvelopeDigest = context.EnvelopeDigest.ToArray(),
             ExpectedReplicaIds = context.ExpectedReplicaIds
                 .Select(static id => (ReadOnlyMemory<byte>)id.ToArray())

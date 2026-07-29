@@ -1,4 +1,4 @@
-# ADR 0006: P10C peer runtime ready; client mailbox activation remains fail-closed
+# ADR 0006: P10D client ingress is survival-development only
 
 Status: accepted. Date: 2026-07-29. Human owner: **Mr. X**.
 
@@ -18,11 +18,33 @@ exactly the selected local and recipient receipts, binds the recipient endpoint 
 RIP1 descriptor, and emits only native PRQ2-domain MQR3.
 
 The legacy JSON `SignedMailboxReplicaRequest` path is removed. There is no JSON translation,
-PRQ1 acceptance, MQR2 acceptance, or public client mailbox route.
+PRQ1 acceptance, or MQR2 acceptance.
 
-`MailboxClient:Enabled=true` still stops host construction. Status says the P10B3 peer runtime is
-ready, while client issuer, membership-bound placement, revocation and public ingress authority
-remain dormant/reject-all. A configuration value is not activation authority.
+Production and default builds keep client ingress dormant and unmapped. Enabling it outside the
+Development environment still stops host construction because reviewed production authorities
+do not exist. Development can activate only through the explicit
+`MailboxClient:DevelopmentFixture:Enabled` composition. That fixture pins the issuer, revocations,
+network, coordinator URL, E/E+1 membership commitments, placement ids and commitments, two
+distinct replica identities and signing public keys, and canonical base64 MIP1/RIP1 proofs. The
+issuer, local replica and remote replica keys must be distinct, and the node owns only its local
+replica private seed. The origin-only coordinator URL is bound to the node's advertised
+`PublicHost`/`PublicPort`, never its container listen address. Clients and operators never infer
+or read node private seeds.
+
+The Development public routes are the exact `MailboxWireHttpContract` MST1, MRT1 and MAK1 POST
+routes. They require exact content types and Content-Length, forbid Content-Encoding, apply
+protocol byte bounds, deadlines and pre-auth IP rate/concurrency admission, and return only
+MQR3, MRP1 or ordered MQR3-in-MAR1 binary success bodies. Error bodies are empty. The MAU2
+presentation carried by the MCP1 compatibility envelope is reconstructed over the canonical
+operation transcript and verified by the pinned Ed25519 authority, revocation policy and durable
+atomic replay journal.
+
+Store and Tombstone fanout build signed canonical PRQ2 from the pinned MIP1/RIP1 evidence and call
+the actual peer HTTP listener. The remote XNode persists and signs its own MRR2 with its own key.
+No process owns both replica keys and a missing/invalid remote receipt is quorum-unavailable,
+never durable. The PRQ2 request digest supplies the MQR3 coordinator sequence. Successful client
+operations complete the MAU2 replay reservation with a bounded response digest; partial
+operations remain pending for exact retry.
 
 ## Durability and limits
 
@@ -65,16 +87,14 @@ The four-package offline closure in `vendor/mailbox-peer-p10b3` is:
 Core/runtime/test projects use locked local resolution. ProfileGenerator/ProfileCarrier projects
 remain isolated on their exact older P04/P14 closure.
 
-## Remaining public-client activation blockers
+## Remaining production activation blockers
 
 Activation needs all of the following, reviewed across protocol, client, node and operations:
 
 1. production issuer key distribution, rotation/LKG/equivocation and grant generation;
 2. durable revocation authority;
 3. deterministic membership-bound placement authority and E/E+1 lifecycle;
-4. composition of the dormant MST1/MRT1/MAK1 adapters with PRQ2 Store/Tombstone fanout, native
-   MQR3 and ordered MAK1-to-MAR1 aggregation;
-5. reviewed public client paths, authentication/error/privacy contract and client conformance;
-6. deployment key custody, staging evidence, mobile/Windows E2E and independent security review.
+4. production fanout and placement-provider composition equivalent to the Development proof path;
+5. deployment key custody, staging evidence, mobile/Windows E2E and independent security review.
 
-Until all six exist, public client ingress stays unmapped and reject-all.
+Until these exist, production public client ingress stays unmapped and reject-all.

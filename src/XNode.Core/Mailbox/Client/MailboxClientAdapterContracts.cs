@@ -36,6 +36,13 @@ public interface IMailboxClientCapabilityVerifier
         CancellationToken cancellationToken);
 }
 
+public interface IMailboxClientCapabilityCompletion
+{
+    void Complete(
+        ReadOnlyMemory<byte> canonicalRequestDigest,
+        ReadOnlyMemory<byte> canonicalOutcome);
+}
+
 public sealed class RejectAllMailboxClientCapabilityVerifier : IMailboxClientCapabilityVerifier
 {
     public bool IsConfigured => false;
@@ -60,7 +67,10 @@ public sealed record MailboxReplicaStoreContext(
     ReadOnlyMemory<byte> CanonicalEnvelope,
     MailboxReplicaDisposition Disposition,
     ulong AcceptedAtUnixSeconds,
-    IReadOnlyList<ReadOnlyMemory<byte>> ExpectedReplicaIds);
+    IReadOnlyList<ReadOnlyMemory<byte>> ExpectedReplicaIds)
+{
+    public ReadOnlyMemory<byte> BlindedPlacementId { get; init; }
+}
 
 public sealed record MailboxReplicaTombstoneContext(
     ulong Cursor,
@@ -72,7 +82,10 @@ public sealed record MailboxReplicaTombstoneContext(
     ReadOnlyMemory<byte> EnvelopeDigest,
     ulong ExpiresAtUnixSeconds,
     ulong AcceptedAtUnixSeconds,
-    IReadOnlyList<ReadOnlyMemory<byte>> ExpectedReplicaIds);
+    IReadOnlyList<ReadOnlyMemory<byte>> ExpectedReplicaIds)
+{
+    public ReadOnlyMemory<byte> BlindedPlacementId { get; init; }
+}
 
 public interface IMailboxClientReplicaAuthorizer
 {
@@ -106,6 +119,21 @@ public interface IMailboxClientReplicaFanout
         CancellationToken cancellationToken);
 }
 
+public sealed record MailboxClientCanonicalFanoutResult(
+    IReadOnlyList<ReadOnlyMemory<byte>> ReplicaReceipts,
+    ulong CoordinatorSequence);
+
+/// <summary>
+/// Optional PRQ2-aware fanout. The coordinator sequence is the exact canonical
+/// PRQ2 request-digest sequence used by MQR3.
+/// </summary>
+public interface IMailboxClientCanonicalReplicaFanout : IMailboxClientReplicaFanout
+{
+    Task<MailboxClientCanonicalFanoutResult> StoreCanonicalAsync(
+        MailboxReplicaStoreContext context,
+        CancellationToken cancellationToken);
+}
+
 public sealed class DisabledMailboxClientReplicaFanout : IMailboxClientReplicaFanout
 {
     public bool IsConfigured => false;
@@ -121,6 +149,13 @@ public interface IMailboxClientTombstoneFanout
     bool IsConfigured { get; }
 
     Task<IReadOnlyList<ReadOnlyMemory<byte>>> TombstoneAsync(
+        MailboxReplicaTombstoneContext context,
+        CancellationToken cancellationToken);
+}
+
+public interface IMailboxClientCanonicalTombstoneFanout : IMailboxClientTombstoneFanout
+{
+    Task<MailboxClientCanonicalFanoutResult> TombstoneCanonicalAsync(
         MailboxReplicaTombstoneContext context,
         CancellationToken cancellationToken);
 }

@@ -90,7 +90,7 @@ public sealed class MailboxClientDeliveryAdapterTests : IDisposable
         Assert.Equal(2, durable.Receipts.Count);
         var sequences = durable.Receipts.Select(receipt =>
         {
-            var quorum = MailboxReceiptV2Codec.DecodeDurableQuorum(
+            var quorum = MailboxReceiptV3Codec.DecodeDurableQuorum(
                 receipt.DurableQuorumReceipt.Span);
             Assert.Equal(MailboxReplicaDisposition.Tombstone, quorum.FirstReplica.Disposition);
             Assert.Equal(receipt.Cursor, quorum.FirstReplica.Cursor);
@@ -474,7 +474,7 @@ public sealed class MailboxClientDeliveryAdapterTests : IDisposable
                 [item.ToAcknowledgement()],
                 epoch: 8)));
         Assert.Equal(MailboxClientAckStatus.Durable, acknowledged.Status);
-        var quorum = MailboxReceiptV2Codec.DecodeDurableQuorum(
+        var quorum = MailboxReceiptV3Codec.DecodeDurableQuorum(
             acknowledged.Receipts[0].DurableQuorumReceipt.Span);
         Assert.Equal(NextMembership, quorum.FirstReplica.MembershipCommitment.ToArray());
     }
@@ -603,7 +603,7 @@ public sealed class MailboxClientDeliveryAdapterTests : IDisposable
             ExpiresAtUnixSeconds = 1161
         };
         var stored = await StoreAsync(fixture.Adapter, later);
-        var quorum = MailboxReceiptV2Codec.DecodeDurableQuorum(
+        var quorum = MailboxReceiptV3Codec.DecodeDurableQuorum(
             stored.DurableQuorumReceipt.Span);
         Assert.Equal(2UL, quorum.FirstReplica.Cursor);
     }

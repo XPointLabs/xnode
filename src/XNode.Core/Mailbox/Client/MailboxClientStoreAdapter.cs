@@ -314,9 +314,16 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
 
         if (reservation.State == MailboxClientLedgerState.Durable)
         {
-            return VerifyCached(reservation, context, expectedReplicaIds)
-                ? new(MailboxClientStoreStatus.Durable, reservation.CachedReceipt.ToArray(), "")
-                : Failure(MailboxClientStoreStatus.Rejected, "cached-quorum-invalid");
+            if (!VerifyCached(reservation, context, expectedReplicaIds))
+            {
+                return Failure(MailboxClientStoreStatus.Rejected, "cached-quorum-invalid");
+            }
+
+            CompleteCapability(requestDigest, reservation.CachedReceipt);
+            return new(
+                MailboxClientStoreStatus.Durable,
+                reservation.CachedReceipt.ToArray(),
+                "");
         }
 
         if (reservation.State == MailboxClientLedgerState.Completing)
@@ -359,11 +366,23 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
 
         var localReceipt = CreateLocalReceipt(context);
         IReadOnlyList<ReadOnlyMemory<byte>> remoteReceipts;
+        ulong? canonicalCoordinatorSequence = null;
         try
         {
-            remoteReceipts = await _fanout.StoreAsync(
-                CopyContext(context),
-                cancellationToken).ConfigureAwait(false);
+            if (_fanout is IMailboxClientCanonicalReplicaFanout canonicalFanout)
+            {
+                var canonical = await canonicalFanout.StoreCanonicalAsync(
+                    CopyContext(context),
+                    cancellationToken).ConfigureAwait(false);
+                remoteReceipts = canonical.ReplicaReceipts;
+                canonicalCoordinatorSequence = canonical.CoordinatorSequence;
+            }
+            else
+            {
+                remoteReceipts = await _fanout.StoreAsync(
+                    CopyContext(context),
+                    cancellationToken).ConfigureAwait(false);
+            }
         }
         catch (Exception exception) when (
             exception is HttpRequestException or IOException or OperationCanceledException)
@@ -433,11 +452,18 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
 
         var firstBytes = MailboxReceiptV2Codec.EncodeReplica(receiptsById[required[0]]);
         var secondBytes = MailboxReceiptV2Codec.EncodeReplica(receiptsById[required[1]]);
-        reservation = await _ledger.BeginCompletionAsync(
-            reservation.OperationKey,
-            firstBytes,
-            secondBytes,
-            cancellationToken).ConfigureAwait(false);
+        reservation = canonicalCoordinatorSequence is null
+            ? await _ledger.BeginCompletionAsync(
+                reservation.OperationKey,
+                firstBytes,
+                secondBytes,
+                cancellationToken).ConfigureAwait(false)
+            : await _ledger.BeginCanonicalCompletionAsync(
+                reservation.OperationKey,
+                firstBytes,
+                secondBytes,
+                canonicalCoordinatorSequence.Value,
+                cancellationToken).ConfigureAwait(false);
         return await ResumeCompletionAsync(
             reservation,
             context,
@@ -489,7 +515,7 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
             first,
             second,
             reservation.Completion.CoordinatorSequence);
-        var encoded = MailboxReceiptV2Codec.EncodeDurableQuorum(quorum);
+        var encoded = MailboxReceiptV3Codec.EncodeDurableQuorum(quorum);
         if (!VerifyQuorum(
                 encoded,
                 context,
@@ -504,6 +530,7 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
             reservation.Completion.CoordinatorSequence,
             encoded,
             cancellationToken).ConfigureAwait(false);
+        CompleteCapability(reservation.RequestDigest, encoded);
         return new(MailboxClientStoreStatus.Durable, encoded, "");
     }
 
@@ -527,12 +554,22 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
     {
         try
         {
-            var verified = MailboxReceiptV2Codec.VerifyDurableQuorum(
-                encoded,
-                _crypto,
-                Expectation(context));
-            var coordinator = verified.CoordinatorReceipt;
-            var actualIds = verified.ReplicaReceipts
+            var coordinator = MailboxReceiptV3Codec.DecodeDurableQuorum(encoded);
+            if (!VerifyReplica(coordinator.FirstReplica, context)
+                || !VerifyReplica(coordinator.SecondReplica, context)
+                || !_crypto.VerifyCoordinator(
+                    coordinator.CoordinatorId.Span,
+                    MailboxReceiptV3Codec.GetQuorumSigningBytes(coordinator),
+                    coordinator.Signature.Span))
+            {
+                return false;
+            }
+
+            var actualIds = new[]
+                {
+                    coordinator.FirstReplica,
+                    coordinator.SecondReplica
+                }
                 .Select(receipt => Convert.ToHexString(receipt.ReplicaId.Span).ToLowerInvariant())
                 .Order(StringComparer.Ordinal)
                 .ToArray();
@@ -597,12 +634,12 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
         };
     }
 
-    private MailboxDurableQuorumReceiptV2 SignQuorum(
+    private MailboxDurableQuorumReceiptV3 SignQuorum(
         MailboxReplicaReceiptV2 first,
         MailboxReplicaReceiptV2 second,
         ulong sequence)
     {
-        var unsigned = new MailboxDurableQuorumReceiptV2
+        var unsigned = new MailboxDurableQuorumReceiptV3
         {
             CoordinatorId = _crypto.LocalRouterId,
             CoordinatorSequence = sequence,
@@ -613,7 +650,7 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
         return unsigned with
         {
             Signature = _crypto.SignLocal(
-                MailboxReceiptV2Codec.GetQuorumSigningBytes(unsigned, _crypto))
+                MailboxReceiptV3Codec.GetQuorumSigningBytes(unsigned))
         };
     }
 
@@ -636,7 +673,10 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
             canonicalEnvelope.ToArray(),
             reservation.Disposition ?? MailboxReplicaDisposition.Stored,
             reservation.AcceptedAtUnixSeconds,
-            expectedReplicaIds.Select(static id => (ReadOnlyMemory<byte>)id.ToArray()).ToArray());
+            expectedReplicaIds.Select(static id => (ReadOnlyMemory<byte>)id.ToArray()).ToArray())
+        {
+            BlindedPlacementId = request.Envelope.PlacementId.Bytes.ToArray()
+        };
 
     private static MailboxReplicaStoreContext CopyContext(MailboxReplicaStoreContext context) =>
         context with
@@ -645,6 +685,7 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
             BlindedMailboxId = context.BlindedMailboxId.ToArray(),
             PlacementCommitment = context.PlacementCommitment.ToArray(),
             MembershipCommitment = context.MembershipCommitment.ToArray(),
+            BlindedPlacementId = context.BlindedPlacementId.ToArray(),
             EnvelopeDigest = context.EnvelopeDigest.ToArray(),
             CanonicalEnvelope = context.CanonicalEnvelope.ToArray(),
             ExpectedReplicaIds = context.ExpectedReplicaIds
@@ -765,6 +806,16 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
         MailboxClientStoreStatus status,
         string error) =>
         MailboxClientStoreResult.Failure(status, error);
+
+    private void CompleteCapability(
+        ReadOnlyMemory<byte> canonicalRequestDigest,
+        ReadOnlyMemory<byte> canonicalOutcome)
+    {
+        if (_verifier is IMailboxClientCapabilityCompletion completion)
+        {
+            completion.Complete(canonicalRequestDigest, canonicalOutcome);
+        }
+    }
 
     private SingleFlightEntry? TryRetainSingleFlight(string operationKey)
     {

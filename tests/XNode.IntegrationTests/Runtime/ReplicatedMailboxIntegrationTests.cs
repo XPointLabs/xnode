@@ -377,11 +377,23 @@ public sealed class ReplicatedMailboxIntegrationTests : IDisposable
         using var wrongTombstoneMethod = await client.PutAsync(
             MailboxWireHttpContract.PeerTombstoneRoute,
             new ByteArrayContent([]));
+        using var dormantClientStore = await client.PostAsync(
+            MailboxWireHttpContract.StoreRoute,
+            new ByteArrayContent([]));
+        using var dormantClientRetrieve = await client.PostAsync(
+            MailboxWireHttpContract.RetrieveRoute,
+            new ByteArrayContent([]));
+        using var dormantClientAck = await client.PostAsync(
+            MailboxWireHttpContract.AcknowledgeRoute,
+            new ByteArrayContent([]));
 
         Assert.Equal(System.Net.HttpStatusCode.NotFound, legacy.StatusCode);
         Assert.Equal(System.Net.HttpStatusCode.NotFound, canonical.StatusCode);
         Assert.Equal(System.Net.HttpStatusCode.NotFound, wrongStoreMethod.StatusCode);
         Assert.Equal(System.Net.HttpStatusCode.NotFound, wrongTombstoneMethod.StatusCode);
+        Assert.Equal(System.Net.HttpStatusCode.NotFound, dormantClientStore.StatusCode);
+        Assert.Equal(System.Net.HttpStatusCode.NotFound, dormantClientRetrieve.StatusCode);
+        Assert.Equal(System.Net.HttpStatusCode.NotFound, dormantClientAck.StatusCode);
     }
 
     public void Dispose()

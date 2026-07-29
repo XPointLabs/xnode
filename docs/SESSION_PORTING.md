@@ -102,25 +102,24 @@ For each ported behavior:
 - Peer journal leases/corruption are eagerly checked and included in readiness. Peer runtime
   readiness is not client activation. Public mailbox ingress remains unmapped.
 
-## Client Mailbox Adapter V1 (Dormant)
+## Client Mailbox Adapter V1 (Development only)
 
-- The dormant adapter ledger still uses its pre-activation internal MQR2 completion evidence.
-  It is unreachable and is not accepted on the P10C peer wire. Reviewed public composition must
-  replace it with P10B3 MQR3 and exact MAK1-order MAR1, never transcode MQR2.
+- The adapter ledger stores native MRR2 inputs and P10B3 MQR3 completion evidence. Development
+  ACK emits exact MAK1-order MAR1 and never transcodes MQR2.
 - The runtime consumes only the four-package P10B3 closure
   `Deep.Protocol`, `Deep.Protocol.Abstractions`, `Deep.Protocol.MembershipRoutes` and
   `Deep.Protocol.Protobuf` at `0.3.0-p10b3.60ce2e3`, produced from accepted source
   `60ce2e3a5140f245d6bcfecf60fa456c26ffe730`.
-- Strict `MAU2` decoding plus Ed25519 `MCG2`/`MCP2` verification is registered only as a dormant
-  internal dependency. Issuer lifecycle/generation authority and revocation policy are injected
+- Strict `MAU2` decoding plus Ed25519 `MCG2`/`MCP2` verification is registered as an internal
+  dependency. Issuer lifecycle/generation authority and revocation policy are injected
   trust boundaries and default to fail-closed. No attacker-supplied grant becomes authority.
 - The protocol replay state machine is backed by an exclusive, durable atomic journal below
   `Node.DataDirectory`. Exact completed retries return the cached canonical outcome; exact
   pending retries remain in-flight; conflicts, stale counters and a higher counter blocked by a
   pending predecessor fail closed. Crash recovery must explicitly complete the exact pending
   claim.
-- The adapter has no HTTP route and remains unreachable in the runtime composition. Its default
-  issuer/revocation authority and replica fanout dependencies fail closed.
+- The adapter has no production HTTP route. Its default issuer/revocation authority and replica
+  fanout dependencies fail closed; only the explicit Development fixture maps routes.
 - The store boundary accepts only a canonical `MST1` frame and persists the complete canonical
   `MEO1` bytes as the opaque payload in the existing crash-safe replica store.
 - A capability verifier must atomically and durably enforce replay and attest the exact
@@ -135,14 +134,14 @@ For each ported behavior:
 - Concurrent exact retries are single-flight. Before a coordinator signature is made, the exact
   two native replica receipts and the next global coordinator sequence are atomically persisted.
   Crash recovery can therefore sign only that previously reserved statement.
-- Completed retries return a persisted `MQR2` only after fully reverifying its replica signatures,
+- Completed retries return a persisted `MQR3` only after fully reverifying its replica signatures,
   current epoch membership commitment, placement, operation, cursor, expiry, expected replica
   set and current local coordinator identity. Membership or node-key rotation fails closed.
 - Replica responses count only after native `MRR2` signature, complete context verification and
   membership/placement authorization. An injected authorizer selects the deterministic expected
   replica ids for the exact epoch, membership commitment and placement commitment; an arbitrary
   self-signed receipt from any other node never counts.
-  The coordinator emits native `MQR2` binding operation, epoch, cursor, blinded mailbox,
+  The coordinator emits native `MQR3` binding operation, epoch, cursor, blinded mailbox,
   placement, membership, envelope digest and expiry.
 - No node seed, retrieve capability, master secret, account identifier or plaintext is persisted
   in the adapter ledger or returned by its contracts.
@@ -168,27 +167,26 @@ For each ported behavior:
   the complete ACK and logical tombstones before local signing or peer fanout. Tombstoned
   envelopes disappear from retrieval immediately, including when quorum is unavailable.
   Per-item native Tombstone `MRR2` bytes and a unique coordinator sequence are persisted before
-  native `MQR2` creation. Partial progress resumes exactly after restart; a durable retry returns
+  native `MQR3` creation. Partial progress resumes exactly after restart; a durable retry returns
   the identical reverified receipt without fanout. For a multi-item ACK, its cached replay
   authority and referenced ledger targets remain until the latest item expiry, preserving exact
   idempotency when item TTLs differ; expired items are never returned by retrieval. A different
   operation id cannot ACK an already tombstoned cursor or mint another receipt.
-- Retrieval has no receipt. ACK currently returns an internal list of per-item `MQR2` receipts;
-  no aggregate public frame or V1 transcode is invented. XNode never records client-side
-  `Delivered`.
+- Retrieval returns MRP1. Development ACK returns exact MAK1-order per-item MQR3 receipts in
+  MAR1; no V1 transcode is invented. XNode never records client-side `Delivered`.
 - Ciphertext reclamation is bounded and best-effort immediately after durable ACK. A logical
   tombstone remains authoritative if deletion or parent-directory durability fails, and startup
   retries every pending `BlobCleaned=false` item before marking cleanup complete.
 - Ledger schema v3 adds canonical blob, placement and membership bindings plus ACK journals.
   Schema v2 is rejected fail-closed rather than migrated because it cannot prove those bindings.
   `maxOperationEntries` charges stores, ACK operations and every ACK item.
-- Production issuer/revocation/key distribution, membership-bound client placement, composition
-  of the canonical peer transport into the dormant client adapters, MQR3/MAR1 public responses,
-  and a reviewed public ingress contract remain mandatory before exposing any client mailbox route.
+- Production issuer/revocation/key distribution, membership-bound client placement, key custody
+  and independent review remain mandatory before exposing a production client mailbox route.
+  Development alone may use the explicit pinned two-XNode P10D fixture; it emits MQR3/MRP1/MAR1
+  and never contains the remote replica private key.
 - Runtime activation preflight is recorded in
-  `docs/adr/0006-mailbox-client-activation-blocker.md`. `MailboxClient:Enabled=true` now fails host
-  construction; configuration cannot substitute for the missing reviewed runtime authorities
-  and B-E contracts.
+  `docs/adr/0006-mailbox-client-activation-blocker.md`. `MailboxClient:Enabled=true` fails release
+  host construction; the Development fixture is not production activation authority.
 
 ## Stop-The-Line Conditions
 
