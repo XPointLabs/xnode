@@ -16,7 +16,7 @@ public sealed class ReplicatedMailboxOptions
 
     public TimeSpan MaximumTtl { get; set; } = TimeSpan.FromDays(7);
 
-    // P10B3 freezes exactly two selected replicas and a 2-of-2 durable quorum.
+    // P10I freezes exactly two selected replicas and a 2-of-2 durable quorum.
     public int ReplicationFactor { get; set; } = 2;
 
     public int WriteQuorum { get; set; } = 2;

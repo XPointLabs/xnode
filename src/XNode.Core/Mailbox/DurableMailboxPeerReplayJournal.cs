@@ -109,6 +109,24 @@ public sealed class DurableMailboxPeerReplayJournal : IMailboxPeerReplayJournal,
         }
     }
 
+    public MailboxPeerReplayEvaluation? EvaluateExisting(MailboxPeerReplayClaim claim)
+    {
+        ArgumentNullException.ThrowIfNull(claim);
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            var path = RecordPath(Hex(claim.ScopeKey.Span));
+            if (!File.Exists(path))
+            {
+                return null;
+            }
+
+            var current = Read(path).Snapshot();
+            return MailboxPeerReplayStateMachine.EvaluateAndReserve(current, claim)
+                .Evaluation;
+        }
+    }
+
     public void CompleteAtomically(
         MailboxPeerReplayClaim claim,
         ReadOnlyMemory<byte> canonicalMrr2Response)

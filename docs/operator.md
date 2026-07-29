@@ -301,7 +301,7 @@ Known bottlenecks and remediation plan are emitted in C3 artifacts:
 
 ## Canonical P10C peer mailbox runtime
 
-The XNode peer listener implements the P10B3 binary wire only. It is disabled by default and
+The XNode peer listener implements the P10I binary wire only. It is disabled by default and
 must not be confused with public client-mailbox activation.
 
 ```json
@@ -374,12 +374,15 @@ Operational invariants:
   selection allowlist;
 - created-at has zero future skew and at most the protocol's fixed past-age window;
 - replay is reserved before mutation in an exclusive crash-safe journal; an exact completed retry
-  returns the cached verified MRR2 and a pending crash claim resumes idempotently;
+  returns the cached verified MRR2 and a pending crash claim resumes idempotently. Persisted exact
+  scopes remain retryable after the initial freshness window and retain their original effective
+  reservation timestamp; an unknown stale request allocates no replay record;
 - replay GC uses the authoritative epoch retirement time plus the protocol-fixed seven-day
+  retention interval;
 - replay startup and every sender/receiver reserve path run priority-ordered bounded collection
   before reporting capacity, so a full journal containing retired completed state remains live;
 - every replay record is semantically validated at startup even when its retention boundary is in
-  the future: the P10B3 state machine must accept its status/timestamp/epoch/retention ordering,
+  the future: the P10I state machine must accept its status/timestamp/epoch/retention ordering,
   Pending carries no response, and Completed carries an exact canonical MRR2-domain response;
 - each Store mutation has one durable record with expiry/retention metadata. Pending Store is
   exclusive to its exact replay nonce. Tombstone advances that same record through
@@ -423,6 +426,9 @@ fanout, persists the full opaque `MEO1`, and accepts only the deterministic repl
 for the exact membership/placement context. Two native context-bound `MRR2` receipts and the
 ledger-allocated next global monotonic coordinator sequence are durably bound in one mutation
 before `MQR3` signing. Request hashes and fanout responses have no sequence authority.
+Replica receipt clocks are independent: each accepted time must be no earlier than the persisted
+request acceptance, and each durable time must be no earlier than its own accepted time and
+strictly before the common expiry. Equality between local and remote timestamps is not required.
 
 Exact concurrent retries are single-flight. Restart recovery either resumes the exact persisted
 completion statement or fails closed; one coordinator sequence cannot sign two statements.
@@ -516,18 +522,18 @@ idempotency conflict 409, missing length 411, too large 413, media type/encoding
 admission ceilings come from `MailboxWireHttpContract`.
 
 Pinned offline runtime package closure under `vendor/mailbox-peer-p10b3`, produced from accepted
-`deep-protocol` source `60ce2e3a5140f245d6bcfecf60fa456c26ffe730`:
+`deep-protocol` source `a9b7a10a555758d4b2e30707a70d271f010b6c30`:
 
-- `Deep.Protocol.0.3.0-p10b3.60ce2e3.nupkg` —
-  `588a889f362a618bd06b8277fd4afc8b6c64ec37797f4cdf291af1865f0fd779`
-- `Deep.Protocol.Abstractions.0.3.0-p10b3.60ce2e3.nupkg` —
-  `af23f03aade18ee726d5a6345e2a613c91fbea0bf62d3d0431dd629062e603bd`
-- `Deep.Protocol.MembershipRoutes.0.3.0-p10b3.60ce2e3.nupkg` —
-  `16f4a0dd0c33461d85ed15bf69268e4b78b70617c059aa60d3b662d922155b96`
-- `Deep.Protocol.Protobuf.0.3.0-p10b3.60ce2e3.nupkg` —
-  `ec5478d4ebc03fba3a97a4e0675b0fbdac4bd43c4503ed39033e1b6e469f1250`
+- `Deep.Protocol.0.3.0-p10i.a9b7a10.nupkg` —
+  `925106e6098fe03a9fc247c5be519a13783318bb349b3b8f3cebaa299b8d0a78`
+- `Deep.Protocol.Abstractions.0.3.0-p10i.a9b7a10.nupkg` —
+  `0daa36393ff1e048186ae90883d7e5aaef18bab345e7c1219fa770a1e17776a6`
+- `Deep.Protocol.MembershipRoutes.0.3.0-p10i.a9b7a10.nupkg` —
+  `cb7cf4b4319349fb8eea81ea700b411f6b3d81ba580aef6a44c4dd141f6dee7e`
+- `Deep.Protocol.Protobuf.0.3.0-p10i.a9b7a10.nupkg` —
+  `5583ede034a85cf514840c8db325a4cffb7cdb0ab840af8c6df7d34fb0c1bade`
 
-Core/runtime/test projects resolve the exact P10B3 version from the local feed in locked mode.
+Core/runtime/test projects resolve the exact P10I version from the local feed in locked mode.
 `XNode.ProfileGenerator` and its tests remain isolated on the exact older P04/ProfileCarrier
 closure because that carrier requires it.
 

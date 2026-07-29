@@ -238,6 +238,7 @@ public sealed class ReplicatedMailboxTests : IDisposable
     public async Task PersistedPendingClaim_RecoversAfterRestartAndThenCaches()
     {
         var fixture = new PeerFixture(_root);
+        MailboxPeerReplayClaim originalClaim;
         using (var first = await fixture.OpenRecipientAsync())
         {
             var decoded = MailboxPeerWireV2Codec.Decode(fixture.CanonicalStore);
@@ -253,6 +254,25 @@ public sealed class ReplicatedMailboxTests : IDisposable
                 first.MembershipVerifier,
                 first.Journal);
             Assert.Equal(MailboxPeerReplayDisposition.NewReserved, verified.ReplayDisposition);
+            originalClaim = verified.ReplayClaim;
+        }
+
+        fixture.Clock.UtcNow += TimeSpan.FromSeconds(
+            MailboxPeerWireV2Limits.MaximumPastAgeSeconds + 1);
+        using (var journal = new DurableMailboxPeerReplayJournal(
+                   _root,
+                   PeerFixture.Options(),
+                   fixture.Clock))
+        {
+            var existing = Assert.IsType<MailboxPeerReplayEvaluation>(
+                journal.EvaluateExisting(originalClaim with
+                {
+                    ReservedAtUnixSeconds = fixture.NowUnixSeconds
+                }));
+            Assert.Equal(MailboxPeerReplayState.PendingSame, existing.State);
+            Assert.Equal(
+                originalClaim.ReservedAtUnixSeconds,
+                existing.EffectiveReservedAtUnixSeconds);
         }
 
         ReadOnlyMemory<byte> recoveredResponse;
@@ -263,14 +283,89 @@ public sealed class ReplicatedMailboxTests : IDisposable
                 MailboxPeerReplicationOperation.Store);
             Assert.Equal(MailboxPeerReceiveStatus.Accepted, result.Status);
             recoveredResponse = result.CanonicalResponse.ToArray();
+            var receipt = MailboxReceiptV2Codec.DecodeReplica(
+                recoveredResponse.Span);
+            Assert.Equal(
+                originalClaim.ReservedAtUnixSeconds,
+                receipt.AcceptedAtUnixSeconds);
+            Assert.Equal(
+                originalClaim.ReservedAtUnixSeconds,
+                receipt.DurableAtUnixSeconds);
         }
 
         using var final = await fixture.OpenRecipientAsync();
-        var retry = await final.Receiver.ReceiveAsync(
+        var firstRetry = await final.Receiver.ReceiveAsync(
             fixture.CanonicalStore,
             MailboxPeerReplicationOperation.Store);
-        Assert.True(retry.WasCached);
-        Assert.Equal(recoveredResponse.ToArray(), retry.CanonicalResponse.ToArray());
+        var secondRetry = await final.Receiver.ReceiveAsync(
+            fixture.CanonicalStore,
+            MailboxPeerReplicationOperation.Store);
+        Assert.True(firstRetry.WasCached);
+        Assert.True(secondRetry.WasCached);
+        Assert.Equal(recoveredResponse.ToArray(), firstRetry.CanonicalResponse.ToArray());
+        Assert.Equal(recoveredResponse.ToArray(), secondRetry.CanonicalResponse.ToArray());
+    }
+
+    [Fact]
+    public async Task CompletedExactRetry_AfterRestartAndPastFreshness_IsByteIdentical()
+    {
+        var fixture = new PeerFixture(_root);
+        byte[] canonicalMrr2;
+        ulong acceptedAt;
+        using (var initial = await fixture.OpenRecipientAsync())
+        {
+            var first = await initial.Receiver.ReceiveAsync(
+                fixture.CanonicalStore,
+                MailboxPeerReplicationOperation.Store);
+            Assert.Equal(MailboxPeerReceiveStatus.Accepted, first.Status);
+            canonicalMrr2 = first.CanonicalResponse.ToArray();
+            acceptedAt = MailboxReceiptV2Codec.DecodeReplica(
+                canonicalMrr2).AcceptedAtUnixSeconds;
+        }
+
+        fixture.Clock.UtcNow += TimeSpan.FromSeconds(
+            MailboxPeerWireV2Limits.MaximumPastAgeSeconds + 1);
+        using (var restarted = await fixture.OpenRecipientAsync())
+        {
+            for (var attempt = 0; attempt < 3; attempt++)
+            {
+                var retry = await restarted.Receiver.ReceiveAsync(
+                    fixture.CanonicalStore,
+                    MailboxPeerReplicationOperation.Store);
+                Assert.Equal(MailboxPeerReceiveStatus.Accepted, retry.Status);
+                Assert.True(retry.WasCached);
+                Assert.Equal(canonicalMrr2, retry.CanonicalResponse.ToArray());
+                Assert.Equal(
+                    acceptedAt,
+                    MailboxReceiptV2Codec.DecodeReplica(
+                        retry.CanonicalResponse.Span).AcceptedAtUnixSeconds);
+            }
+        }
+
+        using var secondRestart = await fixture.OpenRecipientAsync();
+        var afterSecondRestart = await secondRestart.Receiver.ReceiveAsync(
+            fixture.CanonicalStore,
+            MailboxPeerReplicationOperation.Store);
+        Assert.True(afterSecondRestart.WasCached);
+        Assert.Equal(canonicalMrr2, afterSecondRestart.CanonicalResponse.ToArray());
+    }
+
+    [Fact]
+    public async Task UnknownStaleRequest_IsRejectedWithoutReplayAllocation()
+    {
+        var fixture = new PeerFixture(_root);
+        fixture.Clock.UtcNow += TimeSpan.FromSeconds(
+            MailboxPeerWireV2Limits.MaximumPastAgeSeconds + 1);
+
+        using var recipient = await fixture.OpenRecipientAsync();
+        var result = await recipient.Receiver.ReceiveAsync(
+            fixture.CanonicalStore,
+            MailboxPeerReplicationOperation.Store);
+
+        Assert.Equal(MailboxPeerReceiveStatus.Conflict, result.Status);
+        Assert.Empty(Directory.EnumerateFiles(
+            Path.Combine(_root, PeerFixture.Options().PeerReplayDirectoryName),
+            "*.json"));
     }
 
     [Fact]
@@ -904,6 +999,9 @@ public sealed class ReplicatedMailboxTests : IDisposable
     {
         public MailboxPeerReplayEvaluation EvaluateAndReserve(MailboxPeerReplayClaim claim) =>
             inner.EvaluateAndReserve(claim);
+
+        public MailboxPeerReplayEvaluation? EvaluateExisting(MailboxPeerReplayClaim claim) =>
+            inner.EvaluateExisting(claim);
 
         public void CompleteAtomically(
             MailboxPeerReplayClaim claim,

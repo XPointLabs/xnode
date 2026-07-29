@@ -1,27 +1,27 @@
 {
-  "phase": "P10B3",
-  "sourceCommit": "60ce2e3a5140f245d6bcfecf60fa456c26ffe730",
-  "packageVersion": "0.3.0-p10b3.60ce2e3",
+  "phase": "P10I",
+  "sourceCommit": "a9b7a10a555758d4b2e30707a70d271f010b6c30",
+  "packageVersion": "0.3.0-p10i.a9b7a10",
   "packages": [
     {
-      "file": "Deep.Protocol.0.3.0-p10b3.60ce2e3.nupkg",
-      "bytes": 149753,
-      "sha256": "588a889f362a618bd06b8277fd4afc8b6c64ec37797f4cdf291af1865f0fd779"
+      "file": "Deep.Protocol.0.3.0-p10i.a9b7a10.nupkg",
+      "bytes": 153855,
+      "sha256": "925106e6098fe03a9fc247c5be519a13783318bb349b3b8f3cebaa299b8d0a78"
     },
     {
-      "file": "Deep.Protocol.Abstractions.0.3.0-p10b3.60ce2e3.nupkg",
-      "bytes": 24952,
-      "sha256": "af23f03aade18ee726d5a6345e2a613c91fbea0bf62d3d0431dd629062e603bd"
+      "file": "Deep.Protocol.Abstractions.0.3.0-p10i.a9b7a10.nupkg",
+      "bytes": 25666,
+      "sha256": "0daa36393ff1e048186ae90883d7e5aaef18bab345e7c1219fa770a1e17776a6"
     },
     {
-      "file": "Deep.Protocol.MembershipRoutes.0.3.0-p10b3.60ce2e3.nupkg",
-      "bytes": 12871,
-      "sha256": "16f4a0dd0c33461d85ed15bf69268e4b78b70617c059aa60d3b662d922155b96"
+      "file": "Deep.Protocol.MembershipRoutes.0.3.0-p10i.a9b7a10.nupkg",
+      "bytes": 13280,
+      "sha256": "cb7cf4b4319349fb8eea81ea700b411f6b3d81ba580aef6a44c4dd141f6dee7e"
     },
     {
-      "file": "Deep.Protocol.Protobuf.0.3.0-p10b3.60ce2e3.nupkg",
-      "bytes": 50213,
-      "sha256": "ec5478d4ebc03fba3a97a4e0675b0fbdac4bd43c4503ed39033e1b6e469f1250"
+      "file": "Deep.Protocol.Protobuf.0.3.0-p10i.a9b7a10.nupkg",
+      "bytes": 51186,
+      "sha256": "5583ede034a85cf514840c8db325a4cffb7cdb0ab840af8c6df7d34fb0c1bade"
     }
   ]
 }

@@ -433,12 +433,11 @@ public sealed class MailboxReplicaReceiver
                 _ = _replayJournal.CollectExpired(now, _options.MaxPeerReplayGcBatch);
                 // Authenticate the sender and both MIP1 proofs before using the sender id as a
                 // rate-limit partition. This validation journal has no durable side effects.
-                _ = MailboxPeerWireV2Codec.VerifyAndReserve(
+                _ = MailboxPeerWireV2Codec.VerifyReplayCandidate(
                     canonicalRequest.Span,
                     policy,
                     _crypto,
-                    _membershipVerifier,
-                    ValidationOnlyReplayJournal.Instance);
+                    _membershipVerifier);
                 if (!_rateLimiter.TryAcquire(decoded.SenderRouterId.Span, now))
                 {
                     Interlocked.Increment(ref _rateLimited);
@@ -676,23 +675,4 @@ public sealed class MailboxReplicaReceiver
         private sealed record Window(ulong StartedAt, int Count);
     }
 
-    private sealed class ValidationOnlyReplayJournal : IMailboxPeerReplayJournal
-    {
-        public static ValidationOnlyReplayJournal Instance { get; } = new();
-
-        public MailboxPeerReplayEvaluation EvaluateAndReserve(MailboxPeerReplayClaim claim) =>
-            new()
-            {
-                State = MailboxPeerReplayState.NewReserved,
-                CachedResponse = ReadOnlyMemory<byte>.Empty
-            };
-
-        public void CompleteAtomically(
-            MailboxPeerReplayClaim claim,
-            ReadOnlyMemory<byte> canonicalMrr2Response) =>
-            throw new NotSupportedException();
-
-        public int CollectExpired(ulong nowUnixSeconds, int maximumRecords) =>
-            throw new NotSupportedException();
-    }
 }

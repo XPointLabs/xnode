@@ -621,8 +621,9 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
             && receipt.OperationId.Span.SequenceEqual(context.OperationId.Span)
             && receipt.Epoch == context.Epoch
             && receipt.Cursor == context.Cursor
-            && receipt.AcceptedAtUnixSeconds == context.AcceptedAtUnixSeconds
-            && receipt.DurableAtUnixSeconds == context.AcceptedAtUnixSeconds
+            && receipt.AcceptedAtUnixSeconds >= context.AcceptedAtUnixSeconds
+            && receipt.DurableAtUnixSeconds >= receipt.AcceptedAtUnixSeconds
+            && receipt.DurableAtUnixSeconds < context.ExpiresAtUnixSeconds
             && receipt.ExpiresAtUnixSeconds == context.ExpiresAtUnixSeconds
             && receipt.BlindedMailboxId.Span.SequenceEqual(context.BlindedMailboxId.Span)
             && receipt.PlacementCommitment.Span.SequenceEqual(context.PlacementCommitment.Span)

@@ -69,7 +69,7 @@ For each ported behavior:
 
 ## Canonical P10C peer mailbox runtime
 
-- The peer listener accepts only canonical P10B3 PRQ2 Store/Tombstone bytes on the two protocol
+- The peer listener accepts only canonical P10I PRQ2 Store/Tombstone bytes on the two protocol
   routes and returns only native signed durable MRR2. The legacy JSON route is removed; PRQ1,
   MQR2 and cross-operation frames fail closed.
 - The configured epoch commitment is the authority anchor. Both RIP1/MIP1 proofs must bind exact
@@ -79,7 +79,10 @@ For each ported behavior:
   sender binds the outbound route to the verified recipient RIP1 endpoint.
 - PRQ2 CreatedAt permits zero future skew. Replay is durably Pending before mutation; exact
   completed retries return the cached reverified MRR2, conflicts fail closed, and pending crash
-  claims recover idempotently.
+  claims recover idempotently. Existing exact pending/completed scopes may outlive the initial
+  request-freshness window without allocating an unknown stale scope. Recovery reuses the
+  persisted effective reservation timestamp, so reconstructed MRR2 and MQR3 bytes remain exact
+  across sender/recipient restarts.
 - Replay collection follows the protocol state machine and begins only after authoritative epoch
   retirement plus seven days. Priority-ordered bounded collection runs at startup, before reserve
   capacity, and in sender/receiver completion paths. Startup applies the same state-machine
@@ -96,7 +99,7 @@ For each ported behavior:
   and emits only PRQ2-domain MQR3. Partial failure, deadline or invalid evidence never succeeds.
 - Host-global and per-operation pre-auth rate/concurrency admission precedes parse/crypto. HTTP
   routes, media types, body bounds, status codes, at-most-15-second deadlines and verified-sender
-  admission come from P10B3 constants. Wrong methods on peer paths are invariant 404.
+  admission come from P10I constants. Wrong methods on peer paths are invariant 404.
 - No identity, capability, route/placement value, mailbox id, ciphertext or receipt bytes enter
   logs or metric labels. Ordinary onion replay remains explicitly volatile debt.
 - Peer journal leases/corruption are eagerly checked and included in readiness. Peer runtime
@@ -104,12 +107,12 @@ For each ported behavior:
 
 ## Client Mailbox Adapter V1 (Development only)
 
-- The adapter ledger stores native MRR2 inputs and P10B3 MQR3 completion evidence. Development
+- The adapter ledger stores native MRR2 inputs and P10I MQR3 completion evidence. Development
   ACK emits exact MAK1-order MAR1 and never transcodes MQR2.
-- The runtime consumes only the four-package P10B3 closure
+- The runtime consumes only the four-package P10I closure
   `Deep.Protocol`, `Deep.Protocol.Abstractions`, `Deep.Protocol.MembershipRoutes` and
-  `Deep.Protocol.Protobuf` at `0.3.0-p10b3.60ce2e3`, produced from accepted source
-  `60ce2e3a5140f245d6bcfecf60fa456c26ffe730`.
+  `Deep.Protocol.Protobuf` at `0.3.0-p10i.a9b7a10`, produced from accepted source
+  `a9b7a10a555758d4b2e30707a70d271f010b6c30`.
 - Strict `MAU2` decoding plus Ed25519 `MCG2`/`MCP2` verification is registered as an internal
   dependency. Issuer lifecycle/generation authority and revocation policy are injected
   trust boundaries and default to fail-closed. No attacker-supplied grant becomes authority.
@@ -150,7 +153,10 @@ For each ported behavior:
 - Replica responses count only after native `MRR2` signature, complete context verification and
   membership/placement authorization. An injected authorizer selects the deterministic expected
   replica ids for the exact epoch, membership commitment and placement commitment; an arbitrary
-  self-signed receipt from any other node never counts.
+  self-signed receipt from any other node never counts. Each replica's accepted/durable interval
+  is validated independently—accepted is no earlier than the persisted local request acceptance,
+  durable is no earlier than that replica's acceptance and remains strictly before expiry.
+  Replica clocks are not required to produce equal receipt timestamps.
   The coordinator emits native `MQR3` binding operation, epoch, cursor, blinded mailbox,
   placement, membership, envelope digest and expiry.
 - No node seed, retrieve capability, master secret, account identifier or plaintext is persisted

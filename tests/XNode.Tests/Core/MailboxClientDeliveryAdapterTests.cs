@@ -165,6 +165,36 @@ public sealed class MailboxClientDeliveryAdapterTests : IDisposable
             CancellationToken.None));
     }
 
+    [Theory]
+    [InlineData(15, 18, MailboxClientAckStatus.Durable)]
+    [InlineData(-1, 0, MailboxClientAckStatus.QuorumUnavailable)]
+    [InlineData(10, 9, MailboxClientAckStatus.QuorumUnavailable)]
+    [InlineData(69, 70, MailboxClientAckStatus.QuorumUnavailable)]
+    public async Task TombstoneReplicaDurabilityTimes_AreIndependentAndBounded(
+        long acceptedAtOffsetSeconds,
+        long durableAtOffsetSeconds,
+        MailboxClientAckStatus expected)
+    {
+        var tombstones = new ToggleTombstoneFanout
+        {
+            AcceptedAtOffsetSeconds = acceptedAtOffsetSeconds,
+            DurableAtOffsetSeconds = durableAtOffsetSeconds
+        };
+        var fixture = CreateFixture(tombstones);
+        tombstones.Crypto = fixture.RemoteCrypto;
+        await StoreAsync(fixture.Adapter, Envelope(1, MailboxId));
+        var page = await RetrievePageAsync(fixture.Adapter, MailboxId);
+        var request = MailboxClientCodec.EncodeAck(AckRequest(
+            55,
+            MailboxId,
+            page.Items.Select(static item => item.ToAcknowledgement()).ToArray()));
+
+        var result = await fixture.Adapter.AcknowledgeAsync(request);
+
+        Assert.Equal(expected, result.Status);
+        Assert.Equal(expected == MailboxClientAckStatus.Durable, result.Receipts.Count == 1);
+    }
+
     [Fact]
     public async Task Ack_DeleteFlushFailurePreservesDurabilityAndInitializeRetriesCleanup()
     {
@@ -1210,6 +1240,8 @@ public sealed class MailboxClientDeliveryAdapterTests : IDisposable
         public bool IsConfigured => true;
         public bool Fail { get; set; }
         public MailboxClientReceiptCrypto? Crypto { get; set; }
+        public long AcceptedAtOffsetSeconds { get; set; }
+        public long DurableAtOffsetSeconds { get; set; }
         public int CallCount => Volatile.Read(ref _calls);
 
         public Task<IReadOnlyList<ReadOnlyMemory<byte>>> TombstoneAsync(
@@ -1223,6 +1255,16 @@ public sealed class MailboxClientDeliveryAdapterTests : IDisposable
             }
 
             var crypto = Crypto ?? throw new InvalidOperationException();
+            var acceptedAt = AddOffset(
+                context.AcceptedAtUnixSeconds,
+                AcceptedAtOffsetSeconds);
+            var durableAt = AddOffset(
+                context.AcceptedAtUnixSeconds,
+                DurableAtOffsetSeconds);
+            var encodableDurableAt =
+                durableAt >= acceptedAt && durableAt < context.ExpiresAtUnixSeconds
+                    ? durableAt
+                    : acceptedAt;
             var unsigned = new MailboxReplicaReceiptV2
             {
                 Status = MailboxReceiptStatus.Durable,
@@ -1231,8 +1273,8 @@ public sealed class MailboxClientDeliveryAdapterTests : IDisposable
                 OperationId = context.OperationId,
                 Epoch = context.Epoch,
                 Cursor = context.Cursor,
-                AcceptedAtUnixSeconds = context.AcceptedAtUnixSeconds,
-                DurableAtUnixSeconds = context.AcceptedAtUnixSeconds,
+                AcceptedAtUnixSeconds = acceptedAt,
+                DurableAtUnixSeconds = encodableDurableAt,
                 ExpiresAtUnixSeconds = context.ExpiresAtUnixSeconds,
                 BlindedMailboxId = context.BlindedMailboxId,
                 PlacementCommitment = context.PlacementCommitment,
@@ -1245,9 +1287,17 @@ public sealed class MailboxClientDeliveryAdapterTests : IDisposable
                 Signature = crypto.SignLocal(
                     MailboxReceiptV2Codec.GetReplicaSigningBytes(unsigned))
             };
+            var encoded = MailboxReceiptV2Codec.EncodeReplica(signed);
+            BinaryPrimitives.WriteUInt64BigEndian(encoded.AsSpan(72, 8), acceptedAt);
+            BinaryPrimitives.WriteUInt64BigEndian(encoded.AsSpan(80, 8), durableAt);
             return Task.FromResult<IReadOnlyList<ReadOnlyMemory<byte>>>(
-                [MailboxReceiptV2Codec.EncodeReplica(signed)]);
+                [encoded]);
         }
+
+        private static ulong AddOffset(ulong value, long offset) =>
+            offset >= 0
+                ? checked(value + (ulong)offset)
+                : checked(value - (ulong)(-offset));
     }
 
     private sealed class ByteArrayComparer : IEqualityComparer<byte[]>

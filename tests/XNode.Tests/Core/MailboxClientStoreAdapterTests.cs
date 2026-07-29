@@ -87,6 +87,56 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
     }
 
     [Fact]
+    public async Task ExactRetryAfterUnavailablePeer_AcceptsLaterRemoteDurabilityAndCachesMqr3()
+    {
+        var fixture = CreateFixture();
+        var encoded = MailboxClientCodec.EncodeStore(Store(Envelope()));
+        var unavailable = CreateAdapter(fixture, new UnavailableFanout());
+        await unavailable.InitializeAsync();
+
+        var first = await unavailable.StoreAsync(encoded);
+
+        Assert.Equal(MailboxClientStoreStatus.QuorumUnavailable, first.Status);
+        Assert.True(first.DurableQuorumReceipt.IsEmpty);
+
+        unavailable.Dispose();
+        fixture.Ledger.Dispose();
+        var recoveryLedger = Track(new MailboxClientOperationLedger(
+            _root,
+            fixture.AdapterOptions,
+            _clock));
+        var recovery = Track(new MailboxClientStoreAdapter(
+            fixture.AdapterOptions,
+            fixture.StoreOptions,
+            fixture.Store,
+            recoveryLedger,
+            fixture.Verifier,
+            fixture.Authorizer,
+            new SigningFanout(
+                fixture.RemoteCrypto,
+                acceptedAtOffsetSeconds: 15,
+                durableAtOffsetSeconds: 17),
+            fixture.LocalCrypto,
+            _clock));
+        await recovery.InitializeAsync();
+
+        var recovered = await recovery.StoreAsync(encoded);
+        var cached = await recovery.StoreAsync(encoded);
+
+        Assert.Equal(MailboxClientStoreStatus.Durable, recovered.Status);
+        Assert.Equal(recovered.DurableQuorumReceipt.ToArray(), cached.DurableQuorumReceipt.ToArray());
+        var quorum = MailboxReceiptV3Codec.DecodeDurableQuorum(
+            recovered.DurableQuorumReceipt.Span);
+        var receipts = new[] { quorum.FirstReplica, quorum.SecondReplica };
+        Assert.Contains(receipts, receipt =>
+            receipt.AcceptedAtUnixSeconds == 1010
+            && receipt.DurableAtUnixSeconds == 1010);
+        Assert.Contains(receipts, receipt =>
+            receipt.AcceptedAtUnixSeconds == 1025
+            && receipt.DurableAtUnixSeconds == 1027);
+    }
+
+    [Fact]
     public async Task SameOperationWithDifferentCanonicalRequest_IsDurableConflict()
     {
         var fixture = CreateFixture();
@@ -211,6 +261,34 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
 
         Assert.Equal(MailboxClientStoreStatus.QuorumUnavailable, result.Status);
         Assert.True(result.DurableQuorumReceipt.IsEmpty);
+    }
+
+    [Theory]
+    [InlineData(15, 18, MailboxClientStoreStatus.Durable)]
+    [InlineData(-1, 0, MailboxClientStoreStatus.QuorumUnavailable)]
+    [InlineData(10, 9, MailboxClientStoreStatus.QuorumUnavailable)]
+    [InlineData(109, 110, MailboxClientStoreStatus.QuorumUnavailable)]
+    public async Task ReplicaDurabilityTimes_AreIndependentAndBounded(
+        long acceptedAtOffsetSeconds,
+        long durableAtOffsetSeconds,
+        MailboxClientStoreStatus expected)
+    {
+        var fixture = CreateFixture();
+        var adapter = CreateAdapter(
+            fixture,
+            new SigningFanout(
+                fixture.RemoteCrypto,
+                acceptedAtOffsetSeconds: acceptedAtOffsetSeconds,
+                durableAtOffsetSeconds: durableAtOffsetSeconds));
+        await adapter.InitializeAsync();
+
+        var result = await adapter.StoreAsync(
+            MailboxClientCodec.EncodeStore(Store(Envelope())));
+
+        Assert.Equal(expected, result.Status);
+        Assert.Equal(
+            expected == MailboxClientStoreStatus.Durable,
+            !result.DurableQuorumReceipt.IsEmpty);
     }
 
     [Fact]
@@ -1235,7 +1313,9 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
     private sealed class SigningFanout(
         MailboxClientReceiptCrypto crypto,
         Action? beforeSign = null,
-        bool mutateCursor = false)
+        bool mutateCursor = false,
+        long acceptedAtOffsetSeconds = 0,
+        long durableAtOffsetSeconds = 0)
         : IMailboxClientReplicaFanout
     {
         public bool IsConfigured => true;
@@ -1245,7 +1325,16 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
             CancellationToken cancellationToken)
         {
             beforeSign?.Invoke();
-            var now = context.AcceptedAtUnixSeconds;
+            var acceptedAt = AddOffset(
+                context.AcceptedAtUnixSeconds,
+                acceptedAtOffsetSeconds);
+            var durableAt = AddOffset(
+                context.AcceptedAtUnixSeconds,
+                durableAtOffsetSeconds);
+            var encodableDurableAt =
+                durableAt >= acceptedAt && durableAt < context.ExpiresAtUnixSeconds
+                    ? durableAt
+                    : acceptedAt;
             var unsigned = new MailboxReplicaReceiptV2
             {
                 Status = MailboxReceiptStatus.Durable,
@@ -1254,8 +1343,8 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
                 OperationId = context.OperationId,
                 Epoch = context.Epoch,
                 Cursor = mutateCursor ? context.Cursor + 1 : context.Cursor,
-                AcceptedAtUnixSeconds = now,
-                DurableAtUnixSeconds = now,
+                AcceptedAtUnixSeconds = acceptedAt,
+                DurableAtUnixSeconds = encodableDurableAt,
                 ExpiresAtUnixSeconds = context.ExpiresAtUnixSeconds,
                 BlindedMailboxId = context.BlindedMailboxId,
                 PlacementCommitment = context.PlacementCommitment,
@@ -1268,9 +1357,27 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
                 Signature = crypto.SignLocal(
                     MailboxReceiptV2Codec.GetReplicaSigningBytes(unsigned))
             };
+            var encoded = MailboxReceiptV2Codec.EncodeReplica(signed);
+            BinaryPrimitives.WriteUInt64BigEndian(encoded.AsSpan(72, 8), acceptedAt);
+            BinaryPrimitives.WriteUInt64BigEndian(encoded.AsSpan(80, 8), durableAt);
             return Task.FromResult<IReadOnlyList<ReadOnlyMemory<byte>>>(
-                [MailboxReceiptV2Codec.EncodeReplica(signed)]);
+                [encoded]);
         }
+
+        private static ulong AddOffset(ulong value, long offset) =>
+            offset >= 0
+                ? checked(value + (ulong)offset)
+                : checked(value - (ulong)(-offset));
+    }
+
+    private sealed class UnavailableFanout : IMailboxClientReplicaFanout
+    {
+        public bool IsConfigured => true;
+
+        public Task<IReadOnlyList<ReadOnlyMemory<byte>>> StoreAsync(
+            MailboxReplicaStoreContext context,
+            CancellationToken cancellationToken) =>
+            throw new IOException("simulated peer outage");
     }
 
     private sealed class ThrowingFanout : IMailboxClientReplicaFanout

@@ -4,9 +4,9 @@ Status: accepted. Date: 2026-07-29. Human owner: **Mr. X**.
 
 ## Decision
 
-XNode adopts the accepted P10B3 contract from `deep-protocol` source
-`60ce2e3a5140f245d6bcfecf60fa456c26ffe730`, package
-`0.3.0-p10b3.60ce2e3`, for peer mailbox replication only.
+XNode adopts the accepted P10I contract from `deep-protocol` source
+`a9b7a10a555758d4b2e30707a70d271f010b6c30`, package
+`0.3.0-p10i.a9b7a10`, for peer mailbox replication only.
 
 The peer listener maps exact binary PRQ2 Store and Tombstone paths from
 `MailboxWireHttpContract`. It verifies the configured authoritative epoch commitment, both
@@ -16,6 +16,11 @@ zero future skew, expiry and durable replay. Local Store and logical Tombstone m
 crash-safe. Success returns only a native signed durable MRR2. The sender-side coordinator counts
 exactly the selected local and recipient receipts, binds the recipient endpoint to its verified
 RIP1 descriptor, and emits only native PRQ2-domain MQR3.
+
+An exact persisted pending/completed PRQ2 scope may be recovered after the initial freshness
+window while the request remains otherwise live. Lookup is read-only when the stale scope is
+unknown, and a recovered scope retains its original effective reservation timestamp so restarted
+replicas and coordinators reproduce the same MRR2/MQR3 bytes.
 
 The legacy JSON `SignedMailboxReplicaRequest` path is removed. There is no JSON translation,
 PRQ1 acceptance, or MQR2 acceptance.
@@ -42,7 +47,9 @@ atomic replay journal.
 Store and Tombstone fanout build signed canonical PRQ2 from the pinned MIP1/RIP1 evidence and call
 the actual peer HTTP listener. The remote XNode persists and signs its own MRR2 with its own key.
 No process owns both replica keys and a missing/invalid remote receipt is quorum-unavailable,
-never durable. Only after the exact two verified MRR2 bytes are available does the client ledger
+never durable. Replica accepted/durable timestamps are independently signed and bounded by the
+persisted request acceptance and common expiry; cross-replica timestamp equality is not a quorum
+condition. Only after the exact two verified MRR2 bytes are available does the client ledger
 atomically persist those bytes and allocate the next monotonic global MQR3 coordinator sequence;
 no request hash or external caller supplies sequence authority. Successful client
 operations complete the MAU2 replay reservation with a bounded response digest; partial
@@ -73,9 +80,9 @@ operations remain pending for exact retry.
   durable side effect release only a newly-created replay reservation. After ledger, storage or
   peer work begins, cancellation/crash leaves Pending for exact restart recovery; a completed
   ledger statement is reverified and finishes replay completion without duplicate fanout.
-- Replay scope and collection use the P10B3 state machine. Priority-ordered bounded collection runs
+- Replay scope and collection use the P10I state machine. Priority-ordered bounded collection runs
   before capacity at startup and on sender/receiver reserve/completion paths.
-- Eager replay loading applies P10B3 semantic invariants to every record regardless of future
+- Eager replay loading applies P10I semantic invariants to every record regardless of future
   retention and accepts cached completion bytes only as canonical MRR2-domain responses.
 - A Store/Tombstone pair uses one durable expiry/retention record. Pending Store is exclusive to
   its exact replay identity; Tombstone is a recoverable state transition, not a two-file update.

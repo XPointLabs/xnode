@@ -79,6 +79,51 @@ public sealed class ReplicatedMailboxIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task Coordinator_RestartsAndPastFreshnessRetry_KeepMqr3ByteIdentical()
+    {
+        var fixture = new Fixture(_root);
+        byte[] canonicalMqr3;
+        using (var recipient = await fixture.OpenRecipientAsync())
+        using (var sender = await fixture.OpenSenderAsync(
+                   new ReceiverPeerClient(recipient.Receiver)))
+        {
+            var first = await sender.Coordinator.ReplicateAsync(
+                fixture.RecipientPeer,
+                fixture.CanonicalStore,
+                fixture.CurrentPolicy);
+            Assert.Equal(MailboxPeerQuorumStatus.Durable, first.Status);
+            canonicalMqr3 = first.CanonicalMqr3.ToArray();
+        }
+
+        fixture.Clock.UtcNow += TimeSpan.FromSeconds(
+            MailboxPeerWireV2Limits.MaximumPastAgeSeconds + 1);
+        using (var recipient = await fixture.OpenRecipientAsync())
+        using (var sender = await fixture.OpenSenderAsync(
+                   new ReceiverPeerClient(recipient.Receiver)))
+        {
+            for (var attempt = 0; attempt < 3; attempt++)
+            {
+                var retry = await sender.Coordinator.ReplicateAsync(
+                    fixture.RecipientPeer,
+                    fixture.CanonicalStore,
+                    fixture.CurrentPolicy);
+                Assert.Equal(MailboxPeerQuorumStatus.Durable, retry.Status);
+                Assert.Equal(canonicalMqr3, retry.CanonicalMqr3.ToArray());
+            }
+        }
+
+        using var secondRecipientRestart = await fixture.OpenRecipientAsync();
+        using var secondSenderRestart = await fixture.OpenSenderAsync(
+            new ReceiverPeerClient(secondRecipientRestart.Receiver));
+        var finalRetry = await secondSenderRestart.Coordinator.ReplicateAsync(
+            fixture.RecipientPeer,
+            fixture.CanonicalStore,
+            fixture.CurrentPolicy);
+        Assert.Equal(MailboxPeerQuorumStatus.Durable, finalRetry.Status);
+        Assert.Equal(canonicalMqr3, finalRetry.CanonicalMqr3.ToArray());
+    }
+
+    [Fact]
     public async Task DeadlineOrInvalidMrr2_CountsOnlyTheLocalReplica()
     {
         var timeoutFixture = new Fixture(Path.Combine(_root, "timeout"));
@@ -508,6 +553,8 @@ public sealed class ReplicatedMailboxIntegrationTests : IDisposable
         public MailboxPeerAuthorityOptions Authority { get; }
         public FixedClock Clock => _clock;
         public MailboxPeerWireVerificationPolicyV2 Policy { get; }
+        public MailboxPeerWireVerificationPolicyV2 CurrentPolicy =>
+            Policy with { NowUnixSeconds = Now };
         public MailboxReplicaPeer RecipientPeer { get; }
         private ulong Now => checked((ulong)_clock.UtcNow.ToUnixTimeSeconds());
 
@@ -710,7 +757,7 @@ public sealed class ReplicatedMailboxIntegrationTests : IDisposable
 
     private sealed class FixedClock(DateTimeOffset now) : IClock
     {
-        public DateTimeOffset UtcNow { get; } = now;
+        public DateTimeOffset UtcNow { get; set; } = now;
     }
 
     private sealed class NoHostedServicesFactory : WebApplicationFactory<Program>
