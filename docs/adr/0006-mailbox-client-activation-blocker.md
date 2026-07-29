@@ -4,9 +4,13 @@ Status: accepted. Date: 2026-07-29. Human owner: **Mr. X**.
 
 ## Decision
 
-XNode adopts the accepted P10I contract from `deep-protocol` source
-`a9b7a10a555758d4b2e30707a70d271f010b6c30`, package
-`0.3.0-p10i.a9b7a10`, for peer mailbox replication only.
+XNode pins its current runtime protocol binaries to the accepted P10J closure from
+`deep-protocol` source `2886880d4c2060cd819765c53c77a02e1c475ea8`, package
+`0.3.0-p10j.2886880`, under `vendor/mailbox-peer-p10j`.
+
+This package pin does not activate native MAU2 client HTTP ingress. Existing peer replication
+and development client behavior remain governed by this decision; the native MAU2 runtime
+adapter is a separate next slice.
 
 The peer listener maps exact binary PRQ2 Store and Tombstone paths from
 `MailboxWireHttpContract`. It verifies the configured authoritative epoch commitment, both
@@ -103,16 +107,17 @@ no durable-onion claim.
 
 ## Exact dependency provenance
 
-The four-package offline closure in `vendor/mailbox-peer-p10b3` is:
+The four-package offline closure in `vendor/mailbox-peer-p10j`, produced from exact source
+`2886880d4c2060cd819765c53c77a02e1c475ea8` at version `0.3.0-p10j.2886880`, is:
 
 - Deep.Protocol:
-  `588a889f362a618bd06b8277fd4afc8b6c64ec37797f4cdf291af1865f0fd779`;
+  `a41c79124f1c62c2889e7b2ea4695956272aa16de1700206cade8993c1b44abe`;
 - Deep.Protocol.Abstractions:
-  `af23f03aade18ee726d5a6345e2a613c91fbea0bf62d3d0431dd629062e603bd`;
+  `4508e67aba983e91c174c8ce796df654c06892680d65e14ff78bda4d553d542c`;
 - Deep.Protocol.MembershipRoutes:
-  `16f4a0dd0c33461d85ed15bf69268e4b78b70617c059aa60d3b662d922155b96`;
+  `cdb3eb8a8b2889567a25e6db437a287fb12db86d29e0819c13c9adb5fbc02327`;
 - Deep.Protocol.Protobuf:
-  `ec5478d4ebc03fba3a97a4e0675b0fbdac4bd43c4503ed39033e1b6e469f1250`.
+  `c97025f5d1b44fd7a955e7b69614ea2c6cca499656ccf7930029cc740208eab7`.
 
 Core/runtime/test projects use locked local resolution. ProfileGenerator/ProfileCarrier projects
 remain isolated on their exact older P04/P14 closure.

@@ -521,21 +521,25 @@ idempotency conflict 409, missing length 411, too large 413, media type/encoding
 429, dependency/quorum unavailable 503, and deadline 504. Exact byte limits, deadlines and
 admission ceilings come from `MailboxWireHttpContract`.
 
-Pinned offline runtime package closure under `vendor/mailbox-peer-p10b3`, produced from accepted
-`deep-protocol` source `a9b7a10a555758d4b2e30707a70d271f010b6c30`:
+Pinned offline runtime package closure under `vendor/mailbox-peer-p10j`, produced from accepted
+`deep-protocol` source `2886880d4c2060cd819765c53c77a02e1c475ea8`:
 
-- `Deep.Protocol.0.3.0-p10i.a9b7a10.nupkg` —
-  `925106e6098fe03a9fc247c5be519a13783318bb349b3b8f3cebaa299b8d0a78`
-- `Deep.Protocol.Abstractions.0.3.0-p10i.a9b7a10.nupkg` —
-  `0daa36393ff1e048186ae90883d7e5aaef18bab345e7c1219fa770a1e17776a6`
-- `Deep.Protocol.MembershipRoutes.0.3.0-p10i.a9b7a10.nupkg` —
-  `cb7cf4b4319349fb8eea81ea700b411f6b3d81ba580aef6a44c4dd141f6dee7e`
-- `Deep.Protocol.Protobuf.0.3.0-p10i.a9b7a10.nupkg` —
-  `5583ede034a85cf514840c8db325a4cffb7cdb0ab840af8c6df7d34fb0c1bade`
+- `Deep.Protocol.0.3.0-p10j.2886880.nupkg` —
+  `a41c79124f1c62c2889e7b2ea4695956272aa16de1700206cade8993c1b44abe`
+- `Deep.Protocol.Abstractions.0.3.0-p10j.2886880.nupkg` —
+  `4508e67aba983e91c174c8ce796df654c06892680d65e14ff78bda4d553d542c`
+- `Deep.Protocol.MembershipRoutes.0.3.0-p10j.2886880.nupkg` —
+  `cdb3eb8a8b2889567a25e6db437a287fb12db86d29e0819c13c9adb5fbc02327`
+- `Deep.Protocol.Protobuf.0.3.0-p10j.2886880.nupkg` —
+  `c97025f5d1b44fd7a955e7b69614ea2c6cca499656ccf7930029cc740208eab7`
 
-Core/runtime/test projects resolve the exact P10I version from the local feed in locked mode.
+Core/runtime/test projects resolve the exact P10J version from the local feed in locked mode.
 `XNode.ProfileGenerator` and its tests remain isolated on the exact older P04/ProfileCarrier
 closure because that carrier requires it.
+
+This package-closure update does not activate native MAU2 client HTTP ingress. The development
+routes documented above remain the current runtime surface until the separate native-adapter
+slice is implemented and reviewed.
 
 The dormant replay journal is stored below
 `<Node.DataDirectory>/mailbox-capability-replay-v2/replay.json`, which resolves to the existing

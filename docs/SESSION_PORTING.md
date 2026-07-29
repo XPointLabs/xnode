@@ -107,12 +107,15 @@ For each ported behavior:
 
 ## Client Mailbox Adapter V1 (Development only)
 
-- The adapter ledger stores native MRR2 inputs and P10I MQR3 completion evidence. Development
+- The adapter ledger stores native MRR2 inputs and MQR3 completion evidence. Development
   ACK emits exact MAK1-order MAR1 and never transcodes MQR2.
-- The runtime consumes only the four-package P10I closure
+- The runtime consumes only the four-package P10J closure
   `Deep.Protocol`, `Deep.Protocol.Abstractions`, `Deep.Protocol.MembershipRoutes` and
-  `Deep.Protocol.Protobuf` at `0.3.0-p10i.a9b7a10`, produced from accepted source
-  `a9b7a10a555758d4b2e30707a70d271f010b6c30`.
+  `Deep.Protocol.Protobuf` at `0.3.0-p10j.2886880`, produced from accepted source
+  `2886880d4c2060cd819765c53c77a02e1c475ea8` and vendored under
+  `vendor/mailbox-peer-p10j`.
+- This exact package closure does not activate the native MAU2 HTTP adapter. Existing runtime
+  activation remains unchanged; the native adapter is a separate next slice.
 - Strict `MAU2` decoding plus Ed25519 `MCG2`/`MCP2` verification is registered as an internal
   dependency. Issuer lifecycle/generation authority and revocation policy are injected
   trust boundaries and default to fail-closed. No attacker-supplied grant becomes authority.
