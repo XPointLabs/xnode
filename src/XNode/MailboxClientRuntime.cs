@@ -774,78 +774,62 @@ public sealed class MailboxClientAdapterHostedService : IHostedService
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }
 
+public sealed class MailboxAuthenticatedStateGcHostedService(
+    MailboxAuthenticatedCapabilityRuntime runtime,
+    IClock clock)
+    : BackgroundService
+{
+    private const int MaximumEntriesPerPass = 1024;
+    private static readonly TimeSpan Interval = TimeSpan.FromMinutes(1);
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        CollectOneBatch();
+        using var timer = new PeriodicTimer(Interval);
+        while (await timer.WaitForNextTickAsync(stoppingToken))
+        {
+            CollectOneBatch();
+        }
+    }
+
+    private void CollectOneBatch() =>
+        runtime.CollectExpired(
+            checked((ulong)clock.UtcNow.ToUnixTimeSeconds()),
+            MaximumEntriesPerPass);
+}
+
 public sealed class MailboxClientIngressLimiter
 {
-    private const int MaximumPartitions = 4096;
     private readonly object _gate = new();
-    private readonly Dictionary<string, Partition> _partitions =
-        new(StringComparer.Ordinal);
-    private readonly Dictionary<MailboxWireFrame, Endpoint> _globalEndpoints = [];
+    private readonly Dictionary<MailboxAuthenticatedOperation, Endpoint> _endpoints = [];
 
     public bool TryEnter(
-        string partitionKey,
         MailboxHttpEndpointContract contract,
         ulong nowUnixSeconds,
         out IDisposable lease)
     {
+        var operation = contract.AuthenticatedOperation
+            ?? throw new ArgumentException(
+                "Client ingress contracts require an authenticated operation.",
+                nameof(contract));
         lock (_gate)
         {
-            if (!_partitions.TryGetValue(partitionKey, out var partition))
-            {
-                if (_partitions.Count >= MaximumPartitions)
-                {
-                    var expired = _partitions
-                        .Where(static item => item.Value.ActiveLeases == 0)
-                        .OrderBy(static item => item.Value.LastSeenUnixSeconds)
-                        .ThenBy(static item => item.Key, StringComparer.Ordinal)
-                        .FirstOrDefault();
-                    if (expired.Key is null)
-                    {
-                        lease = EmptyLease.Instance;
-                        return false;
-                    }
-
-                    _partitions.Remove(expired.Key);
-                }
-
-                partition = new();
-                _partitions.Add(partitionKey, partition);
-            }
-
-            if (!partition.Endpoints.TryGetValue(contract.RequestFrame, out var endpoint))
+            if (!_endpoints.TryGetValue(operation, out var endpoint))
             {
                 endpoint = new(contract.MaximumConcurrentRequests);
-                partition.Endpoints.Add(contract.RequestFrame, endpoint);
-            }
-
-            if (!_globalEndpoints.TryGetValue(contract.RequestFrame, out var global))
-            {
-                global = new(contract.MaximumConcurrentRequests);
-                _globalEndpoints.Add(contract.RequestFrame, global);
+                _endpoints.Add(operation, endpoint);
             }
 
             Reset(endpoint, nowUnixSeconds);
-            Reset(global, nowUnixSeconds);
-            partition.LastSeenUnixSeconds = nowUnixSeconds;
             if (endpoint.WindowCount >= contract.RequestsPerMinute
-                || global.WindowCount >= contract.RequestsPerMinute
-                || !global.Concurrency.Wait(0))
+                || !endpoint.Concurrency.Wait(0))
             {
-                lease = EmptyLease.Instance;
-                return false;
-            }
-
-            if (!endpoint.Concurrency.Wait(0))
-            {
-                global.Concurrency.Release();
                 lease = EmptyLease.Instance;
                 return false;
             }
 
             endpoint.WindowCount++;
-            global.WindowCount++;
-            partition.ActiveLeases++;
-            lease = new Releaser(this, partition, global.Concurrency, endpoint.Concurrency);
+            lease = new Releaser(endpoint.Concurrency);
             return true;
         }
     }
@@ -860,13 +844,6 @@ public sealed class MailboxClientIngressLimiter
         }
     }
 
-    private sealed class Partition
-    {
-        public ulong LastSeenUnixSeconds { get; set; }
-        public int ActiveLeases { get; set; }
-        public Dictionary<MailboxWireFrame, Endpoint> Endpoints { get; } = [];
-    }
-
     private sealed class Endpoint(int concurrency)
     {
         public ulong WindowStartedAt { get; set; }
@@ -874,23 +851,14 @@ public sealed class MailboxClientIngressLimiter
         public SemaphoreSlim Concurrency { get; } = new(concurrency, concurrency);
     }
 
-    private sealed class Releaser(
-        MailboxClientIngressLimiter owner,
-        Partition partition,
-        SemaphoreSlim global,
-        SemaphoreSlim endpoint) : IDisposable
+    private sealed class Releaser(SemaphoreSlim endpoint) : IDisposable
     {
         private int _disposed;
         public void Dispose()
         {
             if (Interlocked.Exchange(ref _disposed, 1) == 0)
             {
-                lock (owner._gate)
-                {
-                    partition.ActiveLeases--;
-                    endpoint.Release();
-                    global.Release();
-                }
+                endpoint.Release();
             }
         }
     }
@@ -901,5 +869,90 @@ public sealed class MailboxClientIngressLimiter
         public void Dispose()
         {
         }
+    }
+}
+
+public sealed class MailboxClientVerifiedHolderLimiter
+{
+    private const int MaximumPartitions = 4096;
+    private const int RequestsPerMinute = 120;
+    private static ReadOnlySpan<byte> Domain =>
+        "XNODE-MAILBOX-VERIFIED-HOLDER-LIMITER-V1\0"u8;
+
+    private readonly object _gate = new();
+    private readonly Dictionary<string, Window> _windows =
+        new(StringComparer.Ordinal);
+
+    public bool TryAccept(
+        ReadOnlySpan<byte> holderPublicKey,
+        MailboxAuthenticatedOperation operation,
+        ulong nowUnixSeconds)
+    {
+        if (holderPublicKey.Length != 32
+            || holderPublicKey.IndexOfAnyExcept((byte)0) < 0
+            || operation is not (
+                MailboxAuthenticatedOperation.Store
+                or MailboxAuthenticatedOperation.Retrieve
+                or MailboxAuthenticatedOperation.Ack))
+        {
+            return false;
+        }
+
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        hash.AppendData(Domain);
+        hash.AppendData([(byte)operation]);
+        hash.AppendData(holderPublicKey);
+        var key = Convert.ToHexString(hash.GetHashAndReset());
+
+        lock (_gate)
+        {
+            if (!_windows.TryGetValue(key, out var window))
+            {
+                if (_windows.Count >= MaximumPartitions)
+                {
+                    var expired = _windows
+                        .Where(item =>
+                            nowUnixSeconds >= item.Value.StartedAtUnixSeconds
+                                + MailboxWireHttpContract.RateWindowSeconds)
+                        .OrderBy(static item => item.Value.StartedAtUnixSeconds)
+                        .ThenBy(static item => item.Key, StringComparer.Ordinal)
+                        .FirstOrDefault();
+                    if (expired.Key is null)
+                    {
+                        return false;
+                    }
+
+                    _windows.Remove(expired.Key);
+                }
+
+                window = new()
+                {
+                    StartedAtUnixSeconds = nowUnixSeconds
+                };
+                _windows.Add(key, window);
+            }
+
+            if (nowUnixSeconds >= window.StartedAtUnixSeconds
+                    + MailboxWireHttpContract.RateWindowSeconds
+                || nowUnixSeconds < window.StartedAtUnixSeconds)
+            {
+                window.StartedAtUnixSeconds = nowUnixSeconds;
+                window.Count = 0;
+            }
+
+            if (window.Count >= RequestsPerMinute)
+            {
+                return false;
+            }
+
+            window.Count++;
+            return true;
+        }
+    }
+
+    private sealed class Window
+    {
+        public ulong StartedAtUnixSeconds { get; set; }
+        public int Count { get; set; }
     }
 }

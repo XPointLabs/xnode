@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Buffers.Binary;
 using System.Threading.RateLimiting;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
 using Deep.Protocol.DeepExtension.MembershipRoutes;
@@ -130,11 +129,11 @@ builder.Services.AddSingleton<
     SodiumMailboxCapabilityCrypto>();
 builder.Services.AddSingleton(provider => new DurableMailboxCapabilityReplayJournal(
     nodeOptions.DataDirectory));
+builder.Services.AddSingleton(provider => new MailboxClientCanonicalOutcomeStore(
+    nodeOptions.DataDirectory));
 builder.Services.AddSingleton<MailboxAuthenticatedCapabilityRuntime>();
 if (mailboxClientActivationPlan.RoutesMapped)
 {
-    builder.Services.AddSingleton<IMailboxClientCapabilityVerifier,
-        MailboxAuthenticatedCapabilityVerifier>();
     builder.Services.AddSingleton(provider => new MailboxClientOperationLedger(
         nodeOptions.DataDirectory,
         mailboxClientAdapterOptions,
@@ -144,6 +143,7 @@ if (mailboxClientActivationPlan.RoutesMapped)
         nodeOptions.GetEd25519PrivateKey()));
     builder.Services.AddSingleton<MailboxClientStoreAdapter>();
     builder.Services.AddSingleton<MailboxClientIngressLimiter>();
+    builder.Services.AddSingleton<MailboxClientVerifiedHolderLimiter>();
 }
 builder.Services.AddSingleton<MembershipRouteArtifactPublisher>();
 builder.Services.AddSingleton(new NodeDbOptions
@@ -168,6 +168,7 @@ builder.Services.AddSingleton<MailboxPeerStoreHostedService>();
 builder.Services.AddHostedService(provider =>
     provider.GetRequiredService<MailboxPeerStoreHostedService>());
 builder.Services.AddHostedService<MailboxClientAdapterHostedService>();
+builder.Services.AddHostedService<MailboxAuthenticatedStateGcHostedService>();
 builder.Services.AddSingleton<DurableMailboxPeerReplayJournal>(provider => new(
     nodeOptions.DataDirectory,
     mailboxOptions,
@@ -569,7 +570,6 @@ if (mailboxClientActivationPlan.RoutesMapped)
             context,
             services,
             MailboxWireHttpContract.Store,
-            MailboxClientOperation.Store,
             apiListenUri.Port,
             cancellationToken));
     app.MapPost(MailboxWireHttpContract.RetrieveRoute, (
@@ -580,7 +580,6 @@ if (mailboxClientActivationPlan.RoutesMapped)
             context,
             services,
             MailboxWireHttpContract.Retrieve,
-            MailboxClientOperation.Retrieve,
             apiListenUri.Port,
             cancellationToken));
     app.MapPost(MailboxWireHttpContract.AcknowledgeRoute, (
@@ -591,7 +590,6 @@ if (mailboxClientActivationPlan.RoutesMapped)
             context,
             services,
             MailboxWireHttpContract.Acknowledge,
-            MailboxClientOperation.Acknowledge,
             apiListenUri.Port,
             cancellationToken));
 }
@@ -602,10 +600,12 @@ static async Task<IResult> HandleMailboxClientAsync(
     HttpContext context,
     IServiceProvider services,
     MailboxHttpEndpointContract contract,
-    MailboxClientOperation operation,
     int apiListenerPort,
     CancellationToken cancellationToken)
 {
+    var operation = contract.AuthenticatedOperation
+        ?? throw new InvalidOperationException(
+            "A client mailbox route must declare its authenticated operation.");
     var readiness = services.GetRequiredService<MailboxClientRuntimeReadiness>();
     if (context.Connection.LocalPort != apiListenerPort || !readiness.Ready)
     {
@@ -615,9 +615,7 @@ static async Task<IResult> HandleMailboxClientAsync(
 
     var limiter = services.GetRequiredService<MailboxClientIngressLimiter>();
     var clock = services.GetRequiredService<IClock>();
-    var partition = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
     if (!limiter.TryEnter(
-            partition,
             contract,
             checked((ulong)clock.UtcNow.ToUnixTimeSeconds()),
             out var lease))
@@ -631,6 +629,7 @@ static async Task<IResult> HandleMailboxClientAsync(
     using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
     {
         deadline.CancelAfter(TimeSpan.FromSeconds(contract.RequestTimeoutSeconds));
+        MailboxAuthenticatedRuntimeReservation? authenticated = null;
         try
         {
             var preflight = MailboxPeerHttpRequestValidator.Validate(
@@ -644,22 +643,127 @@ static async Task<IResult> HandleMailboxClientAsync(
 
             var body = new byte[checked((int)context.Request.ContentLength!.Value)];
             await context.Request.Body.ReadExactlyAsync(body, deadline.Token);
-            var adapter = services.GetRequiredService<MailboxClientStoreAdapter>();
-            return operation switch
+            var runtime =
+                services.GetRequiredService<MailboxAuthenticatedCapabilityRuntime>();
+            try
             {
-                MailboxClientOperation.Store =>
-                    MapStore(await adapter.StoreAsync(body, deadline.Token), contract),
-                MailboxClientOperation.Retrieve =>
-                    MapRetrieve(await adapter.RetrieveAsync(body, deadline.Token), contract),
-                MailboxClientOperation.Acknowledge =>
-                    MapAcknowledge(
-                        await adapter.AcknowledgeAsync(body, deadline.Token),
-                        body,
-                        contract),
-                _ => Results.StatusCode(StatusCodes.Status404NotFound)
-            };
+                authenticated = runtime.Verify(body);
+            }
+            catch (MailboxAuthenticatedCapabilityException exception)
+            {
+                return Failure(AuthenticatedFailure(exception.Error));
+            }
+
+            if (authenticated.Verified.Binding.Operation != operation)
+            {
+                return Failure(MailboxHttpFailure.MalformedCanonicalBody);
+            }
+
+            var holderLimiter =
+                services.GetRequiredService<MailboxClientVerifiedHolderLimiter>();
+            if (!holderLimiter.TryAccept(
+                    authenticated.Verified.Capability.Grant.HolderPublicKey.Span,
+                    operation,
+                    checked((ulong)clock.UtcNow.ToUnixTimeSeconds())))
+            {
+                return Failure(MailboxHttpFailure.RateOrConcurrencyExceeded);
+            }
+
+            if (authenticated.RecoveredOutcome is not null)
+            {
+                return MapRecoveredOutcome(authenticated.RecoveredOutcome, contract);
+            }
+
+            if (!runtime.TryAcquireExecution(authenticated))
+            {
+                return Failure(MailboxHttpFailure.DependencyUnavailable);
+            }
+
+            runtime.ReserveOutcomeCapacity(
+                authenticated,
+                contract.MaximumResponseBytes);
+            var adapter = services.GetRequiredService<MailboxClientStoreAdapter>();
+            switch (operation)
+            {
+                case MailboxAuthenticatedOperation.Store:
+                {
+                    var envelope =
+                        MailboxAuthenticatedRequestTranscript.DecodeStoreBody(
+                            authenticated.Verified.Binding.CanonicalRequest.Span);
+                    var result = await adapter.StoreVerifiedAsync(
+                        authenticated,
+                        envelope,
+                        deadline.Token);
+                    if (result.Status == MailboxClientStoreStatus.Durable)
+                    {
+                        var outcome = runtime.PersistSuccess(
+                            authenticated,
+                            result.DurableQuorumReceipt,
+                            contract.MaximumResponseBytes);
+                        return MapRecoveredOutcome(outcome, contract);
+                    }
+
+                    return CompleteStoreFailure(runtime, authenticated, result);
+                }
+                case MailboxAuthenticatedOperation.Retrieve:
+                {
+                    var retrieve =
+                        MailboxAuthenticatedRequestTranscript.DecodeRetrieveBody(
+                            authenticated.Verified.Binding.CanonicalRequest.Span);
+                    var result = await adapter.RetrieveVerifiedAsync(
+                        authenticated,
+                        retrieve,
+                        deadline.Token);
+                    if (result.Status == MailboxClientRetrieveStatus.Success)
+                    {
+                        var outcome = runtime.PersistSuccess(
+                            authenticated,
+                            result.CanonicalPage,
+                            contract.MaximumResponseBytes);
+                        return MapRecoveredOutcome(outcome, contract);
+                    }
+
+                    return CompleteRetrieveFailure(runtime, authenticated, result);
+                }
+                case MailboxAuthenticatedOperation.Ack:
+                {
+                    var ack = MailboxAuthenticatedRequestTranscript.DecodeAckBody(
+                        authenticated.Verified.Binding.CanonicalRequest.Span);
+                    var result = await adapter.AcknowledgeVerifiedAsync(
+                        authenticated,
+                        ack,
+                        deadline.Token);
+                    if (result.Status == MailboxClientAckStatus.Durable)
+                    {
+                        var response = MailboxAggregateAckCodec.EncodeMqr3(
+                            new MailboxAggregateAckResponse
+                            {
+                                Epoch = ack.Epoch,
+                                OperationId = ack.OperationId.ToArray(),
+                                TombstoneQuorums = result.Receipts
+                                    .Select(static receipt =>
+                                        (ReadOnlyMemory<byte>)receipt
+                                            .DurableQuorumReceipt.ToArray())
+                                    .ToArray()
+                            });
+                        var outcome = runtime.PersistSuccess(
+                            authenticated,
+                            response,
+                            contract.MaximumResponseBytes);
+                        return MapRecoveredOutcome(outcome, contract);
+                    }
+
+                    return CompleteAckFailure(runtime, authenticated, result);
+                }
+                default:
+                    return Results.NotFound();
+            }
         }
         catch (EndOfStreamException)
+        {
+            return Failure(MailboxHttpFailure.MalformedCanonicalBody);
+        }
+        catch (MailboxAuthenticatedCapabilityException)
         {
             return Failure(MailboxHttpFailure.MalformedCanonicalBody);
         }
@@ -668,118 +772,159 @@ static async Task<IResult> HandleMailboxClientAsync(
         {
             return Failure(MailboxHttpFailure.DeadlineExceeded);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception exception) when (
             exception is IOException
+                or ArgumentException
+                or OverflowException
                 or InvalidDataException
                 or UnauthorizedAccessException
-                or InvalidOperationException)
+                or InvalidOperationException
+                or MailboxPeerReplicationException
+                or MailboxClientCanonicalOutcomePersistenceException
+                or MailboxClientCanonicalOutcomeCapacityException
+                or MailboxClientCanonicalOutcomeConflictException
+                or MailboxClientCanonicalOutcomeMissingException)
         {
             return Failure(MailboxHttpFailure.DependencyUnavailable);
+        }
+        finally
+        {
+            if (authenticated is not null)
+            {
+                services
+                    .GetRequiredService<MailboxAuthenticatedCapabilityRuntime>()
+                    .CleanupRequest(authenticated);
+            }
         }
     }
 }
 
-static IResult MapStore(
-    MailboxClientStoreResult result,
-    MailboxHttpEndpointContract contract) =>
-    result.Status == MailboxClientStoreStatus.Durable
-        ? Results.Bytes(
-            result.DurableQuorumReceipt.ToArray(),
-            contract.ResponseContentType)
-        : Failure(result.Status switch
-        {
-            MailboxClientStoreStatus.Malformed =>
-                MailboxHttpFailure.MalformedCanonicalBody,
-            MailboxClientStoreStatus.Unauthorized
-                when result.Error == "capability-binding-rejected" =>
-                MailboxHttpFailure.AuthenticationFailed,
-            MailboxClientStoreStatus.Unauthorized =>
-                MailboxHttpFailure.AuthorizationFailed,
-            MailboxClientStoreStatus.Conflict =>
-                MailboxHttpFailure.ReplayOrIdempotencyConflict,
-            MailboxClientStoreStatus.Rejected
-                when result.Error.Contains("capacity", StringComparison.Ordinal) =>
-                MailboxHttpFailure.RateOrConcurrencyExceeded,
-            MailboxClientStoreStatus.Disabled =>
-                MailboxHttpFailure.DependencyUnavailable,
-            MailboxClientStoreStatus.NotReady or
-            MailboxClientStoreStatus.QuorumUnavailable or
-            MailboxClientStoreStatus.Rejected =>
-                MailboxHttpFailure.DependencyUnavailable,
-            _ => MailboxHttpFailure.AuthorizationFailed
-        });
+static IResult CompleteStoreFailure(
+    MailboxAuthenticatedCapabilityRuntime runtime,
+    MailboxAuthenticatedRuntimeReservation authenticated,
+    MailboxClientStoreResult result)
+{
+    switch (result.Status)
+    {
+        case MailboxClientStoreStatus.Unauthorized:
+            runtime.PersistTerminal(
+                authenticated,
+                MailboxClientTerminalOutcome.AuthorizationRejected);
+            return Failure(MailboxHttpFailure.AuthorizationFailed);
+        case MailboxClientStoreStatus.Conflict:
+            runtime.PersistTerminal(
+                authenticated,
+                MailboxClientTerminalOutcome.OperationConflict);
+            return Failure(MailboxHttpFailure.ReplayOrIdempotencyConflict);
+        case MailboxClientStoreStatus.Malformed:
+        case MailboxClientStoreStatus.Rejected:
+            runtime.PersistTerminal(
+                authenticated,
+                MailboxClientTerminalOutcome.DurableStateRejected);
+            return Failure(MailboxHttpFailure.DependencyUnavailable);
+        default:
+            return Failure(MailboxHttpFailure.DependencyUnavailable);
+    }
+}
 
-static IResult MapRetrieve(
-    MailboxClientRetrieveResult result,
-    MailboxHttpEndpointContract contract) =>
-    result.Status == MailboxClientRetrieveStatus.Success
-        ? Results.Bytes(
-            result.CanonicalPage.ToArray(),
-            contract.ResponseContentType)
-        : Failure(result.Status switch
-        {
-            MailboxClientRetrieveStatus.Malformed =>
-                MailboxHttpFailure.MalformedCanonicalBody,
-            MailboxClientRetrieveStatus.Unauthorized
-                when result.Error == "capability-binding-rejected" =>
-                MailboxHttpFailure.AuthenticationFailed,
-            MailboxClientRetrieveStatus.Unauthorized =>
-                MailboxHttpFailure.AuthorizationFailed,
-            MailboxClientRetrieveStatus.Rejected
-                when result.Error.Contains("capacity", StringComparison.Ordinal) =>
-                MailboxHttpFailure.RateOrConcurrencyExceeded,
-            MailboxClientRetrieveStatus.Disabled or
-            MailboxClientRetrieveStatus.NotReady or
-            MailboxClientRetrieveStatus.Rejected =>
-                MailboxHttpFailure.DependencyUnavailable,
-            _ => MailboxHttpFailure.AuthorizationFailed
-        });
+static IResult CompleteRetrieveFailure(
+    MailboxAuthenticatedCapabilityRuntime runtime,
+    MailboxAuthenticatedRuntimeReservation authenticated,
+    MailboxClientRetrieveResult result)
+{
+    switch (result.Status)
+    {
+        case MailboxClientRetrieveStatus.Unauthorized:
+            runtime.PersistTerminal(
+                authenticated,
+                MailboxClientTerminalOutcome.AuthorizationRejected);
+            return Failure(MailboxHttpFailure.AuthorizationFailed);
+        case MailboxClientRetrieveStatus.Malformed:
+        case MailboxClientRetrieveStatus.Rejected:
+            runtime.PersistTerminal(
+                authenticated,
+                MailboxClientTerminalOutcome.DurableStateRejected);
+            return Failure(MailboxHttpFailure.DependencyUnavailable);
+        default:
+            return Failure(MailboxHttpFailure.DependencyUnavailable);
+    }
+}
 
-static IResult MapAcknowledge(
-    MailboxClientAckResult result,
-    byte[] canonicalRequest,
+static IResult CompleteAckFailure(
+    MailboxAuthenticatedCapabilityRuntime runtime,
+    MailboxAuthenticatedRuntimeReservation authenticated,
+    MailboxClientAckResult result)
+{
+    switch (result.Status)
+    {
+        case MailboxClientAckStatus.Unauthorized:
+            runtime.PersistTerminal(
+                authenticated,
+                MailboxClientTerminalOutcome.AuthorizationRejected);
+            return Failure(MailboxHttpFailure.AuthorizationFailed);
+        case MailboxClientAckStatus.Conflict:
+            runtime.PersistTerminal(
+                authenticated,
+                MailboxClientTerminalOutcome.OperationConflict);
+            return Failure(MailboxHttpFailure.ReplayOrIdempotencyConflict);
+        case MailboxClientAckStatus.Malformed:
+        case MailboxClientAckStatus.Rejected:
+            runtime.PersistTerminal(
+                authenticated,
+                MailboxClientTerminalOutcome.DurableStateRejected);
+            return Failure(MailboxHttpFailure.DependencyUnavailable);
+        default:
+            return Failure(MailboxHttpFailure.DependencyUnavailable);
+    }
+}
+
+static IResult MapRecoveredOutcome(
+    MailboxClientCanonicalOutcome outcome,
     MailboxHttpEndpointContract contract)
 {
-    if (result.Status == MailboxClientAckStatus.Durable)
+    if (outcome.Kind == MailboxClientCanonicalOutcomeKind.Success)
     {
-        var response = MailboxAggregateAckCodec.EncodeMqr3(
-            new MailboxAggregateAckResponse
-            {
-                Epoch = BinaryPrimitives.ReadUInt64BigEndian(
-                    canonicalRequest.AsSpan(8, 8)),
-                OperationId = canonicalRequest.AsMemory(16, 16).ToArray(),
-                TombstoneQuorums = result.Receipts
-                    .Select(static receipt =>
-                        (ReadOnlyMemory<byte>)receipt.DurableQuorumReceipt.ToArray())
-                    .ToArray()
-            });
         return Results.Bytes(
-            response,
+            outcome.CanonicalBytes.ToArray(),
             contract.ResponseContentType);
     }
 
-    return Failure(result.Status switch
+    return Failure(outcome.Terminal switch
     {
-        MailboxClientAckStatus.Malformed =>
-            MailboxHttpFailure.MalformedCanonicalBody,
-        MailboxClientAckStatus.Unauthorized
-            when result.Error == "capability-binding-rejected" =>
-            MailboxHttpFailure.AuthenticationFailed,
-        MailboxClientAckStatus.Unauthorized =>
+        MailboxClientTerminalOutcome.AuthorizationRejected =>
             MailboxHttpFailure.AuthorizationFailed,
-        MailboxClientAckStatus.Conflict =>
+        MailboxClientTerminalOutcome.OperationConflict =>
             MailboxHttpFailure.ReplayOrIdempotencyConflict,
-        MailboxClientAckStatus.Rejected
-            when result.Error.Contains("capacity", StringComparison.Ordinal) =>
-            MailboxHttpFailure.RateOrConcurrencyExceeded,
-        MailboxClientAckStatus.Disabled or
-        MailboxClientAckStatus.NotReady or
-        MailboxClientAckStatus.QuorumUnavailable or
-        MailboxClientAckStatus.Rejected =>
+        MailboxClientTerminalOutcome.DurableStateRejected =>
             MailboxHttpFailure.DependencyUnavailable,
-        _ => MailboxHttpFailure.AuthorizationFailed
+        _ => MailboxHttpFailure.DependencyUnavailable
     });
 }
+
+static MailboxHttpFailure AuthenticatedFailure(
+    MailboxAuthenticatedCapabilityError error) =>
+    error switch
+    {
+        MailboxAuthenticatedCapabilityError.InvalidIssuerSignature or
+        MailboxAuthenticatedCapabilityError.InvalidHolderSignature =>
+            MailboxHttpFailure.AuthenticationFailed,
+        MailboxAuthenticatedCapabilityError.UntrustedIssuer or
+        MailboxAuthenticatedCapabilityError.Revoked or
+        MailboxAuthenticatedCapabilityError.GenerationRejected =>
+            MailboxHttpFailure.AuthorizationFailed,
+        MailboxAuthenticatedCapabilityError.OutsideValidityWindow =>
+            MailboxHttpFailure.ExpiredOrStale,
+        MailboxAuthenticatedCapabilityError.ReplayRejected or
+        MailboxAuthenticatedCapabilityError.ReplayConflict =>
+            MailboxHttpFailure.ReplayOrIdempotencyConflict,
+        MailboxAuthenticatedCapabilityError.InvalidReplayEvaluation =>
+            MailboxHttpFailure.DependencyUnavailable,
+        _ => MailboxHttpFailure.MalformedCanonicalBody
+    };
 
 static IResult Failure(MailboxHttpFailure failure) =>
     Results.StatusCode(MailboxWireHttpContract.StatusCode(failure));

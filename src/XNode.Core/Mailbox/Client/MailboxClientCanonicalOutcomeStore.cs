@@ -493,7 +493,9 @@ public sealed class MailboxClientCanonicalOutcomeStore : IDisposable
         }
     }
 
-    public int CollectExpired(ulong nowUnixSeconds, int maximumEntries)
+    internal int CollectExpiredForTestsOnly(
+        ulong nowUnixSeconds,
+        int maximumEntries)
     {
         if (nowUnixSeconds == 0)
         {
@@ -510,7 +512,7 @@ public sealed class MailboxClientCanonicalOutcomeStore : IDisposable
             ThrowIfDisposed();
             var expired = _entries
                 .Where(item =>
-                    item.Value.RetainUntilUnixSeconds <= nowUnixSeconds
+                    item.Value.RetainUntilUnixSeconds < nowUnixSeconds
                     && !_reservations.ContainsKey(item.Key))
                 .OrderBy(static item => item.Value.RetainUntilUnixSeconds)
                 .ThenBy(static item => item.Key, StringComparer.Ordinal)
@@ -535,6 +537,55 @@ public sealed class MailboxClientCanonicalOutcomeStore : IDisposable
             }
 
             return expired.Length;
+        }
+    }
+
+    internal bool DeleteExpired(
+        MailboxClientCanonicalOutcomeKey key,
+        ulong nowUnixSeconds)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        if (nowUnixSeconds == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(nowUnixSeconds));
+        }
+
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            var keyText = KeyText(key.Digest);
+            if (!_entries.TryGetValue(keyText, out var entry))
+            {
+                return false;
+            }
+
+            if (entry.RetainUntilUnixSeconds >= nowUnixSeconds)
+            {
+                throw new InvalidOperationException(
+                    "Canonical outcome cannot expire before its replay record.");
+            }
+
+            if (_reservations.ContainsKey(keyText))
+            {
+                throw new InvalidOperationException(
+                    "Canonical outcome expiry conflicts with an active reservation.");
+            }
+
+            _ = ReadFile(PathFor(keyText), key.Digest);
+            try
+            {
+                _durability.DeleteFile(PathFor(keyText));
+            }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException)
+            {
+                throw new MailboxClientCanonicalOutcomePersistenceException();
+            }
+
+            _entries.Remove(keyText);
+            _canonicalBytes -= entry.CanonicalLength;
+            _fileBytes -= entry.FileLength;
+            return true;
         }
     }
 

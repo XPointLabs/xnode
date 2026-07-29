@@ -408,14 +408,15 @@ Operational invariants:
 Ordinary onion peer replay remains process-memory-only. `/status` reports
 `onionPeerReplay=volatile-explicit-debt`; P10C does not claim durable onion replay.
 
-### Canonical client adapter
+### Native MAU2 client adapter
 
-The source tree contains an adapter for canonical `MST1`/`MEO1`, `MRT1`/`MRP1`, and `MAK1`
-processing. It is mapped only by the explicit survival Development composition. Production
-composition still requires reviewed authority and key custody.
+The client routes accept only MAU2 carrying an authenticated canonical `MEO1`, `MBR2`, or `MBA2`
+body and return `MQR3`, `MRP1`, or `MAR1`. They are mapped only by the explicit survival
+Development composition. Production composition still requires reviewed authority and key
+custody. There is no MCP1 envelope, V1 request decoder, translation, or fallback route.
 
 The adapter ledger stores native MRR2 evidence and native MQR3 completion. Development ACK emits
-the exact MAK1-ordered MQR3 list in MAR1; no MQR2 transcode is permitted.
+the exact MBA2-ordered MQR3 list in MAR1; no MQR2 transcode is permitted.
 
 The adapter reports `StoreReady`, `RetrieveReady`, and `AcknowledgeReady` independently;
 aggregate `Ready` is true only when all three are ready. Status also exposes durable-replay and
@@ -430,8 +431,15 @@ Replica receipt clocks are independent: each accepted time must be no earlier th
 request acceptance, and each durable time must be no earlier than its own accepted time and
 strictly before the common expiry. Equality between local and remote timestamps is not required.
 
+The host reserves canonical-outcome capacity for the endpoint maximum before the first
+ledger/blob/peer access. It persists exact MQR3/MRP1/MAR1 (or coarse MTO1 terminal state) before
+completing replay with the outcome digest. A host-global per-operation pre-auth limiter keeps no
+IP partitions; the post-verify limiter keys only a domain-separated hash of operation plus holder.
+
 Exact concurrent retries are single-flight. Restart recovery either resumes the exact persisted
 completion statement or fails closed; one coordinator sequence cannot sign two statements.
+Only the exact durable PendingSame claim may acquire a recovery execution. PendingPrior and a
+concurrent in-process InFlight request perform no worker or outcome mutation.
 Cached `MQR3` bytes are not trusted as a cache hit: signatures, coordinator identity/sequence,
 replica set and all request/membership bindings are reverified on every retry. Ledger loading
 rejects non-canonical keys/hex, duplicate or rewound cursors/sequences, and inconsistent
@@ -450,25 +458,24 @@ ledger for the same directory, or a second adapter claim on one ledger, fails st
 the adapter first and ledger second during orderly shutdown; only then can a replacement runtime
 acquire the directory.
 
-The verifier is an authorization boundary, not a decoder. It must advertise durable atomic
-replay and return an exact attestation for operation type, outer operation id, epoch, mailbox,
-placement and membership commitments, canonical request/capability digests, replay counter,
-idempotency key and replay disposition. Otherwise readiness is
-`capability-verifier-replay-unsafe`.
+The native MAU2 runtime is the authorization boundary. It verifies the exact operation, operation
+id, epoch, mailbox/placement/membership authority, canonical request digest, holder signature,
+replay counter and claim digest before a worker can run. Readiness requires the strict decoder,
+Ed25519 verifier, durable replay journal and durable canonical outcome store.
 
-`MRT1` pagination is a stable high-water snapshot. The signed `XCT1` token binds the mailbox and
+`MBR2` pagination is a stable high-water snapshot. The signed `XCT1` token binds the mailbox and
 authority context, last cursor, snapshot high-water, page-size ceiling, expiry and exact page ACK
 digest. It verifies against any currently authorized replica key to permit failover. If a replica
 does not possess the durable snapshot data it fails closed; clients restart at cursor zero and
 deduplicate locally.
 
-`MAK1` reserves all targets and logical tombstones atomically before signing or fanout. Quorum
+`MBA2` reserves all targets and logical tombstones atomically before signing or fanout. Quorum
 failure therefore hides the ciphertext from later retrieval but leaves retryable durable journal
 state. Every item completes as a native Tombstone `MRR2` quorum and a native `MQR3`; exact retries
 resume or return persisted, reverified bytes through the latest item expiry, including
 multi-item ACKs with staggered TTLs. A new operation id for an already tombstoned cursor is
 rejected and cannot create another journal or fanout. Retrieval emits MRP1, and Development ACK
-returns exact MAK1-ordered MQR3 receipts in MAR1. The node never infers or persists client-side
+returns exact MBA2-ordered MQR3 receipts in MAR1. The node never infers or persists client-side
 `Delivered`.
 
 Physical ciphertext cleanup is bounded after a durable ACK and repeated on initialization.
@@ -510,11 +517,13 @@ ledgers and adapter initialize.
 
 Client HTTP is binary-only:
 
-| Operation | POST route | Request | Success response | Success |
-|---|---|---|---|---|
-| Store | `/api/client/mailbox/v1/store` | `application/vnd.deep.mailbox.mst1` | `application/vnd.deep.mailbox.mqr3` | 200 |
-| Retrieve | `/api/client/mailbox/v1/retrieve` | `application/vnd.deep.mailbox.mrt1` | `application/vnd.deep.mailbox.mrp1` | 200 |
-| Acknowledge | `/api/client/mailbox/v1/acknowledge` | `application/vnd.deep.mailbox.mak1` | `application/vnd.deep.mailbox.mar1` | 200 |
+| Operation | POST route | MAU2 inner body | Request bytes | Success response | Success |
+|---|---|---|---:|---|---:|
+| Store | `/api/client/mailbox/v2/store` | MEO1 | 608..82344 | `application/vnd.deep.mailbox.mqr3` | 200 |
+| Retrieve | `/api/client/mailbox/v2/retrieve` | MBR2 | 536..792 | `application/vnd.deep.mailbox.mrp1` | 200 |
+| Acknowledge | `/api/client/mailbox/v2/acknowledge` | MBA2 | 576..4792 | `application/vnd.deep.mailbox.mar1` | 200 |
+
+All three request media types are `application/vnd.deep.mailbox.mau2`.
 
 Failures have empty bodies: malformed 400, authentication 401, authorization 403, replay/
 idempotency conflict 409, missing length 411, too large 413, media type/encoding 415, admission
@@ -537,12 +546,12 @@ Core/runtime/test projects resolve the exact P10J version from the local feed in
 `XNode.ProfileGenerator` and its tests remain isolated on the exact older P04/ProfileCarrier
 closure because that carrier requires it.
 
-This package-closure update does not activate native MAU2 client HTTP ingress. The development
-routes documented above remain the current runtime surface until the separate native-adapter
-slice is implemented and reviewed.
+The native MAU2 client adapter is active when the validated mailbox-client activation plan maps
+the development routes documented above. Startup remains fail-closed until the peer runtime,
+authenticated capability runtime, operation ledger, and native adapter all report ready.
 
-The dormant replay journal is stored below
-`<Node.DataDirectory>/mailbox-capability-replay-v2/replay.json`, which resolves to the existing
+The active replay journal is stored below
+`<Node.DataDirectory>/mailbox-capability-replay-v3/replay.json`, which resolves to the existing
 `/state` volume in survival containers. It uses an exclusive process lease, same-directory
 write-through replacement and file/parent durability barriers. A crash after reservation leaves
 an explicit `Pending` record; it is never silently retried as new, and only recovery with the
@@ -553,19 +562,20 @@ Side-effect-free post-verification cancellation may instead persist `Released`. 
 deletion: the counter floor and exact claim digest survive restart, exact retry can reserve it
 again, lower and same-counter conflicting claims remain rejected, and only a higher counter can
 advance. Records are collected only after grant/authoritative epoch validity plus the fixed
-seven-day replay-retention interval. Collection precedes capacity admission; diagnostics include
-Pending,
+seven-day replay-retention interval. A host background worker processes at most 1024 entries per
+minute. It durably marks a bounded replay batch expired first, removes only the exact matching
+canonical outcomes, and then finalizes those replay markers. Interrupted batches resume safely
+after restart, and the equality boundary remains retained. Diagnostics include Pending,
 Completed, Released and remaining-capacity counts. Long-lived issuer-key validity does not pin
 expired individual grants, and issuer authorities must never reuse a capability serial.
 
 Replay schema v3 also stores the accepted wall-clock high-watermark. Capability validity and
 collection use `max(observedTime, durableFloor)`, and the floor never decreases. Rollback up to
 60 seconds is absorbed by the floor; larger rollback rejects capability verification until the
-clock recovers. V1/V2 journals migrate atomically at startup using the host clock: all replay
-records and counters survive, V1 records receive infinite retention, and startup cannot proceed
-through a partial migration.
+clock recovers. Because the messenger is pre-production, older replay schemas are rejected
+unchanged rather than migrated.
 
-For MRT1 and MAK1, cryptographic capability verification occurs before delivery admission,
+For MBR2 and MBA2, cryptographic capability verification occurs before delivery admission,
 replica-authority selection, continuation processing, or mailbox-specific ledger/blob access.
 Therefore a forged but canonically framed request cannot probe mailbox presence or spend storage
 I/O. Cancellation before the first durable effect releases only a new reservation. Cancellation

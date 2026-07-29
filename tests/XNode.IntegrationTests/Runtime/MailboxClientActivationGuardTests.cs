@@ -19,8 +19,8 @@ public sealed class MailboxClientActivationGuardTests
 
         Assert.False(status.Enabled);
         Assert.False(status.ClientRoutesMapped);
-        Assert.False(status.LegacyV1TranslationEnabled);
-        Assert.Equal("p10b3-internal-reject-all", status.CapabilityVerifier);
+        Assert.False(status.NativeMau2Ingress);
+        Assert.Equal("native-mau2-reject-all", status.AuthenticatedRuntime);
         Assert.Equal("disabled", status.StoreFanout);
         Assert.Equal("disabled", status.TombstoneFanout);
         Assert.Equal("not-ready", status.Store);
@@ -28,8 +28,9 @@ public sealed class MailboxClientActivationGuardTests
         Assert.Equal("not-ready", status.Acknowledge);
         Assert.Equal(MailboxClientActivationGuard.BlockedReason, status.Reason);
         Assert.True(status.StrictMau2DecoderRegistered);
-        Assert.True(status.Ed25519CapabilityVerifierRegistered);
+        Assert.True(status.Ed25519Mau2VerifierRegistered);
         Assert.True(status.DurableReplayJournalRegistered);
+        Assert.True(status.DurableCanonicalOutcomeStoreRegistered);
         Assert.Equal("dormant-reject-all", status.IssuerAuthority);
         Assert.Equal("dormant-reject-all", status.RevocationPolicy);
         Assert.True(status.PeerRuntimeReady);
@@ -37,9 +38,6 @@ public sealed class MailboxClientActivationGuardTests
         Assert.Equal("client-dormant-reject-all", status.PlacementAuthority);
         Assert.Equal("dormant-unmapped", status.ClientIngress);
 
-        var verifier = new RejectAllMailboxClientCapabilityVerifier();
-        Assert.False(verifier.IsConfigured);
-        Assert.False(verifier.ProvidesDurableAtomicReplay);
         Assert.False(new RejectAllMailboxClientReplicaAuthorizer().IsConfigured);
         Assert.False(new DisabledMailboxClientReplicaFanout().IsConfigured);
         Assert.False(new DisabledMailboxClientTombstoneFanout().IsConfigured);
@@ -78,6 +76,14 @@ public sealed class MailboxClientActivationGuardTests
         var hostSource = string.Join(
             "\n",
             Directory.GetFiles(hostDirectory, "*.cs", SearchOption.AllDirectories)
+                .Order(StringComparer.Ordinal)
+                .Select(File.ReadAllText));
+        var coreClientSource = string.Join(
+            "\n",
+            Directory.GetFiles(
+                    Path.Combine(root, "src", "XNode.Core", "Mailbox", "Client"),
+                    "*.cs",
+                    SearchOption.AllDirectories)
                 .Order(StringComparer.Ordinal)
                 .Select(File.ReadAllText));
         Assert.DoesNotContain(
@@ -130,6 +136,38 @@ public sealed class MailboxClientActivationGuardTests
         Assert.Contains(
             nameof(DurableMailboxCapabilityReplayJournal),
             hostSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            nameof(MailboxClientCanonicalOutcomeStore),
+            hostSource,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "MailboxAuthenticatedCapabilityVerifier",
+            hostSource,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "IMailboxClientCapabilityVerifier",
+            hostSource,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "VerifierDeferredReplayGuard",
+            hostSource,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "canonical-mst1",
+            hostSource,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            "MailboxClientCodec.DecodeStore(",
+            coreClientSource,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "MailboxClientCodec.DecodeRetrieve(",
+            coreClientSource,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "MailboxClientCodec.DecodeAck(",
+            coreClientSource,
             StringComparison.Ordinal);
         Assert.Contains(
             "onionPeerReplay = \"volatile-explicit-debt\"",
@@ -304,14 +342,13 @@ public sealed class MailboxClientActivationGuardTests
     }
 
     [Fact]
-    public void ClientIngressLimiter_EvictsIdlePartitionsAfterAdversarialChurn()
+    public void ClientIngressLimiter_HasOnlyBoundedPerOperationState()
     {
         var limiter = new MailboxClientIngressLimiter();
         ulong now = 1;
         for (var index = 0; index < 4097; index++)
         {
             Assert.True(limiter.TryEnter(
-                $"198.51.{index / 256}.{index % 256}",
                 MailboxWireHttpContract.Store,
                 now,
                 out var lease));
@@ -320,8 +357,7 @@ public sealed class MailboxClientActivationGuardTests
         }
 
         Assert.True(limiter.TryEnter(
-            "203.0.113.250",
-            MailboxWireHttpContract.Store,
+            MailboxWireHttpContract.Retrieve,
             now,
             out var recovered));
         recovered.Dispose();
@@ -336,14 +372,54 @@ public sealed class MailboxClientActivationGuardTests
             MaximumConcurrentRequests = 1,
             RequestsPerMinute = 2
         };
-        Assert.True(limiter.TryEnter("192.0.2.1", contract, 100, out var first));
-        Assert.False(limiter.TryEnter("192.0.2.1", contract, 100, out var rejected));
+        Assert.True(limiter.TryEnter(contract, 100, out var first));
+        Assert.False(limiter.TryEnter(contract, 100, out var rejected));
         rejected.Dispose();
         first.Dispose();
-        Assert.True(limiter.TryEnter("192.0.2.1", contract, 100, out var second));
+        Assert.True(limiter.TryEnter(contract, 100, out var second));
         second.Dispose();
-        Assert.False(limiter.TryEnter("192.0.2.1", contract, 100, out var exhausted));
+        Assert.False(limiter.TryEnter(contract, 100, out var exhausted));
         exhausted.Dispose();
+    }
+
+    [Fact]
+    public void VerifiedHolderLimiter_IsOpaqueBoundedAndIndependentPerOperation()
+    {
+        var limiter = new MailboxClientVerifiedHolderLimiter();
+        var holder = Enumerable.Range(1, 32).Select(static value => (byte)value).ToArray();
+        for (var index = 0; index < 120; index++)
+        {
+            Assert.True(limiter.TryAccept(
+                holder,
+                MailboxAuthenticatedOperation.Store,
+                100));
+        }
+
+        Assert.False(limiter.TryAccept(
+            holder,
+            MailboxAuthenticatedOperation.Store,
+            100));
+        Assert.True(limiter.TryAccept(
+            holder,
+            MailboxAuthenticatedOperation.Retrieve,
+            100));
+        Assert.True(limiter.TryAccept(
+            holder,
+            MailboxAuthenticatedOperation.Store,
+            161));
+
+        var windows = typeof(MailboxClientVerifiedHolderLimiter)
+            .GetField(
+                "_windows",
+                System.Reflection.BindingFlags.Instance
+                | System.Reflection.BindingFlags.NonPublic)!
+            .GetValue(limiter)!;
+        var keys = ((System.Collections.IEnumerable)windows)
+            .Cast<object>()
+            .Select(item => item.GetType().GetProperty("Key")!.GetValue(item)!.ToString())
+            .ToArray();
+        Assert.All(keys, key => Assert.Matches("^[0-9A-F]{64}$", key!));
+        Assert.DoesNotContain(Convert.ToHexString(holder), keys);
     }
 
     private static string FindRepositoryRoot()

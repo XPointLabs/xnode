@@ -12,9 +12,15 @@ public sealed class MailboxAuthenticatedCapabilityRuntimeTests : IDisposable
     private readonly string _directory = Path.Combine(
         Path.GetTempPath(),
         $"xnode-p03b2-runtime-{Guid.NewGuid():N}");
+    private readonly MailboxClientCanonicalOutcomeStore _outcomes;
+
+    public MailboxAuthenticatedCapabilityRuntimeTests()
+    {
+        _outcomes = new MailboxClientCanonicalOutcomeStore(_directory);
+    }
 
     [Fact]
-    public void ValidMau2_UsesEd25519AndReturnsCachedCanonicalOutcome()
+    public void ValidMau2_UsesEd25519AndRecoversExactDurableOutcome()
     {
         var fixture = Frame();
         using var journal = new DurableMailboxCapabilityReplayJournal(_directory);
@@ -23,18 +29,30 @@ public sealed class MailboxAuthenticatedCapabilityRuntimeTests : IDisposable
         var first = runtime.Verify(fixture.Encoded);
         Assert.Equal(
             MailboxAuthenticatedReplayDisposition.NewReserved,
-            first.Capability.ReplayDisposition);
-        runtime.Complete(first, Bytes(0xf1, 64));
+            first.ReplayDisposition);
+        using var outcomeReservation = _outcomes.Reserve(
+            first.OutcomeKey,
+            MailboxAuthenticatedOperation.Store,
+            first.RetainUntilUnixSeconds,
+            MailboxWireHttpContract.Store.MaximumResponseBytes);
+        var stored = _outcomes.PutTerminal(
+            outcomeReservation,
+            MailboxClientTerminalOutcome.DurableStateRejected);
+        runtime.CompletePersistedOutcome(first);
 
         var replay = runtime.Verify(fixture.Encoded);
         Assert.Equal(
             MailboxAuthenticatedReplayDisposition.IdempotentCompleted,
-            replay.Capability.ReplayDisposition);
-        Assert.Equal(Bytes(0xf1, 64), replay.Capability.CachedOutcome.ToArray());
+            replay.ReplayDisposition);
+        Assert.Equal(
+            MailboxClientTerminalOutcome.DurableStateRejected,
+            replay.RecoveredOutcome?.Terminal);
+        Assert.Equal(stored.CanonicalBytes.ToArray(), replay.RecoveredOutcome?.CanonicalBytes.ToArray());
         Assert.True(runtime.Status.Ready);
         Assert.True(runtime.Status.StrictMau2Decoder);
         Assert.True(runtime.Status.Ed25519Verifier);
         Assert.True(runtime.Status.DurableAtomicReplay);
+        Assert.True(runtime.Status.DurableCanonicalOutcomes);
     }
 
     [Fact]
@@ -69,6 +87,176 @@ public sealed class MailboxAuthenticatedCapabilityRuntimeTests : IDisposable
         Assert.Throws<MailboxAuthenticatedCapabilityException>(() =>
             runtime.Verify(wrongEpoch));
         Assert.Equal(0, journal.Diagnostics.ScopeCount);
+    }
+
+    [Fact]
+    public void CompletedReplayWithoutExactDurableOutcome_FailsClosed()
+    {
+        var fixture = Frame();
+        using var journal = new DurableMailboxCapabilityReplayJournal(_directory);
+        var runtime = Runtime(fixture, journal);
+        var first = runtime.Verify(fixture.Encoded);
+        journal.CompleteAtomically(
+            first.Verified.Capability.ReplayClaim,
+            Bytes(0xf3, 32));
+
+        Assert.Throws<MailboxClientCanonicalOutcomeMissingException>(() =>
+            runtime.Verify(fixture.Encoded));
+    }
+
+    [Fact]
+    public void InFlightReplayWithPersistedOutcome_RepairsDigestAndRecoversExactBytes()
+    {
+        var fixture = Frame();
+        using var journal = new DurableMailboxCapabilityReplayJournal(_directory);
+        var runtime = Runtime(fixture, journal);
+        var first = runtime.Verify(fixture.Encoded);
+        using var outcomeReservation = _outcomes.Reserve(
+            first.OutcomeKey,
+            MailboxAuthenticatedOperation.Store,
+            first.RetainUntilUnixSeconds,
+            MailboxWireHttpContract.Store.MaximumResponseBytes);
+        var stored = _outcomes.PutTerminal(
+            outcomeReservation,
+            MailboxClientTerminalOutcome.OperationConflict);
+
+        var recovered = runtime.Verify(fixture.Encoded);
+        Assert.Equal(
+            MailboxAuthenticatedReplayDisposition.InFlight,
+            recovered.ReplayDisposition);
+        Assert.Equal(
+            stored.CanonicalBytes.ToArray(),
+            recovered.RecoveredOutcome?.CanonicalBytes.ToArray());
+
+        var completed = runtime.Verify(fixture.Encoded);
+        Assert.Equal(
+            MailboxAuthenticatedReplayDisposition.IdempotentCompleted,
+            completed.ReplayDisposition);
+        Assert.Equal(
+            stored.CanonicalBytes.ToArray(),
+            completed.RecoveredOutcome?.CanonicalBytes.ToArray());
+    }
+
+    [Fact]
+    public void CompletedReplayWithMismatchedOutcomeDigest_FailsClosed()
+    {
+        var fixture = Frame();
+        using var journal = new DurableMailboxCapabilityReplayJournal(_directory);
+        var runtime = Runtime(fixture, journal);
+        var first = runtime.Verify(fixture.Encoded);
+        using var outcomeReservation = _outcomes.Reserve(
+            first.OutcomeKey,
+            MailboxAuthenticatedOperation.Store,
+            first.RetainUntilUnixSeconds,
+            MailboxWireHttpContract.Store.MaximumResponseBytes);
+        _outcomes.PutTerminal(
+            outcomeReservation,
+            MailboxClientTerminalOutcome.OperationConflict);
+        journal.CompleteAtomically(
+            first.Verified.Capability.ReplayClaim,
+            Bytes(0x5a, 32));
+
+        Assert.Throws<InvalidDataException>(() =>
+            runtime.Verify(fixture.Encoded));
+    }
+
+    [Fact]
+    public void OutcomeCapacityIsReservedBeforeExecutionAndCanAbortWithoutSideEffects()
+    {
+        var constrainedRoot = Path.Combine(_directory, "constrained");
+        using var outcomes = new MailboxClientCanonicalOutcomeStore(
+            constrainedRoot,
+            new MailboxClientCanonicalOutcomeStoreOptions
+            {
+                MaximumEntries = 1,
+                MaximumBytes =
+                    MailboxClientCanonicalOutcomeStore.HeaderLength
+                    + MailboxWireHttpContract.Store.MaximumResponseBytes
+            });
+        using var journal = new DurableMailboxCapabilityReplayJournal(constrainedRoot);
+        var firstFixture = Frame(replayCounter: 11);
+        var runtime = Runtime(firstFixture, journal, outcomes: outcomes);
+        var first = runtime.Verify(firstFixture.Encoded);
+        Assert.True(runtime.TryAcquireExecution(first));
+        runtime.ReserveOutcomeCapacity(
+            first,
+            MailboxWireHttpContract.Store.MaximumResponseBytes);
+        runtime.PersistTerminal(
+            first,
+            MailboxClientTerminalOutcome.DurableStateRejected);
+
+        var secondFixture = Frame(replayCounter: 12);
+        var second = runtime.Verify(secondFixture.Encoded);
+        Assert.True(runtime.TryAcquireExecution(second));
+        Assert.Throws<MailboxClientCanonicalOutcomeCapacityException>(() =>
+            runtime.ReserveOutcomeCapacity(
+                second,
+                MailboxWireHttpContract.Store.MaximumResponseBytes));
+        Assert.False(second.SideEffectsStarted);
+        runtime.AbortIfNew(second);
+
+        Assert.Equal(
+            MailboxAuthenticatedReplayDisposition.NewReserved,
+            runtime.Verify(secondFixture.Encoded).ReplayDisposition);
+    }
+
+    [Fact]
+    public void ActiveExecutionRejectsConcurrentInFlightButAllowsBoundedRecoveryOwner()
+    {
+        var fixture = Frame(replayCounter: 11);
+        var higherFixture = Frame(replayCounter: 12);
+        using var journal = new DurableMailboxCapabilityReplayJournal(_directory);
+        var runtime = Runtime(fixture, journal);
+        var first = runtime.Verify(fixture.Encoded);
+        Assert.True(runtime.TryAcquireExecution(first));
+
+        var concurrent = runtime.Verify(fixture.Encoded);
+        Assert.Equal(
+            MailboxAuthenticatedReplayDisposition.InFlight,
+            concurrent.ReplayDisposition);
+        Assert.False(runtime.TryAcquireExecution(concurrent));
+        var blockedHigher = runtime.Verify(higherFixture.Encoded);
+        Assert.Equal(
+            MailboxAuthenticatedReplayDisposition.InFlight,
+            blockedHigher.ReplayDisposition);
+        Assert.False(runtime.TryAcquireExecution(blockedHigher));
+
+        runtime.EndExecution(first);
+        Assert.False(runtime.TryAcquireExecution(blockedHigher));
+        Assert.True(runtime.TryAcquireExecution(concurrent));
+        runtime.EndExecution(concurrent);
+
+        var restartedRuntime = Runtime(fixture, journal);
+        var afterRestart = restartedRuntime.Verify(fixture.Encoded);
+        Assert.Equal(
+            MailboxAuthenticatedReplayDisposition.InFlight,
+            afterRestart.ReplayDisposition);
+        Assert.True(restartedRuntime.TryAcquireExecution(afterRestart));
+        restartedRuntime.EndExecution(afterRestart);
+    }
+
+    [Fact]
+    public void AbortOnlyReleasesNewReservationBeforeSideEffects()
+    {
+        var fixture = Frame();
+        using var journal = new DurableMailboxCapabilityReplayJournal(_directory);
+        var runtime = Runtime(fixture, journal);
+
+        var safe = runtime.Verify(fixture.Encoded);
+        runtime.AbortIfNew(safe);
+        Assert.Equal(
+            MailboxAuthenticatedReplayDisposition.NewReserved,
+            runtime.Verify(fixture.Encoded).ReplayDisposition);
+
+        using var secondJournal = new DurableMailboxCapabilityReplayJournal(
+            Path.Combine(_directory, "side-effect-journal"));
+        var sideEffectRuntime = Runtime(fixture, secondJournal);
+        var started = sideEffectRuntime.Verify(fixture.Encoded);
+        started.MarkSideEffectsStarted();
+        sideEffectRuntime.AbortIfNew(started);
+        Assert.Equal(
+            MailboxAuthenticatedReplayDisposition.InFlight,
+            sideEffectRuntime.Verify(fixture.Encoded).ReplayDisposition);
     }
 
     [Fact]
@@ -126,6 +314,7 @@ public sealed class MailboxAuthenticatedCapabilityRuntimeTests : IDisposable
             new RejectAllMailboxCapabilityAuthoritySource(),
             new RejectAllMailboxCapabilityRevocationPolicy(),
             journal,
+            _outcomes,
             new FixedClock(Now));
 
         Assert.False(runtime.Status.Ready);
@@ -149,14 +338,14 @@ public sealed class MailboxAuthenticatedCapabilityRuntimeTests : IDisposable
             });
         var runtime = Runtime(fixture, journal);
         var verified = runtime.Verify(fixture.Encoded);
-        runtime.Complete(verified, Bytes(0xf2, 32));
+        PersistTerminal(runtime, verified);
 
         var retainedUntil = journal.RetainUntilUnixSeconds(
             fixture.Grant.ExpiresAtUnixSeconds);
-        Assert.Equal(0, journal.CollectExpired(retainedUntil));
+        Assert.Equal(0, journal.CollectExpiredForTestsOnly(retainedUntil));
         Assert.Equal(
             1,
-            journal.CollectExpired(retainedUntil + 1));
+            journal.CollectExpiredForTestsOnly(retainedUntil + 1));
         Assert.Equal(0, journal.Diagnostics.ScopeCount);
 
         Assert.Equal(
@@ -186,13 +375,13 @@ public sealed class MailboxAuthenticatedCapabilityRuntimeTests : IDisposable
         using var journal = new DurableMailboxCapabilityReplayJournal(_directory);
         var runtime = Runtime(firstFrame, journal);
         var first = runtime.Verify(firstFrame.Encoded);
-        runtime.Complete(first, Bytes(0xe1, 32));
+        PersistTerminal(runtime, first);
 
         var higher = runtime.Verify(higherFrame.Encoded);
 
         Assert.Equal(
             MailboxAuthenticatedReplayDisposition.NewReserved,
-            higher.Capability.ReplayDisposition);
+            higher.ReplayDisposition);
     }
 
     [Fact]
@@ -204,11 +393,11 @@ public sealed class MailboxAuthenticatedCapabilityRuntimeTests : IDisposable
         {
             var runtime = Runtime(fixture, journal, clock: clock);
             var verified = runtime.Verify(fixture.Encoded);
-            runtime.Complete(verified, Bytes(0xe2, 32));
+            PersistTerminal(runtime, verified);
             var collectedAt = journal.RetainUntilUnixSeconds(
                 fixture.Grant.ExpiresAtUnixSeconds) + 1;
             clock.UtcNow = DateTimeOffset.FromUnixTimeSeconds(checked((long)collectedAt));
-            Assert.Equal(1, journal.CollectExpired(collectedAt));
+            Assert.Equal(1, journal.CollectExpiredForTestsOnly(collectedAt));
         }
 
         clock.UtcNow = Now;
@@ -230,7 +419,7 @@ public sealed class MailboxAuthenticatedCapabilityRuntimeTests : IDisposable
         var clock = new FixedClock(
             DateTimeOffset.FromUnixTimeSeconds(checked((long)acceptedTime)));
         using var journal = new DurableMailboxCapabilityReplayJournal(_directory);
-        _ = journal.CollectExpired(acceptedTime);
+        _ = journal.CollectExpiredForTestsOnly(acceptedTime);
         clock.UtcNow = DateTimeOffset.FromUnixTimeSeconds(
             checked((long)fixture.Grant.ExpiresAtUnixSeconds - 49));
         var runtime = Runtime(fixture, journal, clock: clock);
@@ -245,6 +434,7 @@ public sealed class MailboxAuthenticatedCapabilityRuntimeTests : IDisposable
 
     public void Dispose()
     {
+        _outcomes.Dispose();
         if (Directory.Exists(_directory))
         {
             Directory.Delete(_directory, recursive: true);
@@ -257,14 +447,31 @@ public sealed class MailboxAuthenticatedCapabilityRuntimeTests : IDisposable
         ulong? minimumGeneration = null,
         MailboxCapabilityLifecycle? allowedLifecycle = null,
         bool revoked = false,
-        IClock? clock = null) => new(
+        IClock? clock = null,
+        MailboxClientCanonicalOutcomeStore? outcomes = null) => new(
             new FixedAuthority(
                 fixture.Grant,
                 minimumGeneration ?? fixture.Grant.Generation,
                 allowedLifecycle ?? fixture.Grant.Lifecycle),
             new FixedRevocations(revoked),
             journal,
+            outcomes ?? _outcomes,
             clock ?? new FixedClock(Now));
+
+    private void PersistTerminal(
+        MailboxAuthenticatedCapabilityRuntime runtime,
+        MailboxAuthenticatedRuntimeReservation reservation)
+    {
+        using var outcomeReservation = _outcomes.Reserve(
+            reservation.OutcomeKey,
+            reservation.Verified.Binding.Operation,
+            reservation.RetainUntilUnixSeconds,
+            MailboxWireHttpContract.Store.MaximumResponseBytes);
+        _outcomes.PutTerminal(
+            outcomeReservation,
+            MailboxClientTerminalOutcome.DurableStateRejected);
+        runtime.CompletePersistedOutcome(reservation);
+    }
 
     private static FrameFixture Frame(ulong replayCounter = 11)
     {

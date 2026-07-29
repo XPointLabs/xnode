@@ -9,8 +9,8 @@ public sealed class MailboxClientActivationOptions
 public sealed record MailboxClientActivationStatus(
     bool Enabled,
     bool ClientRoutesMapped,
-    bool LegacyV1TranslationEnabled,
-    string CapabilityVerifier,
+    bool NativeMau2Ingress,
+    string AuthenticatedRuntime,
     string StoreFanout,
     string TombstoneFanout,
     string Store,
@@ -19,8 +19,9 @@ public sealed record MailboxClientActivationStatus(
     string Reason)
 {
     public bool StrictMau2DecoderRegistered { get; init; }
-    public bool Ed25519CapabilityVerifierRegistered { get; init; }
+    public bool Ed25519Mau2VerifierRegistered { get; init; }
     public bool DurableReplayJournalRegistered { get; init; }
+    public bool DurableCanonicalOutcomeStoreRegistered { get; init; }
     public string IssuerAuthority { get; init; } = "unconfigured";
     public string RevocationPolicy { get; init; } = "unconfigured";
     public bool PeerRuntimeReady { get; init; }
@@ -48,8 +49,8 @@ public static class MailboxClientActivationGuard
         return new(
             Enabled: false,
             ClientRoutesMapped: false,
-            LegacyV1TranslationEnabled: false,
-            CapabilityVerifier: "p10b3-internal-reject-all",
+            NativeMau2Ingress: false,
+            AuthenticatedRuntime: "native-mau2-reject-all",
             StoreFanout: "disabled",
             TombstoneFanout: "disabled",
             Store: "not-ready",
@@ -58,8 +59,9 @@ public static class MailboxClientActivationGuard
             Reason: BlockedReason)
         {
             StrictMau2DecoderRegistered = true,
-            Ed25519CapabilityVerifierRegistered = true,
+            Ed25519Mau2VerifierRegistered = true,
             DurableReplayJournalRegistered = true,
+            DurableCanonicalOutcomeStoreRegistered = true,
             IssuerAuthority = "dormant-reject-all",
             RevocationPolicy = "dormant-reject-all",
             PeerRuntimeReady = true,
@@ -86,8 +88,8 @@ public static class MailboxClientActivationGuard
         string reason) => new(
         Enabled: true,
         ClientRoutesMapped: true,
-        LegacyV1TranslationEnabled: false,
-        CapabilityVerifier: "mau2-ed25519-durable-replay",
+        NativeMau2Ingress: true,
+        AuthenticatedRuntime: "mau2-ed25519-durable-replay-outcomes",
         StoreFanout: "development-fixture-mrr2",
         TombstoneFanout: "development-fixture-mrr2",
         Store: operationStatus,
@@ -96,13 +98,14 @@ public static class MailboxClientActivationGuard
         Reason: reason)
     {
         StrictMau2DecoderRegistered = true,
-        Ed25519CapabilityVerifierRegistered = true,
+        Ed25519Mau2VerifierRegistered = true,
         DurableReplayJournalRegistered = true,
+        DurableCanonicalOutcomeStoreRegistered = true,
         IssuerAuthority = "development-config-pinned",
         RevocationPolicy = "development-config-pinned",
         PeerRuntimeReady = true,
         PeerWire = "prq2-mrr2-mqr3",
         PlacementAuthority = "development-config-pinned",
-        ClientIngress = "canonical-mst1-mrt1-mak1"
+        ClientIngress = "native-mau2-meo1-mbr2-mba2"
     };
 }

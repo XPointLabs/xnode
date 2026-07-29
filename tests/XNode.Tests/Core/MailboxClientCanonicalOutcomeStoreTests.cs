@@ -372,9 +372,11 @@ public sealed class MailboxClientCanonicalOutcomeStoreTests : IDisposable
             _ = store.PutSuccess(reservation, canonical);
         }
 
-        Assert.Equal(0, store.CollectExpired(1_999, 10));
+        Assert.Equal(0, store.CollectExpiredForTestsOnly(1_999, 10));
         Assert.True(store.TryRead(key, MailboxAuthenticatedOperation.Store, out _));
-        Assert.Equal(1, store.CollectExpired(2_000, 10));
+        Assert.Equal(0, store.CollectExpiredForTestsOnly(2_000, 10));
+        Assert.True(store.TryRead(key, MailboxAuthenticatedOperation.Store, out _));
+        Assert.Equal(1, store.CollectExpiredForTestsOnly(2_001, 10));
         Assert.False(store.TryRead(key, MailboxAuthenticatedOperation.Store, out _));
         Assert.Equal(0, store.Diagnostics.EntryCount);
         Assert.Equal(0, store.Diagnostics.CanonicalBytes);

@@ -3,47 +3,11 @@ using Deep.Protocol.DeepExtension.MailboxCapabilities;
 
 namespace XNode.Core.Mailbox.Client;
 
-public enum MailboxClientOperation
+internal enum MailboxClientOperation
 {
     Store = 1,
     Retrieve = 2,
     Acknowledge = 3
-}
-
-public sealed record MailboxCapabilityBinding(
-    ulong Epoch,
-    ReadOnlyMemory<byte> BlindedMailboxId,
-    ReadOnlyMemory<byte> PlacementCommitment,
-    ReadOnlyMemory<byte> MembershipCommitment,
-    MailboxClientOperation AllowedOperation)
-{
-    public ReadOnlyMemory<byte> OuterOperationId { get; init; }
-    public ReadOnlyMemory<byte> CanonicalRequestDigest { get; init; }
-    public ReadOnlyMemory<byte> CanonicalCapabilityDigest { get; init; }
-    public ulong ReplayCounter { get; init; }
-    public ReadOnlyMemory<byte> IdempotencyKey { get; init; }
-    public MailboxCapabilityReplayDisposition ReplayDisposition { get; init; }
-    public object? CompletionHandle { get; init; }
-}
-
-public interface IMailboxClientCapabilityVerifier
-{
-    bool IsConfigured { get; }
-    bool ProvidesDurableAtomicReplay { get; }
-
-    ValueTask<MailboxCapabilityBinding?> VerifyAsync(
-        ReadOnlyMemory<byte> canonicalRequest,
-        MailboxClientOperation operation,
-        CancellationToken cancellationToken);
-}
-
-public interface IMailboxClientCapabilityCompletion
-{
-    void Complete(
-        object completionHandle,
-        ReadOnlyMemory<byte> canonicalOutcome);
-
-    void Abort(object completionHandle);
 }
 
 internal enum MailboxClientObservedAccess
@@ -70,18 +34,6 @@ internal sealed class NullMailboxClientRequestObserver : IMailboxClientRequestOb
         MailboxClientObservedAccess access)
     {
     }
-}
-
-public sealed class RejectAllMailboxClientCapabilityVerifier : IMailboxClientCapabilityVerifier
-{
-    public bool IsConfigured => false;
-    public bool ProvidesDurableAtomicReplay => false;
-
-    public ValueTask<MailboxCapabilityBinding?> VerifyAsync(
-        ReadOnlyMemory<byte> canonicalRequest,
-        MailboxClientOperation operation,
-        CancellationToken cancellationToken) =>
-        ValueTask.FromResult<MailboxCapabilityBinding?>(null);
 }
 
 public sealed record MailboxReplicaStoreContext(
@@ -183,7 +135,7 @@ public sealed class MailboxClientAdapterOptions
 {
     public bool Enabled { get; set; }
 
-    public string DirectoryName { get; set; } = "mailbox-client-adapter-v1";
+    public string DirectoryName { get; set; } = "mailbox-client-native-mau2-v1";
 
     public string CurrentMembershipCommitment { get; set; } = "";
 
@@ -309,13 +261,14 @@ public sealed record MailboxClientStoreResult(
 
 public sealed record MailboxClientAdapterStatus(
     bool Enabled,
-    bool CapabilityVerifierConfigured,
+    bool NativeMau2Runtime,
     bool ReplicaAuthorizerConfigured,
     bool ReplicaFanoutConfigured,
     bool Ready,
     string Reason)
 {
-    public bool CapabilityVerifierProvidesDurableAtomicReplay { get; init; }
+    public bool DurableAtomicReplay { get; init; }
+    public bool DurableCanonicalOutcomes { get; init; }
     public bool TombstoneFanoutConfigured { get; init; }
     public bool StoreReady { get; init; }
     public bool RetrieveReady { get; init; }

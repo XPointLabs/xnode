@@ -179,65 +179,6 @@ public sealed class MailboxClientActivatedEndToEndTests : IDisposable
         }
     }
 
-    [Fact]
-    public async Task ForgedCanonicalMrt1AndMak1_PerformNoMailboxReadOrMutation()
-    {
-        var fixture = await ActivatedFixture.OpenAsync(_root, _clock);
-        using (fixture)
-        using (var runtime = await fixture.OpenCoordinatorAsync())
-        {
-            Assert.Equal(
-                MailboxClientStoreStatus.Durable,
-                (await runtime.Adapter.StoreAsync(
-                    fixture.CreateStoreRequest(replayCounter: 1))).Status);
-            var validRetrieve = fixture.CreateRetrieveRequest(replayCounter: 1);
-            var retrieved = await runtime.Adapter.RetrieveAsync(validRetrieve);
-            var page = MailboxClientCodec.DecodeRetrievePage(
-                retrieved.CanonicalPage.Span,
-                fixture.DecodePolicy);
-            var validAck = fixture.CreateAckRequest(
-                Assert.Single(page.Items).ToAcknowledgement(),
-                replayCounter: 2);
-            var observer = new RecordingObserver();
-            runtime.Adapter.RequestObserver = observer;
-
-            var forgedRetrieve = MailboxClientCodec.DecodeRetrieve(
-                validRetrieve,
-                fixture.DecodePolicy,
-                new AcceptingReplayGuard());
-            var retrieveInner =
-                forgedRetrieve.RetrieveCapability.DomainValue.Bytes.ToArray();
-            retrieveInner[^1] ^= 1;
-            var forgedAck = MailboxClientCodec.DecodeAck(
-                validAck,
-                fixture.DecodePolicy,
-                new AcceptingReplayGuard());
-            var ackInner = forgedAck.RetrieveCapability.DomainValue.Bytes.ToArray();
-            ackInner[^1] ^= 1;
-
-            var retrieveResult = await runtime.Adapter.RetrieveAsync(
-                MailboxClientCodec.EncodeRetrieve(forgedRetrieve with
-                {
-                    RetrieveCapability = forgedRetrieve.RetrieveCapability with
-                    {
-                        DomainValue = new RotatingRetrieveCapability(retrieveInner)
-                    }
-                }));
-            var ackResult = await runtime.Adapter.AcknowledgeAsync(
-                MailboxClientCodec.EncodeAck(forgedAck with
-                {
-                    RetrieveCapability = forgedAck.RetrieveCapability with
-                    {
-                        DomainValue = new RotatingRetrieveCapability(ackInner)
-                    }
-                }));
-
-            Assert.Equal(MailboxClientRetrieveStatus.Unauthorized, retrieveResult.Status);
-            Assert.Equal(MailboxClientAckStatus.Unauthorized, ackResult.Status);
-            Assert.Empty(observer.Accesses);
-        }
-    }
-
     public void Dispose()
     {
         if (Directory.Exists(_root))
@@ -432,14 +373,12 @@ public sealed class MailboxClientActivatedEndToEndTests : IDisposable
                 {
                     MaximumScopes = 64
                 });
+            var outcomes = new MailboxClientCanonicalOutcomeStore(localRoot);
             var runtime = new MailboxAuthenticatedCapabilityRuntime(
                 new DevelopmentMailboxCapabilityAuthority(_activation, AdapterOptions),
                 new DevelopmentMailboxCapabilityRevocations(_activation),
                 replay,
-                _clock);
-            var verifier = new MailboxAuthenticatedCapabilityVerifier(
-                AdapterOptions,
-                runtime,
+                outcomes,
                 _clock);
             var fanout = new DevelopmentMailboxReplicaFanout(
                 _activation,
@@ -451,14 +390,17 @@ public sealed class MailboxClientActivatedEndToEndTests : IDisposable
                 MailboxOptions,
                 _localStore,
                 ledger,
-                verifier,
                 new DevelopmentMailboxReplicaAuthority(_activation, AdapterOptions),
                 fanout,
                 new MailboxClientReceiptCrypto(LocalRouterId, Hex(_localSeed)),
                 _clock,
                 fanout);
             await adapter.InitializeAsync();
-            return new(adapter, ledger, replay);
+            return new(
+                new NativeAdapterHarness(adapter, runtime),
+                ledger,
+                replay,
+                outcomes);
         }
 
         public byte[] CreateStoreRequest(ulong replayCounter)
@@ -475,18 +417,11 @@ public sealed class MailboxClientActivatedEndToEndTests : IDisposable
                 Ciphertext = Range(1, 64)
             };
             var binding = MailboxAuthenticatedRequestTranscript.ForStore(envelope);
-            return MailboxClientCodec.EncodeStore(new()
-            {
-                Epoch = 7,
-                OperationId = envelope.OperationId,
-                MixedVersion = MailboxMixedVersionMarker.StrictV1,
-                DepositCapability = OuterCapability(
-                    MailboxCapabilityDomain.Deposit,
-                    binding,
-                    replayCounter,
-                    serial: 0x21),
-                Envelope = envelope
-            });
+            return NativeRequest(
+                MailboxCapabilityDomain.Deposit,
+                binding,
+                replayCounter,
+                serial: 0x21);
         }
 
         public byte[] CreateRetrieveRequest(ulong replayCounter)
@@ -500,22 +435,11 @@ public sealed class MailboxClientActivatedEndToEndTests : IDisposable
                 0,
                 10,
                 ReadOnlySpan<byte>.Empty);
-            return MailboxClientCodec.EncodeRetrieve(new()
-            {
-                Epoch = 7,
-                OperationId = operationId,
-                MixedVersion = MailboxMixedVersionMarker.StrictV1,
-                RetrieveCapability = OuterCapability(
-                    MailboxCapabilityDomain.Retrieve,
-                    binding,
-                    replayCounter,
-                    serial: 0x41),
-                MailboxId = new BlindedMailboxId(_mailboxId),
-                PlacementId = new BlindedPlacementId(_placementId),
-                AfterCursor = 0,
-                MaximumItems = 10,
-                ContinuationToken = ReadOnlyMemory<byte>.Empty
-            });
+            return NativeRequest(
+                MailboxCapabilityDomain.Retrieve,
+                binding,
+                replayCounter,
+                serial: 0x41);
         }
 
         public byte[] CreateAckRequest(
@@ -532,25 +456,14 @@ public sealed class MailboxClientActivatedEndToEndTests : IDisposable
                 isFinalPage: true,
                 ReadOnlySpan<byte>.Empty,
                 acknowledgements);
-            return MailboxClientCodec.EncodeAck(new()
-            {
-                Epoch = 7,
-                OperationId = operationId,
-                MixedVersion = MailboxMixedVersionMarker.StrictV1,
-                RetrieveCapability = OuterCapability(
-                    MailboxCapabilityDomain.Retrieve,
-                    binding,
-                    replayCounter,
-                    serial: 0x41),
-                MailboxId = new BlindedMailboxId(_mailboxId),
-                PlacementId = new BlindedPlacementId(_placementId),
-                IsFinalPage = true,
-                ContinuationToken = ReadOnlyMemory<byte>.Empty,
-                Acknowledgements = acknowledgements
-            });
+            return NativeRequest(
+                MailboxCapabilityDomain.Retrieve,
+                binding,
+                replayCounter,
+                serial: 0x41);
         }
 
-        private MailboxCapabilityPresentation OuterCapability(
+        private byte[] NativeRequest(
             MailboxCapabilityDomain domain,
             MailboxAuthenticatedRequestBinding binding,
             ulong replayCounter,
@@ -582,22 +495,12 @@ public sealed class MailboxClientActivatedEndToEndTests : IDisposable
                 binding,
                 replayCounter,
                 _holderSeed);
-            var encoded = MailboxAuthenticatedCapabilityCodec.EncodePresentation(presentation);
-            MailboxDomainValue domainValue = domain == MailboxCapabilityDomain.Deposit
-                ? new RotatingDepositCapability(encoded)
-                : new RotatingRetrieveCapability(encoded);
-            return new()
+            return MailboxAuthenticatedClientRequestCodec.Encode(
+                new MailboxAuthenticatedClientRequest
             {
-                DomainValue = domainValue,
-                Lifecycle = MailboxCapabilityLifecycle.Active,
-                MixedVersion = MailboxMixedVersionMarker.StrictV1,
-                Generation = 7,
-                NotBeforeBucket = checked((uint)(Now - 60)),
-                ExpiresAtBucket = checked((uint)(Now + 3600)),
-                OverlapUntilBucket = 0,
-                ReplayCounter = replayCounter,
-                IdempotencyKey = Filled(checked((byte)(0x60 + replayCounter)), 16)
-            };
+                Binding = binding,
+                Presentation = presentation
+            });
         }
 
         public void Dispose()
@@ -678,16 +581,237 @@ public sealed class MailboxClientActivatedEndToEndTests : IDisposable
     }
 
     private sealed record CoordinatorRuntime(
-        MailboxClientStoreAdapter Adapter,
+        NativeAdapterHarness Adapter,
         MailboxClientOperationLedger Ledger,
-        DurableMailboxCapabilityReplayJournal Replay) : IDisposable
+        DurableMailboxCapabilityReplayJournal Replay,
+        MailboxClientCanonicalOutcomeStore Outcomes) : IDisposable
     {
         public void Dispose()
         {
             Adapter.Dispose();
             Ledger.Dispose();
             Replay.Dispose();
+            Outcomes.Dispose();
         }
+    }
+
+    private sealed class NativeAdapterHarness(
+        MailboxClientStoreAdapter adapter,
+        MailboxAuthenticatedCapabilityRuntime runtime) : IDisposable
+    {
+        public IMailboxClientRequestObserver RequestObserver
+        {
+            get => adapter.RequestObserver;
+            set => adapter.RequestObserver = value;
+        }
+
+        public async Task<MailboxClientStoreResult> StoreAsync(
+            ReadOnlyMemory<byte> canonicalMau2,
+            CancellationToken cancellationToken = default)
+        {
+            var reservation = runtime.Verify(canonicalMau2);
+            if (reservation.RecoveredOutcome is { } recovered)
+            {
+                return recovered.Kind == MailboxClientCanonicalOutcomeKind.Success
+                    ? new(
+                        MailboxClientStoreStatus.Durable,
+                        recovered.CanonicalBytes,
+                        "")
+                    : MailboxClientStoreResult.Failure(
+                        MailboxClientStoreStatus.Rejected,
+                        "persisted-terminal");
+            }
+
+            if (!runtime.TryAcquireExecution(reservation))
+            {
+                return MailboxClientStoreResult.Failure(
+                    MailboxClientStoreStatus.NotReady,
+                    "in-flight");
+            }
+
+            try
+            {
+                runtime.ReserveOutcomeCapacity(
+                    reservation,
+                    MailboxWireHttpContract.Store.MaximumResponseBytes);
+                var envelope =
+                    MailboxAuthenticatedRequestTranscript.DecodeStoreBody(
+                        reservation.Verified.Binding.CanonicalRequest.Span);
+                var result = await adapter.StoreVerifiedAsync(
+                    reservation,
+                    envelope,
+                    cancellationToken);
+                if (result.Status == MailboxClientStoreStatus.Durable)
+                {
+                    adapter.RequestObserver.OnAccess(
+                        MailboxClientOperation.Store,
+                        MailboxClientObservedAccess.ReplayCompletion);
+                    runtime.PersistSuccess(
+                        reservation,
+                        result.DurableQuorumReceipt,
+                        MailboxWireHttpContract.Store.MaximumResponseBytes);
+                    return result;
+                }
+
+                End(reservation);
+                return result;
+            }
+            catch
+            {
+                End(reservation);
+                throw;
+            }
+        }
+
+        public async Task<MailboxClientRetrieveResult> RetrieveAsync(
+            ReadOnlyMemory<byte> canonicalMau2,
+            CancellationToken cancellationToken = default)
+        {
+            var reservation = runtime.Verify(canonicalMau2);
+            if (reservation.RecoveredOutcome is { } recovered)
+            {
+                return recovered.Kind == MailboxClientCanonicalOutcomeKind.Success
+                    ? new(
+                        MailboxClientRetrieveStatus.Success,
+                        recovered.CanonicalBytes,
+                        "")
+                    : MailboxClientRetrieveResult.Failure(
+                        MailboxClientRetrieveStatus.Rejected,
+                        "persisted-terminal");
+            }
+
+            if (!runtime.TryAcquireExecution(reservation))
+            {
+                return MailboxClientRetrieveResult.Failure(
+                    MailboxClientRetrieveStatus.NotReady,
+                    "in-flight");
+            }
+
+            try
+            {
+                runtime.ReserveOutcomeCapacity(
+                    reservation,
+                    MailboxWireHttpContract.Retrieve.MaximumResponseBytes);
+                var request =
+                    MailboxAuthenticatedRequestTranscript.DecodeRetrieveBody(
+                        reservation.Verified.Binding.CanonicalRequest.Span);
+                var result = await adapter.RetrieveVerifiedAsync(
+                    reservation,
+                    request,
+                    cancellationToken);
+                if (result.Status == MailboxClientRetrieveStatus.Success)
+                {
+                    adapter.RequestObserver.OnAccess(
+                        MailboxClientOperation.Retrieve,
+                        MailboxClientObservedAccess.ReplayCompletion);
+                    runtime.PersistSuccess(
+                        reservation,
+                        result.CanonicalPage,
+                        MailboxWireHttpContract.Retrieve.MaximumResponseBytes);
+                    return result;
+                }
+
+                End(reservation);
+                return result;
+            }
+            catch
+            {
+                End(reservation);
+                throw;
+            }
+        }
+
+        public async Task<MailboxClientAckResult> AcknowledgeAsync(
+            ReadOnlyMemory<byte> canonicalMau2,
+            CancellationToken cancellationToken = default)
+        {
+            var reservation = runtime.Verify(canonicalMau2);
+            var request = MailboxAuthenticatedRequestTranscript.DecodeAckBody(
+                reservation.Verified.Binding.CanonicalRequest.Span);
+            if (reservation.RecoveredOutcome is { } recovered)
+            {
+                if (recovered.Kind != MailboxClientCanonicalOutcomeKind.Success)
+                {
+                    return MailboxClientAckResult.Failure(
+                        MailboxClientAckStatus.Rejected,
+                        "persisted-terminal");
+                }
+
+                var aggregate = MailboxAggregateAckCodec.DecodeMqr3(
+                    recovered.CanonicalBytes.Span);
+                return new(
+                    MailboxClientAckStatus.Durable,
+                    request.Acknowledgements.Zip(
+                        aggregate.TombstoneQuorums,
+                        static (acknowledgement, quorum) => new MailboxClientAckReceipt(
+                            acknowledgement.Cursor,
+                            acknowledgement.EnvelopeDigest,
+                            quorum)).ToArray(),
+                    "");
+            }
+
+            if (!runtime.TryAcquireExecution(reservation))
+            {
+                return MailboxClientAckResult.Failure(
+                    MailboxClientAckStatus.NotReady,
+                    "in-flight");
+            }
+
+            try
+            {
+                runtime.ReserveOutcomeCapacity(
+                    reservation,
+                    MailboxWireHttpContract.Acknowledge.MaximumResponseBytes);
+                var result = await adapter.AcknowledgeVerifiedAsync(
+                    reservation,
+                    request,
+                    cancellationToken);
+                if (result.Status == MailboxClientAckStatus.Durable)
+                {
+                    var canonical = MailboxAggregateAckCodec.EncodeMqr3(
+                        new MailboxAggregateAckResponse
+                        {
+                            Epoch = request.Epoch,
+                            OperationId = request.OperationId,
+                            TombstoneQuorums = result.Receipts
+                                .Select(static receipt =>
+                                    (ReadOnlyMemory<byte>)receipt
+                                        .DurableQuorumReceipt.ToArray())
+                                .ToArray()
+                        });
+                    adapter.RequestObserver.OnAccess(
+                        MailboxClientOperation.Acknowledge,
+                        MailboxClientObservedAccess.ReplayCompletion);
+                    runtime.PersistSuccess(
+                        reservation,
+                        canonical,
+                        MailboxWireHttpContract.Acknowledge.MaximumResponseBytes);
+                    return result;
+                }
+
+                End(reservation);
+                return result;
+            }
+            catch
+            {
+                End(reservation);
+                throw;
+            }
+        }
+
+        private void End(MailboxAuthenticatedRuntimeReservation reservation)
+        {
+            if (reservation.SideEffectsStarted)
+            {
+                runtime.EndExecution(reservation);
+            }
+            else
+            {
+                runtime.AbortIfNew(reservation);
+            }
+        }
+
+        public void Dispose() => adapter.Dispose();
     }
 
     private sealed class ReceiverPeerClient(MailboxReplicaReceiver receiver)
@@ -724,27 +848,6 @@ public sealed class MailboxClientActivatedEndToEndTests : IDisposable
     private sealed class FixedClock(DateTimeOffset now) : IClock
     {
         public DateTimeOffset UtcNow { get; } = now;
-    }
-
-    private sealed class AcceptingReplayGuard : IMailboxCapabilityReplayGuard
-    {
-        public MailboxCapabilityReplayEvaluation Evaluate(
-            MailboxCapabilityReplayScope scope) => new()
-        {
-            Decision = MailboxCapabilityReplayDecision.AcceptedNew,
-            CachedOutcome = ReadOnlyMemory<byte>.Empty
-        };
-    }
-
-    private sealed class RecordingObserver : IMailboxClientRequestObserver
-    {
-        public List<(MailboxClientOperation Operation, MailboxClientObservedAccess Access)>
-            Accesses { get; } = [];
-
-        public void OnAccess(
-            MailboxClientOperation operation,
-            MailboxClientObservedAccess access) =>
-            Accesses.Add((operation, access));
     }
 
     private sealed class ThrowOnceObserver(

@@ -87,7 +87,7 @@ public sealed class DurableMailboxCapabilityReplayJournalTests : IDisposable
             Assert.Throws<InvalidOperationException>(() => Journal());
         }
 
-        var journalDirectory = Path.Combine(_directory, "mailbox-capability-replay-v2");
+        var journalDirectory = Path.Combine(_directory, "mailbox-capability-replay-v3");
         Directory.CreateDirectory(journalDirectory);
         File.WriteAllText(Path.Combine(journalDirectory, "replay.json"), "{\"schemaVersion\":99}");
         Assert.Throws<InvalidDataException>(() => Journal());
@@ -102,7 +102,7 @@ public sealed class DurableMailboxCapabilityReplayJournalTests : IDisposable
 
         var persisted = File.ReadAllText(Path.Combine(
             _directory,
-            "mailbox-capability-replay-v2",
+            "mailbox-capability-replay-v3",
             "replay.json"));
         Assert.DoesNotContain(
             Convert.ToHexString(claim.IssuerPublicKey.Span),
@@ -201,6 +201,9 @@ public sealed class DurableMailboxCapabilityReplayJournalTests : IDisposable
         journal.CompleteAtomically(
             Claim(counter: 1, claimByte: 0x71),
             Bytes(0x72, 32));
+        Assert.Equal(
+            1,
+            journal.CollectExpiredForTestsOnly(retainedUntil + 1));
 
         var replacement = journal.EvaluateAndReserve(
             Claim(counter: 1, claimByte: 0x73, serialByte: 0x74),
@@ -219,8 +222,10 @@ public sealed class DurableMailboxCapabilityReplayJournalTests : IDisposable
             journal.Diagnostics);
     }
 
-    [Fact]
-    public void SchemaV1AndV2Records_MigrateWithDurableTimeFloor()
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void PreProductionLegacySchemas_AreRejectedWithoutMigration(int legacyVersion)
     {
         var claim = Claim(counter: 4, claimByte: 0x75);
         using (var journal = Journal())
@@ -230,77 +235,20 @@ public sealed class DurableMailboxCapabilityReplayJournalTests : IDisposable
 
         var path = Path.Combine(
             _directory,
-            "mailbox-capability-replay-v2",
+            "mailbox-capability-replay-v3",
             "replay.json");
         var schema3 = File.ReadAllText(path);
-        foreach (var legacyVersion in new[] { 2, 1 })
-        {
-            var legacy = schema3
-                .Replace(
-                    "\"schemaVersion\":3",
-                    $"\"schemaVersion\":{legacyVersion}",
-                    StringComparison.Ordinal);
-            legacy = System.Text.RegularExpressions.Regex.Replace(
-                legacy,
-                ",\"acceptedTimeHighWatermarkUnixSeconds\":1000",
-                "");
-            if (legacyVersion == 1)
-            {
-                legacy = System.Text.RegularExpressions.Regex.Replace(
-                    legacy,
-                    ",\"retainUntilUnixSeconds\":18446744073709551615",
-                    "");
-            }
-
-            File.WriteAllText(path, legacy);
-            using var migrated = new DurableMailboxCapabilityReplayJournal(
-                _directory,
-                clock: new FixedClock(2_000));
-            Assert.Equal(
-                MailboxCapabilityAtomicReplayState.PendingSame,
-                Evaluate(migrated, claim, nowUnixSeconds: 2_000).State);
-            Assert.Equal(2_000UL, migrated.Diagnostics.AcceptedTimeHighWatermarkUnixSeconds);
-            Assert.Equal(1, migrated.Diagnostics.PendingCount);
-        }
-    }
-
-    [Fact]
-    public void InterruptedSchemaV2Migration_RestartsFromAtomicSchemaV3Image()
-    {
-        var claim = Claim(counter: 5, claimByte: 0x76);
-        using (var journal = Journal())
-        {
-            _ = Evaluate(journal, claim);
-        }
-
-        var path = Path.Combine(
-            _directory,
-            "mailbox-capability-replay-v2",
-            "replay.json");
-        var legacy = File.ReadAllText(path)
-            .Replace("\"schemaVersion\":3", "\"schemaVersion\":2", StringComparison.Ordinal);
-        legacy = System.Text.RegularExpressions.Regex.Replace(
-            legacy,
-            ",\"acceptedTimeHighWatermarkUnixSeconds\":1000",
-            "");
+        var legacy = schema3.Replace(
+            "\"schemaVersion\":3",
+            $"\"schemaVersion\":{legacyVersion}",
+            StringComparison.Ordinal);
         File.WriteAllText(path, legacy);
 
-        Assert.Throws<IOException>(() =>
+        Assert.Throws<InvalidDataException>(() =>
         {
-            using var interrupted = new DurableMailboxCapabilityReplayJournal(
-                _directory,
-                durability: new ThrowAfterMoveDurability(),
-                clock: new FixedClock(2_000));
+            using var rejected = new DurableMailboxCapabilityReplayJournal(_directory);
         });
-
-        using var restarted = new DurableMailboxCapabilityReplayJournal(
-            _directory,
-            clock: new FixedClock(2_000));
-        Assert.Equal(3, ReadSchemaVersion(path));
-        Assert.Equal(2_000UL, restarted.Diagnostics.AcceptedTimeHighWatermarkUnixSeconds);
-        Assert.Equal(
-            MailboxCapabilityAtomicReplayState.PendingSame,
-            Evaluate(restarted, claim, nowUnixSeconds: 2_000).State);
+        Assert.Equal(legacy, File.ReadAllText(path));
     }
 
     [Fact]
@@ -406,12 +354,6 @@ public sealed class DurableMailboxCapabilityReplayJournalTests : IDisposable
 
     private static byte[] Bytes(byte value, int length) =>
         Enumerable.Repeat(value, length).ToArray();
-
-    private static int ReadSchemaVersion(string path)
-    {
-        using var document = System.Text.Json.JsonDocument.Parse(File.ReadAllBytes(path));
-        return document.RootElement.GetProperty("schemaVersion").GetInt32();
-    }
 
     private sealed class ThrowAfterMoveDurability : IMailboxDurabilityBarrier
     {
