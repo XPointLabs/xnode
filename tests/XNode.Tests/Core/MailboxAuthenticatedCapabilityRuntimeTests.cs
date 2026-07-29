@@ -136,6 +136,64 @@ public sealed class MailboxAuthenticatedCapabilityRuntimeTests : IDisposable
         Assert.Equal(0, journal.Diagnostics.ScopeCount);
     }
 
+    [Fact]
+    public void GrantExpiry_NotLongLivedIssuerValidity_DrivesCapacityRecovery()
+    {
+        var fixture = Frame();
+        using var journal = new DurableMailboxCapabilityReplayJournal(
+            _directory,
+            new DurableMailboxCapabilityReplayJournalOptions
+            {
+                MaximumScopes = 1
+            });
+        var runtime = Runtime(fixture, journal);
+        var verified = runtime.Verify(fixture.Encoded);
+        runtime.Complete(verified, Bytes(0xf2, 32));
+
+        var retainedUntil = journal.RetainUntilUnixSeconds(
+            fixture.Grant.ExpiresAtUnixSeconds);
+        Assert.Equal(0, journal.CollectExpired(retainedUntil));
+        Assert.Equal(
+            1,
+            journal.CollectExpired(retainedUntil + 1));
+        Assert.Equal(0, journal.Diagnostics.ScopeCount);
+
+        Assert.Equal(
+            MailboxCapabilityAtomicReplayState.NewReserved,
+            journal.EvaluateAndReserve(
+                new MailboxCapabilityAtomicReplayClaim
+                {
+                    ClaimDigest = Bytes(0x31, 32),
+                    IssuerPublicKey = Bytes(0x32, 32),
+                    Serial = Bytes(0x33, 16),
+                    Epoch = 8,
+                    Generation = 10,
+                    Operation = MailboxAuthenticatedOperation.Store,
+                    OperationId = Bytes(0x34, 16),
+                    ReplayCounter = 1,
+                    RequestDigest = Bytes(0x35, 32)
+                },
+                nowUnixSeconds: retainedUntil + 1,
+                retainUntilUnixSeconds: retainedUntil + 100).State);
+    }
+
+    [Fact]
+    public void CompletedTerminalOutcome_DoesNotStrandHigherReplayCounter()
+    {
+        var firstFrame = Frame(replayCounter: 11);
+        var higherFrame = Frame(replayCounter: 12);
+        using var journal = new DurableMailboxCapabilityReplayJournal(_directory);
+        var runtime = Runtime(firstFrame, journal);
+        var first = runtime.Verify(firstFrame.Encoded);
+        runtime.Complete(first, Bytes(0xe1, 32));
+
+        var higher = runtime.Verify(higherFrame.Encoded);
+
+        Assert.Equal(
+            MailboxAuthenticatedReplayDisposition.NewReserved,
+            higher.Capability.ReplayDisposition);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_directory))
@@ -158,7 +216,7 @@ public sealed class MailboxAuthenticatedCapabilityRuntimeTests : IDisposable
             journal,
             new FixedClock(Now));
 
-    private static FrameFixture Frame()
+    private static FrameFixture Frame(ulong replayCounter = 11)
     {
         var crypto = new SodiumMailboxCapabilityCrypto();
         var issuerSeed = Range(0x10, 32);
@@ -198,7 +256,7 @@ public sealed class MailboxAuthenticatedCapabilityRuntimeTests : IDisposable
         var presentation = crypto.SignPresentation(
             grant,
             binding,
-            replayCounter: 11,
+            replayCounter,
             holderSeed);
         var encoded = MailboxAuthenticatedClientRequestCodec.Encode(
             new MailboxAuthenticatedClientRequest
@@ -246,7 +304,7 @@ public sealed class MailboxAuthenticatedCapabilityRuntimeTests : IDisposable
                         MinimumGeneration = minimumGeneration,
                         MaximumGeneration = 20,
                         ValidFromUnixSeconds = 800,
-                        ValidUntilUnixSeconds = 1_200
+                        ValidUntilUnixSeconds = 1_000_000
                     }
                 ]
             };

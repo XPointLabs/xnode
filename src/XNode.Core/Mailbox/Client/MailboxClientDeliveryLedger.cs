@@ -503,43 +503,6 @@ public sealed partial class MailboxClientOperationLedger
         ulong cursor,
         ReadOnlyMemory<byte> firstReplicaReceipt,
         ReadOnlyMemory<byte> secondReplicaReceipt,
-        CancellationToken cancellationToken) =>
-        await BeginAckCompletionCoreAsync(
-            operationKey,
-            cursor,
-            firstReplicaReceipt,
-            secondReplicaReceipt,
-            null,
-            cancellationToken).ConfigureAwait(false);
-
-    public Task<MailboxClientAckReservation> BeginCanonicalAckCompletionAsync(
-        string operationKey,
-        ulong cursor,
-        ReadOnlyMemory<byte> firstReplicaReceipt,
-        ReadOnlyMemory<byte> secondReplicaReceipt,
-        ulong coordinatorSequence,
-        CancellationToken cancellationToken)
-    {
-        if (coordinatorSequence == 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(coordinatorSequence));
-        }
-
-        return BeginAckCompletionCoreAsync(
-            operationKey,
-            cursor,
-            firstReplicaReceipt,
-            secondReplicaReceipt,
-            coordinatorSequence,
-            cancellationToken);
-    }
-
-    private async Task<MailboxClientAckReservation> BeginAckCompletionCoreAsync(
-        string operationKey,
-        ulong cursor,
-        ReadOnlyMemory<byte> firstReplicaReceipt,
-        ReadOnlyMemory<byte> secondReplicaReceipt,
-        ulong? exactCoordinatorSequence,
         CancellationToken cancellationToken)
     {
         ThrowIfDisposed();
@@ -569,8 +532,7 @@ public sealed partial class MailboxClientOperationLedger
                 throw new MailboxClientLedgerCapacityException();
             }
 
-            var sequence = exactCoordinatorSequence
-                ?? ++document.NextCoordinatorSequence;
+            var sequence = ++document.NextCoordinatorSequence;
             operation.Items[itemIndex] = item with
             {
                 State = "completing",

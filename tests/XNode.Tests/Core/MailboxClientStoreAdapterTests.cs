@@ -372,7 +372,7 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
         var secondVerifier = new FixedVerifier(new(
             7,
             otherMailbox,
-            SHA256.HashData(PlacementId),
+            MailboxPlacementCommitment.Compute(new BlindedPlacementId(PlacementId)),
             MembershipCommitment,
             MailboxClientOperation.Store));
         adapter.Dispose();
@@ -442,7 +442,7 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
             MailboxId,
             EnvelopeDigest,
             Range(0xa1, 32),
-            SHA256.HashData(PlacementId),
+            MailboxPlacementCommitment.Compute(new BlindedPlacementId(PlacementId)),
             MembershipCommitment,
             replicas,
             1011,
@@ -458,7 +458,7 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
             MailboxId,
             Range(0x93, 32),
             Range(0x94, 32),
-            SHA256.HashData(PlacementId),
+            MailboxPlacementCommitment.Compute(new BlindedPlacementId(PlacementId)),
             MembershipCommitment,
             replicas,
             1200,
@@ -545,7 +545,7 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
         var nextVerifier = new FixedVerifier(new(
             8,
             MailboxId,
-            SHA256.HashData(PlacementId),
+            MailboxPlacementCommitment.Compute(new BlindedPlacementId(PlacementId)),
             NextMembershipCommitment,
             MailboxClientOperation.Store));
         var authorizer = new RecordingAuthorizer(
@@ -652,7 +652,7 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
             MailboxId,
             EnvelopeDigest,
             Range(0xa1, 32),
-            SHA256.HashData(PlacementId),
+            MailboxPlacementCommitment.Compute(new BlindedPlacementId(PlacementId)),
             MembershipCommitment,
             replicas,
             1120,
@@ -959,7 +959,8 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
             RelayContactSigner.DeriveRouterId(remoteSeed),
             remoteSeed);
         var store = new ReplicatedMailboxStore(_root, mailboxOptions, _clock);
-        var placementCommitment = SHA256.HashData(PlacementId);
+        var placementCommitment =
+            MailboxPlacementCommitment.Compute(new BlindedPlacementId(PlacementId));
         var ledger = Track(new MailboxClientOperationLedger(
             _root,
             adapterOptions,
@@ -1052,7 +1053,7 @@ public sealed class MailboxClientStoreAdapterTests : IDisposable
         new(
             7,
             mailboxId,
-            SHA256.HashData(PlacementId),
+            MailboxPlacementCommitment.Compute(new BlindedPlacementId(PlacementId)),
             MembershipCommitment,
             MailboxClientOperation.Store);
 

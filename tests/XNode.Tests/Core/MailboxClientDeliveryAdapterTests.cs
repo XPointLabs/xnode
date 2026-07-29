@@ -1053,7 +1053,7 @@ public sealed class MailboxClientDeliveryAdapterTests : IDisposable
             return ValueTask.FromResult<MailboxCapabilityBinding?>(new(
                 epoch,
                 mailbox,
-                SHA256.HashData(placement),
+                MailboxPlacementCommitment.Compute(new BlindedPlacementId(placement)),
                 options.GetMembershipCommitment(epoch),
                 operation)
             {

@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
 
 namespace XNode.Core.Mailbox.Client;
@@ -170,26 +171,9 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
             return Failure(MailboxClientStoreStatus.Malformed, "non-canonical-mst1");
         }
 
-        var placementCommitment = SHA256.HashData(request.Envelope.PlacementId.Bytes.Span);
+        var placementCommitment = MailboxPlacementCommitment.Compute(
+            request.Envelope.PlacementId);
         var membershipCommitment = _options.GetMembershipCommitment(request.Epoch);
-        var verified = await _verifier.VerifyAsync(
-            ownedRequest.ToArray(),
-            MailboxClientOperation.Store,
-            cancellationToken).ConfigureAwait(false);
-        if (!BindingMatches(
-                verified,
-                MailboxClientOperation.Store,
-                request.Epoch,
-                request.OperationId.Span,
-                request.Envelope.MailboxId.Bytes.Span,
-                placementCommitment,
-                membershipCommitment,
-                requestDigest,
-                request.DepositCapability))
-        {
-            return Failure(MailboxClientStoreStatus.Unauthorized, "capability-binding-rejected");
-        }
-
         IReadOnlyList<ReadOnlyMemory<byte>> expectedReplicaIds;
         try
         {
@@ -240,6 +224,7 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
             await singleFlight.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
             entered = true;
             return await StoreSingleFlightAsync(
+                ownedRequest,
                 requestDigest,
                 request,
                 canonicalEnvelope,
@@ -261,6 +246,7 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
     }
 
     private async Task<MailboxClientStoreResult> StoreSingleFlightAsync(
+        byte[] canonicalRequest,
         byte[] requestDigest,
         MailboxStoreRequest request,
         byte[] canonicalEnvelope,
@@ -270,6 +256,29 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
         IReadOnlyList<ReadOnlyMemory<byte>> expectedReplicaIds,
         CancellationToken cancellationToken)
     {
+        var verified = await _verifier.VerifyAsync(
+            canonicalRequest,
+            MailboxClientOperation.Store,
+            cancellationToken).ConfigureAwait(false);
+        if (!BindingMatches(
+                verified,
+                MailboxClientOperation.Store,
+                request.Epoch,
+                request.OperationId.Span,
+                request.Envelope.MailboxId.Bytes.Span,
+                placementCommitment,
+                membershipCommitment,
+                requestDigest,
+                request.DepositCapability))
+        {
+            if (verified is not null)
+            {
+                AbortCapability(verified);
+            }
+
+            return Failure(MailboxClientStoreStatus.Unauthorized, "capability-binding-rejected");
+        }
+
         MailboxClientStoreReservation reservation;
         try
         {
@@ -288,15 +297,23 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
         }
         catch (MailboxClientOperationConflictException)
         {
+            CompleteTerminal(verified!, "operation-id-conflict");
             return Failure(MailboxClientStoreStatus.Conflict, "operation-id-conflict");
         }
         catch (MailboxClientLedgerCapacityException)
         {
+            CompleteTerminal(verified!, "operation-ledger-capacity");
             return Failure(MailboxClientStoreStatus.Rejected, "operation-ledger-capacity");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            AbortCapability(verified!);
+            throw;
         }
 
         if (!ReplicaSetsEqual(reservation.ExpectedReplicaIds, expectedReplicaIds))
         {
+            CompleteTerminal(verified!, "replica-authority-rotated");
             return Failure(MailboxClientStoreStatus.Unauthorized, "replica-authority-rotated");
         }
 
@@ -309,6 +326,7 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
             expectedReplicaIds);
         if (reservation.State == MailboxClientLedgerState.Terminal)
         {
+            CompleteTerminal(verified!, reservation.Error);
             return Failure(MailboxClientStoreStatus.Rejected, reservation.Error);
         }
 
@@ -316,10 +334,11 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
         {
             if (!VerifyCached(reservation, context, expectedReplicaIds))
             {
+                CompleteTerminal(verified!, "cached-quorum-invalid");
                 return Failure(MailboxClientStoreStatus.Rejected, "cached-quorum-invalid");
             }
 
-            CompleteCapability(requestDigest, reservation.CachedReceipt);
+            CompleteCapability(verified!, reservation.CachedReceipt);
             return new(
                 MailboxClientStoreStatus.Durable,
                 reservation.CachedReceipt.ToArray(),
@@ -332,6 +351,7 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
                 reservation,
                 context,
                 expectedReplicaIds,
+                verified!,
                 cancellationToken).ConfigureAwait(false);
         }
 
@@ -344,6 +364,7 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
                     reservation.OperationKey,
                     localStore.Error,
                     cancellationToken).ConfigureAwait(false);
+                CompleteTerminal(verified!, localStore.Error);
                 return Failure(MailboxClientStoreStatus.Rejected, localStore.Error);
             }
 
@@ -366,23 +387,11 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
 
         var localReceipt = CreateLocalReceipt(context);
         IReadOnlyList<ReadOnlyMemory<byte>> remoteReceipts;
-        ulong? canonicalCoordinatorSequence = null;
         try
         {
-            if (_fanout is IMailboxClientCanonicalReplicaFanout canonicalFanout)
-            {
-                var canonical = await canonicalFanout.StoreCanonicalAsync(
-                    CopyContext(context),
-                    cancellationToken).ConfigureAwait(false);
-                remoteReceipts = canonical.ReplicaReceipts;
-                canonicalCoordinatorSequence = canonical.CoordinatorSequence;
-            }
-            else
-            {
-                remoteReceipts = await _fanout.StoreAsync(
-                    CopyContext(context),
-                    cancellationToken).ConfigureAwait(false);
-            }
+            remoteReceipts = await _fanout.StoreAsync(
+                CopyContext(context),
+                cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception) when (
             exception is HttpRequestException or IOException or OperationCanceledException)
@@ -452,22 +461,16 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
 
         var firstBytes = MailboxReceiptV2Codec.EncodeReplica(receiptsById[required[0]]);
         var secondBytes = MailboxReceiptV2Codec.EncodeReplica(receiptsById[required[1]]);
-        reservation = canonicalCoordinatorSequence is null
-            ? await _ledger.BeginCompletionAsync(
-                reservation.OperationKey,
-                firstBytes,
-                secondBytes,
-                cancellationToken).ConfigureAwait(false)
-            : await _ledger.BeginCanonicalCompletionAsync(
-                reservation.OperationKey,
-                firstBytes,
-                secondBytes,
-                canonicalCoordinatorSequence.Value,
-                cancellationToken).ConfigureAwait(false);
+        reservation = await _ledger.BeginCompletionAsync(
+            reservation.OperationKey,
+            firstBytes,
+            secondBytes,
+            cancellationToken).ConfigureAwait(false);
         return await ResumeCompletionAsync(
             reservation,
             context,
             expectedReplicaIds,
+            verified!,
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -475,10 +478,12 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
         MailboxClientStoreReservation reservation,
         MailboxReplicaStoreContext context,
         IReadOnlyList<ReadOnlyMemory<byte>> expectedReplicaIds,
+        MailboxCapabilityBinding verified,
         CancellationToken cancellationToken)
     {
         if (reservation.Completion is null)
         {
+            CompleteTerminal(verified, "completion-reservation-invalid");
             return Failure(MailboxClientStoreStatus.Rejected, "completion-reservation-invalid");
         }
 
@@ -493,6 +498,7 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
         }
         catch (MailboxReceiptException)
         {
+            CompleteTerminal(verified, "completion-receipt-invalid");
             return Failure(MailboxClientStoreStatus.Rejected, "completion-receipt-invalid");
         }
 
@@ -508,6 +514,7 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
             || !VerifyReplica(first, context)
             || !VerifyReplica(second, context))
         {
+            CompleteTerminal(verified, "completion-authority-stale");
             return Failure(MailboxClientStoreStatus.Rejected, "completion-authority-stale");
         }
 
@@ -522,6 +529,7 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
                 expectedReplicaIds,
                 reservation.Completion.CoordinatorSequence))
         {
+            CompleteTerminal(verified, "completion-quorum-invalid");
             return Failure(MailboxClientStoreStatus.Rejected, "completion-quorum-invalid");
         }
 
@@ -530,7 +538,7 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
             reservation.Completion.CoordinatorSequence,
             encoded,
             cancellationToken).ConfigureAwait(false);
-        CompleteCapability(reservation.RequestDigest, encoded);
+        CompleteCapability(verified, encoded);
         return new(MailboxClientStoreStatus.Durable, encoded, "");
     }
 
@@ -808,12 +816,27 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
         MailboxClientStoreResult.Failure(status, error);
 
     private void CompleteCapability(
-        ReadOnlyMemory<byte> canonicalRequestDigest,
+        MailboxCapabilityBinding binding,
         ReadOnlyMemory<byte> canonicalOutcome)
     {
-        if (_verifier is IMailboxClientCapabilityCompletion completion)
+        if (_verifier is IMailboxClientCapabilityCompletion completion
+            && binding.CompletionHandle is not null)
         {
-            completion.Complete(canonicalRequestDigest, canonicalOutcome);
+            completion.Complete(binding.CompletionHandle, canonicalOutcome);
+        }
+    }
+
+    private void CompleteTerminal(MailboxCapabilityBinding binding, string error) =>
+        CompleteCapability(
+            binding,
+            Encoding.UTF8.GetBytes($"XNODE-MAILBOX-TERMINAL-V1\0{error}"));
+
+    private void AbortCapability(MailboxCapabilityBinding binding)
+    {
+        if (_verifier is IMailboxClientCapabilityCompletion completion
+            && binding.CompletionHandle is not null)
+        {
+            completion.Abort(binding.CompletionHandle);
         }
     }
 

@@ -14,11 +14,6 @@ public sealed class MailboxAuthenticatedCapabilityVerifier
     private readonly MailboxClientAdapterOptions _options;
     private readonly MailboxAuthenticatedCapabilityRuntime _runtime;
     private readonly IClock _clock;
-    private readonly Dictionary<string, VerifiedMailboxAuthenticatedClientRequest> _pending =
-        new(StringComparer.Ordinal);
-    private readonly Dictionary<string, byte[]> _completedOutcomes =
-        new(StringComparer.Ordinal);
-    private readonly object _pendingGate = new();
 
     public MailboxAuthenticatedCapabilityVerifier(
         MailboxClientAdapterOptions options,
@@ -40,6 +35,7 @@ public sealed class MailboxAuthenticatedCapabilityVerifier
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        VerifiedMailboxAuthenticatedClientRequest? verified = null;
         try
         {
             var decoded = DecodeOuter(canonicalRequest.Span, operation);
@@ -59,16 +55,9 @@ public sealed class MailboxAuthenticatedCapabilityVerifier
                 {
                     Binding = decoded.AuthenticatedBinding,
                     Presentation = authenticatedPresentation
-                });
-            var verified = _runtime.Verify(mau2);
-            lock (_pendingGate)
-            {
-                var key = DigestKey(SHA256.HashData(canonicalRequest.Span));
-                if (!_completedOutcomes.ContainsKey(key))
-                {
-                    _pending[key] = verified;
-                }
-            }
+            });
+            verified = _runtime.Verify(mau2);
+            var completionHandle = new CompletionHandle(this, verified);
             var replayDisposition = verified.Capability.ReplayDisposition switch
             {
                 MailboxAuthenticatedReplayDisposition.NewReserved =>
@@ -93,7 +82,8 @@ public sealed class MailboxAuthenticatedCapabilityVerifier
                     MailboxCapabilityCodec.Encode(decoded.Capability)),
                 ReplayCounter = decoded.Capability.ReplayCounter,
                 IdempotencyKey = decoded.Capability.IdempotencyKey.ToArray(),
-                ReplayDisposition = replayDisposition
+                ReplayDisposition = replayDisposition,
+                CompletionHandle = completionHandle
             });
         }
         catch (Exception exception) when (
@@ -104,21 +94,29 @@ public sealed class MailboxAuthenticatedCapabilityVerifier
                 or InvalidOperationException
                 or OverflowException)
         {
+            if (verified?.Capability.ReplayDisposition
+                == MailboxAuthenticatedReplayDisposition.NewReserved)
+            {
+                _runtime.Abort(verified);
+            }
+
             return ValueTask.FromResult<MailboxCapabilityBinding?>(null);
         }
     }
 
     public void Complete(
-        ReadOnlyMemory<byte> canonicalRequestDigest,
+        object completionHandle,
         ReadOnlyMemory<byte> canonicalOutcome)
     {
-        var key = DigestKey(canonicalRequestDigest.Span);
+        var handle = RequireHandle(completionHandle);
         var outcomeDigest = SHA256.HashData(canonicalOutcome.Span);
-        lock (_pendingGate)
+        lock (handle.Gate)
         {
-            if (_completedOutcomes.TryGetValue(key, out var completed))
+            if (handle.State == CompletionState.Completed)
             {
-                if (!CryptographicOperations.FixedTimeEquals(completed, outcomeDigest))
+                if (!CryptographicOperations.FixedTimeEquals(
+                        handle.CompletedOutcome!,
+                        outcomeDigest))
                 {
                     throw new InvalidOperationException(
                         "Completed authenticated replay outcome conflicts.");
@@ -127,19 +125,19 @@ public sealed class MailboxAuthenticatedCapabilityVerifier
                 return;
             }
 
-            if (!_pending.Remove(key, out var verified))
+            if (handle.State == CompletionState.Aborted)
             {
                 throw new InvalidOperationException(
-                    "Authenticated capability completion has no verified reservation.");
+                    "Authenticated capability reservation was safely released.");
             }
 
             // Replay outcomes are bounded and non-sensitive. The operation ledger remains
             // authoritative for the full canonical response.
-            if (verified.Capability.ReplayDisposition
+            if (handle.Verified.Capability.ReplayDisposition
                 == MailboxAuthenticatedReplayDisposition.IdempotentCompleted)
             {
                 if (!CryptographicOperations.FixedTimeEquals(
-                        verified.Capability.CachedOutcome.Span,
+                        handle.Verified.Capability.CachedOutcome.Span,
                         outcomeDigest))
                 {
                     throw new InvalidOperationException(
@@ -148,23 +146,47 @@ public sealed class MailboxAuthenticatedCapabilityVerifier
             }
             else
             {
-                _runtime.Complete(verified, outcomeDigest);
+                _runtime.Complete(handle.Verified, outcomeDigest);
             }
 
-            _completedOutcomes[key] = outcomeDigest;
+            handle.CompletedOutcome = outcomeDigest;
+            handle.State = CompletionState.Completed;
         }
     }
 
-    private static string DigestKey(ReadOnlySpan<byte> canonicalRequestDigest)
+    public void Abort(object completionHandle)
     {
-        if (canonicalRequestDigest.Length != 32)
+        var handle = RequireHandle(completionHandle);
+        lock (handle.Gate)
+        {
+            if (handle.State != CompletionState.Active)
+            {
+                return;
+            }
+
+            // A PendingSame handle did not create the durable reservation and therefore
+            // cannot safely release work another identical request may have started.
+            if (handle.Verified.Capability.ReplayDisposition
+                == MailboxAuthenticatedReplayDisposition.NewReserved)
+            {
+                _runtime.Abort(handle.Verified);
+            }
+
+            handle.State = CompletionState.Aborted;
+        }
+    }
+
+    private CompletionHandle RequireHandle(object completionHandle)
+    {
+        if (completionHandle is not CompletionHandle handle
+            || !ReferenceEquals(handle.Owner, this))
         {
             throw new ArgumentException(
-                "Canonical request digest must be SHA-256.",
-                nameof(canonicalRequestDigest));
+                "Completion handle was not issued by this verifier.",
+                nameof(completionHandle));
         }
 
-        return Convert.ToHexString(canonicalRequestDigest);
+        return handle;
     }
 
     private DecodedOuterRequest DecodeOuter(
@@ -264,5 +286,23 @@ public sealed class MailboxAuthenticatedCapabilityVerifier
                 Decision = MailboxCapabilityReplayDecision.AcceptedNew,
                 CachedOutcome = ReadOnlyMemory<byte>.Empty
             };
+    }
+
+    private enum CompletionState
+    {
+        Active,
+        Completed,
+        Aborted
+    }
+
+    private sealed class CompletionHandle(
+        MailboxAuthenticatedCapabilityVerifier owner,
+        VerifiedMailboxAuthenticatedClientRequest verified)
+    {
+        public MailboxAuthenticatedCapabilityVerifier Owner { get; } = owner;
+        public VerifiedMailboxAuthenticatedClientRequest Verified { get; } = verified;
+        public object Gate { get; } = new();
+        public CompletionState State { get; set; }
+        public byte[]? CompletedOutcome { get; set; }
     }
 }

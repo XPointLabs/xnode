@@ -370,39 +370,6 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
         string operationKey,
         ReadOnlyMemory<byte> firstReplicaReceipt,
         ReadOnlyMemory<byte> secondReplicaReceipt,
-        CancellationToken cancellationToken) =>
-        await BeginCompletionCoreAsync(
-            operationKey,
-            firstReplicaReceipt,
-            secondReplicaReceipt,
-            null,
-            cancellationToken).ConfigureAwait(false);
-
-    public Task<MailboxClientStoreReservation> BeginCanonicalCompletionAsync(
-        string operationKey,
-        ReadOnlyMemory<byte> firstReplicaReceipt,
-        ReadOnlyMemory<byte> secondReplicaReceipt,
-        ulong coordinatorSequence,
-        CancellationToken cancellationToken)
-    {
-        if (coordinatorSequence == 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(coordinatorSequence));
-        }
-
-        return BeginCompletionCoreAsync(
-            operationKey,
-            firstReplicaReceipt,
-            secondReplicaReceipt,
-            coordinatorSequence,
-            cancellationToken);
-    }
-
-    private async Task<MailboxClientStoreReservation> BeginCompletionCoreAsync(
-        string operationKey,
-        ReadOnlyMemory<byte> firstReplicaReceipt,
-        ReadOnlyMemory<byte> secondReplicaReceipt,
-        ulong? exactCoordinatorSequence,
         CancellationToken cancellationToken)
     {
         ThrowIfDisposed();
@@ -433,12 +400,7 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
                 throw new InvalidDataException("Mailbox operation cannot begin completion.");
             }
 
-            var sequence = exactCoordinatorSequence
-                ?? document.NextCoordinatorSequence + 1;
-            if (exactCoordinatorSequence is null)
-            {
-                document.NextCoordinatorSequence = sequence;
-            }
+            var sequence = ++document.NextCoordinatorSequence;
             operation = operation with
             {
                 State = "completing",

@@ -10,6 +10,8 @@ public sealed class DurableMailboxCapabilityReplayJournalOptions
 
     public int MaximumScopes { get; set; } = 100_000;
 
+    public TimeSpan RetentionAfterValidity { get; set; } = TimeSpan.FromDays(7);
+
     internal void Validate()
     {
         if (string.IsNullOrWhiteSpace(DirectoryName)
@@ -18,7 +20,8 @@ public sealed class DurableMailboxCapabilityReplayJournalOptions
             || DirectoryName.Contains('/')
             || DirectoryName.Contains('\\')
             || DirectoryName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0
-            || MaximumScopes is < 1 or > 1_000_000)
+            || MaximumScopes is < 1 or > 1_000_000
+            || RetentionAfterValidity != TimeSpan.FromDays(7))
         {
             throw new InvalidOperationException("Mailbox replay journal options are invalid.");
         }
@@ -28,11 +31,13 @@ public sealed class DurableMailboxCapabilityReplayJournalOptions
 public sealed record MailboxCapabilityReplayJournalDiagnostics(
     int ScopeCount,
     int PendingCount,
-    int CompletedCount);
+    int CompletedCount,
+    int ReleasedCount,
+    int CapacityRemaining);
 
 internal sealed class MailboxCapabilityReplayJournalDocument
 {
-    public int SchemaVersion { get; set; } = 1;
+    public int SchemaVersion { get; set; } = 2;
     public Dictionary<string, MailboxCapabilityReplayJournalRecord> Records { get; set; } =
         new(StringComparer.Ordinal);
 }
@@ -43,6 +48,7 @@ internal sealed class MailboxCapabilityReplayJournalRecord
     public string ClaimDigest { get; set; } = "";
     public string Status { get; set; } = "";
     public string CanonicalOutcome { get; set; } = "";
+    public ulong RetainUntilUnixSeconds { get; set; } = ulong.MaxValue;
 }
 
 /// <summary>
@@ -53,11 +59,13 @@ internal sealed class MailboxCapabilityReplayJournalRecord
 public sealed class DurableMailboxCapabilityReplayJournal
     : IMailboxCapabilityReplayJournal, IDisposable
 {
-    private const int SchemaVersion = 1;
+    private const int SchemaVersion = 2;
+    private const string ReleasedStatus = "Released";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _directory;
     private readonly string _path;
     private readonly int _maximumScopes;
+    private readonly ulong _retentionSeconds;
     private readonly IMailboxStorageSecurity _security;
     private readonly IMailboxDurabilityBarrier _durability;
     private readonly FileStream _lease;
@@ -83,6 +91,7 @@ public sealed class DurableMailboxCapabilityReplayJournal
         _directory = Path.Combine(dataDirectory, options.DirectoryName);
         _path = Path.Combine(_directory, "replay.json");
         _maximumScopes = options.MaximumScopes;
+        _retentionSeconds = checked((ulong)options.RetentionAfterValidity.TotalSeconds);
         _security = security ?? new MailboxStorageSecurity();
         _durability = durability ?? new MailboxDurabilityBarrier();
         _security.SecureDirectory(_directory);
@@ -106,6 +115,16 @@ public sealed class DurableMailboxCapabilityReplayJournal
         try
         {
             _document = Load();
+            if (_document.SchemaVersion == 1)
+            {
+                _document.SchemaVersion = SchemaVersion;
+                foreach (var record in _document.Records.Values)
+                {
+                    // Schema v1 did not retain validity metadata. Keeping those records
+                    // indefinitely is the only fail-closed migration.
+                    record.RetainUntilUnixSeconds = ulong.MaxValue;
+                }
+            }
             if (_document.Records.Count > _maximumScopes)
             {
                 throw new InvalidDataException(
@@ -133,35 +152,69 @@ public sealed class DurableMailboxCapabilityReplayJournal
                     _document.Records.Values.Count(static record =>
                         record.Status == nameof(MailboxCapabilityReplayRecordStatus.Pending)),
                     _document.Records.Values.Count(static record =>
-                        record.Status == nameof(MailboxCapabilityReplayRecordStatus.Completed)));
+                        record.Status == nameof(MailboxCapabilityReplayRecordStatus.Completed)),
+                    _document.Records.Values.Count(static record =>
+                        record.Status == ReleasedStatus),
+                    _maximumScopes - _document.Records.Count);
             }
         }
     }
 
+    public ulong RetainUntilUnixSeconds(ulong validityEndsAtUnixSeconds) =>
+        validityEndsAtUnixSeconds > ulong.MaxValue - _retentionSeconds
+            ? ulong.MaxValue
+            : validityEndsAtUnixSeconds + _retentionSeconds;
+
+    public IMailboxCapabilityReplayJournal CreateEvaluationScope(
+        ulong nowUnixSeconds,
+        ulong retainUntilUnixSeconds) =>
+        new EvaluationScope(this, nowUnixSeconds, retainUntilUnixSeconds);
+
     public MailboxCapabilityAtomicReplayEvaluation EvaluateAndReserve(
-        MailboxCapabilityAtomicReplayClaim claim)
+        MailboxCapabilityAtomicReplayClaim claim) =>
+        EvaluateAndReserve(claim, nowUnixSeconds: 0, retainUntilUnixSeconds: ulong.MaxValue);
+
+    public MailboxCapabilityAtomicReplayEvaluation EvaluateAndReserve(
+        MailboxCapabilityAtomicReplayClaim claim,
+        ulong nowUnixSeconds,
+        ulong retainUntilUnixSeconds)
     {
         ArgumentNullException.ThrowIfNull(claim);
         lock (_gate)
         {
             ThrowIfDisposed();
+            CollectExpiredLocked(nowUnixSeconds);
             var scope = ScopeKey(claim);
             _document.Records.TryGetValue(scope, out var persisted);
-            var current = persisted is null ? null : ToSnapshot(persisted);
+            var current = persisted is null || persisted.Status == ReleasedStatus
+                ? null
+                : ToSnapshot(persisted);
+            if (persisted?.Status == ReleasedStatus)
+            {
+                var exactClaim = persisted.HighestCounter == claim.ReplayCounter
+                    && Fixed(persisted.ClaimDigest, claim.ClaimDigest.Span);
+                if (!exactClaim && claim.ReplayCounter <= persisted.HighestCounter)
+                {
+                    current = ToPendingSnapshot(persisted);
+                }
+            }
+
             var transition = MailboxCapabilityReplayStateMachine.EvaluateAndReserve(
                 current,
                 claim);
             if (transition.NextSnapshot is not null &&
                 (current is null || !SnapshotsEqual(current, transition.NextSnapshot)))
             {
-                if (current is null && _document.Records.Count >= _maximumScopes)
+                if (persisted is null && _document.Records.Count >= _maximumScopes)
                 {
                     throw new InvalidOperationException(
                         "Mailbox replay journal capacity is exhausted.");
                 }
 
                 var replacement = Clone(_document);
-                replacement.Records[scope] = FromSnapshot(transition.NextSnapshot);
+                replacement.Records[scope] = FromSnapshot(
+                    transition.NextSnapshot,
+                    retainUntilUnixSeconds);
                 Save(replacement);
                 _document = replacement;
             }
@@ -189,14 +242,71 @@ public sealed class DurableMailboxCapabilityReplayJournal
                     "Mailbox replay completion has no durable reservation.");
             }
 
+            if (persisted.Status == ReleasedStatus)
+            {
+                throw InvalidCompletion("Mailbox replay completion was safely released.");
+            }
+
+            var current = ToSnapshot(persisted);
+            if (current.Status == MailboxCapabilityReplayRecordStatus.Completed)
+            {
+                var exactClaim = current.HighestCounter == claim.ReplayCounter
+                    && CryptographicOperations.FixedTimeEquals(
+                        current.ClaimDigest.Span,
+                        claim.ClaimDigest.Span);
+                if (!exactClaim
+                    || !current.CanonicalOutcome.Span.SequenceEqual(canonicalOutcome.Span))
+                {
+                    throw InvalidCompletion(
+                        "Completed mailbox replay outcome conflicts.");
+                }
+
+                return;
+            }
+
             var completed = MailboxCapabilityReplayStateMachine.Complete(
-                ToSnapshot(persisted),
+                current,
                 claim,
                 canonicalOutcome.Span);
             var replacement = Clone(_document);
-            replacement.Records[scope] = FromSnapshot(completed);
+            replacement.Records[scope] = FromSnapshot(
+                completed,
+                persisted.RetainUntilUnixSeconds);
             Save(replacement);
             _document = replacement;
+        }
+    }
+
+    public void AbortAtomically(MailboxCapabilityAtomicReplayClaim claim)
+    {
+        ArgumentNullException.ThrowIfNull(claim);
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            var scope = ScopeKey(claim);
+            if (!_document.Records.TryGetValue(scope, out var persisted)
+                || persisted.Status != nameof(MailboxCapabilityReplayRecordStatus.Pending)
+                || persisted.HighestCounter != claim.ReplayCounter
+                || !Fixed(persisted.ClaimDigest, claim.ClaimDigest.Span))
+            {
+                throw InvalidCompletion(
+                    "Mailbox replay abort has no matching pending reservation.");
+            }
+
+            var replacement = Clone(_document);
+            replacement.Records[scope].Status = ReleasedStatus;
+            replacement.Records[scope].CanonicalOutcome = "";
+            Save(replacement);
+            _document = replacement;
+        }
+    }
+
+    public int CollectExpired(ulong nowUnixSeconds)
+    {
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            return CollectExpiredLocked(nowUnixSeconds);
         }
     }
 
@@ -293,7 +403,7 @@ public sealed class DurableMailboxCapabilityReplayJournal
 
     private static void Validate(MailboxCapabilityReplayJournalDocument document)
     {
-        if (document.SchemaVersion != SchemaVersion || document.Records is null)
+        if (document.SchemaVersion is not (1 or SchemaVersion) || document.Records is null)
         {
             throw new InvalidDataException("Mailbox replay journal schema is unsupported.");
         }
@@ -305,8 +415,27 @@ public sealed class DurableMailboxCapabilityReplayJournal
                 throw new InvalidDataException("Mailbox replay journal record key is invalid.");
             }
 
-            _ = ToSnapshot(pair.Value);
+            ValidateRecord(pair.Value, document.SchemaVersion);
         }
+    }
+
+    private static void ValidateRecord(
+        MailboxCapabilityReplayJournalRecord record,
+        int schemaVersion)
+    {
+        if (record.Status == ReleasedStatus)
+        {
+            if (schemaVersion < SchemaVersion
+                || !TryDecodeHex(record.ClaimDigest, 32, out _)
+                || !string.IsNullOrEmpty(record.CanonicalOutcome))
+            {
+                throw new InvalidDataException("Released mailbox replay record is invalid.");
+            }
+
+            return;
+        }
+
+        _ = ToSnapshot(record);
     }
 
     private static MailboxCapabilityReplaySnapshot ToSnapshot(
@@ -363,15 +492,34 @@ public sealed class DurableMailboxCapabilityReplayJournal
         return snapshot;
     }
 
+    private static MailboxCapabilityReplaySnapshot ToPendingSnapshot(
+        MailboxCapabilityReplayJournalRecord record)
+    {
+        if (!TryDecodeHex(record.ClaimDigest, 32, out var claimDigest))
+        {
+            throw new InvalidDataException("Mailbox replay claim digest is invalid.");
+        }
+
+        return new MailboxCapabilityReplaySnapshot
+        {
+            HighestCounter = record.HighestCounter,
+            ClaimDigest = claimDigest,
+            Status = MailboxCapabilityReplayRecordStatus.Pending,
+            CanonicalOutcome = ReadOnlyMemory<byte>.Empty
+        };
+    }
+
     private static MailboxCapabilityReplayJournalRecord FromSnapshot(
-        MailboxCapabilityReplaySnapshot snapshot) => new()
+        MailboxCapabilityReplaySnapshot snapshot,
+        ulong retainUntilUnixSeconds) => new()
         {
             HighestCounter = snapshot.HighestCounter,
             ClaimDigest = Convert.ToHexString(snapshot.ClaimDigest.Span).ToLowerInvariant(),
             Status = snapshot.Status.ToString(),
             CanonicalOutcome = snapshot.CanonicalOutcome.IsEmpty
             ? ""
-            : Convert.ToBase64String(snapshot.CanonicalOutcome.Span)
+            : Convert.ToBase64String(snapshot.CanonicalOutcome.Span),
+            RetainUntilUnixSeconds = retainUntilUnixSeconds
         };
 
     private static MailboxCapabilityReplayJournalDocument Clone(
@@ -385,10 +533,38 @@ public sealed class DurableMailboxCapabilityReplayJournal
                 HighestCounter = pair.Value.HighestCounter,
                 ClaimDigest = pair.Value.ClaimDigest,
                 Status = pair.Value.Status,
-                CanonicalOutcome = pair.Value.CanonicalOutcome
+                CanonicalOutcome = pair.Value.CanonicalOutcome,
+                RetainUntilUnixSeconds = pair.Value.RetainUntilUnixSeconds
             },
             StringComparer.Ordinal)
         };
+
+    private int CollectExpiredLocked(ulong nowUnixSeconds)
+    {
+        if (nowUnixSeconds == 0)
+        {
+            return 0;
+        }
+
+        var expired = _document.Records
+            .Where(pair => pair.Value.RetainUntilUnixSeconds < nowUnixSeconds)
+            .Select(static pair => pair.Key)
+            .ToArray();
+        if (expired.Length == 0)
+        {
+            return 0;
+        }
+
+        var replacement = Clone(_document);
+        foreach (var scope in expired)
+        {
+            replacement.Records.Remove(scope);
+        }
+
+        Save(replacement);
+        _document = replacement;
+        return expired.Length;
+    }
 
     private static bool SnapshotsEqual(
         MailboxCapabilityReplaySnapshot left,
@@ -403,6 +579,15 @@ public sealed class DurableMailboxCapabilityReplayJournal
     private static string ScopeKey(MailboxCapabilityAtomicReplayClaim claim) =>
         Convert.ToHexString(MailboxCapabilityReplayStateMachine.ComputeScopeKey(claim))
             .ToLowerInvariant();
+
+    private static bool Fixed(string encoded, ReadOnlySpan<byte> expected) =>
+        TryDecodeHex(encoded, expected.Length, out var decoded)
+        && CryptographicOperations.FixedTimeEquals(decoded, expected);
+
+    private static MailboxAuthenticatedCapabilityException InvalidCompletion(string message) =>
+        new(
+            MailboxAuthenticatedCapabilityError.InvalidReplayEvaluation,
+            message);
 
     private static bool TryDecodeHex(string? value, int bytes, out byte[] decoded)
     {
@@ -430,5 +615,20 @@ public sealed class DurableMailboxCapabilityReplayJournal
     private void ThrowIfDisposed()
     {
         ObjectDisposedException.ThrowIf(_disposed != 0, this);
+    }
+
+    private sealed class EvaluationScope(
+        DurableMailboxCapabilityReplayJournal owner,
+        ulong nowUnixSeconds,
+        ulong retainUntilUnixSeconds) : IMailboxCapabilityReplayJournal
+    {
+        public MailboxCapabilityAtomicReplayEvaluation EvaluateAndReserve(
+            MailboxCapabilityAtomicReplayClaim claim) =>
+            owner.EvaluateAndReserve(claim, nowUnixSeconds, retainUntilUnixSeconds);
+
+        public void CompleteAtomically(
+            MailboxCapabilityAtomicReplayClaim claim,
+            ReadOnlyMemory<byte> canonicalOutcome) =>
+            owner.CompleteAtomically(claim, canonicalOutcome);
     }
 }

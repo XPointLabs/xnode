@@ -420,8 +420,9 @@ tombstone-fanout configuration instead of overclaiming readiness. When used in a
 composition it reserves
 `(epoch, blindedMailboxId, operationId)`, request digest and a per-mailbox monotonic cursor before
 fanout, persists the full opaque `MEO1`, and accepts only the deterministic replica ids selected
-for the exact membership/placement context. Two native context-bound `MRR2` receipts and a
-PRQ2-derived coordinator sequence are durably bound before `MQR3` signing.
+for the exact membership/placement context. Two native context-bound `MRR2` receipts and the
+ledger-allocated next global monotonic coordinator sequence are durably bound in one mutation
+before `MQR3` signing. Request hashes and fanout responses have no sequence authority.
 
 Exact concurrent retries are single-flight. Restart recovery either resumes the exact persisted
 completion statement or fails closed; one coordinator sequence cannot sign two statements.
@@ -537,3 +538,12 @@ write-through replacement and file/parent durability barriers. A crash after res
 an explicit `Pending` record; it is never silently retried as new, and only recovery with the
 exact claim can complete it. Diagnostics expose counts only, never issuer, serial, operation,
 request or capability bytes.
+
+Side-effect-free post-verification cancellation may instead persist `Released`. This is not a
+deletion: the counter floor and exact claim digest survive restart, exact retry can reserve it
+again, lower and same-counter conflicting claims remain rejected, and only a higher counter can
+advance. Records are collected only after grant/authoritative epoch validity plus the fixed
+seven-day replay-retention interval. Collection precedes capacity admission; diagnostics include
+Pending,
+Completed, Released and remaining-capacity counts. Long-lived issuer-key validity does not pin
+expired individual grants, and issuer authorities must never reuse a capability serial.

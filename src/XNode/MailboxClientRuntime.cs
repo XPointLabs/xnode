@@ -377,6 +377,17 @@ public sealed class DevelopmentMailboxCapabilityAuthority
 
     public bool IsConfigured => true;
 
+    public ulong ReplayValidityEndsAt(
+        MailboxCapabilityAuthorityQuery query,
+        MailboxAuthenticatedGrant grant) =>
+        Math.Max(
+            grant.ExpiresAtUnixSeconds,
+            query.Epoch == _adapter.CurrentEpoch
+                ? _adapter.CurrentExpiresAtUnixSeconds
+                : query.Epoch == _adapter.NextEpoch
+                    ? _adapter.NextExpiresAtUnixSeconds
+                    : grant.ExpiresAtUnixSeconds);
+
     public bool TryResolve(
         MailboxCapabilityAuthorityQuery query,
         out MailboxAuthenticatedVerificationPolicy? policy)
@@ -510,8 +521,8 @@ public sealed class DevelopmentMailboxReplicaAuthority
 }
 
 public sealed class DevelopmentMailboxReplicaFanout
-    : IMailboxClientCanonicalReplicaFanout,
-      IMailboxClientCanonicalTombstoneFanout
+    : IMailboxClientReplicaFanout,
+      IMailboxClientTombstoneFanout
 {
     private readonly MailboxClientDevelopmentFixtureOptions _fixture;
     private readonly MailboxClientAdapterOptions _adapter;
@@ -533,13 +544,7 @@ public sealed class DevelopmentMailboxReplicaFanout
 
     public bool IsConfigured => true;
 
-    public async Task<IReadOnlyList<ReadOnlyMemory<byte>>> StoreAsync(
-        MailboxReplicaStoreContext context,
-        CancellationToken cancellationToken) =>
-        (await StoreCanonicalAsync(context, cancellationToken).ConfigureAwait(false))
-        .ReplicaReceipts;
-
-    public Task<MailboxClientCanonicalFanoutResult> StoreCanonicalAsync(
+    public Task<IReadOnlyList<ReadOnlyMemory<byte>>> StoreAsync(
         MailboxReplicaStoreContext context,
         CancellationToken cancellationToken) =>
         SendAsync(
@@ -556,13 +561,7 @@ public sealed class DevelopmentMailboxReplicaFanout
             context.CanonicalEnvelope,
             cancellationToken);
 
-    public async Task<IReadOnlyList<ReadOnlyMemory<byte>>> TombstoneAsync(
-        MailboxReplicaTombstoneContext context,
-        CancellationToken cancellationToken) =>
-        (await TombstoneCanonicalAsync(context, cancellationToken).ConfigureAwait(false))
-        .ReplicaReceipts;
-
-    public Task<MailboxClientCanonicalFanoutResult> TombstoneCanonicalAsync(
+    public Task<IReadOnlyList<ReadOnlyMemory<byte>>> TombstoneAsync(
         MailboxReplicaTombstoneContext context,
         CancellationToken cancellationToken) =>
         SendAsync(
@@ -579,7 +578,7 @@ public sealed class DevelopmentMailboxReplicaFanout
             context.EnvelopeDigest,
             cancellationToken);
 
-    private async Task<MailboxClientCanonicalFanoutResult> SendAsync(
+    private async Task<IReadOnlyList<ReadOnlyMemory<byte>>> SendAsync(
         MailboxPeerReplicationOperation operation,
         ulong epoch,
         ReadOnlyMemory<byte> operationId,
@@ -596,7 +595,8 @@ public sealed class DevelopmentMailboxReplicaFanout
         cancellationToken.ThrowIfCancellationRequested();
         if (placementId.Length != MailboxClientLimits.BlindedIdentifierLength
             || !CryptographicOperations.FixedTimeEquals(
-                SHA256.HashData(placementId.Span),
+                MailboxPlacementCommitment.Compute(
+                    new BlindedPlacementId(placementId.ToArray())),
                 placement.Span))
         {
             throw new InvalidOperationException(
@@ -645,11 +645,7 @@ public sealed class DevelopmentMailboxReplicaFanout
             operation,
             canonical,
             cancellationToken).ConfigureAwait(false);
-        var sequence = System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(
-            SHA256.HashData(canonical)) | 0x8000_0000_0000_0000UL;
-        return new(
-            response is null ? [] : [response.Value.ToArray()],
-            sequence);
+        return response is null ? [] : [response.Value.ToArray()];
     }
 
     private static byte[] ReplayNonce(

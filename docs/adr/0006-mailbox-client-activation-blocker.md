@@ -42,14 +42,25 @@ atomic replay journal.
 Store and Tombstone fanout build signed canonical PRQ2 from the pinned MIP1/RIP1 evidence and call
 the actual peer HTTP listener. The remote XNode persists and signs its own MRR2 with its own key.
 No process owns both replica keys and a missing/invalid remote receipt is quorum-unavailable,
-never durable. The PRQ2 request digest supplies the MQR3 coordinator sequence. Successful client
+never durable. Only after the exact two verified MRR2 bytes are available does the client ledger
+atomically persist those bytes and allocate the next monotonic global MQR3 coordinator sequence;
+no request hash or external caller supplies sequence authority. Successful client
 operations complete the MAU2 replay reservation with a bounded response digest; partial
 operations remain pending for exact retry.
 
 ## Durability and limits
 
-- The replay journal holds an exclusive process lease, atomically persists Pending before storage,
-  caches only verified exact MRR2 bytes after durable mutation, and recovers Pending after restart.
+- The capability replay journal holds an exclusive process lease and atomically persists Pending
+  before storage. Completion is represented by an opaque request-scoped handle, not an
+  ever-growing process dictionary. A side-effect-free cancellation may durably move its exact
+  new reservation to Released; Released preserves the counter and claim digest, permits only the
+  exact claim to re-reserve at that counter, rejects lower/same-counter conflicts, and permits a
+  higher counter only because no downstream side effect remains pending.
+- Capability replay records retain through the later of grant expiry and authoritative epoch
+  retirement plus the protocol-fixed seven-day retention interval. Collection removes only
+  records beyond that boundary and runs before capacity admission, so capacity diagnostics and
+  recovery are truthful. Issuer-key lifetime does not extend per-grant replay storage; serial
+  reuse remains forbidden by the issuer authority.
 - Replay scope and collection use the P10B3 state machine. Priority-ordered bounded collection runs
   before capacity at startup and on sender/receiver reserve/completion paths.
 - Eager replay loading applies P10B3 semantic invariants to every record regardless of future

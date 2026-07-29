@@ -118,6 +118,12 @@ For each ported behavior:
   pending retries remain in-flight; conflicts, stale counters and a higher counter blocked by a
   pending predecessor fail closed. Crash recovery must explicitly complete the exact pending
   claim.
+- Completion ownership is an opaque request-scoped handle. There is no process-global pending or
+  completed-outcome map. Before downstream effects, safe abort persists `Released` without
+  deleting its anti-replay floor: exact retry may re-reserve, lower and same-counter conflicting
+  claims remain rejected, and a higher counter may advance. Validity-aware bounded collection
+  uses grant/authoritative epoch retirement plus the protocol-fixed seven-day replay retention,
+  not issuer-key lifetime, and runs before capacity admission.
 - The adapter has no production HTTP route. Its default issuer/revocation authority and replica
   fanout dependencies fail closed; only the explicit Development fixture maps routes.
 - The store boundary accepts only a canonical `MST1` frame and persists the complete canonical

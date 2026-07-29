@@ -25,6 +25,11 @@ public interface IMailboxCapabilityAuthoritySource
     bool TryResolve(
         MailboxCapabilityAuthorityQuery query,
         out MailboxAuthenticatedVerificationPolicy? policy);
+
+    ulong ReplayValidityEndsAt(
+        MailboxCapabilityAuthorityQuery query,
+        MailboxAuthenticatedGrant grant) =>
+        grant.ExpiresAtUnixSeconds;
 }
 
 public interface IMailboxCapabilityRevocationPolicy : IMailboxCapabilityRevocationSource
@@ -139,12 +144,19 @@ public sealed class MailboxAuthenticatedCapabilityRuntime
         {
             NowUnixSeconds = checked((ulong)_clock.UtcNow.ToUnixTimeSeconds())
         };
+        var retainUntil = _replay.RetainUntilUnixSeconds(
+            Math.Max(
+                grant.ExpiresAtUnixSeconds,
+                _authority.ReplayValidityEndsAt(query, grant)));
+        var replayScope = _replay.CreateEvaluationScope(
+            policy.NowUnixSeconds,
+            retainUntil);
         return MailboxAuthenticatedClientRequestCodec.Verify(
             canonicalMau2.Span,
             policy,
             _crypto,
             _revocations,
-            _replay);
+            replayScope);
     }
 
     public void Complete(
@@ -153,5 +165,11 @@ public sealed class MailboxAuthenticatedCapabilityRuntime
     {
         ArgumentNullException.ThrowIfNull(verified);
         _replay.CompleteAtomically(verified.Capability.ReplayClaim, canonicalOutcome);
+    }
+
+    public void Abort(VerifiedMailboxAuthenticatedClientRequest verified)
+    {
+        ArgumentNullException.ThrowIfNull(verified);
+        _replay.AbortAtomically(verified.Capability.ReplayClaim);
     }
 }

@@ -23,6 +23,7 @@ public sealed record MailboxCapabilityBinding(
     public ulong ReplayCounter { get; init; }
     public ReadOnlyMemory<byte> IdempotencyKey { get; init; }
     public MailboxCapabilityReplayDisposition ReplayDisposition { get; init; }
+    public object? CompletionHandle { get; init; }
 }
 
 public interface IMailboxClientCapabilityVerifier
@@ -39,8 +40,10 @@ public interface IMailboxClientCapabilityVerifier
 public interface IMailboxClientCapabilityCompletion
 {
     void Complete(
-        ReadOnlyMemory<byte> canonicalRequestDigest,
+        object completionHandle,
         ReadOnlyMemory<byte> canonicalOutcome);
+
+    void Abort(object completionHandle);
 }
 
 public sealed class RejectAllMailboxClientCapabilityVerifier : IMailboxClientCapabilityVerifier
@@ -119,20 +122,6 @@ public interface IMailboxClientReplicaFanout
         CancellationToken cancellationToken);
 }
 
-public sealed record MailboxClientCanonicalFanoutResult(
-    IReadOnlyList<ReadOnlyMemory<byte>> ReplicaReceipts,
-    ulong CoordinatorSequence);
-
-/// <summary>
-/// Optional PRQ2-aware fanout. The coordinator sequence is the exact canonical
-/// PRQ2 request-digest sequence used by MQR3.
-/// </summary>
-public interface IMailboxClientCanonicalReplicaFanout : IMailboxClientReplicaFanout
-{
-    Task<MailboxClientCanonicalFanoutResult> StoreCanonicalAsync(
-        MailboxReplicaStoreContext context,
-        CancellationToken cancellationToken);
-}
 
 public sealed class DisabledMailboxClientReplicaFanout : IMailboxClientReplicaFanout
 {
@@ -153,12 +142,6 @@ public interface IMailboxClientTombstoneFanout
         CancellationToken cancellationToken);
 }
 
-public interface IMailboxClientCanonicalTombstoneFanout : IMailboxClientTombstoneFanout
-{
-    Task<MailboxClientCanonicalFanoutResult> TombstoneCanonicalAsync(
-        MailboxReplicaTombstoneContext context,
-        CancellationToken cancellationToken);
-}
 
 public sealed class DisabledMailboxClientTombstoneFanout : IMailboxClientTombstoneFanout
 {
