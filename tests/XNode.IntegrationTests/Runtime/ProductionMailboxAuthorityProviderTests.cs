@@ -29,9 +29,11 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
 
         Assert.True(provider.IsConfigured);
         Assert.True(provider.Status.ArtifactVerified);
-        Assert.False(provider.Status.RevocationArtifactVerified);
+        Assert.True(provider.Status.RevocationArtifactVerified);
+        Assert.True(provider.Status.AuthorityRevocationReady);
+        Assert.False(provider.Status.ProductionMailboxRoutesReady);
         Assert.False(provider.Status.Ready);
-        Assert.Equal("revocation-snapshot-artifact-unavailable", provider.Status.Reason);
+        Assert.Equal("topology-artifact-unavailable", provider.Status.Reason);
         Assert.Equal(7UL, provider.Status.AuthorityGeneration);
         Assert.Equal("https://ingress.example.net/mau2/", provider.NodeIngress!.Endpoint.AbsoluteUri);
         Assert.False(CryptographicOperations.FixedTimeEquals(
@@ -89,6 +91,105 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
         Assert.Equal(1, writes.ReplaceCount);
     }
 
+    [Fact]
+    public async Task VerifiedSnapshotIsExactAndUnknownSerialIsNotRevoked()
+    {
+        var fixture = Fixture.Create(_root);
+        var provider = fixture.Provider();
+        await provider.InitializeAsync();
+
+        Assert.True(provider.IsRevoked(Query(fixture, Bytes(0x10, 16))));
+        Assert.False(provider.IsRevoked(Query(fixture, Bytes(0x20, 16))));
+        Assert.Throws<ProductionMailboxRevocationSnapshotException>(() =>
+            provider.IsRevoked(Query(fixture, Bytes(0x20, 16)) with
+            {
+                IssuerPublicKey = Bytes(0x30, 32)
+            }));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task MissingOrCorruptRevocationFailsClosed(bool missing)
+    {
+        var fixture = Fixture.Create(_root);
+        if (missing)
+        {
+            File.Delete(fixture.RevocationArtifactPath);
+        }
+        else
+        {
+            File.WriteAllBytes(fixture.RevocationArtifactPath, [0x01, 0x02]);
+        }
+
+        var provider = fixture.Provider();
+        await provider.InitializeAsync();
+
+        Assert.False(provider.IsConfigured);
+        Assert.False(provider.Status.Ready);
+        Assert.False(provider.Status.RevocationArtifactVerified);
+        Assert.Equal(
+            missing ? "authority-state-rejected" : "revocation-verification-rejected",
+            provider.Status.Reason);
+    }
+
+    [Fact]
+    public async Task InvalidSuccessorRevocationDoesNotAdvanceLkgOrReplacePublishedPair()
+    {
+        var fixture = Fixture.Create(_root);
+        var provider = fixture.Provider();
+        await provider.InitializeAsync();
+        var committed = File.ReadAllBytes(fixture.LkgPath);
+
+        var successor = fixture.Successor();
+        var snapshot = ProductionMailboxRevocationSnapshotCodec.Decode(
+            File.ReadAllBytes(fixture.RevocationArtifactPath));
+        var invalid = snapshot with
+        {
+            IssuerSignature = Bytes(0xF0, 64)
+        };
+        var invalidBytes = ProductionMailboxRevocationSnapshotCodec.Encode(invalid);
+        successor = fixture.Sign(successor with
+        {
+            Revocation = successor.Revocation with
+            {
+                SnapshotHash = SHA256.HashData(invalidBytes)
+            }
+        });
+        fixture.WriteArtifact(successor);
+        File.WriteAllBytes(fixture.RevocationArtifactPath, invalidBytes);
+
+        await provider.InitializeAsync();
+
+        Assert.True(provider.IsConfigured);
+        Assert.False(provider.Status.Ready);
+        Assert.Equal("revocation-signature-rejected", provider.Status.Reason);
+        Assert.Equal(7UL, provider.Status.AuthorityGeneration);
+        Assert.Equal(committed, File.ReadAllBytes(fixture.LkgPath));
+        Assert.True(provider.IsRevoked(Query(fixture, Bytes(0x10, 16))));
+    }
+
+    [Fact]
+    public async Task SuccessorWithPreviousSnapshotFailsWithoutAdvancingPair()
+    {
+        var fixture = Fixture.Create(_root);
+        var provider = fixture.Provider();
+        await provider.InitializeAsync();
+        var committed = File.ReadAllBytes(fixture.LkgPath);
+        var previousSnapshot = File.ReadAllBytes(fixture.RevocationArtifactPath);
+        var successor = fixture.Successor();
+        fixture.WriteArtifact(successor);
+        File.WriteAllBytes(fixture.RevocationArtifactPath, previousSnapshot);
+
+        await provider.InitializeAsync();
+
+        Assert.True(provider.IsConfigured);
+        Assert.False(provider.Status.Ready);
+        Assert.Equal("revocation-verification-rejected", provider.Status.Reason);
+        Assert.Equal(7UL, provider.Status.AuthorityGeneration);
+        Assert.Equal(committed, File.ReadAllBytes(fixture.LkgPath));
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -111,7 +212,7 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
 
         await provider.InitializeAsync();
 
-        Assert.False(provider.IsConfigured);
+        Assert.True(provider.IsConfigured);
         Assert.Equal(
             fork ? "authority-chain-rejected" : "authority-rollback-rejected",
             provider.Status.Reason);
@@ -568,26 +669,42 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
 
     private static string Hex(byte[] value) => Convert.ToHexString(value).ToLowerInvariant();
 
+    private static MailboxCapabilityRevocationQuery Query(
+        Fixture fixture,
+        byte[] serial) => new()
+    {
+        IssuerPublicKey = fixture.Authority.MailboxIssuerEd25519PublicKey,
+        Serial = serial,
+        Domain = MailboxCapabilityDomain.Deposit,
+        Generation = fixture.Authority.CurrentEpoch.Generation,
+        Epoch = fixture.Authority.CurrentEpoch.Epoch,
+        MembershipCommitment = fixture.Authority.CurrentEpoch.MembershipCommitment
+    };
+
     private sealed class Fixture
     {
         private readonly byte[] _privateKey;
+        private readonly byte[] _issuerPrivateKey;
 
         private Fixture(
             RouterNodeOptions node,
             ProductionMailboxAuthorityOptions options,
             ProductionMailboxAuthority authority,
-            byte[] privateKey)
+            byte[] privateKey,
+            byte[] issuerPrivateKey)
         {
             Node = node;
             Options = options;
             Authority = authority;
             _privateKey = privateKey;
+            _issuerPrivateKey = issuerPrivateKey;
         }
 
         public RouterNodeOptions Node { get; }
         public ProductionMailboxAuthorityOptions Options { get; }
         public ProductionMailboxAuthority Authority { get; private set; }
         public string ArtifactPath => Options.ArtifactPath;
+        public string RevocationArtifactPath => Options.RevocationArtifactPath;
         public string LkgPath => Options.LastKnownGoodPath;
 
         public static Fixture Create(string root)
@@ -595,8 +712,10 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
             var data = Path.Combine(root, "data");
             Directory.CreateDirectory(data);
             var artifactPath = Path.Combine(root, "authority.pma1");
+            var revocationArtifactPath = Path.Combine(root, "revocation.pmr1");
             var lkgPath = Path.Combine(data, "authority.pml1");
             var pair = PublicKeyAuth.GenerateKeyPair(Bytes(0x21, 32));
+            var issuerPair = PublicKeyAuth.GenerateKeyPair(Bytes(0x22, 32));
             var unsigned = new ProductionMailboxAuthority
             {
                 DevelopmentOnly = false,
@@ -607,7 +726,7 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
                 NetworkId = Bytes(0x11, 16),
                 AuthorityGeneration = 7,
                 PreviousAuthorityHash = Bytes(0x31, 32),
-                MailboxIssuerEd25519PublicKey = Bytes(0x51, 32),
+                MailboxIssuerEd25519PublicKey = issuerPair.PublicKey,
                 MrXApprovalEd25519PublicKey = pair.PublicKey,
                 Coordinator = Endpoint("https://coordinator.example.net/", 0x61),
                 NodeIngress = Endpoint("https://ingress.example.net/mau2/", 0x71),
@@ -631,6 +750,7 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
                 {
                     Enabled = true,
                     ArtifactPath = artifactPath,
+                    RevocationArtifactPath = revocationArtifactPath,
                     ArtifactTrustRoot = root,
                     LastKnownGoodPath = lkgPath,
                     PinnedMrXPublicKeySha256 = Hex(SHA256.HashData(pair.PublicKey)),
@@ -638,8 +758,9 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
                     ClockSkewSeconds = 0
                 },
                 unsigned,
-                pair.PrivateKey);
-            fixture.Authority = fixture.Sign(unsigned);
+                pair.PrivateKey,
+                issuerPair.PrivateKey);
+            fixture.Authority = fixture.BindAndSignPair(unsigned);
             fixture.WriteArtifact(fixture.Authority);
             File.WriteAllBytes(lkgPath, ProductionMailboxAuthorityLkgCodec.Encode(new(
                 new(6, Bytes(0x31, 32), 5, Bytes(0xC1, 32), Bytes(0xD1, 32)),
@@ -659,7 +780,7 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
         public ProductionMailboxAuthority Successor(byte[]? previousAuthorityHash = null)
         {
             var currentHash = ProductionMailboxAuthorityCodec.ComputeCanonicalHash(Authority);
-            return Sign(Authority with
+            var successor = BindAndSignPair(Authority with
             {
                 AuthorityGeneration = 8,
                 PreviousAuthorityHash = previousAuthorityHash ?? currentHash,
@@ -673,6 +794,41 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
                     Generation = 7
                 },
                 MrXApproval = Approval(Now - 5, Now + 600)
+            });
+            return successor;
+        }
+
+        private ProductionMailboxAuthority BindAndSignPair(
+            ProductionMailboxAuthority authority)
+        {
+            var snapshot = new ProductionMailboxRevocationSnapshot
+            {
+                NetworkId = authority.NetworkId,
+                AuthorityGeneration = authority.AuthorityGeneration,
+                AuthorityBindingHash = ProductionMailboxRevocationSnapshotCodec
+                    .ComputeAuthorityBindingHash(authority),
+                RevocationGeneration = authority.Revocation.Generation,
+                RevocationHeadHash = authority.Revocation.HeadHash,
+                PreviousRevocationHeadHash = authority.Revocation.PreviousHeadHash,
+                IssuedAtUnixSeconds = authority.Revocation.IssuedAtUnixSeconds,
+                ExpiresAtUnixSeconds = authority.Revocation.ExpiresAtUnixSeconds,
+                RevokedGrantSerials = [(ReadOnlyMemory<byte>)Bytes(0x10, 16)],
+                IssuerSignature = new byte[64]
+            };
+            snapshot = snapshot with
+            {
+                IssuerSignature = PublicKeyAuth.SignDetached(
+                    ProductionMailboxRevocationSnapshotCodec.GetSigningBytes(snapshot),
+                    _issuerPrivateKey)
+            };
+            var encoded = ProductionMailboxRevocationSnapshotCodec.Encode(snapshot);
+            File.WriteAllBytes(RevocationArtifactPath, encoded);
+            return Sign(authority with
+            {
+                Revocation = authority.Revocation with
+                {
+                    SnapshotHash = SHA256.HashData(encoded)
+                }
             });
         }
 

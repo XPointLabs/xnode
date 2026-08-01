@@ -10,22 +10,22 @@
       },
       "Deep.Protocol": {
         "type": "Direct",
-        "requested": "[0.4.0-production.fa31413, 0.4.0-production.fa31413]",
-        "resolved": "0.4.0-production.fa31413",
-        "contentHash": "OtuexQCAEthpeyi/dSQa36r+7bm8NIqRDFZTbFAWoELsp/VE2uoXJyyVleqUl6N5GROk2BZbGA5E2G2UENWE+Q==",
+        "requested": "[0.4.0-production.7c17735, 0.4.0-production.7c17735]",
+        "resolved": "0.4.0-production.7c17735",
+        "contentHash": "otCZGVmAtqEWvLxKD3PQQBJw2tyRbvAaT74PajpFvwIuGFOTRDWoOtu5jACVUFtPFBRaKePVi373uILEe/BeeA==",
         "dependencies": {
-          "Deep.Protocol.Abstractions": "0.4.0-production.fa31413",
-          "Deep.Protocol.Protobuf": "0.4.0-production.fa31413",
+          "Deep.Protocol.Abstractions": "0.4.0-production.7c17735",
+          "Deep.Protocol.Protobuf": "0.4.0-production.7c17735",
           "Sodium.Core": "1.4.1"
         }
       },
       "Deep.Protocol.MembershipRoutes": {
         "type": "Direct",
-        "requested": "[0.4.0-production.fa31413, 0.4.0-production.fa31413]",
-        "resolved": "0.4.0-production.fa31413",
-        "contentHash": "ydLxoGEL8KdiAWVrigx4c7fsbyV1heBlEeUEpRSbIkkhWBVL3jpx5dA4JS8usWXf6nplToghXjQyisMmoWOmBw==",
+        "requested": "[0.4.0-production.7c17735, 0.4.0-production.7c17735]",
+        "resolved": "0.4.0-production.7c17735",
+        "contentHash": "xWEW0hlOVLn60dbD4AiGj0410i3rnnWwi4m/tSO1AtWGOBaikD+fEtLDvomqCNfAyBVZOLOcKIkQFcTntXOUAQ==",
         "dependencies": {
-          "Deep.Protocol": "0.4.0-production.fa31413"
+          "Deep.Protocol": "0.4.0-production.7c17735"
         }
       },
       "Microsoft.NET.Test.Sdk": {
@@ -57,13 +57,13 @@
       },
       "Deep.Protocol.Abstractions": {
         "type": "Transitive",
-        "resolved": "0.4.0-production.fa31413",
-        "contentHash": "bOAPd+hOb+JiLW+ftGkkAHM6Suda3CpciaRkWpeJDhXozf6vzAkOn7nIX1JXj6C27Va58ih2wyoLrI+tVjCUyQ=="
+        "resolved": "0.4.0-production.7c17735",
+        "contentHash": "uk28kbBxD33lLlipsOOv3xBFfWA7jruf9J/ccjjPdIRUVY6n+2wnXY/8u4SQ+ermEqVeR2NNxCjBnBDsTUx4/w=="
       },
       "Deep.Protocol.Protobuf": {
         "type": "Transitive",
-        "resolved": "0.4.0-production.fa31413",
-        "contentHash": "953w8A8IwxcReTxiMRf/hxtwtcm/Vc10jFZFuP4zDl7nPByW7QeILCWfF3jtizf1evexukzTM5RNNQHLQZGemg==",
+        "resolved": "0.4.0-production.7c17735",
+        "contentHash": "tNJ4zktlJXg7PhSw3kuNQBOnX77jGSFKqqtkmFtCI9quv5ac+K2+d/9Tnorp3RIu6IDLw3yRtaBGhmoZqlMt0Q==",
         "dependencies": {
           "Google.Protobuf": "3.32.1"
         }
@@ -232,8 +232,8 @@
       "xnode.core": {
         "type": "Project",
         "dependencies": {
-          "Deep.Protocol": "[0.4.0-production.fa31413, 0.4.0-production.fa31413]",
-          "Deep.Protocol.MembershipRoutes": "[0.4.0-production.fa31413, 0.4.0-production.fa31413]",
+          "Deep.Protocol": "[0.4.0-production.7c17735, 0.4.0-production.7c17735]",
+          "Deep.Protocol.MembershipRoutes": "[0.4.0-production.7c17735, 0.4.0-production.7c17735]",
           "Microsoft.Extensions.Logging.Abstractions": "[8.0.0, )",
           "Rebex.Elliptic.Ed25519": "[1.2.2, )",
           "Sodium.Core": "[1.4.1, )"

@@ -4,9 +4,9 @@ Status: accepted. Date: 2026-07-30. Human owner: **Mr. X**.
 
 ## Decision
 
-XNode consumes the exact locked PMA1 protocol closure built from `deep-protocol` source
-`fa314137d0ee97b62b77b00849ce030e273eec32`, version `0.4.0-production.fa31413`, under
-`vendor/production-authority-fa31413`.
+XNode consumes the exact locked PMA1+PMR1 protocol closure built from `deep-protocol` source
+`7c1773597db7d081219a083b75eb95c5d534c7b1`, version `0.4.0-production.7c17735`, under
+`vendor/production-revocation-7c17735`.
 
 The peer listener remains native PRQ2 Store/Tombstone with signed MRR2 and exact 2-of-2 MQR3.
 The client listener now exposes only the three P10J MAU2 routes from `MailboxWireHttpContract`.
@@ -36,10 +36,12 @@ Pre-auth admission is host-global and independent per authenticated operation; i
 remote-IP partitions. Post-verify admission stores only a domain-separated hash of operation plus
 holder public key and permits 120 requests per minute.
 
-Production/default composition remains dormant and unmapped. A production-only PMA1 loader now
-verifies and durably chains the public issuer/epoch/NodeIngress-SPKI substrate, while readiness
-remains false because PMA1 commits only a revocation snapshot hash and cannot answer whether an
-individual serial is revoked. Unknown serials are never treated as non-revoked. Development activation requires the
+Production/default composition remains dormant and unmapped. A production-only loader now
+verifies PMA1 and its hash-bound, issuer-signed complete PMR1 snapshot on the same clock observation,
+then durably commits and publishes the immutable pair atomically. Only that verified full snapshot
+may treat an unknown serial as non-revoked. Authority/revocation readiness is distinct from route
+readiness, which remains false until a signed topology artifact supplies two replicas, MIP1 proofs,
+and HTTPS/SPKI routing. Development activation requires the
 explicit pinned fixture: issuer, revocations, network, coordinator URL, E/E+1 commitments,
 placement ids/commitments, exactly two distinct replica identities/keys, and canonical MIP1/RIP1
 proofs. The node owns only its local replica private seed.
@@ -51,20 +53,18 @@ contract compatibility is outside this ADR and remains separately controlled.
 ## Exact dependency provenance
 
 - Deep.Protocol:
-  `4cc09868cf000091e3d9014ac426c23a1894f9dbd08e8b5aeaa298c0173f13aa`
+  `e7c0c22b2d7dade2cb9714ee776ab8b662fef51166e86dbec28545ad1ec3b723`
 - Deep.Protocol.Abstractions:
-  `efdc2a5e4d1ec198c00f9f584684dfa20acf2ff62b9a8703fb32ac025f7a57f2`
+  `f9304f9d43ff2363b6472526fa7a4f1b1321046ccb9dc2cf65b1028f5b0da681`
 - Deep.Protocol.MembershipRoutes:
-  `98d177d71b53856773bc300e6ba0a2ba3d90622feeb271dd2a3229cf1c8b26d6`
+  `8b112ed79f74b8af65d4e48ac19c13b8c7f252ce3ce0c931ab866f1656b957df`
 - Deep.Protocol.Protobuf:
-  `890d05366fbf9c24fb8fa828c7a591e40fbfe99b725ef499bcc5239537e7ee04`
+  `c72a832637580690632ce2d946b30466cb2effe2e3f433f7ac3d7e30f48a88e1`
 
 ## Remaining production blockers
 
-1. reviewed production issuer distribution/rotation and grant generation (PMA1 consumption is present);
-2. hash-bound public revocation artifact/proof and durable serial-level policy;
-3. reviewed membership-bound placement and E/E+1 lifecycle;
-4. production fanout composition and deployment key custody;
-5. staging, mobile/Windows E2E, operational rehearsal, and independent security review.
+1. signed PMT1 topology artifact and runtime provider;
+2. production replica authorization/fanout composition and deployment key custody;
+3. staging, mobile/Windows E2E, operational rehearsal, and independent security review.
 
 Until these gates close, public client ingress remains Development-only.

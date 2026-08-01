@@ -68,13 +68,14 @@ public static class MailboxClientComposition
             if (productionAuthority?.Enabled == true)
             {
                 throw new InvalidOperationException(
-                    "MailboxClient Production activation remains fail-closed until a hash-bound " +
-                    "public revocation artifact is verified against PMA1.");
+                    "MailboxClient Production activation remains fail-closed until a verified " +
+                    "production topology artifact supplies two replicas, canonical MIP1 proofs, " +
+                    "and HTTPS endpoints with SPKI pins.");
             }
 
             throw new InvalidOperationException(
-                "MailboxClient Production activation requires the PMA1 authority and its " +
-                "hash-bound public revocation artifact.");
+                "MailboxClient Production activation requires PMA1, PMR1, and a verified " +
+                "production topology artifact.");
         }
 
         if (!activation.DevelopmentFixture.Enabled)

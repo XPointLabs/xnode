@@ -18,12 +18,14 @@ public sealed class ProductionMailboxAuthorityOptions
 {
     public bool Enabled { get; set; }
     public string ArtifactPath { get; set; } = "";
+    public string RevocationArtifactPath { get; set; } = "";
     public string ArtifactTrustRoot { get; set; } = "";
     public string LastKnownGoodPath { get; set; } = "";
     public string PinnedMrXPublicKeySha256 { get; set; } = "";
     public string ExpectedNetworkId { get; set; } = "";
     public uint ClockSkewSeconds { get; set; } = 60;
     public int MaximumArtifactBytes { get; set; } = 65_536;
+    public int MaximumRevocationArtifactBytes { get; set; } = 131_072;
 
     public void Validate(RouterNodeOptions node, bool isProduction)
     {
@@ -31,6 +33,7 @@ public sealed class ProductionMailboxAuthorityOptions
         if (!Enabled)
         {
             if (!string.IsNullOrEmpty(ArtifactPath)
+                || !string.IsNullOrEmpty(RevocationArtifactPath)
                 || !string.IsNullOrEmpty(LastKnownGoodPath)
                 || !string.IsNullOrEmpty(ArtifactTrustRoot)
                 || !string.IsNullOrEmpty(PinnedMrXPublicKeySha256)
@@ -58,16 +61,22 @@ public sealed class ProductionMailboxAuthorityOptions
             ProductionMailboxAuthorityConstants.NetworkIdLength,
             "network id");
         if (ClockSkewSeconds > ProductionMailboxAuthorityConstants.MaximumClockSkewSeconds
-            || MaximumArtifactBytes is < 1 or > 1_048_576)
+            || MaximumArtifactBytes is < 1 or > 1_048_576
+            || MaximumRevocationArtifactBytes is < 1 or > 1_048_576)
         {
             throw new InvalidOperationException(
                 "MailboxClientProductionAuthority bounds are invalid.");
         }
 
         var artifact = RequireAbsolutePath(ArtifactPath, "artifact");
+        var revocationArtifact = RequireAbsolutePath(
+            RevocationArtifactPath,
+            "revocation artifact");
         var artifactTrustRoot = RequireAbsolutePath(ArtifactTrustRoot, "artifact trust root");
         var lkg = RequireAbsolutePath(LastKnownGoodPath, "LKG");
-        if (StringComparer.OrdinalIgnoreCase.Equals(artifact, lkg))
+        if (string.Equals(artifact, lkg, PathComparison)
+            || string.Equals(revocationArtifact, lkg, PathComparison)
+            || string.Equals(artifact, revocationArtifact, PathComparison))
         {
             throw new InvalidOperationException(
                 "MailboxClientProductionAuthority artifact and LKG paths must differ.");
@@ -85,6 +94,12 @@ public sealed class ProductionMailboxAuthorityOptions
         {
             throw new InvalidOperationException(
                 "MailboxClientProductionAuthority artifact must be inside its trust root.");
+        }
+
+        if (!IsDescendant(revocationArtifact, artifactTrustRoot))
+        {
+            throw new InvalidOperationException(
+                "MailboxClientProductionAuthority revocation artifact must be inside its trust root.");
         }
     }
 
@@ -162,6 +177,53 @@ public sealed record ProductionMailboxAuthorityStatus(
 {
     public string EndpointRole { get; init; } = "node-ingress";
     public string Transport { get; init; } = "authenticated-mau2";
+    public bool AuthorityRevocationReady { get; init; }
+    public bool ProductionMailboxRoutesReady { get; init; }
+}
+
+public sealed record ProductionMailboxTopologyReplica(
+    ReadOnlyMemory<byte> ReplicaId,
+    ReadOnlyMemory<byte> CanonicalMembershipProof,
+    Uri HttpsEndpoint,
+    ReadOnlyMemory<byte> CurrentSpkiSha256,
+    ReadOnlyMemory<byte> NextSpkiSha256);
+
+public sealed record ProductionMailboxEpochTopology(
+    ulong Epoch,
+    ReadOnlyMemory<byte> MembershipCommitment,
+    ReadOnlyMemory<byte> PlacementCommitment,
+    IReadOnlyList<ProductionMailboxTopologyReplica> Replicas);
+
+/// <summary>
+/// Future PMT1 boundary. A production implementation must return exactly two distinct replicas,
+/// canonical MIP1 proofs bound to the requested epoch/commitments, and public HTTPS endpoints
+/// with current/next SPKI pins. PMA1/PMR1 never imply or synthesize these values.
+/// </summary>
+public interface IProductionMailboxTopologyProvider
+{
+    bool IsConfigured { get; }
+
+    bool TryResolve(
+        ulong epoch,
+        ReadOnlyMemory<byte> membershipCommitment,
+        ReadOnlyMemory<byte> placementCommitment,
+        out ProductionMailboxEpochTopology? topology);
+}
+
+public sealed class UnavailableProductionMailboxTopologyProvider
+    : IProductionMailboxTopologyProvider
+{
+    public bool IsConfigured => false;
+
+    public bool TryResolve(
+        ulong epoch,
+        ReadOnlyMemory<byte> membershipCommitment,
+        ReadOnlyMemory<byte> placementCommitment,
+        out ProductionMailboxEpochTopology? topology)
+    {
+        topology = null;
+        return false;
+    }
 }
 
 public interface IProductionMailboxAuthorityFileSecurity
@@ -1070,7 +1132,9 @@ internal static class ProductionMailboxAuthorityNativeFile
     private static extern uint GetEffectiveUserId();
 }
 
-public sealed class ProductionMailboxAuthorityProvider : IMailboxCapabilityAuthoritySource
+public sealed class ProductionMailboxAuthorityProvider
+    : IMailboxCapabilityAuthoritySource,
+      IMailboxCapabilityRevocationPolicy
 {
     private readonly ProductionMailboxAuthorityOptions _options;
     private readonly string _artifactTrustRoot;
@@ -1080,7 +1144,7 @@ public sealed class ProductionMailboxAuthorityProvider : IMailboxCapabilityAutho
     private readonly IMailboxStorageSecurity _storageSecurity;
     private readonly IMailboxDurabilityBarrier _durability;
     private readonly SemaphoreSlim _initializeGate = new(1, 1);
-    private VerifiedProductionMailboxAuthority? _verified;
+    private ProductionMailboxAuthorityPair? _verified;
     private ProductionMailboxAuthorityStatus _status;
 
     public ProductionMailboxAuthorityProvider(
@@ -1114,11 +1178,17 @@ public sealed class ProductionMailboxAuthorityProvider : IMailboxCapabilityAutho
 
     public bool IsConfigured => Volatile.Read(ref _verified) is not null;
 
+    public bool IsRevoked(MailboxCapabilityRevocationQuery query)
+    {
+        var pair = Volatile.Read(ref _verified);
+        return pair is null || pair.Revocation.IsRevoked(query);
+    }
+
     public ProductionMailboxNodeIngress? NodeIngress
     {
         get
         {
-            var authority = Volatile.Read(ref _verified)?.Authority;
+            var authority = Volatile.Read(ref _verified)?.Authority.Authority;
             return authority is null
                 ? null
                 : new(
@@ -1146,18 +1216,23 @@ public sealed class ProductionMailboxAuthorityProvider : IMailboxCapabilityAutho
                 or InvalidDataException
                 or InvalidOperationException
                 or ProductionMailboxAuthorityException
+                or ProductionMailboxRevocationSnapshotException
                 or CryptographicException)
         {
-            Volatile.Write(ref _verified, null);
+            var previous = Volatile.Read(ref _verified);
             Volatile.Write(ref _status, new(
                 true,
-                false,
-                false,
-                false,
+                previous is not null,
+                previous is not null,
+                previous is not null,
                 false,
                 FailureReason(exception),
-                0,
-                0));
+                previous?.Authority.Authority.AuthorityGeneration ?? 0,
+                previous?.Revocation.Snapshot.RevocationGeneration ?? 0)
+            {
+                AuthorityRevocationReady = previous is not null,
+                ProductionMailboxRoutesReady = false
+            });
         }
         finally
         {
@@ -1169,7 +1244,7 @@ public sealed class ProductionMailboxAuthorityProvider : IMailboxCapabilityAutho
         MailboxCapabilityAuthorityQuery query,
         out MailboxAuthenticatedVerificationPolicy? policy)
     {
-        var authority = Volatile.Read(ref _verified)?.Authority;
+        var authority = Volatile.Read(ref _verified)?.Authority.Authority;
         if (authority is null)
         {
             policy = null;
@@ -1226,7 +1301,7 @@ public sealed class ProductionMailboxAuthorityProvider : IMailboxCapabilityAutho
         MailboxCapabilityAuthorityQuery query,
         MailboxAuthenticatedGrant grant)
     {
-        var authority = Volatile.Read(ref _verified)?.Authority;
+        var authority = Volatile.Read(ref _verified)?.Authority.Authority;
         if (authority is null)
         {
             return grant.ExpiresAtUnixSeconds;
@@ -1242,11 +1317,17 @@ public sealed class ProductionMailboxAuthorityProvider : IMailboxCapabilityAutho
     private void InitializeCore()
     {
         _fileSecurity.ValidateReadOnlyArtifact(_options.ArtifactPath, _artifactTrustRoot);
+        _fileSecurity.ValidateReadOnlyArtifact(
+            _options.RevocationArtifactPath,
+            _artifactTrustRoot);
         _fileSecurity.ValidateProtectedLastKnownGood(_options.LastKnownGoodPath, _dataTrustRoot);
         using var processLock = AcquireProcessLock();
         _fileSecurity.ValidateProtectedLastKnownGood(_options.LastKnownGoodPath, _dataTrustRoot);
         var lkg = ProductionMailboxAuthorityLkgCodec.Decode(ReadExactLkg());
-        var artifactBytes = ReadBoundedArtifact();
+        var artifactBytes = ReadBoundedArtifact(
+            _options.ArtifactPath,
+            _options.MaximumArtifactBytes,
+            "authority");
         var authority = ProductionMailboxAuthorityCodec.Decode(artifactBytes);
         var artifactHash = SHA256.HashData(artifactBytes);
         var idempotent = authority.AuthorityGeneration == lkg.Committed.Generation
@@ -1256,11 +1337,24 @@ public sealed class ProductionMailboxAuthorityProvider : IMailboxCapabilityAutho
                 ?? throw new InvalidDataException(
                     "Production mailbox authority LKG lacks its verification anchor.")
             : lkg.Committed;
+        var now = checked((ulong)_clock.UtcNow.ToUnixTimeSeconds());
         var verified = ProductionMailboxAuthorityVerifier.Verify(
             authority,
-            Context(anchor),
+            Context(anchor, now),
             new SodiumProductionMailboxAuthoritySignatureVerifier());
         ValidateCommit(verified, authority.Revocation, idempotent ? lkg.Committed : null);
+
+        var revocationBytes = ReadBoundedArtifact(
+            _options.RevocationArtifactPath,
+            _options.MaximumRevocationArtifactBytes,
+            "revocation");
+        var revocation = ProductionMailboxRevocationSnapshotVerifier.Verify(
+            revocationBytes,
+            verified,
+            now,
+            _options.ClockSkewSeconds,
+            new SodiumProductionMailboxRevocationSnapshotSignatureVerifier());
+        ValidateRevocationCommit(revocation, idempotent ? lkg.Committed : null);
 
         if (!idempotent)
         {
@@ -1275,20 +1369,25 @@ public sealed class ProductionMailboxAuthorityProvider : IMailboxCapabilityAutho
             SaveLkg(next);
         }
 
-        Volatile.Write(ref _verified, verified);
+        Volatile.Write(ref _verified, new(verified, revocation));
         Volatile.Write(ref _status, new(
             true,
             true,
             true,
+            true,
             false,
-            false,
-            "revocation-snapshot-artifact-unavailable",
+            "topology-artifact-unavailable",
             authority.AuthorityGeneration,
-            authority.Revocation.Generation));
+            authority.Revocation.Generation)
+        {
+            AuthorityRevocationReady = true,
+            ProductionMailboxRoutesReady = false
+        });
     }
 
     private ProductionMailboxAuthorityVerificationContext Context(
-        ProductionMailboxAuthorityLkgCommit anchor) => new()
+        ProductionMailboxAuthorityLkgCommit anchor,
+        ulong nowUnixSeconds) => new()
     {
         PinnedMrXPublicKeySha256 = _options.GetPinnedMrXKeyHash(),
         ExpectedNetworkId = _options.GetExpectedNetworkId(),
@@ -1297,21 +1396,21 @@ public sealed class ProductionMailboxAuthorityProvider : IMailboxCapabilityAutho
         LastCommittedRevocationGeneration = anchor.RevocationGeneration,
         LastCommittedRevocationHeadHash = anchor.RevocationHeadHash,
         LastCommittedRevocationSnapshotHash = anchor.RevocationSnapshotHash,
-        NowUnixSeconds = checked((ulong)_clock.UtcNow.ToUnixTimeSeconds()),
+        NowUnixSeconds = nowUnixSeconds,
         ClockSkewSeconds = _options.ClockSkewSeconds
     };
 
-    private byte[] ReadBoundedArtifact()
+    private byte[] ReadBoundedArtifact(string path, int maximumBytes, string name)
     {
         using var stream = ProductionMailboxAuthorityNativeFile.OpenStableRead(
-            _options.ArtifactPath,
+            path,
             () => _fileSecurity.ValidateReadOnlyArtifact(
-                _options.ArtifactPath,
+                path,
                 _artifactTrustRoot));
-        if (stream.Length <= 0 || stream.Length > _options.MaximumArtifactBytes)
+        if (stream.Length <= 0 || stream.Length > maximumBytes)
         {
             throw new InvalidDataException(
-                "Production mailbox authority artifact size is outside bounds.");
+                $"Production mailbox {name} artifact size is outside bounds.");
         }
 
         var bytes = new byte[checked((int)stream.Length)];
@@ -1395,6 +1494,21 @@ public sealed class ProductionMailboxAuthorityProvider : IMailboxCapabilityAutho
         }
     }
 
+    private static void ValidateRevocationCommit(
+        VerifiedProductionMailboxRevocationSnapshot revocation,
+        ProductionMailboxAuthorityLkgCommit? expected)
+    {
+        var snapshot = revocation.Snapshot;
+        if (expected is not null
+            && (snapshot.RevocationGeneration != expected.RevocationGeneration
+                || !Fixed(snapshot.RevocationHeadHash.Span, expected.RevocationHeadHash)
+                || !Fixed(revocation.CanonicalSnapshotHash.Span, expected.RevocationSnapshotHash)))
+        {
+            throw new InvalidDataException(
+                "Production mailbox revocation artifact conflicts with durable LKG.");
+        }
+    }
+
     private static string FailureReason(Exception exception) => exception switch
     {
         UnauthorizedAccessException => "protected-storage-rejected",
@@ -1407,6 +1521,14 @@ public sealed class ProductionMailboxAuthorityProvider : IMailboxCapabilityAutho
             ProductionMailboxAuthorityError.Expired => "authority-expired",
             _ => "authority-verification-rejected"
         },
+        ProductionMailboxRevocationSnapshotException revocation => revocation.Error switch
+        {
+            ProductionMailboxRevocationSnapshotError.NotYetValid => "revocation-not-yet-valid",
+            ProductionMailboxRevocationSnapshotError.Expired => "revocation-expired",
+            ProductionMailboxRevocationSnapshotError.InvalidSignature => "revocation-signature-rejected",
+            ProductionMailboxRevocationSnapshotError.SnapshotHashMismatch => "revocation-hash-rejected",
+            _ => "revocation-verification-rejected"
+        },
         InvalidDataException => "authority-state-rejected",
         _ => "authority-initialization-failed"
     };
@@ -1415,6 +1537,10 @@ public sealed class ProductionMailboxAuthorityProvider : IMailboxCapabilityAutho
         left.Length == right.Length
         && CryptographicOperations.FixedTimeEquals(left, right);
 }
+
+internal sealed record ProductionMailboxAuthorityPair(
+    VerifiedProductionMailboxAuthority Authority,
+    VerifiedProductionMailboxRevocationSnapshot Revocation);
 
 public sealed class ProductionMailboxAuthorityHostedService(
     ProductionMailboxAuthorityProvider provider) : IHostedService
@@ -1453,7 +1579,7 @@ internal static class ProductionMailboxAuthorityLkgCodec
         }
 
         var bytes = new byte[Length];
-        "PML1"u8.CopyTo(bytes);
+        "PML2"u8.CopyTo(bytes);
         bytes[4] = 1;
         WriteCommit(bytes.AsSpan(8, CommitLength), value.Committed);
         bytes[8 + CommitLength] = value.VerificationAnchor is null ? (byte)0 : (byte)1;
@@ -1471,7 +1597,7 @@ internal static class ProductionMailboxAuthorityLkgCodec
     public static ProductionMailboxAuthorityLkg Decode(ReadOnlySpan<byte> bytes)
     {
         if (bytes.Length != Length
-            || !bytes[..4].SequenceEqual("PML1"u8)
+            || !bytes[..4].SequenceEqual("PML2"u8)
             || bytes[4] != 1
             || bytes.Slice(5, 3).IndexOfAnyExcept((byte)0) >= 0
             || bytes[8 + CommitLength] is not (0 or 1)

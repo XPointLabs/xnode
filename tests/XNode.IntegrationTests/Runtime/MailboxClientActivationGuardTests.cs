@@ -236,7 +236,7 @@ public sealed class MailboxClientActivationGuardTests
     }
 
     [Fact]
-    public void ProductionPma1SubstrateCannotBypassMissingRevocationArtifactGate()
+    public void ProductionPma1Pmr1SubstrateCannotBypassMissingTopologyArtifactGate()
     {
         var exception = Assert.Throws<InvalidOperationException>(() =>
             MailboxClientComposition.Validate(
@@ -250,7 +250,7 @@ public sealed class MailboxClientActivationGuardTests
                     Enabled = true
                 }));
 
-        Assert.Contains("hash-bound public revocation artifact", exception.Message);
+        Assert.Contains("production topology artifact", exception.Message);
     }
 
     [Fact]

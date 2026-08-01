@@ -9,14 +9,14 @@ public sealed class MailboxClientPackagePinTests
     private static readonly IReadOnlyDictionary<string, string> Expected =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            ["Deep.Protocol.0.4.0-production.fa31413.nupkg"] =
-                "4cc09868cf000091e3d9014ac426c23a1894f9dbd08e8b5aeaa298c0173f13aa",
-            ["Deep.Protocol.Abstractions.0.4.0-production.fa31413.nupkg"] =
-                "efdc2a5e4d1ec198c00f9f584684dfa20acf2ff62b9a8703fb32ac025f7a57f2",
-            ["Deep.Protocol.MembershipRoutes.0.4.0-production.fa31413.nupkg"] =
-                "98d177d71b53856773bc300e6ba0a2ba3d90622feeb271dd2a3229cf1c8b26d6",
-            ["Deep.Protocol.Protobuf.0.4.0-production.fa31413.nupkg"] =
-                "890d05366fbf9c24fb8fa828c7a591e40fbfe99b725ef499bcc5239537e7ee04"
+            ["Deep.Protocol.0.4.0-production.7c17735.nupkg"] =
+                "e7c0c22b2d7dade2cb9714ee776ab8b662fef51166e86dbec28545ad1ec3b723",
+            ["Deep.Protocol.Abstractions.0.4.0-production.7c17735.nupkg"] =
+                "f9304f9d43ff2363b6472526fa7a4f1b1321046ccb9dc2cf65b1028f5b0da681",
+            ["Deep.Protocol.MembershipRoutes.0.4.0-production.7c17735.nupkg"] =
+                "8b112ed79f74b8af65d4e48ac19c13b8c7f252ce3ce0c931ab866f1656b957df",
+            ["Deep.Protocol.Protobuf.0.4.0-production.7c17735.nupkg"] =
+                "c72a832637580690632ce2d946b30466cb2effe2e3f433f7ac3d7e30f48a88e1"
         };
 
     [Fact]
@@ -26,7 +26,7 @@ public sealed class MailboxClientPackagePinTests
         var packageDirectory = Path.Combine(
             root,
             "vendor",
-            "production-authority-fa31413",
+            "production-revocation-7c17735",
             "packages");
         var files = Directory.GetFiles(packageDirectory, "*.nupkg")
             .ToDictionary(static path => Path.GetFileName(path)!, StringComparer.Ordinal);
@@ -46,11 +46,11 @@ public sealed class MailboxClientPackagePinTests
         var coreProject = File.ReadAllText(
             Path.Combine(root, "src", "XNode.Core", "XNode.Core.csproj"));
         Assert.Contains(
-            "Version=\"[0.4.0-production.fa31413]\"",
+            "Version=\"[0.4.0-production.7c17735]\"",
             coreProject,
             StringComparison.Ordinal);
         Assert.Contains(
-            "Deep.Protocol.MembershipRoutes\" Version=\"[0.4.0-production.fa31413]\"",
+            "Deep.Protocol.MembershipRoutes\" Version=\"[0.4.0-production.7c17735]\"",
             coreProject,
             StringComparison.Ordinal);
         Assert.DoesNotContain("p03b2", coreProject, StringComparison.OrdinalIgnoreCase);
@@ -65,7 +65,7 @@ public sealed class MailboxClientPackagePinTests
                 StringComparer.Ordinal);
         Assert.Equal(
             new[] { "Deep.Protocol", "Deep.Protocol.*" },
-            sources["production-authority-protocol"]);
+            sources["production-revocation-protocol"]);
         Assert.DoesNotContain(
             sources["nuget.org"],
             static pattern => pattern is "*" or "Deep.Protocol" or "Deep.Protocol.*");
@@ -74,20 +74,20 @@ public sealed class MailboxClientPackagePinTests
             Path.Combine(root, "src", "XNode.Core", "packages.lock.json")));
         var packages = lockDocument.RootElement.GetProperty("dependencies").GetProperty("net10.0");
         Assert.Equal(
-            "0.4.0-production.fa31413",
+            "0.4.0-production.7c17735",
             packages.GetProperty("Deep.Protocol").GetProperty("resolved").GetString());
         Assert.Equal(
-            "OtuexQCAEthpeyi/dSQa36r+7bm8NIqRDFZTbFAWoELsp/VE2uoXJyyVleqUl6N5GROk2BZbGA5E2G2UENWE+Q==",
+            "otCZGVmAtqEWvLxKD3PQQBJw2tyRbvAaT74PajpFvwIuGFOTRDWoOtu5jACVUFtPFBRaKePVi373uILEe/BeeA==",
             packages.GetProperty("Deep.Protocol").GetProperty("contentHash").GetString());
         Assert.Equal(
-            "0.4.0-production.fa31413",
+            "0.4.0-production.7c17735",
             packages.GetProperty("Deep.Protocol.MembershipRoutes").GetProperty("resolved").GetString());
         Assert.Contains("<RestoreLockedMode>true</RestoreLockedMode>", coreProject);
 
         using var manifest = JsonDocument.Parse(File.ReadAllBytes(
-            Path.Combine(root, "vendor", "production-authority-fa31413", "package-manifest.json")));
+            Path.Combine(root, "vendor", "production-revocation-7c17735", "package-manifest.json")));
         Assert.Equal(
-            "fa314137d0ee97b62b77b00849ce030e273eec32",
+            "7c1773597db7d081219a083b75eb95c5d534c7b1",
             manifest.RootElement.GetProperty("sourceCommit").GetString());
         Assert.Equal(
             Expected.Count,

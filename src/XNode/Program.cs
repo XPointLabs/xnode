@@ -140,6 +140,16 @@ if (mailboxClientActivationPlan.DevelopmentFixture)
     builder.Services.AddSingleton<IMailboxClientTombstoneFanout>(provider =>
         provider.GetRequiredService<DevelopmentMailboxReplicaFanout>());
 }
+else if (productionMailboxAuthorityOptions.Enabled)
+{
+    builder.Services.AddSingleton<IMailboxCapabilityAuthoritySource>(provider =>
+        provider.GetRequiredService<ProductionMailboxAuthorityProvider>());
+    builder.Services.AddSingleton<IMailboxCapabilityRevocationPolicy>(provider =>
+        provider.GetRequiredService<ProductionMailboxAuthorityProvider>());
+    builder.Services.AddSingleton<
+        IProductionMailboxTopologyProvider,
+        UnavailableProductionMailboxTopologyProvider>();
+}
 else
 {
     builder.Services.AddSingleton<
