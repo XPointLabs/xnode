@@ -66,6 +66,16 @@ if (mailboxOptions.Enabled
         "Runtime:MaxPeerRequestBodyBytes is too small for the configured mailbox blob limit.");
 }
 
+IPublicPeerEndpointAuthorizer publicPeerEndpointAuthorizer =
+    builder.Environment.IsProduction() || !runtimeOptions.AllowPublicPeerEndpoints
+        ? DenyAllPublicPeerEndpointAuthorizer.Instance
+        : AllowAllPublicPeerEndpointAuthorizer.Instance;
+var peerEndpointPolicy = PeerEndpointPolicy.Create(
+    runtimeOptions,
+    nodeOptions,
+    builder.Environment.EnvironmentName,
+    publicPeerEndpointAuthorizer);
+
 VlessProfileGuard.Validate(vlessOptions, builder.Environment.IsDevelopment());
 
 vlessOptions.PublicHost = string.IsNullOrWhiteSpace(vlessOptions.PublicHost) ? nodeOptions.PublicHost : vlessOptions.PublicHost;
@@ -86,6 +96,7 @@ builder.Services.AddSingleton<OnionPeerReplayGuard>();
 builder.Services.AddSingleton(nodeOptions);
 builder.Services.AddSingleton(pathOptions);
 builder.Services.AddSingleton(runtimeOptions);
+builder.Services.AddSingleton(peerEndpointPolicy);
 builder.Services.AddSingleton(vlessOptions);
 builder.Services.AddSingleton(registryBootstrapOptions);
 builder.Services.AddSingleton(storageRpcOptions);
@@ -206,9 +217,9 @@ builder.Services.AddSingleton<ISessionStorageRpcBackend>(_ =>
         ? new DisabledSessionStorageRpcBackend()
         : new HttpSessionStorageRpcBackend(new HttpClient(), storageRpcOptions));
 builder.Services.AddHttpClient<IOnionPeerClient, HttpOnionPeerClient>()
-    .ConfigurePrimaryHttpMessageHandler(() => OnionPeerHttpHandler.Create(runtimeOptions));
+    .ConfigurePrimaryHttpMessageHandler(() => OnionPeerHttpHandler.Create(peerEndpointPolicy));
 builder.Services.AddHttpClient<IMailboxReplicaPeerClient, HttpMailboxReplicaPeerClient>()
-    .ConfigurePrimaryHttpMessageHandler(() => OnionPeerHttpHandler.Create(runtimeOptions));
+    .ConfigurePrimaryHttpMessageHandler(() => OnionPeerHttpHandler.Create(peerEndpointPolicy));
 builder.Services.AddSingleton(provider => new MailboxReplicationCoordinator(
     nodeOptions.GetRouterId(),
     nodeOptions.GetEd25519PrivateKey(),
@@ -356,8 +367,11 @@ app.MapGet("/health/ready", (
     var mailboxPeerReady = !mailbox.Enabled || mailboxPeer.Ready;
     var mailboxClientReady =
         !mailboxClientActivationPlan.RoutesMapped || mailboxClient.Ready;
-    var ready = status.State == "running"
-        && transportReady
+    var baseReadiness = RouterReadinessEvaluator.Evaluate(
+        status,
+        transportReady,
+        peerEndpointPolicy.IsProductionPublicRoutingReady);
+    var ready = baseReadiness.Ready
         && mailboxPeerReady
         && mailboxClientReady;
     return ready
@@ -366,6 +380,8 @@ app.MapGet("/health/ready", (
             ready = true,
             degraded = xrayStatus.Degraded,
             transportMode = xrayStatus.Mode,
+            publicPeerAuthorizationMode = peerEndpointPolicy.PublicAuthorizationMode.ToString(),
+            privateMembership = status.PrivateMembership,
             mailboxPeer = mailboxPeer.Status,
             mailboxClient = mailboxClient.Status
         })
@@ -375,6 +391,8 @@ app.MapGet("/health/ready", (
                 ready = false,
                 status,
                 xray = xrayStatus,
+                publicPeerRoutingReady = peerEndpointPolicy.IsProductionPublicRoutingReady,
+                publicPeerAuthorizationMode = peerEndpointPolicy.PublicAuthorizationMode.ToString(),
                 mailboxPeer = mailboxPeer.Status,
                 mailboxClient = mailboxClient.Status
             },
@@ -403,6 +421,8 @@ app.MapGet("/status", (
     {
         router = runtime.Status,
         xray = xray.Status,
+        publicPeerAuthorizationMode = peerEndpointPolicy.PublicAuthorizationMode.ToString(),
+        productionPublicRoutingReady = peerEndpointPolicy.IsProductionPublicRoutingReady,
         registryPayload = registryPayloadFactory.Create(),
         mailbox = mailboxStatus,
         onionPeerReplay = "volatile-explicit-debt",

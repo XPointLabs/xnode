@@ -134,14 +134,15 @@ Until those items are closed, the correct answer to “is the router fully produ
 ## Health
 
 - `GET /health/live`: process liveness.
-- `GET /health/ready`: runtime plus Xray readiness.
+- `GET /health/ready`: runtime, Xray, and production public-peer authorization readiness.
 - `GET /status`: runtime status, Xray supervisor status, and current registry payload.
 
 Readiness semantics for transport failover:
 
-- `ready=true` when runtime is `running` and transport is either `running` or `degraded`.
+- `ready=true` when runtime is `running`, transport is either `running` or `degraded`, and Production public-peer authorization is in verified-ticket mode.
 - `degraded` means Xray hit restart limit inside `failureWindow` and entered cooldown before next retry.
 - `transportMode` in readiness payload exposes current supervisor mode (`running`, `restarting`, `degraded`, and related states).
+- `publicPeerAuthorizationMode` exposes `DenyAll`, `UnverifiedNonProduction`, or the future `VerifiedTickets` mode. Production `DenyAll` deliberately returns `503`.
 
 ## Session RPC Ingress
 
@@ -159,10 +160,98 @@ Supported first-pass methods are `status`, `path_ping`, `fetch_rids`, `fetch_rcs
 
 Runtime rejects public `report_path_result` requests. Public storage RPC results, including downstream HTTP failures, are not path-health evidence and cannot influence relay selection. The compatibility `churn-blocked router count` remains zero until XNode has an authenticated, direct peer-health plane.
 
-Private peer routing is disabled by default. A controlled container or private-LAN deployment may opt in to
-RFC1918 peer endpoints with `Runtime__AllowPrivatePeerEndpoints=true`. This does not permit loopback,
-link-local, multicast, unspecified, CGNAT, documentation, or IPv6 unique-local addresses. Loopback remains
-separately gated by `Runtime__AllowLoopbackPeerEndpoints=true`.
+Private peer routing is disabled by default. The only private-LAN exception is the exact
+router-ID/RFC1918-address/port/path inventory described below. Loopback and broad private-network switches
+are not supported.
+
+## Private Peer Endpoints for UAT
+
+Public/mainnet nodes must advertise a publicly routable peer RPC URL with the exact
+`/api/peer/onion` path. A local Docker UAT may instead enable the exact private-peer
+policy documented in `docs/ROUTER_SECURITY_TUNABLES.md`.
+
+The exception is deliberately narrow:
+
+- it binds the recipient router ID to one literal RFC1918 IPv4 `/32`, port, and exact path;
+- the same immutable policy filters route contacts and the socket address used for the connection;
+- it is disabled by default and fails startup in `Production`, on `mainnet`, or when the explicit test network identities differ;
+- loopback, private DNS names, DNS rebinding, link-local/cloud metadata, multicast, unspecified addresses, redirects, and proxies remain blocked.
+
+For UAT, set `DOTNET_ENVIRONMENT=UAT`, then set `Node:Network` and
+`Runtime:PrivatePeerNetworkIdentity` to the same explicit test identity (normally `uat`)
+and supply the complete per-recipient allowlist. Mr. X
+owns approval of that UAT inventory. Remove the entire allowlist and disable the feature
+before promoting a configuration to production.
+
+For a three-router UAT, "complete" means the following 3 x 3 matrix. Each
+router configuration must contain all three exact recipient tuples, including
+its own tuple:
+
+| Configuration loaded by | Recipient A | Recipient B | Recipient C |
+| --- | --- | --- | --- |
+| Router A | `A_ID @ 10.20.30.40:8080/api/peer/onion` | `B_ID @ 10.20.30.41:8081/api/peer/onion` | `C_ID @ 10.20.30.42:8082/api/peer/onion` |
+| Router B | `A_ID @ 10.20.30.40:8080/api/peer/onion` | `B_ID @ 10.20.30.41:8081/api/peer/onion` | `C_ID @ 10.20.30.42:8082/api/peer/onion` |
+| Router C | `A_ID @ 10.20.30.40:8080/api/peer/onion` | `B_ID @ 10.20.30.41:8081/api/peer/onion` | `C_ID @ 10.20.30.42:8082/api/peer/onion` |
+
+Replace the symbolic IDs with full router IDs and derive all three rows from
+the same Mr. X-approved inventory. Do not abbreviate IDs in configuration and
+do not replace exact tuples with ranges. Private membership mode rejects any
+allowlist whose exact unique cardinality is not three. Missing or mismatched
+local and remote tuples have the same result: a three-hop storage route fails
+with `path-not-found`. In private-only mode, a public contact cannot fill that
+gap.
+
+Validate the mode before accepting the UAT:
+
+1. Set `Runtime:AllowPublicPeerEndpoints=false` and
+   `Runtime:EnablePrivateAllowlistMembership=true` on all three routers, and
+   deny public egress at the network layer.
+2. Fetch each router's fresh signed contact from `/api/network/contact`.
+   Mr. X must verify its signature, derived router identity, freshness, and
+   exact advertised tuple before distributing it.
+3. Submit all three contacts to every router through `/api/session/rpc` with
+   method `store_rc`. The payload is the complete signed contact returned by
+   `/api/network/contact`; no unsigned contact may be synthesized from config.
+4. Confirm `/status` reports
+   `publicPeerAuthorizationMode="DenyAll"` and
+   `productionPublicRoutingReady=true`, plus:
+
+   ```json
+   {
+     "router": {
+       "privateMembership": {
+         "enabled": true,
+         "expectedRelays": 3,
+         "registeredRelays": 3,
+         "ready": true
+       }
+     }
+   }
+   ```
+
+   `ready` remains `false` when any two of the three fresh signed contacts
+   advertise the same X25519 public key, even if all three router identities
+   are registered.
+
+5. With runtime and transport healthy, confirm `/health/ready` returns `200`.
+   Before all three signed contacts are registered it must return `503`.
+6. Request a storage route and confirm it contains exactly the three expected,
+   unique router IDs, with the contacted local router as entry hop.
+7. In a disposable negative test, remove or alter each of the A, B, and C
+   tuples in turn and confirm `path-not-found`; restore the approved inventory
+   after every check.
+
+The private allowlist is a trust anchor, not membership data. A contact becomes
+registered only after `store_rc` validates its fresh Ed25519 self-signature and
+its exact allowlisted router-ID/RPC-endpoint tuple. A seed whose derived public
+ID differs from `Node:RouterId` fails startup in this mode.
+
+`DenyAll` has different readiness meaning across environments: in
+non-production private-only UAT it denies public peers while exact private
+tuples remain operational. With private membership mode enabled, healthy
+readiness is `200` only after all expected signed contacts are registered; in Production it
+means no proof-capable public routing is available, so readiness is
+intentionally `503` and `productionPublicRoutingReady=false`.
 
 ## Runtime Metrics
 
@@ -229,7 +318,8 @@ Default profile values are defined in `appsettings.json` and can be overridden p
 
 4. Verify readiness/registry behavior during degraded state:
 
-  - `GET /health/ready` stays `200` with `degraded=true` and `transportMode="degraded"`.
+  - In non-Production, `GET /health/ready` stays `200` with `degraded=true` and `transportMode="degraded"`.
+  - In Production, `DenyAll` public-peer authorization overrides transport health and keeps readiness at `503`.
   - `registry.transport` in `GET /status` mirrors supervisor metadata (`mode`, `degraded`, `restartCount`, `lastExitReason`).
 
 ## Registry Heartbeat

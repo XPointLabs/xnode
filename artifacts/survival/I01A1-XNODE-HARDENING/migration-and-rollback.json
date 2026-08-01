@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "survival-migration-rollback-v1",
+  "migrationRequired": true,
+  "migration": [
+    "Set Runtime:ProductionPublicPeerPorts to the minimal HTTPS port set.",
+    "Implement and inject a registry-backed endpoint ownership authorizer before production routing is enabled.",
+    "Keep the current deny-all production authorizer while ownership proof is unavailable.",
+    "For private-only UAT, set Runtime:AllowPublicPeerEndpoints=false and enforce network-layer public-egress denial."
+  ],
+  "dataMigration": "none",
+  "rollback": [
+    "Keep production routing stopped or retain the deny-all production authorizer.",
+    "Deliver a forward corrective commit for regressions.",
+    "Do not operationally revert the security commit or replace deny-all with allow-all."
+  ],
+  "rollbackRisk": "Operational revert is forbidden because it restores acceptance of a signed public-victim endpoint and the earlier IPv6 special-range exposure."
+}

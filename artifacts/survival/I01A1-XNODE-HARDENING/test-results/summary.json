@@ -1,0 +1,32 @@
+{
+  "schemaVersion": "survival-test-results-v1",
+  "subjectCommit": "e334ba82c1b7e4509299bf64d031bfc123985543",
+  "subjectTree": "8c98b64fa5a9006560ce1984bd64dcfd38ac233b",
+  "commands": [
+    {
+      "command": "dotnet test XNode.slnx --no-restore",
+      "exitCode": 0,
+      "passed": 97,
+      "failed": 0,
+      "skipped": 0,
+      "projects": {
+        "XNode.Tests": 76,
+        "XNode.IntegrationTests": 21
+      }
+    },
+    {
+      "command": "dotnet build XNode.slnx -c Release --no-restore",
+      "exitCode": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "command": "dotnet format XNode.slnx --no-restore --include assigned C# files",
+      "exitCode": 0
+    },
+    {
+      "command": "git diff --check",
+      "exitCode": 0
+    }
+  ]
+}

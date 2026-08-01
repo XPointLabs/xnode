@@ -39,7 +39,9 @@ public sealed class LocalRelayContactProviderTests
 
         var error = Assert.Throws<InvalidOperationException>(provider.Create);
 
-        Assert.Equal("Node:PublicPeerRpcEndpoint must be an absolute http(s) URL.", error.Message);
+        Assert.Equal(
+            "Node:PublicPeerRpcEndpoint must be an absolute http(s) URL with exact path '/api/peer/onion'.",
+            error.Message);
     }
 
     [Fact]

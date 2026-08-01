@@ -1,7 +1,9 @@
-﻿namespace XNode.Core.Runtime;
+namespace XNode.Core.Runtime;
 
 public sealed class RouterRuntimeOptions
 {
+    public const int PrivateAllowlistMembershipRelayCount = 3;
+
     public TimeSpan HeartbeatInterval { get; set; } = TimeSpan.FromSeconds(30);
 
     public bool BootstrapFromStorage { get; set; } = true;
@@ -26,5 +28,26 @@ public sealed class RouterRuntimeOptions
 
     public bool AllowLoopbackPeerEndpoints { get; set; }
 
-    public bool AllowPrivatePeerEndpoints { get; set; }
+    public bool EnablePrivatePeerEndpoints { get; set; }
+
+    public string PrivatePeerNetworkIdentity { get; set; } = "";
+
+    public List<PrivatePeerEndpointAllowlistEntry> PrivatePeerEndpointAllowlist { get; set; } = [];
+
+    public bool EnablePrivateAllowlistMembership { get; set; }
+
+    public int[] ProductionPublicPeerPorts { get; set; } = [];
+
+    public bool AllowPublicPeerEndpoints { get; set; } = true;
+}
+
+public sealed class PrivatePeerEndpointAllowlistEntry
+{
+    public string RouterId { get; set; } = "";
+
+    public string IpAddress { get; set; } = "";
+
+    public int Port { get; set; }
+
+    public string Path { get; set; } = "/api/peer/onion";
 }

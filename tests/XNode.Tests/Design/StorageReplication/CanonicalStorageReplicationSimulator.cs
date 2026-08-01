@@ -1,0 +1,1024 @@
+using System.Buffers.Binary;
+using System.Security.Cryptography;
+using System.Text;
+
+namespace XNode.Tests.Design.StorageReplication;
+
+internal sealed class StorageReplicaId : IEquatable<StorageReplicaId>, IComparable<StorageReplicaId>
+{
+    private readonly byte[] _bytes;
+
+    public StorageReplicaId(ReadOnlySpan<byte> bytes)
+    {
+        if (bytes.Length != 16)
+        {
+            throw new ArgumentException("A storage replica receipt ID is exactly 16 bytes.");
+        }
+
+        _bytes = bytes.ToArray();
+    }
+
+    public ReadOnlyMemory<byte> Bytes => _bytes;
+
+    public int CompareTo(StorageReplicaId? other) =>
+        other is null ? 1 : _bytes.AsSpan().SequenceCompareTo(other._bytes);
+
+    public bool Equals(StorageReplicaId? other) =>
+        other is not null && _bytes.AsSpan().SequenceEqual(other._bytes);
+
+    public override bool Equals(object? obj) => Equals(obj as StorageReplicaId);
+
+    public override int GetHashCode() =>
+        BinaryPrimitives.ReadInt32BigEndian(SHA256.HashData(_bytes));
+
+    public override string ToString() => Convert.ToHexStringLower(_bytes);
+}
+
+internal sealed class RouteHopId : IEquatable<RouteHopId>
+{
+    private readonly byte[] _bytes;
+
+    public RouteHopId(ReadOnlySpan<byte> bytes)
+    {
+        if (bytes.Length != 32)
+        {
+            throw new ArgumentException("A route hop router ID is exactly 32 bytes.");
+        }
+
+        _bytes = bytes.ToArray();
+    }
+
+    public ReadOnlyMemory<byte> Bytes => _bytes;
+
+    public bool Equals(RouteHopId? other) =>
+        other is not null && _bytes.AsSpan().SequenceEqual(other._bytes);
+
+    public override bool Equals(object? obj) => Equals(obj as RouteHopId);
+
+    public override int GetHashCode() =>
+        BinaryPrimitives.ReadInt32BigEndian(SHA256.HashData(_bytes));
+
+    public override string ToString() => Convert.ToHexStringLower(_bytes);
+}
+
+internal sealed class OpaquePlacementKey32
+{
+    private readonly byte[] _bytes;
+
+    public OpaquePlacementKey32(ReadOnlySpan<byte> bytes)
+    {
+        if (bytes.Length != 32)
+        {
+            throw new ArgumentException("The P05 placement key profile is exactly 32 bytes.");
+        }
+
+        _bytes = bytes.ToArray();
+    }
+
+    public ReadOnlySpan<byte> Span => _bytes;
+}
+
+internal sealed class RequestNonce
+{
+    private readonly byte[] _bytes;
+
+    public RequestNonce(ReadOnlySpan<byte> bytes)
+    {
+        if (bytes.Length is < 16 or > 64)
+        {
+            throw new ArgumentException("The test nonce must be 16..64 bytes.");
+        }
+
+        _bytes = bytes.ToArray();
+    }
+
+    public ReadOnlySpan<byte> Span => _bytes;
+}
+
+internal sealed class CanonicalMembershipContext
+{
+    private readonly byte[] _networkId;
+    private readonly byte[] _membershipStatementHash;
+
+    public CanonicalMembershipContext(
+        ReadOnlySpan<byte> networkId,
+        ReadOnlySpan<byte> membershipStatementHash)
+    {
+        if (networkId.Length != 16 || membershipStatementHash.Length != 32)
+        {
+            throw new ArgumentException("Membership context requires networkId16 and statementHash32.");
+        }
+
+        _networkId = networkId.ToArray();
+        _membershipStatementHash = membershipStatementHash.ToArray();
+    }
+
+    public byte[] NetworkId => _networkId.ToArray();
+
+    public byte[] MembershipStatementHash => _membershipStatementHash.ToArray();
+
+    public static CanonicalMembershipContext TestDefault(
+        IReadOnlyCollection<StorageReplicaId> replicas)
+    {
+        var network = SHA256.HashData("deep-storage-test-network-v1"u8)[..16];
+        var membershipBytes = replicas
+            .Order()
+            .SelectMany(static replica => replica.Bytes.ToArray())
+            .ToArray();
+        var framed = new byte["deep-storage-test-membership-v1"u8.Length + membershipBytes.Length];
+        "deep-storage-test-membership-v1"u8.CopyTo(framed);
+        membershipBytes.CopyTo(framed, "deep-storage-test-membership-v1"u8.Length);
+        return new CanonicalMembershipContext(network, SHA256.HashData(framed));
+    }
+}
+
+internal sealed record CanonicalStoragePlacementResult(
+    ulong MembershipEpoch,
+    OpaquePlacementKey32 PlacementKey,
+    CanonicalMembershipContext Membership,
+    byte[] PlacementCommitment,
+    IReadOnlyList<RouteHopId> RouteHops,
+    IReadOnlyList<StorageReplicaId> Replicas);
+
+internal sealed record CanonicalPlacementDistribution(
+    int Minimum,
+    int Maximum,
+    double Mean,
+    double CoefficientOfVariation)
+{
+    public static CanonicalPlacementDistribution Create(
+        int membershipSize,
+        int keyCount,
+        IEnumerable<int> assignmentCounts)
+    {
+        var counts = assignmentCounts.ToArray();
+        if (counts.Length != membershipSize || counts.Sum() != keyCount * 3)
+        {
+            throw new ArgumentException("Distribution counts do not cover the exact N=3 assignment set.");
+        }
+
+        var mean = counts.Average();
+        var variance = counts.Sum(value => Math.Pow(value - mean, 2)) / counts.Length;
+        return new CanonicalPlacementDistribution(
+            counts.Min(),
+            counts.Max(),
+            mean,
+            Math.Sqrt(variance) / mean);
+    }
+}
+
+internal static class CanonicalStoragePlacementSimulator
+{
+    private static ReadOnlySpan<byte> Domain => "deep-storage-placement-hrw-v1"u8;
+
+    public static CanonicalStoragePlacementResult Assign(
+        OpaquePlacementKey32 placementKey,
+        ulong membershipEpoch,
+        RequestNonce requestNonce,
+        IReadOnlyList<RouteHopId> routeHops,
+        IReadOnlyList<StorageReplicaId> eligibleReplicas,
+        CanonicalMembershipContext? membership = null)
+    {
+        ArgumentNullException.ThrowIfNull(placementKey);
+        ArgumentNullException.ThrowIfNull(requestNonce);
+        ArgumentNullException.ThrowIfNull(routeHops);
+        ArgumentNullException.ThrowIfNull(eligibleReplicas);
+        if (membershipEpoch == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(membershipEpoch));
+        }
+
+        if (requestNonce.Span.IsEmpty)
+        {
+            throw new ArgumentException("Nonce is transport replay input, even though placement excludes it.");
+        }
+
+        if (routeHops.Count == 0 || routeHops.Distinct().Count() != routeHops.Count)
+        {
+            throw new ArgumentException("Route hops are a separate, duplicate-free input.");
+        }
+
+        var members = eligibleReplicas.Distinct().Order().ToArray();
+        if (members.Length < 3 || members.Length != eligibleReplicas.Count)
+        {
+            throw new ArgumentException("At least three exact, distinct replica IDs are required.");
+        }
+
+        var selected = members
+            .Select(replica => new ScoredReplica(replica, Score(placementKey.Span, replica.Bytes.Span)))
+            .OrderByDescending(static value => value.Score, ByteArrayComparer.Instance)
+            .ThenBy(static value => value.Replica)
+            .Take(3)
+            .Select(static value => value.Replica)
+            .ToArray();
+        membership ??= CanonicalMembershipContext.TestDefault(members);
+
+        return new CanonicalStoragePlacementResult(
+            membershipEpoch,
+            placementKey,
+            membership,
+            PlacementCommitment(placementKey.Span),
+            routeHops.ToArray(),
+            selected);
+    }
+
+    private static byte[] PlacementCommitment(ReadOnlySpan<byte> placementKey)
+    {
+        var domain = "deep-storage-placement-commit-v1"u8;
+        var input = new byte[domain.Length + placementKey.Length + 4];
+        domain.CopyTo(input);
+        placementKey.CopyTo(input.AsSpan(domain.Length));
+        input[^4] = 1; // algorithm version
+        input[^3] = 3; // N
+        input[^2] = 2; // W
+        input[^1] = 2; // R
+        return SHA256.HashData(input);
+    }
+
+    private static byte[] Score(ReadOnlySpan<byte> placementKey, ReadOnlySpan<byte> replicaId)
+    {
+        var input = new byte[Domain.Length + 2 + placementKey.Length + 2 + replicaId.Length];
+        var offset = 0;
+        Domain.CopyTo(input);
+        offset += Domain.Length;
+        BinaryPrimitives.WriteUInt16BigEndian(input.AsSpan(offset), checked((ushort)placementKey.Length));
+        offset += 2;
+        placementKey.CopyTo(input.AsSpan(offset));
+        offset += placementKey.Length;
+        BinaryPrimitives.WriteUInt16BigEndian(input.AsSpan(offset), checked((ushort)replicaId.Length));
+        offset += 2;
+        replicaId.CopyTo(input.AsSpan(offset));
+        return SHA256.HashData(input);
+    }
+
+    private sealed record ScoredReplica(StorageReplicaId Replica, byte[] Score);
+
+    private sealed class ByteArrayComparer : IComparer<byte[]>
+    {
+        public static ByteArrayComparer Instance { get; } = new();
+
+        public int Compare(byte[]? left, byte[]? right)
+        {
+            if (ReferenceEquals(left, right))
+            {
+                return 0;
+            }
+
+            if (left is null)
+            {
+                return -1;
+            }
+
+            return right is null ? 1 : left.AsSpan().SequenceCompareTo(right);
+        }
+    }
+}
+
+internal static class CanonicalStorageLogId
+{
+    private static ReadOnlySpan<byte> Domain => "deep-storage-log-id-v1"u8;
+
+    public static byte[] Derive(
+        CanonicalStoragePlacementResult placement,
+        ulong generation)
+    {
+        if (generation == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(generation));
+        }
+
+        var networkId = placement.Membership.NetworkId;
+        var membershipHash = placement.Membership.MembershipStatementHash;
+        var input = new byte[Domain.Length + 16 + 32 + 32 + 8 + 8 + 4];
+        var offset = 0;
+        Domain.CopyTo(input);
+        offset += Domain.Length;
+        networkId.CopyTo(input, offset);
+        offset += 16;
+        membershipHash.CopyTo(input, offset);
+        offset += 32;
+        placement.PlacementCommitment.CopyTo(input, offset);
+        offset += 32;
+        BinaryPrimitives.WriteUInt64BigEndian(input.AsSpan(offset), placement.MembershipEpoch);
+        offset += 8;
+        BinaryPrimitives.WriteUInt64BigEndian(input.AsSpan(offset), generation);
+        offset += 8;
+        input[offset++] = 1; // algorithm version
+        input[offset++] = 3; // N
+        input[offset++] = 2; // W
+        input[offset] = 2; // R
+        return SHA256.HashData(input);
+    }
+}
+
+internal sealed record ReceiptExpectation(
+    CanonicalStoragePlacementResult Placement,
+    byte[] LogId,
+    ulong Generation,
+    ulong Cursor,
+    byte[] OperationId,
+    byte[] PreviousCommitHash,
+    byte[] PayloadDigest,
+    byte[]? TombstoneTarget)
+{
+    public static ReceiptExpectation Create(
+        CanonicalStoragePlacementResult placement,
+        ulong generation,
+        ulong cursor,
+        byte[] operationId,
+        byte[] previousCommitHash,
+        byte[] payloadDigest,
+        byte[]? tombstoneTarget)
+    {
+        if (generation == 0 || cursor == 0 ||
+            operationId.Length != 16 ||
+            previousCommitHash.Length != 32 ||
+            payloadDigest.Length != 32 ||
+            tombstoneTarget is { Length: not 16 })
+        {
+            throw new ArgumentException("Receipt expectation has a non-canonical field.");
+        }
+
+        return new ReceiptExpectation(
+            placement,
+            CanonicalStorageLogId.Derive(placement, generation),
+            generation,
+            cursor,
+            operationId.ToArray(),
+            previousCommitHash.ToArray(),
+            payloadDigest.ToArray(),
+            tombstoneTarget?.ToArray());
+    }
+}
+
+internal sealed record SimulatedBoundReceipt(
+    byte[] LogId,
+    ulong MembershipEpoch,
+    StorageReplicaId ReplicaId,
+    ulong Generation,
+    ulong Cursor,
+    byte[] OperationId,
+    byte[] PreviousCommitHash,
+    byte[] PayloadDigest,
+    byte[]? TombstoneTarget,
+    bool Durable)
+{
+    public static SimulatedBoundReceipt From(
+        ReceiptExpectation expectation,
+        StorageReplicaId replicaId) =>
+        new(
+            expectation.LogId.ToArray(),
+            expectation.Placement.MembershipEpoch,
+            replicaId,
+            expectation.Generation,
+            expectation.Cursor,
+            expectation.OperationId.ToArray(),
+            expectation.PreviousCommitHash.ToArray(),
+            expectation.PayloadDigest.ToArray(),
+            expectation.TombstoneTarget?.ToArray(),
+            true);
+}
+
+internal enum BoundQuorumStatus
+{
+    NoQuorum,
+    Durable
+}
+
+internal static class BoundReceiptEvaluator
+{
+    public static BoundQuorumStatus Evaluate(
+        ReceiptExpectation expectation,
+        IReadOnlyCollection<SimulatedBoundReceipt> receipts)
+    {
+        var owners = expectation.Placement.Replicas.ToHashSet();
+        var valid = receipts
+            .Where(receipt =>
+                receipt.Durable &&
+                receipt.LogId.AsSpan().SequenceEqual(expectation.LogId) &&
+                owners.Contains(receipt.ReplicaId) &&
+                receipt.MembershipEpoch == expectation.Placement.MembershipEpoch &&
+                receipt.Generation == expectation.Generation &&
+                receipt.Cursor == expectation.Cursor &&
+                Equal(receipt.OperationId, expectation.OperationId) &&
+                Equal(receipt.PreviousCommitHash, expectation.PreviousCommitHash) &&
+                Equal(receipt.PayloadDigest, expectation.PayloadDigest) &&
+                Equal(receipt.TombstoneTarget, expectation.TombstoneTarget))
+            .Select(static receipt => receipt.ReplicaId)
+            .Distinct()
+            .Count();
+
+        return valid >= 2 ? BoundQuorumStatus.Durable : BoundQuorumStatus.NoQuorum;
+    }
+
+    private static bool Equal(byte[]? left, byte[]? right) =>
+        left is null ? right is null : right is not null && left.AsSpan().SequenceEqual(right);
+}
+
+internal enum EpochOverlapStatus
+{
+    NoActiveQuorum,
+    ActiveDurablePreviousGap,
+    DurableBothEpochs
+}
+
+internal static class EpochOverlapEvaluator
+{
+    public static EpochOverlapStatus Evaluate(
+        ReceiptExpectation previous,
+        IReadOnlyCollection<SimulatedBoundReceipt> previousReceipts,
+        ReceiptExpectation active,
+        IReadOnlyCollection<SimulatedBoundReceipt> activeReceipts,
+        bool previousContinuityWasComplete)
+    {
+        if (active.Placement.MembershipEpoch != previous.Placement.MembershipEpoch + 1)
+        {
+            throw new ArgumentException("Only E/E+1 overlap is permitted.");
+        }
+
+        if (BoundReceiptEvaluator.Evaluate(active, activeReceipts) != BoundQuorumStatus.Durable)
+        {
+            return EpochOverlapStatus.NoActiveQuorum;
+        }
+
+        return previousContinuityWasComplete &&
+               BoundReceiptEvaluator.Evaluate(previous, previousReceipts) == BoundQuorumStatus.Durable
+            ? EpochOverlapStatus.DurableBothEpochs
+            : EpochOverlapStatus.ActiveDurablePreviousGap;
+    }
+}
+
+internal sealed record CanonicalStorageOperation(
+    byte[] LogicalObjectId,
+    byte[] PayloadDigest,
+    byte[]? TombstoneTarget)
+{
+    public bool IsTombstone => TombstoneTarget is not null;
+}
+
+internal sealed record CommittedStorageRecord(
+    byte[] LogId,
+    ulong MembershipEpoch,
+    ulong Generation,
+    ulong Cursor,
+    byte[] LogicalObjectId,
+    byte[] EpochOperationId,
+    byte[] PreviousCommitHash,
+    byte[] CommitHash,
+    byte[] PayloadDigest,
+    byte[]? TombstoneTarget,
+    IReadOnlyList<SimulatedBoundReceipt> DurableOwnerReceipts);
+
+internal enum QuorumAppendStatus
+{
+    Committed,
+    Idempotent,
+    HeadConflict,
+    IdempotencyConflict
+}
+
+internal sealed record QuorumAppendResult(QuorumAppendStatus Status, ulong Cursor);
+
+internal enum AuthenticatedReadStatus
+{
+    Complete,
+    NoMatchingHighWater
+}
+
+internal sealed record ReplicaHighWaterEvidence(
+    byte[] LogId,
+    StorageReplicaId ReplicaId,
+    ulong MembershipEpoch,
+    ulong Generation,
+    ulong Cursor,
+    byte[] CommitHash,
+    byte[] ReadChallenge,
+    uint IssuedBucket,
+    byte[] EvidenceDigest);
+
+internal sealed record VisibleStorageObject(byte[] LogicalObjectId, byte[] PayloadDigest);
+
+internal sealed record AuthenticatedReadPage(
+    AuthenticatedReadStatus Status,
+    ulong PageStartCursor,
+    ulong PageEndCursor,
+    ulong HighWaterCursor,
+    byte[] ContinuationHash,
+    IReadOnlyList<ReplicaHighWaterEvidence> HighWaterEvidence,
+    IReadOnlyList<CommittedStorageRecord> Records,
+    IReadOnlyList<VisibleStorageObject> VisibleObjects);
+
+internal sealed class ClientHighWaterLkg
+{
+    private readonly Dictionary<string, (ulong Cursor, byte[] CommitHash)> _heads =
+        new(StringComparer.Ordinal);
+
+    public bool TryObserve(ReadOnlySpan<byte> logId, ulong cursor, ReadOnlySpan<byte> commitHash)
+    {
+        var key = Convert.ToHexString(logId);
+        if (!_heads.TryGetValue(key, out var current))
+        {
+            _heads[key] = (cursor, commitHash.ToArray());
+            return true;
+        }
+
+        if (cursor < current.Cursor ||
+            cursor == current.Cursor && !commitHash.SequenceEqual(current.CommitHash))
+        {
+            return false;
+        }
+
+        if (cursor > current.Cursor)
+        {
+            _heads[key] = (cursor, commitHash.ToArray());
+        }
+
+        return true;
+    }
+}
+
+internal static class AuthenticatedReadPageVerifier
+{
+    private static ReadOnlySpan<byte> HighWaterDomain => "deep-storage-high-water-v1"u8;
+
+    public static bool Verify(
+        AuthenticatedReadPage page,
+        CanonicalStoragePlacementResult placement,
+        ulong generation,
+        ulong afterCursor,
+        ReadOnlySpan<byte> expectedPreviousCommitHash,
+        RequestNonce expectedChallenge,
+        uint currentBucket,
+        ClientHighWaterLkg clientLkg)
+    {
+        var logId = CanonicalStorageLogId.Derive(placement, generation);
+        if (page.Status != AuthenticatedReadStatus.Complete ||
+            expectedPreviousCommitHash.Length != 32 ||
+            page.ContinuationHash.Length != 32 ||
+            page.HighWaterEvidence.Count != 2 ||
+            page.HighWaterEvidence.Select(static item => item.ReplicaId).Distinct().Count() != 2 ||
+            page.HighWaterEvidence.Any(evidence =>
+                evidence.LogId.Length != 32 ||
+                !evidence.LogId.AsSpan().SequenceEqual(logId) ||
+                !placement.Replicas.Contains(evidence.ReplicaId) ||
+                evidence.MembershipEpoch != placement.MembershipEpoch ||
+                evidence.Generation != generation ||
+                evidence.Cursor != page.HighWaterCursor ||
+                evidence.CommitHash.Length != 32 ||
+                evidence.ReadChallenge.Length != expectedChallenge.Span.Length ||
+                !evidence.ReadChallenge.AsSpan().SequenceEqual(expectedChallenge.Span) ||
+                evidence.IssuedBucket > currentBucket ||
+                currentBucket - evidence.IssuedBucket > 1 ||
+                evidence.EvidenceDigest.Length != 32 ||
+                !evidence.EvidenceDigest.AsSpan().SequenceEqual(
+                    Digest(logId, evidence.ReplicaId, evidence.Cursor, evidence.CommitHash,
+                        evidence.ReadChallenge, evidence.IssuedBucket))) ||
+            !page.HighWaterEvidence[0].CommitHash.AsSpan()
+                .SequenceEqual(page.HighWaterEvidence[1].CommitHash))
+        {
+            return false;
+        }
+
+        if (page.Records.Count == 0)
+        {
+            if (page.HighWaterCursor > afterCursor ||
+                page.PageStartCursor != afterCursor + 1 ||
+                page.PageEndCursor != afterCursor ||
+                !page.ContinuationHash.AsSpan().SequenceEqual(expectedPreviousCommitHash))
+            {
+                return false;
+            }
+
+            return clientLkg.TryObserve(
+                logId,
+                page.HighWaterCursor,
+                page.HighWaterEvidence[0].CommitHash);
+        }
+
+        if (page.PageStartCursor != afterCursor + 1 ||
+            page.PageEndCursor != page.Records[^1].Cursor ||
+            page.PageEndCursor > page.HighWaterCursor ||
+            page.Records.Count != checked((int)(page.PageEndCursor - page.PageStartCursor + 1)))
+        {
+            return false;
+        }
+
+        var previousHash = expectedPreviousCommitHash.ToArray();
+        for (var index = 0; index < page.Records.Count; index++)
+        {
+            var record = page.Records[index];
+            var expectedCursor = page.PageStartCursor + (ulong)index;
+            if (record.LogId.Length != 32 ||
+                !record.LogId.AsSpan().SequenceEqual(logId) ||
+                record.MembershipEpoch != placement.MembershipEpoch ||
+                record.Generation != generation ||
+                record.Cursor != expectedCursor ||
+                record.PreviousCommitHash.Length != 32 ||
+                record.CommitHash.Length != 32 ||
+                !record.PreviousCommitHash.AsSpan().SequenceEqual(previousHash))
+            {
+                return false;
+            }
+
+            var expectation = ReceiptExpectation.Create(
+                placement,
+                generation,
+                record.Cursor,
+                record.EpochOperationId,
+                record.PreviousCommitHash,
+                record.PayloadDigest,
+                record.TombstoneTarget);
+            if (BoundReceiptEvaluator.Evaluate(expectation, record.DurableOwnerReceipts) !=
+                BoundQuorumStatus.Durable)
+            {
+                return false;
+            }
+
+            previousHash = record.CommitHash;
+        }
+
+        if (!previousHash.AsSpan().SequenceEqual(page.ContinuationHash) ||
+            page.PageEndCursor == page.HighWaterCursor &&
+            !page.ContinuationHash.AsSpan().SequenceEqual(page.HighWaterEvidence[0].CommitHash))
+        {
+            return false;
+        }
+
+        return clientLkg.TryObserve(
+            logId,
+            page.HighWaterCursor,
+            page.HighWaterEvidence[0].CommitHash);
+    }
+
+    public static byte[] Digest(
+        ReadOnlySpan<byte> logId,
+        StorageReplicaId replica,
+        ulong cursor,
+        ReadOnlySpan<byte> commitHash,
+        ReadOnlySpan<byte> readChallenge,
+        uint issuedBucket)
+    {
+        var input = new byte[
+            HighWaterDomain.Length + 32 + 16 + 8 + 32 + 2 + readChallenge.Length + 4];
+        var offset = 0;
+        HighWaterDomain.CopyTo(input);
+        offset += HighWaterDomain.Length;
+        logId.CopyTo(input.AsSpan(offset));
+        offset += 32;
+        replica.Bytes.Span.CopyTo(input.AsSpan(offset));
+        offset += 16;
+        BinaryPrimitives.WriteUInt64BigEndian(input.AsSpan(offset), cursor);
+        offset += 8;
+        commitHash.CopyTo(input.AsSpan(offset));
+        offset += 32;
+        BinaryPrimitives.WriteUInt16BigEndian(input.AsSpan(offset), checked((ushort)readChallenge.Length));
+        offset += 2;
+        readChallenge.CopyTo(input.AsSpan(offset));
+        offset += readChallenge.Length;
+        BinaryPrimitives.WriteUInt32BigEndian(input.AsSpan(offset), issuedBucket);
+        return SHA256.HashData(input);
+    }
+}
+
+internal enum LegacyMirrorStatus
+{
+    NotRollbackSafe,
+    RollbackSafe
+}
+
+internal static class LegacyMirrorEvaluator
+{
+    public static LegacyMirrorStatus Evaluate(
+        bool v2FinalizedW2,
+        bool legacyDurableAck,
+        bool legacyReadBackMatches,
+        bool continuityJournalComplete) =>
+        v2FinalizedW2 &&
+        legacyDurableAck &&
+        legacyReadBackMatches &&
+        continuityJournalComplete
+            ? LegacyMirrorStatus.RollbackSafe
+            : LegacyMirrorStatus.NotRollbackSafe;
+}
+
+/// <summary>
+/// A pure executable protocol model. The global record list is the model oracle;
+/// individual replica prefixes are the observable state used by every operation.
+/// A production implementation would use a per-slot quorum ballot/CAS protocol,
+/// not this in-memory oracle.
+/// </summary>
+internal sealed class QuorumLogProtocolSimulator
+{
+    private static ReadOnlySpan<byte> OperationDomain => "deep-storage-epoch-operation-v1"u8;
+    private static ReadOnlySpan<byte> CommitDomain => "deep-storage-commit-chain-v1"u8;
+    private readonly CanonicalStoragePlacementResult _placement;
+    private readonly ulong _generation;
+    private readonly Dictionary<StorageReplicaId, List<CommittedStorageRecord>> _replicaPrefixes;
+    private readonly List<CommittedStorageRecord> _committed = new();
+
+    public QuorumLogProtocolSimulator(
+        CanonicalStoragePlacementResult placement,
+        ulong generation)
+    {
+        _placement = placement;
+        _generation = generation;
+        if (generation == 0 || placement.Replicas.Count != 3)
+        {
+            throw new ArgumentException("A nonzero generation and exact N=3 placement are required.");
+        }
+
+        _replicaPrefixes = placement.Replicas.ToDictionary(
+            static replica => replica,
+            static _ => new List<CommittedStorageRecord>());
+    }
+
+    public IReadOnlyList<CommittedStorageRecord> CommittedRecords => _committed;
+
+    public CanonicalStoragePlacementResult Placement => _placement;
+
+    public ulong Generation => _generation;
+
+    public QuorumAppendResult TryAppend(
+        CanonicalStorageOperation operation,
+        ulong expectedCommittedCursor,
+        IReadOnlyCollection<StorageReplicaId> quorum)
+    {
+        ValidateOperation(operation);
+        var existing = _committed.FirstOrDefault(record =>
+            record.LogicalObjectId.AsSpan().SequenceEqual(operation.LogicalObjectId));
+        if (existing is not null)
+        {
+            var same = existing.PayloadDigest.AsSpan().SequenceEqual(operation.PayloadDigest) &&
+                       Equal(existing.TombstoneTarget, operation.TombstoneTarget);
+            return new QuorumAppendResult(
+                same ? QuorumAppendStatus.Idempotent : QuorumAppendStatus.IdempotencyConflict,
+                existing.Cursor);
+        }
+
+        var owners = quorum.Distinct().ToArray();
+        if (owners.Length != 2 || owners.Any(owner => !_replicaPrefixes.ContainsKey(owner)))
+        {
+            throw new ArgumentException("An append requires two distinct exact HRW owners.");
+        }
+
+        var expectedHash = expectedCommittedCursor == 0
+            ? new byte[32]
+            : _committed.Single(record => record.Cursor == expectedCommittedCursor).CommitHash;
+        var headsMatch = owners.All(owner =>
+        {
+            var prefix = _replicaPrefixes[owner];
+            var cursor = (ulong)prefix.Count;
+            var hash = prefix.Count == 0 ? new byte[32] : prefix[^1].CommitHash;
+            return cursor == expectedCommittedCursor && hash.AsSpan().SequenceEqual(expectedHash);
+        });
+        if (!headsMatch || expectedCommittedCursor != (ulong)_committed.Count)
+        {
+            return new QuorumAppendResult(QuorumAppendStatus.HeadConflict, (ulong)_committed.Count);
+        }
+
+        var cursor = expectedCommittedCursor + 1;
+        var epochOperationId = DeriveEpochOperationId(operation, cursor, expectedHash);
+        var commitHash = DeriveCommitHash(operation, cursor, epochOperationId, expectedHash);
+        var expectation = ReceiptExpectation.Create(
+            _placement,
+            _generation,
+            cursor,
+            epochOperationId,
+            expectedHash,
+            operation.PayloadDigest,
+            operation.TombstoneTarget);
+        var receipts = owners
+            .Select(owner => SimulatedBoundReceipt.From(expectation, owner))
+            .ToArray();
+        if (BoundReceiptEvaluator.Evaluate(expectation, receipts) != BoundQuorumStatus.Durable)
+        {
+            throw new InvalidOperationException("The model cannot commit without exact W=2 evidence.");
+        }
+
+        var record = new CommittedStorageRecord(
+            expectation.LogId.ToArray(),
+            _placement.MembershipEpoch,
+            _generation,
+            cursor,
+            operation.LogicalObjectId.ToArray(),
+            epochOperationId,
+            expectedHash.ToArray(),
+            commitHash,
+            operation.PayloadDigest.ToArray(),
+            operation.TombstoneTarget?.ToArray(),
+            receipts);
+        _committed.Add(record);
+        foreach (var owner in owners)
+        {
+            _replicaPrefixes[owner].Add(record);
+        }
+
+        return new QuorumAppendResult(QuorumAppendStatus.Committed, cursor);
+    }
+
+    public void CatchUp(StorageReplicaId target, StorageReplicaId source)
+    {
+        var targetPrefix = _replicaPrefixes[target];
+        var sourcePrefix = _replicaPrefixes[source];
+        if (targetPrefix.Count > sourcePrefix.Count)
+        {
+            throw new InvalidOperationException("Repair cannot roll a prefix back.");
+        }
+
+        for (var index = 0; index < targetPrefix.Count; index++)
+        {
+            if (!targetPrefix[index].CommitHash.AsSpan().SequenceEqual(sourcePrefix[index].CommitHash))
+            {
+                throw new InvalidOperationException("Conflicting authenticated prefixes cannot be repaired silently.");
+            }
+        }
+
+        foreach (var record in sourcePrefix.Skip(targetPrefix.Count))
+        {
+            if (record.DurableOwnerReceipts.Count < 2)
+            {
+                throw new InvalidOperationException("Repair requires per-record W2 evidence.");
+            }
+
+            targetPrefix.Add(record);
+        }
+    }
+
+    public AuthenticatedReadPage ReadAuthenticatedPage(
+        IReadOnlyCollection<StorageReplicaId> readQuorum,
+        ulong afterCursor,
+        int maximumRecords,
+        RequestNonce readChallenge,
+        uint issuedBucket)
+    {
+        ArgumentNullException.ThrowIfNull(readChallenge);
+        if (maximumRecords is < 1 or > 1024)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maximumRecords));
+        }
+
+        var readers = readQuorum.Distinct().ToArray();
+        if (readers.Length != 2 || readers.Any(reader => !_replicaPrefixes.ContainsKey(reader)))
+        {
+            throw new ArgumentException("Read requires two distinct exact HRW owners.");
+        }
+
+        var prefixes = readers.Select(reader => _replicaPrefixes[reader]).ToArray();
+        var sameHead = prefixes[0].Count == prefixes[1].Count &&
+                       (prefixes[0].Count == 0 ||
+                        prefixes[0][^1].CommitHash.AsSpan().SequenceEqual(prefixes[1][^1].CommitHash));
+        if (!sameHead)
+        {
+            return EmptyRead(AuthenticatedReadStatus.NoMatchingHighWater);
+        }
+
+        var head = (ulong)prefixes[0].Count;
+        if (afterCursor > head)
+        {
+            return EmptyRead(AuthenticatedReadStatus.NoMatchingHighWater);
+        }
+
+        var headHash = head == 0 ? new byte[32] : prefixes[0][^1].CommitHash;
+        var logId = CanonicalStorageLogId.Derive(_placement, _generation);
+        var evidence = readers
+            .Select(reader => new ReplicaHighWaterEvidence(
+                logId.ToArray(),
+                reader,
+                _placement.MembershipEpoch,
+                _generation,
+                head,
+                headHash.ToArray(),
+                readChallenge.Span.ToArray(),
+                issuedBucket,
+                AuthenticatedReadPageVerifier.Digest(
+                    logId,
+                    reader,
+                    head,
+                    headHash,
+                    readChallenge.Span,
+                    issuedBucket)))
+            .ToArray();
+        var records = prefixes[0]
+            .Where(record => record.Cursor > afterCursor)
+            .Take(maximumRecords)
+            .ToArray();
+        if (records.Select(static record => record.Cursor)
+                .SequenceEqual(Enumerable.Range(1, records.Length).Select(index => afterCursor + (ulong)index)) is false ||
+            records.Any(static record => record.DurableOwnerReceipts.Count < 2))
+        {
+            return EmptyRead(AuthenticatedReadStatus.NoMatchingHighWater);
+        }
+
+        var visible = new Dictionary<string, VisibleStorageObject>(StringComparer.Ordinal);
+        foreach (var record in prefixes[0])
+        {
+            if (record.TombstoneTarget is null)
+            {
+                visible[Convert.ToHexString(record.LogicalObjectId)] =
+                    new VisibleStorageObject(record.LogicalObjectId.ToArray(), record.PayloadDigest.ToArray());
+            }
+            else
+            {
+                visible.Remove(Convert.ToHexString(record.TombstoneTarget));
+            }
+        }
+
+        var pageStart = afterCursor + 1;
+        var pageEnd = records.Length == 0 ? afterCursor : records[^1].Cursor;
+        var continuationHash = records.Length > 0
+            ? records[^1].CommitHash.ToArray()
+            : afterCursor == 0
+                ? new byte[32]
+                : prefixes[0][checked((int)afterCursor - 1)].CommitHash.ToArray();
+        return new AuthenticatedReadPage(
+            AuthenticatedReadStatus.Complete,
+            pageStart,
+            pageEnd,
+            head,
+            continuationHash,
+            evidence,
+            records,
+            visible.Values.ToArray());
+    }
+
+    private AuthenticatedReadPage EmptyRead(AuthenticatedReadStatus status) =>
+        new(status, 0, 0, 0, new byte[32], Array.Empty<ReplicaHighWaterEvidence>(),
+            Array.Empty<CommittedStorageRecord>(), Array.Empty<VisibleStorageObject>());
+
+    private byte[] DeriveEpochOperationId(
+        CanonicalStorageOperation operation,
+        ulong cursor,
+        ReadOnlySpan<byte> previousCommitHash)
+    {
+        var tombstone = operation.TombstoneTarget ?? Array.Empty<byte>();
+        var logId = CanonicalStorageLogId.Derive(_placement, _generation);
+        var input = new byte[
+            OperationDomain.Length + 32 + 8 + 32 + 16 + 32 + 1 + tombstone.Length];
+        var offset = 0;
+        OperationDomain.CopyTo(input);
+        offset += OperationDomain.Length;
+        logId.CopyTo(input, offset);
+        offset += 32;
+        BinaryPrimitives.WriteUInt64BigEndian(input.AsSpan(offset), cursor);
+        offset += 8;
+        previousCommitHash.CopyTo(input.AsSpan(offset));
+        offset += 32;
+        operation.LogicalObjectId.CopyTo(input, offset);
+        offset += 16;
+        operation.PayloadDigest.CopyTo(input, offset);
+        offset += 32;
+        input[offset++] = operation.IsTombstone ? (byte)1 : (byte)0;
+        tombstone.CopyTo(input, offset);
+        return SHA256.HashData(input)[..16];
+    }
+
+    private byte[] DeriveCommitHash(
+        CanonicalStorageOperation operation,
+        ulong cursor,
+        ReadOnlySpan<byte> epochOperationId,
+        ReadOnlySpan<byte> previousCommitHash)
+    {
+        var tombstone = operation.TombstoneTarget ?? Array.Empty<byte>();
+        var logId = CanonicalStorageLogId.Derive(_placement, _generation);
+        if (epochOperationId.Length != 16)
+        {
+            throw new ArgumentException("Epoch operation ID must be 16 bytes.");
+        }
+
+        var input = new byte[
+            CommitDomain.Length + 32 + 8 + 16 + 32 + 16 + 32 + 1 + tombstone.Length];
+        var offset = 0;
+        CommitDomain.CopyTo(input);
+        offset += CommitDomain.Length;
+        logId.CopyTo(input, offset);
+        offset += 32;
+        BinaryPrimitives.WriteUInt64BigEndian(input.AsSpan(offset), cursor);
+        offset += 8;
+        epochOperationId.CopyTo(input.AsSpan(offset));
+        offset += 16;
+        previousCommitHash.CopyTo(input.AsSpan(offset));
+        offset += 32;
+        operation.LogicalObjectId.CopyTo(input, offset);
+        offset += 16;
+        operation.PayloadDigest.CopyTo(input, offset);
+        offset += 32;
+        input[offset++] = operation.IsTombstone ? (byte)1 : (byte)0;
+        tombstone.CopyTo(input, offset);
+        return SHA256.HashData(input);
+    }
+
+    private static void ValidateOperation(CanonicalStorageOperation operation)
+    {
+        if (operation.LogicalObjectId.Length != 16 ||
+            operation.PayloadDigest.Length != 32 ||
+            operation.TombstoneTarget is { Length: not 16 } ||
+            operation.TombstoneTarget is not null &&
+            operation.TombstoneTarget.AsSpan().SequenceEqual(operation.LogicalObjectId))
+        {
+            throw new ArgumentException("Operation identity, digest or tombstone target is invalid.");
+        }
+    }
+
+    private static bool Equal(byte[]? left, byte[]? right) =>
+        left is null ? right is null : right is not null && left.AsSpan().SequenceEqual(right);
+}

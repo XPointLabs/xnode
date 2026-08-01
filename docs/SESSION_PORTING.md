@@ -24,6 +24,14 @@ choices below that boundary.
   router is hop zero.
 - Only the currently registered `NodeDb` catalog authorizes relays. Contact self-signatures prove
   integrity, possession, and freshness, not membership.
+- A chain-free non-production private UAT may explicitly use an exact three-router allowlist as
+  membership authority, but only after each contact is received, freshly self-signed, and matched
+  to its exact router-ID, literal RFC1918 address, port, and `/api/peer/onion` path. Configuration
+  alone never creates membership; the catalog snapshot remains atomic for each route decision.
+- Route validation and the actual socket connection share one immutable endpoint policy. Private
+  DNS/rebinding, loopback, special-use addresses, redirects, and proxies fail closed. Production
+  public forwarding additionally requires HTTPS, an allowed port, and endpoint-ownership proof
+  bound to the router identity; the executable remains unready while only `DenyAll` is available.
 - RPC responses bind the pinned responder, request metadata, payload/result digests, issuance
   time, and success state under the responder Ed25519 identity.
 - Direct storage RPC outcomes are not relay-health evidence.
@@ -99,7 +107,8 @@ choices below that boundary.
 
 ## Readiness and diagnostics
 
-- Readiness includes router/Xray state, peer journals, native MAU2 authority/revocation policy,
+- Readiness includes router/Xray state, peer endpoint authorization/private membership, peer
+  journals, native MAU2 authority/revocation policy,
   durable replay, durable canonical outcomes, operation ledger, placement authority, and fanout.
 - Active client status is `native-mau2-meo1-mbr2-mba2`.
 - Logs and metrics expose only coarse failure categories and bounded operational counts.
@@ -113,4 +122,6 @@ choices below that boundary.
 - PendingPrior or a concurrent InFlight request can enter a worker.
 - A completed replay can return without exact outcome bytes and constant-time digest verification.
 - Any public V1 mailbox route, compatibility decoder, conversion, or fallback remains reachable.
+- Production readiness can pass without proof-capable public-peer authorization, or private UAT
+  readiness can pass with an incomplete/non-unique exact signed membership catalog.
 - Ported behavior is asserted only manually.

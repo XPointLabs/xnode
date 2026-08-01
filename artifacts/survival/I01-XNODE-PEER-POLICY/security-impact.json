@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "survival-security-impact-v1",
+  "riskBefore": "Docker/UAT RFC1918 peers were rejected, encouraging broad SSRF exceptions or unusable route contacts.",
+  "controlsAdded": [
+    "Immutable startup-built allowlist keyed by recipient router ID, canonical literal RFC1918 IPv4 /32, port, and exact path.",
+    "Same policy instance used for route contact eligibility and actual socket address selection.",
+    "Production environment and mainnet/test-identity startup guards.",
+    "Private hostname and public-to-private DNS rebinding denial at connect time.",
+    "Loopback, link-local/cloud metadata, multicast, unspecified, shared, documentation, IPv6 private, redirects, and proxies remain blocked."
+  ],
+  "residualRisks": [
+    "UAT operators must protect configuration integrity and stable container address assignment.",
+    "The allowlist permits direct HTTP to explicitly named RFC1918 peers; confidentiality still depends on the existing signed onion envelope and trusted UAT host/network boundary.",
+    "A compromised router identity already present in the UAT allowlist can receive traffic addressed to that identity."
+  ],
+  "secretsReadOrWritten": false,
+  "productionDefenseWeakened": false
+}

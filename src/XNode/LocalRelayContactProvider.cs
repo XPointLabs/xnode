@@ -1,4 +1,4 @@
-﻿using XNode.Core;
+using XNode.Core;
 using XNode.Core.Onion;
 using XNode.Core.Runtime;
 using XNode.Transport.Vless;
@@ -83,9 +83,14 @@ public sealed class LocalRelayContactProvider : ILocalRelayContactProvider
     {
         var trimmed = endpoint.Trim().TrimEnd('/');
         if (!Uri.TryCreate(trimmed, UriKind.Absolute, out var uri)
-            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
+            || !string.Equals(uri.AbsolutePath, PeerEndpointPolicy.OnionPeerPath, StringComparison.Ordinal)
+            || !string.IsNullOrEmpty(uri.Query)
+            || !string.IsNullOrEmpty(uri.UserInfo)
+            || !string.IsNullOrEmpty(uri.Fragment))
         {
-            throw new InvalidOperationException("Node:PublicPeerRpcEndpoint must be an absolute http(s) URL.");
+            throw new InvalidOperationException(
+                $"Node:PublicPeerRpcEndpoint must be an absolute http(s) URL with exact path '{PeerEndpointPolicy.OnionPeerPath}'.");
         }
 
         return trimmed;

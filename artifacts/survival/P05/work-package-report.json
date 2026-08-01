@@ -1,0 +1,132 @@
+{
+  "schema": "deep-survival-work-package-report.v1",
+  "workPackage": "P05",
+  "title": "Storage ownership and replication ADR",
+  "status": "design-review-go-proposed-not-approved",
+  "humanOwner": "Mr. X",
+  "decisionOwner": "Mr. X",
+  "decisionDeadline": "2026-07-21",
+  "approvedAdrSha": "NOT-APPROVED",
+  "repository": "xnode",
+  "branch": "survival/w01-p05-storage-replication-adr",
+  "baseCommit": "8b19577ef00f2169116cc08da51e9592089289a9",
+  "redCommit": "5feb95ff44e2f70e3e1b23307271ea968716e4c4",
+  "simulatorCommit": "97281d55b32864c5c508abe7977a80d19b769d5f",
+  "proposalCommit": "9f5e658d7f86272a041ca4ba0faa4327dd348353",
+  "initialEvidenceCommit": "ec8f5ac32429607ef8c0c36eb54144c5fae3bdcf",
+  "correctiveRedCommit": "8c2156bd37d551da6ef4f1776679c4399e429101",
+  "correctiveSimulatorCommit": "25cf55b26b7393b5abf654104fdc25fa790c5760",
+  "correctiveDesignCommit": "b131f853bf702d958d1552d3b6fa031837753c96",
+  "firstCorrectiveEvidenceCommit": "30dc69fdc02feba2c9543b89e01511b30bcf3437",
+  "secondCorrectiveRedCommit": "f95452ec1499cd9bdc5ec5812dd5b87e82552e43",
+  "secondCorrectiveDesignCommit": "86a4fd4fc9fe81d227c47b5266fd62628c7ac416",
+  "secondCorrectiveEvidenceCommit": "3f967230a0411ff9d4ef475e9db847bcf01d4b66",
+  "recommendation": {
+    "architecture": "xnode-core-storage-coordinator",
+    "productRuntimeOwner": "xnode",
+    "replication": "N=3/W=2/R=2",
+    "clientFanout": false,
+    "routeHopsEqualReplicas": false,
+    "legacyDefaultUnchanged": true
+  },
+  "pins": {
+    "promptSha256": "abaaadfa9fb1680d2a7b84d784d89695f9cd14110bc09689db623306f27d1f6a",
+    "p03bSourceCommit": "6e2c709a378ffac40c441e97e2e4da40aac9a104",
+    "p03bPackageVersion": "0.3.0-p03b.6e2c709",
+    "p03bPackageManifestSha256": "1c820f59033bee6157ecc89c9d7123664f404a6b6a9f5a05703667be5f45f694",
+    "p03bWorkPackageReportSha256": "ff37d549e8f2df5c89600916cfd82755712ac6bf0561d0753de3f0c161c8953d",
+    "p04SourceCommit": "b887fa088f486390be182cac4cbcb59b60ce8931",
+    "p04FinalGo": "db58937",
+    "p04PackageVersion": "0.3.0-p04.b887fa0",
+    "p04PackageManifestSha256": "fd3ef27bf0b9272570d6c6e680a3c99e581f6220799d13ee3afbd86ea0e99298",
+    "p04WorkPackageReportSha256": "fd9f78f88070a94450c2b07d14486a34508d852a6f66fa6b8368e7a59dfee04c"
+  },
+  "files": {
+    "adrSha256": "b5596de00fd9fd9da68f5f321fcc60667e16601f29e00bb45ff78aa8d8a6b914",
+    "apiProposalSha256": "db76a5f319b81714de75095fb952facacd973e36f6e00b5152fda9e0c9283f7e",
+    "estimateAndLocksSha256": "647532611c80c5aad4d5ce8d7cfb3a33445923b07eb9ba5df89a94f2fc1a6e3d",
+    "p05aWorkPackageSha256": "e9ea59f521198a4af5e7863bdab7c363e6763b5c56a17be0c22f408e24f694a2",
+    "simulatorSha256": "68c730de54397739d1b844ec21f62df452119d66bbe19874f379f0a97f8b1a83",
+    "simulatorTestsSha256": "078f940c7a54fc30b4310960567b65e63c5786c4f0ad7974b9a3384a6c9e0782",
+    "gateScriptSha256": "9a9a7da3dd883da17a567a7613af556ae307666f457fba2154807e77129c88f3"
+  },
+  "tests": {
+    "focusedRelease": {
+      "passed": 12,
+      "failed": 0,
+      "skipped": 0
+    },
+    "fullRelease": {
+      "unitPassed": 96,
+      "integrationPassed": 30,
+      "failed": 0,
+      "skipped": 0
+    },
+    "productionSourceFilesChanged": 0
+  },
+  "acceptance": {
+    "optionsCompared": "pass",
+    "ownerRecommended": "pass-xnode",
+    "routeReplicaSeparation": "pass",
+    "opaquePlacementNoMasterSecret": "pass",
+    "nonceIndependence": "pass-4-20-100-1000",
+    "minimalRemap": "pass-4-20-100-1000",
+    "distributionReported": "pass",
+    "binaryTypedGoldenPlacement": "pass",
+    "failureTable": "pass-corrected-design",
+    "quorumCursorAndPrefix": "pass-test-model-not-production-proof",
+    "authenticatedReadCompleteness": "pass-test-model-exact-log-fresh-challenge-lkg-omission-rejected",
+    "boundedPagination": "pass-test-model-page-boundary-omission-and-reorder-rejected",
+    "epochOverlapRollback": "pass-separate-membership-state-machine-design",
+    "legacyRollbackMirror": "pass-separate-strict-state-machine-design",
+    "logicalPhysicalQuota": "pass-design",
+    "mixedVersionLegacyFlag": "pass-design",
+    "apiDtoProposal": "pass-proposed",
+    "p08p09EstimateFileLocks": "pass",
+    "p05aExplicitPredecessor": "pass-proposed-deep-protocol-owner-files-vectors-package-review",
+    "productionReplication": "not-implemented-by-design",
+    "humanApproval": "pending"
+  },
+  "blockersBeforeP08P09": [
+    "Mr. X has not approved an immutable ADR SHA.",
+    "P04D verified immutable full storage roster is not pinned.",
+    "P05A deep-protocol source/package/hash and independent review do not exist yet.",
+    "Production replica/coordinator crypto and key distribution are not approved.",
+    "Durable atomic P04 LKG/revocation/equivocation state is not available."
+  ],
+  "independentReview": {
+    "initialCommit": "ec8f5ac32429607ef8c0c36eb54144c5fae3bdcf",
+    "initialVerdict": "NO-GO",
+    "initialCounts": {
+      "p0": 0,
+      "p1": 3,
+      "p2": 1,
+      "p3": 0
+    },
+    "firstCorrectiveCommit": "30dc69fdc02feba2c9543b89e01511b30bcf3437",
+    "firstCorrectiveVerdict": "NO-GO",
+    "firstCorrectiveCounts": {
+      "p0": 0,
+      "p1": 1,
+      "p2": 2,
+      "p3": 0
+    },
+    "secondCorrectiveReviewedCommit": "3f967230a0411ff9d4ef475e9db847bcf01d4b66",
+    "secondCorrectiveVerdict": "GO",
+    "secondCorrectiveCounts": {
+      "p0": 0,
+      "p1": 0,
+      "p2": 0,
+      "p3": 0
+    },
+    "allPriorFindingsClosed": true,
+    "residualDisposition": "design-review-go-only-adr-remains-proposed-not-approved"
+  },
+  "publication": {
+    "gitPush": false,
+    "dockerChanged": false,
+    "networkAccessed": false,
+    "productionRuntimeChanged": false,
+    "productionCredentialsAccessed": false
+  }
+}

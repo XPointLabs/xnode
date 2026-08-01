@@ -10,16 +10,16 @@ namespace XNode;
 public sealed class HttpMailboxReplicaPeerClient : IMailboxReplicaPeerClient
 {
     private readonly HttpClient _httpClient;
-    private readonly RouterRuntimeOptions _runtimeOptions;
+    private readonly PeerEndpointPolicy _peerEndpointPolicy;
     private readonly ReplicatedMailboxOptions _mailboxOptions;
 
     public HttpMailboxReplicaPeerClient(
         HttpClient httpClient,
-        RouterRuntimeOptions runtimeOptions,
+        PeerEndpointPolicy peerEndpointPolicy,
         ReplicatedMailboxOptions mailboxOptions)
     {
         _httpClient = httpClient;
-        _runtimeOptions = runtimeOptions;
+        _peerEndpointPolicy = peerEndpointPolicy;
         _mailboxOptions = mailboxOptions;
     }
 
@@ -61,10 +61,10 @@ public sealed class HttpMailboxReplicaPeerClient : IMailboxReplicaPeerClient
                 peer.Endpoint,
                 contract.Route)
             || !Uri.TryCreate(peer.Endpoint.Trim(), UriKind.Absolute, out var uri)
-            || !PeerEndpointPolicy.TryValidateUri(
+            || !_peerEndpointPolicy.TryValidatePeerRouteEndpoint(
+                peer.RouterId,
                 uri,
-                _runtimeOptions.AllowLoopbackPeerEndpoints,
-                _runtimeOptions.AllowPrivatePeerEndpoints,
+                contract.Route,
                 out _)
             || uri.Scheme != Uri.UriSchemeHttps
                 && !_mailboxOptions.AllowInsecureHttpPeerTransport
@@ -80,6 +80,8 @@ public sealed class HttpMailboxReplicaPeerClient : IMailboxReplicaPeerClient
         {
             Content = content
         };
+        message.Options.Set(HttpOnionPeerClient.RecipientRouterIdOption, peer.RouterId.Value);
+        message.Options.Set(HttpOnionPeerClient.ExpectedPeerPathOption, contract.Route);
         using var response = await _httpClient.SendAsync(
             message,
             HttpCompletionOption.ResponseHeadersRead,

@@ -1,4 +1,5 @@
-﻿using XNode.Core.NodeDb;
+﻿using XNode.Core;
+using XNode.Core.NodeDb;
 
 namespace XNode.Tests.Core;
 
@@ -83,6 +84,29 @@ public sealed class NodeDbPersistenceTests
     }
 
     [Fact]
+    public async Task UpsertAndRegisterAsync_StoresContactAndMembershipUnderOneGate()
+    {
+        var root = NewTempDirectory();
+        try
+        {
+            var db = new XNode.Core.NodeDb.NodeDb(Options(root), new FixedClock(TestData.Now));
+            await db.InitializeAsync();
+            var contact = TestData.Contact(1, "10.1.1.1");
+
+            var result = await db.UpsertAndRegisterAsync(contact);
+
+            Assert.True(result.Stored);
+            Assert.Equal(contact, db.GetContact(contact.RouterId));
+            Assert.True(db.IsRegistered(contact.RouterId));
+            Assert.Equal(1, db.Snapshot().RegisteredRelays);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task NodeDb_ConcurrentUpdatesPersistTheNewestContactWithoutTempCollisions()
     {
         var root = NewTempDirectory();
@@ -114,6 +138,80 @@ public sealed class NodeDbPersistenceTests
             Directory.Delete(root, recursive: true);
         }
     }
+
+    [Fact]
+    public async Task RegisteredRelayCatalogSnapshot_RemainsAtomicAndImmutableAcrossConcurrentUpdates()
+    {
+        var root = NewTempDirectory();
+        try
+        {
+            var db = new XNode.Core.NodeDb.NodeDb(Options(root), new FixedClock(TestData.Now));
+            await db.InitializeAsync();
+            await db.UpsertAndRegisterAsync(ContactWithOnionKey(1, "aa", signedMinutes: 0));
+            await db.UpsertAndRegisterAsync(ContactWithOnionKey(2, "aa", signedMinutes: 0));
+            await db.UpsertAndRegisterAsync(ContactWithOnionKey(3, "bb", signedMinutes: 0));
+
+            var snapshotCaptured = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var updatesCompleted = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var reader = Task.Run(async () =>
+            {
+                var oldSnapshot = db.GetRegisteredRelayCatalogSnapshot();
+                snapshotCaptured.SetResult();
+                await updatesCompleted.Task;
+                return OnionKeys(oldSnapshot);
+            });
+            var writer = Task.Run(async () =>
+            {
+                await snapshotCaptured.Task;
+                await db.UpsertAndRegisterAsync(ContactWithOnionKey(3, "aa", signedMinutes: 2));
+                var middleSnapshot = db.GetRegisteredRelayCatalogSnapshot();
+                await db.UpsertAndRegisterAsync(ContactWithOnionKey(1, "cc", signedMinutes: 2));
+                await db.UpsertAndRegisterAsync(ContactWithOnionKey(2, "cc", signedMinutes: 2));
+                updatesCompleted.SetResult();
+                return OnionKeys(middleSnapshot);
+            });
+
+            var oldKeys = await reader;
+            var middleKeys = await writer;
+            var finalSnapshot = db.GetRegisteredRelayCatalogSnapshot();
+            var finalKeys = OnionKeys(finalSnapshot);
+
+            Assert.Equal(["aa", "aa", "bb"], oldKeys);
+            Assert.Equal(["aa", "aa", "aa"], middleKeys);
+            Assert.Equal(["cc", "cc", "aa"], finalKeys);
+            Assert.All(
+                new[] { oldKeys, middleKeys, finalKeys },
+                static keys => Assert.True(keys.Distinct(StringComparer.OrdinalIgnoreCase).Count() < keys.Length));
+            Assert.Equal(3, finalSnapshot.RegisteredRelayCount);
+
+            var leakedContact = finalSnapshot.GetContact(TestData.Id(1))!;
+            leakedContact.Capabilities[0] = "mutated";
+            Assert.Equal(
+                "session-rpc",
+                finalSnapshot.GetContact(TestData.Id(1))!.Capabilities[0]);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static RelayContact ContactWithOnionKey(byte id, string keyByte, int signedMinutes)
+    {
+        var contact = TestData.Contact(id, $"10.3.0.{id}", signedMinutes: signedMinutes);
+        return contact with
+        {
+            X25519PublicKey = string.Concat(Enumerable.Repeat(keyByte, 32)),
+            Capabilities = ["session-rpc", "onion-v1"]
+        };
+    }
+
+    private static string[] OnionKeys(RegisteredRelayCatalogSnapshot snapshot) =>
+        snapshot.GetContacts()
+            .Select(static contact => contact.X25519PublicKey[..2])
+            .ToArray();
 
     private static NodeDbOptions Options(string root)
     {

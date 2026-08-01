@@ -1,0 +1,83 @@
+{
+  "schema": "deep-storage-placement-simulation.v1",
+  "workPackage": "P05",
+  "status": "design-evidence-only-not-production",
+  "algorithm": "unweighted-hrw-sha256-v1",
+  "replication": {
+    "n": 3,
+    "w": 2,
+    "r": 2
+  },
+  "keysPerMembership": 8192,
+  "matrix": [
+    {
+      "members": 4,
+      "assignments": 24576,
+      "minimum": 6125,
+      "maximum": 6171,
+      "mean": 6144.0,
+      "coefficientOfVariation": 0.0027,
+      "addOneRemapFraction": 0.603882,
+      "expectedAddOneRemapFraction": 0.600000
+    },
+    {
+      "members": 20,
+      "assignments": 24576,
+      "minimum": 1187,
+      "maximum": 1265,
+      "mean": 1228.8,
+      "coefficientOfVariation": 0.0163,
+      "addOneRemapFraction": 0.144775,
+      "expectedAddOneRemapFraction": 0.142857
+    },
+    {
+      "members": 100,
+      "assignments": 24576,
+      "minimum": 209,
+      "maximum": 277,
+      "mean": 245.76,
+      "coefficientOfVariation": 0.0600,
+      "addOneRemapFraction": 0.033325,
+      "expectedAddOneRemapFraction": 0.029703
+    },
+    {
+      "members": 1000,
+      "assignments": 24576,
+      "minimum": 10,
+      "maximum": 39,
+      "mean": 24.58,
+      "coefficientOfVariation": 0.2037,
+      "addOneRemapFraction": 0.003296,
+      "expectedAddOneRemapFraction": 0.002997
+    }
+  ],
+  "properties": {
+    "canonicalBinaryIds": "pass-separate-route32-replica16",
+    "goldenOwnerVector": "pass",
+    "requestNonceIndependence": "pass-all-4-20-100-1000",
+    "threeDistinctOwners": "pass",
+    "routeAndReplicaInputsSeparate": "pass",
+    "addOneMinimalRemap": "pass-all-4-20-100-1000",
+    "exactOwnerEpochOperationGenerationCursorDigestBinding": "pass",
+    "alternatingAbBcAcPrefix": "pass",
+    "concurrentStaleHead": "pass-rejected",
+    "unknownOutcomeRetry": "pass-idempotent",
+    "authenticatedHighWater": "pass-two-exact-owners-exact-log-id",
+    "highWaterFreshness": "pass-client-challenge-and-issued-bucket-bound",
+    "clientHighWaterLkg": "pass-lower-cursor-and-same-cursor-different-hash-rejected-per-log",
+    "crossLogSubstitution": "pass-cross-network-cross-placement-and-empty-head-substitution-rejected",
+    "perRecordContiguousCompleteness": "pass-omission-rejected",
+    "boundedPagination": "pass-multi-page-boundary-omission-and-reordering-rejected",
+    "exactTombstoneTarget": "pass-higher-committed-cursor",
+    "epochOverlapContinuityGap": "pass-rollback-disabled",
+    "legacyMirrorGap": "pass-rollback-claim-disabled"
+  },
+  "limitations": [
+    "Test-only simulator; no product project references it.",
+    "No disk, network, crypto, latency, battery, chaos or production durability claim.",
+    "The model oracle is not a production ballot/consensus implementation.",
+    "The simulator models exact log-scoped evidence, freshness and bounded pages but does not implement P03B/P05A crypto.",
+    "Freshness buckets and client last-known-good state are design-test mechanisms, not a claim that device clock rollback and state loss are solved.",
+    "P05A and P04D remain mandatory predecessors."
+  ]
+}
