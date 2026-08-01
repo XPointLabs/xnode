@@ -42,15 +42,22 @@ var mailboxClientActivationOptions = builder.Configuration.GetSection("MailboxCl
     .Get<MailboxClientActivationOptions>() ?? new MailboxClientActivationOptions();
 var mailboxClientAdapterOptions = builder.Configuration.GetSection("MailboxClientAdapter")
     .Get<MailboxClientAdapterOptions>() ?? new MailboxClientAdapterOptions();
+var productionMailboxAuthorityOptions = builder.Configuration
+    .GetSection("MailboxClientProductionAuthority")
+    .Get<ProductionMailboxAuthorityOptions>() ?? new ProductionMailboxAuthorityOptions();
 mailboxOptions.Validate();
 mailboxPeerAuthorityOptions.Validate(mailboxOptions.Enabled);
+productionMailboxAuthorityOptions.Validate(
+    nodeOptions,
+    builder.Environment.IsProduction());
 var mailboxClientActivationPlan = MailboxClientComposition.Validate(
     mailboxClientActivationOptions,
     mailboxClientAdapterOptions,
     nodeOptions,
     mailboxOptions,
     builder.Environment.IsDevelopment(),
-    mailboxPeerAuthorityOptions);
+    mailboxPeerAuthorityOptions,
+    productionMailboxAuthorityOptions);
 if (mailboxOptions.Enabled
     && mailboxPeerAuthorityOptions.CurrentEpochExpiresAtUnixSeconds
         <= checked((ulong)DateTimeOffset.UtcNow.ToUnixTimeSeconds()))
@@ -107,8 +114,15 @@ builder.Services.AddSingleton(mailboxOptions);
 builder.Services.AddSingleton(mailboxPeerAuthorityOptions);
 builder.Services.AddSingleton(mailboxClientActivationOptions);
 builder.Services.AddSingleton(mailboxClientAdapterOptions);
+builder.Services.AddSingleton(productionMailboxAuthorityOptions);
 builder.Services.AddSingleton(mailboxClientActivationPlan);
 builder.Services.AddSingleton<MailboxClientRuntimeReadiness>();
+builder.Services.AddSingleton<IMailboxStorageSecurity, MailboxStorageSecurity>();
+builder.Services.AddSingleton<IMailboxDurabilityBarrier, MailboxDurabilityBarrier>();
+builder.Services.AddSingleton<IProductionMailboxAuthorityFileSecurity,
+    ProductionMailboxAuthorityFileSecurity>();
+builder.Services.AddSingleton<ProductionMailboxAuthorityProvider>();
+builder.Services.AddHostedService<ProductionMailboxAuthorityHostedService>();
 if (mailboxClientActivationPlan.DevelopmentFixture)
 {
     builder.Services.AddSingleton<
@@ -354,7 +368,8 @@ app.MapGet("/health/ready", (
     IXraySupervisor xray,
     ReplicatedMailboxOptions mailbox,
     MailboxPeerRuntimeReadiness mailboxPeer,
-    MailboxClientRuntimeReadiness mailboxClient) =>
+    MailboxClientRuntimeReadiness mailboxClient,
+    ProductionMailboxAuthorityProvider productionMailboxAuthority) =>
 {
     var status = runtime.Status;
     var xrayStatus = xray.Status;
@@ -367,13 +382,17 @@ app.MapGet("/health/ready", (
     var mailboxPeerReady = !mailbox.Enabled || mailboxPeer.Ready;
     var mailboxClientReady =
         !mailboxClientActivationPlan.RoutesMapped || mailboxClient.Ready;
+    var productionMailboxAuthorityReady =
+        !productionMailboxAuthorityOptions.Enabled
+        || productionMailboxAuthority.Status.Ready;
     var baseReadiness = RouterReadinessEvaluator.Evaluate(
         status,
         transportReady,
         peerEndpointPolicy.IsProductionPublicRoutingReady);
     var ready = baseReadiness.Ready
         && mailboxPeerReady
-        && mailboxClientReady;
+        && mailboxClientReady
+        && productionMailboxAuthorityReady;
     return ready
         ? Results.Ok(new
         {
@@ -383,7 +402,8 @@ app.MapGet("/health/ready", (
             publicPeerAuthorizationMode = peerEndpointPolicy.PublicAuthorizationMode.ToString(),
             privateMembership = status.PrivateMembership,
             mailboxPeer = mailboxPeer.Status,
-            mailboxClient = mailboxClient.Status
+            mailboxClient = mailboxClient.Status,
+            mailboxProductionAuthority = productionMailboxAuthority.Status
         })
         : Results.Json(
             new
@@ -394,7 +414,8 @@ app.MapGet("/health/ready", (
                 publicPeerRoutingReady = peerEndpointPolicy.IsProductionPublicRoutingReady,
                 publicPeerAuthorizationMode = peerEndpointPolicy.PublicAuthorizationMode.ToString(),
                 mailboxPeer = mailboxPeer.Status,
-                mailboxClient = mailboxClient.Status
+                mailboxClient = mailboxClient.Status,
+                mailboxProductionAuthority = productionMailboxAuthority.Status
             },
             statusCode: StatusCodes.Status503ServiceUnavailable);
 });
@@ -406,6 +427,7 @@ app.MapGet("/status", (
     ReplicatedMailboxOptions mailbox,
     MailboxPeerRuntimeReadiness mailboxPeer,
     MailboxClientRuntimeReadiness mailboxClient,
+    ProductionMailboxAuthorityProvider productionMailboxAuthority,
     IServiceProvider services) =>
 {
     object mailboxStatus = mailbox.Enabled
@@ -426,7 +448,8 @@ app.MapGet("/status", (
         registryPayload = registryPayloadFactory.Create(),
         mailbox = mailboxStatus,
         onionPeerReplay = "volatile-explicit-debt",
-        mailboxClient = mailboxClient.Status
+        mailboxClient = mailboxClient.Status,
+        mailboxProductionAuthority = productionMailboxAuthority.Status
     });
 });
 

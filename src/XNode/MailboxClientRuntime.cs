@@ -44,7 +44,8 @@ public static class MailboxClientComposition
         RouterNodeOptions node,
         ReplicatedMailboxOptions mailbox,
         bool isDevelopment,
-        MailboxPeerAuthorityOptions? peerAuthority = null)
+        MailboxPeerAuthorityOptions? peerAuthority = null,
+        ProductionMailboxAuthorityOptions? productionAuthority = null)
     {
         ArgumentNullException.ThrowIfNull(activation);
         ArgumentNullException.ThrowIfNull(adapter);
@@ -62,11 +63,24 @@ public static class MailboxClientComposition
             return new(activation, adapter, false, false);
         }
 
-        if (!isDevelopment || !activation.DevelopmentFixture.Enabled)
+        if (!isDevelopment)
+        {
+            if (productionAuthority?.Enabled == true)
+            {
+                throw new InvalidOperationException(
+                    "MailboxClient Production activation remains fail-closed until a hash-bound " +
+                    "public revocation artifact is verified against PMA1.");
+            }
+
+            throw new InvalidOperationException(
+                "MailboxClient Production activation requires the PMA1 authority and its " +
+                "hash-bound public revocation artifact.");
+        }
+
+        if (!activation.DevelopmentFixture.Enabled)
         {
             throw new InvalidOperationException(
-                "MailboxClient activation requires reviewed production authority, placement, " +
-                "fanout and revocation providers. Only the explicit Development fixture is available.");
+                "MailboxClient Development activation requires the explicit Development fixture.");
         }
 
         if (!mailbox.Enabled || !adapter.Enabled)

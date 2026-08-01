@@ -236,6 +236,41 @@ public sealed class MailboxClientActivationGuardTests
     }
 
     [Fact]
+    public void ProductionPma1SubstrateCannotBypassMissingRevocationArtifactGate()
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            MailboxClientComposition.Validate(
+                new MailboxClientActivationOptions { Enabled = true },
+                new MailboxClientAdapterOptions { Enabled = true },
+                new RouterNodeOptions(),
+                new ReplicatedMailboxOptions { Enabled = true },
+                isDevelopment: false,
+                productionAuthority: new ProductionMailboxAuthorityOptions
+                {
+                    Enabled = true
+                }));
+
+        Assert.Contains("hash-bound public revocation artifact", exception.Message);
+    }
+
+    [Fact]
+    public void HostWiresProductionAuthorityIntoSanitizedReadinessOnly()
+    {
+        var root = FindRepositoryRoot();
+        var source = File.ReadAllText(Path.Combine(root, "src", "XNode", "Program.cs"));
+        using var settings = JsonDocument.Parse(File.ReadAllText(
+            Path.Combine(root, "src", "XNode", "appsettings.json")));
+
+        Assert.False(settings.RootElement
+            .GetProperty("MailboxClientProductionAuthority")
+            .GetProperty("enabled")
+            .GetBoolean());
+        Assert.Contains(nameof(ProductionMailboxAuthorityHostedService), source);
+        Assert.Contains("mailboxProductionAuthority = productionMailboxAuthority.Status", source);
+        Assert.DoesNotContain("productionMailboxAuthority.NodeIngress", source);
+    }
+
+    [Fact]
     public void DevelopmentActivation_AcceptsDockerAdvertisedOriginThenRejectsKeyReuseAndBadOrigins()
     {
         var crypto = new SodiumMailboxPeerReplicationCrypto();

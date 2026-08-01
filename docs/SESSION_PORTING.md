@@ -102,8 +102,11 @@ choices below that boundary.
   physical blob cleanup as bounded best effort after logical durability.
 - The client adapter consumes only the exact locked P10J protocol closure. There is no public
   MST1/MRT1/MAK1 path, MCP1 compatibility envelope, V1 translation, or fallback call graph.
-- Production activation still requires reviewed issuer/revocation distribution, membership-bound
-  placement, and key custody. Development may use only the explicit pinned two-XNode fixture.
+- Production consumes a protected read-only canonical PMA1 artifact only through a pinned Mr. X
+  key hash and protected atomic LKG chain. It exposes signed NodeIngress current/next SPKI and
+  issuer/E/E+1 authority, but readiness and routes remain fail-closed until a hash-bound public
+  revocation artifact can answer serial-level revocation. Development remains a separate explicit
+  pinned two-XNode fixture and cannot consume the production provider.
 
 ## Readiness and diagnostics
 
@@ -112,6 +115,7 @@ choices below that boundary.
   durable replay, durable canonical outcomes, operation ledger, placement authority, and fanout.
 - Active client status is `native-mau2-meo1-mbr2-mba2`.
 - Logs and metrics expose only coarse failure categories and bounded operational counts.
+- Authority diagnostics never expose PMA1 paths, endpoints, pins, hashes, or exception text.
 
 ## Stop-the-line conditions
 

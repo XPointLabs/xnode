@@ -4,31 +4,31 @@
     "net10.0": {
       "Deep.Protocol": {
         "type": "Transitive",
-        "resolved": "0.4.0-survival.e570512",
-        "contentHash": "7TZ9uLNtVQWEqKhu5R+r23yxGIzNfhtMY0VJ8X7OPTgbsN6FJpf0DZ7/PCgjqTcUecZxBScSJ7yFxfLb+ozJCw==",
+        "resolved": "0.4.0-production.fa31413",
+        "contentHash": "OtuexQCAEthpeyi/dSQa36r+7bm8NIqRDFZTbFAWoELsp/VE2uoXJyyVleqUl6N5GROk2BZbGA5E2G2UENWE+Q==",
         "dependencies": {
-          "Deep.Protocol.Abstractions": "0.4.0-survival.e570512",
-          "Deep.Protocol.Protobuf": "0.4.0-survival.e570512",
+          "Deep.Protocol.Abstractions": "0.4.0-production.fa31413",
+          "Deep.Protocol.Protobuf": "0.4.0-production.fa31413",
           "Sodium.Core": "1.4.1"
         }
       },
       "Deep.Protocol.Abstractions": {
         "type": "Transitive",
-        "resolved": "0.4.0-survival.e570512",
-        "contentHash": "c2rRxx7OgrI2pmfkze2FS3mJd6Rru84X8bwX7/FLJR9YgTO0L+gQlyUuoXpXKOmFQW+Um4fjwE/dp+79sIckow=="
+        "resolved": "0.4.0-production.fa31413",
+        "contentHash": "bOAPd+hOb+JiLW+ftGkkAHM6Suda3CpciaRkWpeJDhXozf6vzAkOn7nIX1JXj6C27Va58ih2wyoLrI+tVjCUyQ=="
       },
       "Deep.Protocol.MembershipRoutes": {
         "type": "Transitive",
-        "resolved": "0.4.0-survival.e570512",
-        "contentHash": "/35oG7mCA7AtoK5fGJ/SgltcqCvt8H4oAgP80zzryQyElT01iirwAnYx2mVmDpJKtlwzmUvUisCRe+TGAVk9aA==",
+        "resolved": "0.4.0-production.fa31413",
+        "contentHash": "ydLxoGEL8KdiAWVrigx4c7fsbyV1heBlEeUEpRSbIkkhWBVL3jpx5dA4JS8usWXf6nplToghXjQyisMmoWOmBw==",
         "dependencies": {
-          "Deep.Protocol": "0.4.0-survival.e570512"
+          "Deep.Protocol": "0.4.0-production.fa31413"
         }
       },
       "Deep.Protocol.Protobuf": {
         "type": "Transitive",
-        "resolved": "0.4.0-survival.e570512",
-        "contentHash": "6ycEE9S9ZRTdKcg4OR88h0WP4Opqx2bzN/p2Sb8xhi6amr7gGOL5ck+oyhFp6N3sTg5gEpE9YNQ9KqSZIclWvQ==",
+        "resolved": "0.4.0-production.fa31413",
+        "contentHash": "953w8A8IwxcReTxiMRf/hxtwtcm/Vc10jFZFuP4zDl7nPByW7QeILCWfF3jtizf1evexukzTM5RNNQHLQZGemg==",
         "dependencies": {
           "Google.Protobuf": "3.32.1"
         }
@@ -69,8 +69,8 @@
       "xnode.core": {
         "type": "Project",
         "dependencies": {
-          "Deep.Protocol": "[0.4.0-survival.e570512, 0.4.0-survival.e570512]",
-          "Deep.Protocol.MembershipRoutes": "[0.4.0-survival.e570512, 0.4.0-survival.e570512]",
+          "Deep.Protocol": "[0.4.0-production.fa31413, 0.4.0-production.fa31413]",
+          "Deep.Protocol.MembershipRoutes": "[0.4.0-production.fa31413, 0.4.0-production.fa31413]",
           "Rebex.Elliptic.Ed25519": "[1.2.2, )",
           "Sodium.Core": "[1.4.1, )"
         }

@@ -575,9 +575,10 @@ v3 is intentionally incompatible with v2, whose records lack the canonical blob/
 membership evidence needed for safe retrieval and tombstones. Operation capacity counts stores,
 ACK operation records and each ACK item.
 
-Do not expose client mailbox endpoints in production. Production issuer/revocation/placement
-authorities and reviewed key custody remain absent. A survival-only Development composition
-exists for honest two-XNode interoperability testing. The activation decision is frozen in
+Do not expose client mailbox endpoints in production. XNode can now consume the public PMA1
+issuer/epoch/NodeIngress-SPKI substrate, but it deliberately remains unready until a separate
+hash-bound revocation artifact can answer serial-level decisions. A survival-only Development
+composition exists for honest two-XNode interoperability testing. The activation decision is frozen in
 `docs/adr/0006-mailbox-client-activation-blocker.md`.
 
 `MailboxClient` remains fail-closed by default:
@@ -591,7 +592,7 @@ exists for honest two-XNode interoperability testing. The activation decision is
 ```
 
 Setting it to `true` from JSON, environment variables or command-line configuration prevents host
-construction in production. In Development it also requires `MailboxClientAdapter:Enabled=true`,
+construction in production while the revocation artifact gate is open. In Development it also requires `MailboxClientAdapter:Enabled=true`,
 `Mailbox:Enabled=true`, and an explicit `developmentFixture` containing a pinned 16-byte network
 id, issuer public key and generation/validity window, coordinator base URL, current/next
 placement ids and their SHA-256 commitments, two distinct replica ids and matching Ed25519 public
@@ -604,6 +605,52 @@ container bind address in `Node.ApiListenUrl`. LAN HTTP is accepted only inside 
 Development composition. `/status` and `/health/ready` expose
 `starting`, `ready`, or fail-closed startup state and never report enabled before the durable
 ledgers and adapter initialize.
+
+### Production PMA1 authority substrate
+
+The production-only public authority loader is configured independently from route activation:
+
+```json
+{
+  "MailboxClientProductionAuthority": {
+    "enabled": true,
+    "artifactPath": "/run/secrets/deep/mailbox-authority.pma1",
+    "artifactTrustRoot": "/run/secrets/deep",
+    "lastKnownGoodPath": "/var/lib/xnode/mailbox-authority/authority.pml1",
+    "pinnedMrXPublicKeySha256": "<64 lowercase hex>",
+    "expectedNetworkId": "<32 lowercase hex>",
+    "clockSkewSeconds": 60,
+    "maximumArtifactBytes": 65536
+  }
+}
+```
+
+This section is rejected outside `Production`. All paths must be absolute, the PMA1 file must stay
+inside its explicit immutable trust root, and the LKG must stay inside `Node:DataDirectory`. Every
+ancestor from the file to that trust root is checked before each open and may be writable only by
+the service identity. On Linux the PMA1 artifact is an owner-only `0400` regular file and the
+pre-provisioned PML1 LKG is `0600`; no traversed path may be a symlink. On Windows files and
+ancestors must have the exact service owner and protected non-inherited service-only ACLs, with the
+PMA1 artifact read-only. PML1 contains
+only generations and SHA-256 chain state, never a private/signing key, holder, capability,
+mailbox id, or endpoint.
+
+Startup performs canonical PMA1 decode, pinned Mr. X key-hash and Ed25519 verification, expected
+network, exact authority/hash successor, revocation generation/head/snapshot successor, time and
+freshness checks. PMA1, LKG and lock opens reject final-path links and compare native file identity
+before/during/after validation. The lock is either exclusively created or opened only after exact
+validation; an unchecked `OpenOrCreate` path is never used. Only then does XNode atomically replace
+and durably flush the LKG. The accepted
+authority is published in memory only after persistence. The LKG retains the prior verification
+anchor, so restart on the same PMA1 is re-verified and idempotent; rollback and forks fail closed.
+Diagnostics expose only coarse state and generations, not paths, endpoints, pins, hashes or
+exception text.
+
+Until a hash-bound public revocation artifact is verified,
+`mailboxProductionAuthority.ready=false` with reason
+`revocation-snapshot-artifact-unavailable`; `/health/ready` returns 503 whenever this substrate is
+enabled, and `MailboxClient:Enabled=true` remains rejected. PMA1's snapshot hash must never be
+treated as evidence that an unknown serial is not revoked.
 
 Client HTTP is binary-only:
 
@@ -620,19 +667,19 @@ idempotency conflict 409, missing length 411, too large 413, media type/encoding
 429, dependency/quorum unavailable 503, and deadline 504. Exact byte limits, deadlines and
 admission ceilings come from `MailboxWireHttpContract`.
 
-Pinned offline runtime package closure under `vendor/mailbox-peer-p10j`, produced from accepted
-`deep-protocol` source `2886880d4c2060cd819765c53c77a02e1c475ea8`:
+The active native mailbox package closure is under `vendor/production-authority-fa31413`, produced
+from accepted `deep-protocol` source `fa314137d0ee97b62b77b00849ce030e273eec32`:
 
-- `Deep.Protocol.0.3.0-p10j.2886880.nupkg` —
-  `a41c79124f1c62c2889e7b2ea4695956272aa16de1700206cade8993c1b44abe`
-- `Deep.Protocol.Abstractions.0.3.0-p10j.2886880.nupkg` —
-  `4508e67aba983e91c174c8ce796df654c06892680d65e14ff78bda4d553d542c`
-- `Deep.Protocol.MembershipRoutes.0.3.0-p10j.2886880.nupkg` —
-  `cdb3eb8a8b2889567a25e6db437a287fb12db86d29e0819c13c9adb5fbc02327`
-- `Deep.Protocol.Protobuf.0.3.0-p10j.2886880.nupkg` —
-  `c97025f5d1b44fd7a955e7b69614ea2c6cca499656ccf7930029cc740208eab7`
+- `Deep.Protocol.0.4.0-production.fa31413.nupkg` —
+  `4cc09868cf000091e3d9014ac426c23a1894f9dbd08e8b5aeaa298c0173f13aa`
+- `Deep.Protocol.Abstractions.0.4.0-production.fa31413.nupkg` —
+  `efdc2a5e4d1ec198c00f9f584684dfa20acf2ff62b9a8703fb32ac025f7a57f2`
+- `Deep.Protocol.MembershipRoutes.0.4.0-production.fa31413.nupkg` —
+  `98d177d71b53856773bc300e6ba0a2ba3d90622feeb271dd2a3229cf1c8b26d6`
+- `Deep.Protocol.Protobuf.0.4.0-production.fa31413.nupkg` —
+  `890d05366fbf9c24fb8fa828c7a591e40fbfe99b725ef499bcc5239537e7ee04`
 
-Core/runtime/test projects resolve the exact P10J version from the local feed in locked mode.
+Core/runtime/test projects resolve the exact PMA1 version from the local feed in locked mode.
 `XNode.ProfileGenerator` and its tests remain isolated on the exact older P04/ProfileCarrier
 closure because that carrier requires it.
 

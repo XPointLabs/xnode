@@ -4,9 +4,9 @@ Status: accepted. Date: 2026-07-30. Human owner: **Mr. X**.
 
 ## Decision
 
-XNode consumes the exact locked P10J protocol closure built from `deep-protocol` source
-`2886880d4c2060cd819765c53c77a02e1c475ea8`, version `0.3.0-p10j.2886880`, under
-`vendor/mailbox-peer-p10j`.
+XNode consumes the exact locked PMA1 protocol closure built from `deep-protocol` source
+`fa314137d0ee97b62b77b00849ce030e273eec32`, version `0.4.0-production.fa31413`, under
+`vendor/production-authority-fa31413`.
 
 The peer listener remains native PRQ2 Store/Tombstone with signed MRR2 and exact 2-of-2 MQR3.
 The client listener now exposes only the three P10J MAU2 routes from `MailboxWireHttpContract`.
@@ -36,7 +36,10 @@ Pre-auth admission is host-global and independent per authenticated operation; i
 remote-IP partitions. Post-verify admission stores only a domain-separated hash of operation plus
 holder public key and permits 120 requests per minute.
 
-Production/default composition remains dormant and unmapped. Development activation requires the
+Production/default composition remains dormant and unmapped. A production-only PMA1 loader now
+verifies and durably chains the public issuer/epoch/NodeIngress-SPKI substrate, while readiness
+remains false because PMA1 commits only a revocation snapshot hash and cannot answer whether an
+individual serial is revoked. Unknown serials are never treated as non-revoked. Development activation requires the
 explicit pinned fixture: issuer, revocations, network, coordinator URL, E/E+1 commitments,
 placement ids/commitments, exactly two distinct replica identities/keys, and canonical MIP1/RIP1
 proofs. The node owns only its local replica private seed.
@@ -48,18 +51,18 @@ contract compatibility is outside this ADR and remains separately controlled.
 ## Exact dependency provenance
 
 - Deep.Protocol:
-  `a41c79124f1c62c2889e7b2ea4695956272aa16de1700206cade8993c1b44abe`
+  `4cc09868cf000091e3d9014ac426c23a1894f9dbd08e8b5aeaa298c0173f13aa`
 - Deep.Protocol.Abstractions:
-  `4508e67aba983e91c174c8ce796df654c06892680d65e14ff78bda4d553d542c`
+  `efdc2a5e4d1ec198c00f9f584684dfa20acf2ff62b9a8703fb32ac025f7a57f2`
 - Deep.Protocol.MembershipRoutes:
-  `cdb3eb8a8b2889567a25e6db437a287fb12db86d29e0819c13c9adb5fbc02327`
+  `98d177d71b53856773bc300e6ba0a2ba3d90622feeb271dd2a3229cf1c8b26d6`
 - Deep.Protocol.Protobuf:
-  `c97025f5d1b44fd7a955e7b69614ea2c6cca499656ccf7930029cc740208eab7`
+  `890d05366fbf9c24fb8fa828c7a591e40fbfe99b725ef499bcc5239537e7ee04`
 
 ## Remaining production blockers
 
-1. reviewed production issuer distribution/rotation and grant generation;
-2. durable production revocation authority;
+1. reviewed production issuer distribution/rotation and grant generation (PMA1 consumption is present);
+2. hash-bound public revocation artifact/proof and durable serial-level policy;
 3. reviewed membership-bound placement and E/E+1 lifecycle;
 4. production fanout composition and deployment key custody;
 5. staging, mobile/Windows E2E, operational rehearsal, and independent security review.
