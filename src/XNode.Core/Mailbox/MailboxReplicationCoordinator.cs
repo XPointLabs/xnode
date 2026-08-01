@@ -4,7 +4,11 @@ using Deep.Protocol.DeepExtension.MembershipRoutes;
 
 namespace XNode.Core.Mailbox;
 
-public sealed record MailboxReplicaPeer(RouterId RouterId, string Endpoint);
+public sealed record MailboxReplicaPeer(RouterId RouterId, string Endpoint)
+{
+    public ReadOnlyMemory<byte> CurrentSpkiSha256 { get; init; }
+    public ReadOnlyMemory<byte> NextSpkiSha256 { get; init; }
+}
 
 public interface IMailboxReplicaPeerClient
 {

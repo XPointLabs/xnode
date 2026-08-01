@@ -1,5 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using XNode;
 using XNode.Core;
@@ -11,6 +13,35 @@ namespace XNode.IntegrationTests.Runtime;
 
 public sealed class HttpOnionPeerClientSecurityTests
 {
+    [Fact]
+    public void PinnedMailboxTlsAcceptsOnlyCurrentOrNextExactSpki()
+    {
+        using var rsa = RSA.Create(2048);
+        var request = new CertificateRequest(
+            "CN=mailbox.example.net",
+            rsa,
+            HashAlgorithmName.SHA256,
+            RSASignaturePadding.Pkcs1);
+        using var certificate = request.CreateSelfSigned(
+            DateTimeOffset.UtcNow.AddMinutes(-1),
+            DateTimeOffset.UtcNow.AddMinutes(5));
+        var observed = SHA256.HashData(
+            certificate.PublicKey.ExportSubjectPublicKeyInfo());
+
+        Assert.True(OnionPeerHttpHandler.MatchesPinnedSpki(
+            certificate,
+            observed,
+            Enumerable.Repeat((byte)0xA0, 32).ToArray()));
+        Assert.True(OnionPeerHttpHandler.MatchesPinnedSpki(
+            certificate,
+            Enumerable.Repeat((byte)0xA0, 32).ToArray(),
+            observed));
+        Assert.False(OnionPeerHttpHandler.MatchesPinnedSpki(
+            certificate,
+            Enumerable.Repeat((byte)0xA0, 32).ToArray(),
+            Enumerable.Repeat((byte)0xB0, 32).ToArray()));
+    }
+
     [Fact]
     public void TypedHttpClient_HasExactlyOneApplicablePublicConstructor()
     {

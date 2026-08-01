@@ -34,7 +34,8 @@ public sealed record MailboxClientActivationPlan(
     MailboxClientActivationOptions Activation,
     MailboxClientAdapterOptions Adapter,
     bool RoutesMapped,
-    bool DevelopmentFixture);
+    bool DevelopmentFixture,
+    bool ProductionTopology);
 
 public static class MailboxClientComposition
 {
@@ -60,17 +61,21 @@ public static class MailboxClientComposition
             }
 
             adapter.Validate();
-            return new(activation, adapter, false, false);
+            return new(activation, adapter, false, false, false);
         }
 
         if (!isDevelopment)
         {
             if (productionAuthority?.Enabled == true)
             {
-                throw new InvalidOperationException(
-                    "MailboxClient Production activation remains fail-closed until a verified " +
-                    "production topology artifact supplies two replicas, canonical MIP1 proofs, " +
-                    "and HTTPS endpoints with SPKI pins.");
+                if (!mailbox.Enabled || !adapter.Enabled)
+                {
+                    throw new InvalidOperationException(
+                        "MailboxClient Production activation requires Mailbox and MailboxClientAdapter.");
+                }
+
+                adapter.Validate();
+                return new(activation, adapter, true, false, true);
             }
 
             throw new InvalidOperationException(
@@ -122,7 +127,7 @@ public static class MailboxClientComposition
                 "MailboxClient Development authority must exactly match MailboxPeerAuthority.");
         }
 
-        return new(activation, adapter, true, true);
+        return new(activation, adapter, true, true, false);
     }
 
     private static bool PinsPlacement(
@@ -509,6 +514,7 @@ public sealed class DevelopmentMailboxReplicaAuthority
         ulong epoch,
         ReadOnlyMemory<byte> membershipCommitment,
         ReadOnlyMemory<byte> placementCommitment,
+        ReadOnlyMemory<byte> selectionInputCommitment,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();

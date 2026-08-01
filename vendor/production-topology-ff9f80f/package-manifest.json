@@ -1,0 +1,28 @@
+{
+  "schema": "deep-local-package-closure.v1",
+  "sourceRepository": "deep-protocol",
+  "sourceCommit": "ff9f80fb6c29e3ac0a725f9161ee477b658730e3",
+  "version": "0.4.0-production.ff9f80f",
+  "packages": [
+    {
+      "file": "packages/Deep.Protocol.0.4.0-production.ff9f80f.nupkg",
+      "bytes": 216316,
+      "sha256": "feec9ded0d02c04fda2650bb45a0b550e97915df724e99fb56f1c1976508e154"
+    },
+    {
+      "file": "packages/Deep.Protocol.Abstractions.0.4.0-production.ff9f80f.nupkg",
+      "bytes": 25679,
+      "sha256": "86871905258af6b63e51b8231d35fb31ad51f45a3bccd3f2574716c7b7e60851"
+    },
+    {
+      "file": "packages/Deep.Protocol.MembershipRoutes.0.4.0-production.ff9f80f.nupkg",
+      "bytes": 31010,
+      "sha256": "a27f7d2a841ff3fb122d1d0767da2ee87b3e8b5f547b647600271d2ba54c2825"
+    },
+    {
+      "file": "packages/Deep.Protocol.Protobuf.0.4.0-production.ff9f80f.nupkg",
+      "bytes": 51191,
+      "sha256": "77bd88914a8e323c0b741664e2ff1431555311550edddc8f55f66ab287365416"
+    }
+  ]
+}

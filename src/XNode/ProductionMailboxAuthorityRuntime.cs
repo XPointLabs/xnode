@@ -8,6 +8,7 @@ using System.Runtime.Versioning;
 using Microsoft.Win32.SafeHandles;
 using Deep.Protocol.DeepExtension.MailboxAuthority;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
+using Deep.Protocol.DeepExtension.MailboxTopology;
 using XNode.Core;
 using XNode.Core.Mailbox;
 using XNode.Core.Mailbox.Client;
@@ -19,6 +20,9 @@ public sealed class ProductionMailboxAuthorityOptions
     public bool Enabled { get; set; }
     public string ArtifactPath { get; set; } = "";
     public string RevocationArtifactPath { get; set; } = "";
+    public string TopologyArtifactPath { get; set; } = "";
+    public string SelectionArtifactDirectory { get; set; } = "";
+    public string ReadinessSelectionInputCommitment { get; set; } = "";
     public string ArtifactTrustRoot { get; set; } = "";
     public string LastKnownGoodPath { get; set; } = "";
     public string PinnedMrXPublicKeySha256 { get; set; } = "";
@@ -26,6 +30,10 @@ public sealed class ProductionMailboxAuthorityOptions
     public uint ClockSkewSeconds { get; set; } = 60;
     public int MaximumArtifactBytes { get; set; } = 65_536;
     public int MaximumRevocationArtifactBytes { get; set; } = 131_072;
+    public int MaximumTopologyArtifactBytes { get; set; } =
+        ProductionMailboxTopologyConstants.MaximumTopologyArtifactBytes;
+    public int MaximumSelectionArtifactBytes { get; set; } =
+        ProductionMailboxTopologyConstants.MaximumSelectionArtifactBytes;
 
     public void Validate(RouterNodeOptions node, bool isProduction)
     {
@@ -34,6 +42,9 @@ public sealed class ProductionMailboxAuthorityOptions
         {
             if (!string.IsNullOrEmpty(ArtifactPath)
                 || !string.IsNullOrEmpty(RevocationArtifactPath)
+                || !string.IsNullOrEmpty(TopologyArtifactPath)
+                || !string.IsNullOrEmpty(SelectionArtifactDirectory)
+                || !string.IsNullOrEmpty(ReadinessSelectionInputCommitment)
                 || !string.IsNullOrEmpty(LastKnownGoodPath)
                 || !string.IsNullOrEmpty(ArtifactTrustRoot)
                 || !string.IsNullOrEmpty(PinnedMrXPublicKeySha256)
@@ -60,9 +71,17 @@ public sealed class ProductionMailboxAuthorityOptions
             ExpectedNetworkId,
             ProductionMailboxAuthorityConstants.NetworkIdLength,
             "network id");
+        _ = DecodeHex(
+            ReadinessSelectionInputCommitment,
+            ProductionMailboxTopologyConstants.HashLength,
+            "readiness selection-input commitment");
         if (ClockSkewSeconds > ProductionMailboxAuthorityConstants.MaximumClockSkewSeconds
             || MaximumArtifactBytes is < 1 or > 1_048_576
-            || MaximumRevocationArtifactBytes is < 1 or > 1_048_576)
+            || MaximumRevocationArtifactBytes is < 1 or > 1_048_576
+            || MaximumTopologyArtifactBytes is < 1
+                or > ProductionMailboxTopologyConstants.MaximumTopologyArtifactBytes
+            || MaximumSelectionArtifactBytes is < 1
+                or > ProductionMailboxTopologyConstants.MaximumSelectionArtifactBytes)
         {
             throw new InvalidOperationException(
                 "MailboxClientProductionAuthority bounds are invalid.");
@@ -72,11 +91,20 @@ public sealed class ProductionMailboxAuthorityOptions
         var revocationArtifact = RequireAbsolutePath(
             RevocationArtifactPath,
             "revocation artifact");
+        var topologyArtifact = RequireAbsolutePath(
+            TopologyArtifactPath,
+            "topology artifact");
+        var selectionDirectory = RequireAbsolutePath(
+            SelectionArtifactDirectory,
+            "selection artifact directory");
         var artifactTrustRoot = RequireAbsolutePath(ArtifactTrustRoot, "artifact trust root");
         var lkg = RequireAbsolutePath(LastKnownGoodPath, "LKG");
         if (string.Equals(artifact, lkg, PathComparison)
             || string.Equals(revocationArtifact, lkg, PathComparison)
-            || string.Equals(artifact, revocationArtifact, PathComparison))
+            || string.Equals(topologyArtifact, lkg, PathComparison)
+            || string.Equals(artifact, revocationArtifact, PathComparison)
+            || string.Equals(artifact, topologyArtifact, PathComparison)
+            || string.Equals(revocationArtifact, topologyArtifact, PathComparison))
         {
             throw new InvalidOperationException(
                 "MailboxClientProductionAuthority artifact and LKG paths must differ.");
@@ -101,6 +129,13 @@ public sealed class ProductionMailboxAuthorityOptions
             throw new InvalidOperationException(
                 "MailboxClientProductionAuthority revocation artifact must be inside its trust root.");
         }
+
+        if (!IsDescendant(topologyArtifact, artifactTrustRoot)
+            || !IsDescendant(selectionDirectory, artifactTrustRoot))
+        {
+            throw new InvalidOperationException(
+                "MailboxClientProductionAuthority topology/selection artifacts must be inside their trust root.");
+        }
     }
 
     internal byte[] GetPinnedMrXKeyHash() => DecodeHex(
@@ -112,6 +147,11 @@ public sealed class ProductionMailboxAuthorityOptions
         ExpectedNetworkId,
         ProductionMailboxAuthorityConstants.NetworkIdLength,
         "network id");
+
+    internal byte[] GetReadinessSelectionInputCommitment() => DecodeHex(
+        ReadinessSelectionInputCommitment,
+        ProductionMailboxTopologyConstants.HashLength,
+        "readiness selection-input commitment");
 
     internal string GetArtifactTrustRoot() => Path.GetFullPath(ArtifactTrustRoot)
         .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
@@ -179,6 +219,8 @@ public sealed record ProductionMailboxAuthorityStatus(
     public string Transport { get; init; } = "authenticated-mau2";
     public bool AuthorityRevocationReady { get; init; }
     public bool ProductionMailboxRoutesReady { get; init; }
+    public bool TopologyArtifactVerified { get; init; }
+    public ulong TopologyGeneration { get; init; }
 }
 
 public sealed record ProductionMailboxTopologyReplica(
@@ -192,10 +234,11 @@ public sealed record ProductionMailboxEpochTopology(
     ulong Epoch,
     ReadOnlyMemory<byte> MembershipCommitment,
     ReadOnlyMemory<byte> PlacementCommitment,
+    ReadOnlyMemory<byte> SelectionInputCommitment,
     IReadOnlyList<ProductionMailboxTopologyReplica> Replicas);
 
 /// <summary>
-/// Future PMT1 boundary. A production implementation must return exactly two distinct replicas,
+/// Production PMT1/PMS1 boundary. An implementation must return exactly two distinct replicas,
 /// canonical MIP1 proofs bound to the requested epoch/commitments, and public HTTPS endpoints
 /// with current/next SPKI pins. PMA1/PMR1 never imply or synthesize these values.
 /// </summary>
@@ -207,23 +250,8 @@ public interface IProductionMailboxTopologyProvider
         ulong epoch,
         ReadOnlyMemory<byte> membershipCommitment,
         ReadOnlyMemory<byte> placementCommitment,
+        ReadOnlyMemory<byte> selectionInputCommitment,
         out ProductionMailboxEpochTopology? topology);
-}
-
-public sealed class UnavailableProductionMailboxTopologyProvider
-    : IProductionMailboxTopologyProvider
-{
-    public bool IsConfigured => false;
-
-    public bool TryResolve(
-        ulong epoch,
-        ReadOnlyMemory<byte> membershipCommitment,
-        ReadOnlyMemory<byte> placementCommitment,
-        out ProductionMailboxEpochTopology? topology)
-    {
-        topology = null;
-        return false;
-    }
 }
 
 public interface IProductionMailboxAuthorityFileSecurity
@@ -1134,7 +1162,8 @@ internal static class ProductionMailboxAuthorityNativeFile
 
 public sealed class ProductionMailboxAuthorityProvider
     : IMailboxCapabilityAuthoritySource,
-      IMailboxCapabilityRevocationPolicy
+      IMailboxCapabilityRevocationPolicy,
+      IProductionMailboxTopologyProvider
 {
     private readonly ProductionMailboxAuthorityOptions _options;
     private readonly string _artifactTrustRoot;
@@ -1174,21 +1203,122 @@ public sealed class ProductionMailboxAuthorityProvider
             0);
     }
 
-    public ProductionMailboxAuthorityStatus Status => Volatile.Read(ref _status);
+    public ProductionMailboxAuthorityStatus Status
+    {
+        get
+        {
+            var status = Volatile.Read(ref _status);
+            var bundle = Volatile.Read(ref _verified);
+            return status.Ready && (bundle is null || !IsLive(bundle))
+                ? status with
+                {
+                    Ready = false,
+                    Reason = "production-bundle-expired",
+                    ProductionMailboxRoutesReady = false
+                }
+                : status;
+        }
+    }
 
-    public bool IsConfigured => Volatile.Read(ref _verified) is not null;
+    public bool IsConfigured
+    {
+        get
+        {
+            var bundle = Volatile.Read(ref _verified);
+            return bundle is not null && IsLive(bundle);
+        }
+    }
+
+    public bool SupportsAdapter(MailboxClientAdapterOptions adapter)
+    {
+        ArgumentNullException.ThrowIfNull(adapter);
+        var bundle = Volatile.Read(ref _verified);
+        if (bundle is null || !IsLive(bundle))
+        {
+            return false;
+        }
+
+        var authority = bundle.Authority.Authority;
+        return adapter.Enabled
+            && adapter.CurrentEpoch == authority.CurrentEpoch.Epoch
+            && adapter.NextEpoch == authority.NextEpoch.Epoch
+            && TryDecodeCommitment(
+                adapter.CurrentMembershipCommitment,
+                authority.CurrentEpoch.MembershipCommitment.Span)
+            && TryDecodeCommitment(
+                adapter.NextMembershipCommitment,
+                authority.NextEpoch.MembershipCommitment.Span);
+    }
 
     public bool IsRevoked(MailboxCapabilityRevocationQuery query)
     {
         var pair = Volatile.Read(ref _verified);
-        return pair is null || pair.Revocation.IsRevoked(query);
+        return pair is null || !IsLive(pair) || pair.Revocation.IsRevoked(query);
+    }
+
+    public bool TryResolve(
+        ulong epoch,
+        ReadOnlyMemory<byte> membershipCommitment,
+        ReadOnlyMemory<byte> placementCommitment,
+        ReadOnlyMemory<byte> selectionInputCommitment,
+        out ProductionMailboxEpochTopology? topology)
+    {
+        var bundle = Volatile.Read(ref _verified);
+        if (bundle is null || !IsLive(bundle))
+        {
+            topology = null;
+            return false;
+        }
+
+        try
+        {
+            var selection = VerifySelection(
+                bundle.Authority,
+                bundle.Topology,
+                selectionInputCommitment.Span,
+                null);
+            var proof = selection.Proof;
+            if (proof.Epoch != epoch
+                || !Fixed(proof.MembershipCommitment.Span, membershipCommitment.Span)
+                || !Fixed(proof.PlacementCommitment.Span, placementCommitment.Span))
+            {
+                topology = null;
+                return false;
+            }
+
+            topology = new(
+                proof.Epoch,
+                proof.MembershipCommitment.ToArray(),
+                proof.PlacementCommitment.ToArray(),
+                proof.SelectionInputCommitment.ToArray(),
+                selection.Replicas.Select(static replica =>
+                    new ProductionMailboxTopologyReplica(
+                        replica.ReplicaId.ToArray(),
+                        replica.CanonicalMIP1Proof.ToArray(),
+                        new Uri(replica.HttpsEndpoint.AbsoluteUri, UriKind.Absolute),
+                        replica.CurrentSpkiSha256.ToArray(),
+                        replica.NextSpkiSha256.ToArray())).ToArray());
+            return true;
+        }
+        catch (Exception exception) when (
+            exception is IOException
+                or UnauthorizedAccessException
+                or InvalidDataException
+                or ProductionMailboxTopologyException)
+        {
+            topology = null;
+            return false;
+        }
     }
 
     public ProductionMailboxNodeIngress? NodeIngress
     {
         get
         {
-            var authority = Volatile.Read(ref _verified)?.Authority.Authority;
+            var bundle = Volatile.Read(ref _verified);
+            var authority = bundle is not null && IsLive(bundle)
+                ? bundle.Authority.Authority
+                : null;
             return authority is null
                 ? null
                 : new(
@@ -1217,6 +1347,7 @@ public sealed class ProductionMailboxAuthorityProvider
                 or InvalidOperationException
                 or ProductionMailboxAuthorityException
                 or ProductionMailboxRevocationSnapshotException
+                or ProductionMailboxTopologyException
                 or CryptographicException)
         {
             var previous = Volatile.Read(ref _verified);
@@ -1231,7 +1362,9 @@ public sealed class ProductionMailboxAuthorityProvider
                 previous?.Revocation.Snapshot.RevocationGeneration ?? 0)
             {
                 AuthorityRevocationReady = previous is not null,
-                ProductionMailboxRoutesReady = false
+                ProductionMailboxRoutesReady = false,
+                TopologyArtifactVerified = previous is not null,
+                TopologyGeneration = previous?.Topology.CommittedTopologyGeneration ?? 0
             });
         }
         finally
@@ -1244,7 +1377,10 @@ public sealed class ProductionMailboxAuthorityProvider
         MailboxCapabilityAuthorityQuery query,
         out MailboxAuthenticatedVerificationPolicy? policy)
     {
-        var authority = Volatile.Read(ref _verified)?.Authority.Authority;
+        var bundle = Volatile.Read(ref _verified);
+        var authority = bundle is not null && IsLive(bundle)
+            ? bundle.Authority.Authority
+            : null;
         if (authority is null)
         {
             policy = null;
@@ -1301,7 +1437,10 @@ public sealed class ProductionMailboxAuthorityProvider
         MailboxCapabilityAuthorityQuery query,
         MailboxAuthenticatedGrant grant)
     {
-        var authority = Volatile.Read(ref _verified)?.Authority.Authority;
+        var bundle = Volatile.Read(ref _verified);
+        var authority = bundle is not null && IsLive(bundle)
+            ? bundle.Authority.Authority
+            : null;
         if (authority is null)
         {
             return grant.ExpiresAtUnixSeconds;
@@ -1320,6 +1459,9 @@ public sealed class ProductionMailboxAuthorityProvider
         _fileSecurity.ValidateReadOnlyArtifact(
             _options.RevocationArtifactPath,
             _artifactTrustRoot);
+        _fileSecurity.ValidateReadOnlyArtifact(
+            _options.TopologyArtifactPath,
+            _artifactTrustRoot);
         _fileSecurity.ValidateProtectedLastKnownGood(_options.LastKnownGoodPath, _dataTrustRoot);
         using var processLock = AcquireProcessLock();
         _fileSecurity.ValidateProtectedLastKnownGood(_options.LastKnownGoodPath, _dataTrustRoot);
@@ -1330,10 +1472,10 @@ public sealed class ProductionMailboxAuthorityProvider
             "authority");
         var authority = ProductionMailboxAuthorityCodec.Decode(artifactBytes);
         var artifactHash = SHA256.HashData(artifactBytes);
-        var idempotent = authority.AuthorityGeneration == lkg.Committed.Generation
+        var authorityIdempotent = authority.AuthorityGeneration == lkg.Committed.Generation
             && Fixed(artifactHash, lkg.Committed.AuthorityHash);
-        var anchor = idempotent
-            ? lkg.VerificationAnchor
+        var anchor = authorityIdempotent
+            ? lkg.AuthorityVerificationAnchor
                 ?? throw new InvalidDataException(
                     "Production mailbox authority LKG lacks its verification anchor.")
             : lkg.Committed;
@@ -1342,7 +1484,10 @@ public sealed class ProductionMailboxAuthorityProvider
             authority,
             Context(anchor, now),
             new SodiumProductionMailboxAuthoritySignatureVerifier());
-        ValidateCommit(verified, authority.Revocation, idempotent ? lkg.Committed : null);
+        ValidateCommit(
+            verified,
+            authority.Revocation,
+            authorityIdempotent ? lkg.Committed : null);
 
         var revocationBytes = ReadBoundedArtifact(
             _options.RevocationArtifactPath,
@@ -1354,9 +1499,55 @@ public sealed class ProductionMailboxAuthorityProvider
             now,
             _options.ClockSkewSeconds,
             new SodiumProductionMailboxRevocationSnapshotSignatureVerifier());
-        ValidateRevocationCommit(revocation, idempotent ? lkg.Committed : null);
+        ValidateRevocationCommit(
+            revocation,
+            authorityIdempotent ? lkg.Committed : null);
 
-        if (!idempotent)
+        var topologyBytes = ReadBoundedArtifact(
+            _options.TopologyArtifactPath,
+            _options.MaximumTopologyArtifactBytes,
+            "topology");
+        var decodedTopology = ProductionMailboxTopologyCodec.Decode(topologyBytes);
+        var topologyHash = SHA256.HashData(topologyBytes);
+        var topologyIdempotent =
+            decodedTopology.TopologyGeneration == lkg.Committed.TopologyGeneration
+            && Fixed(topologyHash, lkg.Committed.TopologyHash);
+        var topologyAnchor = topologyIdempotent
+            ? lkg.TopologyVerificationAnchor
+                ?? throw new InvalidDataException(
+                    "Production mailbox authority LKG lacks its topology verification anchor.")
+            : new ProductionMailboxTopologyLkgCommit(
+                lkg.Committed.TopologyGeneration,
+                lkg.Committed.TopologyHash);
+        var verifiedTopology = ProductionMailboxTopologyVerifier.Verify(
+            topologyBytes,
+            verified,
+            new ProductionMailboxTopologyVerificationContext
+            {
+                LastCommittedTopologyGeneration = topologyAnchor.Generation,
+                LastCommittedTopologyHash = topologyAnchor.Hash,
+                NowUnixSeconds = now,
+                ClockSkewSeconds = _options.ClockSkewSeconds
+            },
+            new SodiumProductionMailboxTopologySignatureVerifier());
+        if (topologyIdempotent
+            && (verifiedTopology.CommittedTopologyGeneration
+                    != lkg.Committed.TopologyGeneration
+                || !Fixed(
+                    verifiedTopology.CanonicalTopologyHash.Span,
+                    lkg.Committed.TopologyHash)))
+        {
+            throw new InvalidDataException(
+                "Production mailbox topology artifact conflicts with durable LKG.");
+        }
+
+        var readinessSelection = VerifySelection(
+            verified,
+            verifiedTopology,
+            _options.GetReadinessSelectionInputCommitment(),
+            now);
+
+        if (!authorityIdempotent || !topologyIdempotent)
         {
             var next = new ProductionMailboxAuthorityLkg(
                 new(
@@ -1364,25 +1555,63 @@ public sealed class ProductionMailboxAuthorityProvider
                     verified.CanonicalAuthorityHash.ToArray(),
                     authority.Revocation.Generation,
                     authority.Revocation.HeadHash.ToArray(),
-                    authority.Revocation.SnapshotHash.ToArray()),
-                lkg.Committed);
+                    authority.Revocation.SnapshotHash.ToArray(),
+                    verifiedTopology.CommittedTopologyGeneration,
+                    verifiedTopology.CanonicalTopologyHash.ToArray()),
+                authorityIdempotent
+                    ? lkg.AuthorityVerificationAnchor
+                    : lkg.Committed,
+                topologyIdempotent
+                    ? lkg.TopologyVerificationAnchor
+                    : new ProductionMailboxTopologyLkgCommit(
+                        lkg.Committed.TopologyGeneration,
+                        lkg.Committed.TopologyHash));
             SaveLkg(next);
         }
 
-        Volatile.Write(ref _verified, new(verified, revocation));
+        Volatile.Write(ref _verified, new(
+            verified,
+            revocation,
+            verifiedTopology,
+            readinessSelection));
         Volatile.Write(ref _status, new(
             true,
             true,
             true,
             true,
-            false,
-            "topology-artifact-unavailable",
+            true,
+            "",
             authority.AuthorityGeneration,
             authority.Revocation.Generation)
         {
             AuthorityRevocationReady = true,
-            ProductionMailboxRoutesReady = false
+            ProductionMailboxRoutesReady = true,
+            TopologyArtifactVerified = true,
+            TopologyGeneration = verifiedTopology.CommittedTopologyGeneration
         });
+    }
+
+    private VerifiedProductionMailboxSelection VerifySelection(
+        VerifiedProductionMailboxAuthority authority,
+        VerifiedProductionMailboxTopology topology,
+        ReadOnlySpan<byte> selectionInputCommitment,
+        ulong? observedNow)
+    {
+        var path = Path.Combine(
+            _options.SelectionArtifactDirectory,
+            Convert.ToHexString(selectionInputCommitment).ToLowerInvariant() + ".pms1");
+        var bytes = ReadBoundedArtifact(
+            path,
+            _options.MaximumSelectionArtifactBytes,
+            "selection");
+        return ProductionMailboxSelectionVerifier.Verify(
+            bytes,
+            authority,
+            topology,
+            selectionInputCommitment,
+            observedNow ?? checked((ulong)_clock.UtcNow.ToUnixTimeSeconds()),
+            _options.ClockSkewSeconds,
+            new SodiumProductionMailboxTopologySignatureVerifier());
     }
 
     private ProductionMailboxAuthorityVerificationContext Context(
@@ -1529,6 +1758,17 @@ public sealed class ProductionMailboxAuthorityProvider
             ProductionMailboxRevocationSnapshotError.SnapshotHashMismatch => "revocation-hash-rejected",
             _ => "revocation-verification-rejected"
         },
+        ProductionMailboxTopologyException topology => topology.Error switch
+        {
+            ProductionMailboxTopologyError.TopologyRollback => "topology-rollback-rejected",
+            ProductionMailboxTopologyError.PreviousHashMismatch => "topology-chain-rejected",
+            ProductionMailboxTopologyError.NotYetValid => "topology-not-yet-valid",
+            ProductionMailboxTopologyError.Expired => "topology-expired",
+            ProductionMailboxTopologyError.InvalidSignature => "topology-signature-rejected",
+            ProductionMailboxTopologyError.InvalidMembershipProof => "topology-proof-rejected",
+            ProductionMailboxTopologyError.SelectionMismatch => "topology-selection-rejected",
+            _ => "topology-verification-rejected"
+        },
         InvalidDataException => "authority-state-rejected",
         _ => "authority-initialization-failed"
     };
@@ -1536,11 +1776,51 @@ public sealed class ProductionMailboxAuthorityProvider
     private static bool Fixed(ReadOnlySpan<byte> left, ReadOnlySpan<byte> right) =>
         left.Length == right.Length
         && CryptographicOperations.FixedTimeEquals(left, right);
+
+    private static bool TryDecodeCommitment(string encoded, ReadOnlySpan<byte> expected)
+    {
+        try
+        {
+            return Fixed(Convert.FromHexString(encoded), expected);
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+    }
+
+    private bool IsLive(ProductionMailboxAuthorityPair bundle)
+    {
+        var now = checked((ulong)_clock.UtcNow.ToUnixTimeSeconds());
+        var authority = bundle.Authority.Authority;
+        var topology = bundle.Topology.Snapshot;
+        var selection = bundle.ReadinessSelection.Proof;
+        return Within(
+                authority.CurrentEpoch.NotBeforeUnixSeconds,
+                authority.CurrentEpoch.NotAfterUnixSeconds,
+                now)
+            && Within(
+                authority.MrXApproval.RolloutNotBeforeUnixSeconds,
+                authority.MrXApproval.RolloutNotAfterUnixSeconds,
+                now)
+            && Within(
+                authority.Revocation.IssuedAtUnixSeconds,
+                authority.Revocation.ExpiresAtUnixSeconds,
+                now)
+            && Within(topology.IssuedAtUnixSeconds, topology.ExpiresAtUnixSeconds, now)
+            && Within(selection.IssuedAtUnixSeconds, selection.ExpiresAtUnixSeconds, now);
+    }
+
+    private bool Within(ulong from, ulong until, ulong now) =>
+        (now >= from || from - now <= _options.ClockSkewSeconds)
+        && (now <= until || now - until <= _options.ClockSkewSeconds);
 }
 
 internal sealed record ProductionMailboxAuthorityPair(
     VerifiedProductionMailboxAuthority Authority,
-    VerifiedProductionMailboxRevocationSnapshot Revocation);
+    VerifiedProductionMailboxRevocationSnapshot Revocation,
+    VerifiedProductionMailboxTopology Topology,
+    VerifiedProductionMailboxSelection ReadinessSelection);
 
 public sealed class ProductionMailboxAuthorityHostedService(
     ProductionMailboxAuthorityProvider provider) : IHostedService
@@ -1553,19 +1833,32 @@ public sealed class ProductionMailboxAuthorityHostedService(
 
 internal sealed record ProductionMailboxAuthorityLkg(
     ProductionMailboxAuthorityLkgCommit Committed,
-    ProductionMailboxAuthorityLkgCommit? VerificationAnchor);
+    ProductionMailboxAuthorityLkgCommit? AuthorityVerificationAnchor,
+    ProductionMailboxTopologyLkgCommit? TopologyVerificationAnchor);
 
 internal sealed record ProductionMailboxAuthorityLkgCommit(
     ulong Generation,
     byte[] AuthorityHash,
     ulong RevocationGeneration,
     byte[] RevocationHeadHash,
-    byte[] RevocationSnapshotHash);
+    byte[] RevocationSnapshotHash,
+    ulong TopologyGeneration,
+    byte[] TopologyHash);
+
+internal sealed record ProductionMailboxTopologyLkgCommit(
+    ulong Generation,
+    byte[] Hash);
 
 internal static class ProductionMailboxAuthorityLkgCodec
 {
-    private const int CommitLength = 8 + 32 + 8 + 32 + 32;
-    private const int PayloadLength = 4 + 1 + 3 + CommitLength + 1 + CommitLength;
+    private const int CommitLength = 8 + 32 + 8 + 32 + 32 + 8 + 32;
+    private const int TopologyCommitLength = 8 + 32;
+    private const int CommittedOffset = 8;
+    private const int AuthorityFlagOffset = CommittedOffset + CommitLength;
+    private const int AuthorityAnchorOffset = AuthorityFlagOffset + 1;
+    private const int TopologyFlagOffset = AuthorityAnchorOffset + CommitLength;
+    private const int TopologyAnchorOffset = TopologyFlagOffset + 1;
+    private const int PayloadLength = TopologyAnchorOffset + TopologyCommitLength;
     private const int Length = PayloadLength + 32;
     internal const int EncodedLength = Length;
 
@@ -1573,19 +1866,32 @@ internal static class ProductionMailboxAuthorityLkgCodec
     {
         ArgumentNullException.ThrowIfNull(value);
         ValidateCommit(value.Committed);
-        if (value.VerificationAnchor is not null)
+        if (value.AuthorityVerificationAnchor is not null)
         {
-            ValidateCommit(value.VerificationAnchor);
+            ValidateCommit(value.AuthorityVerificationAnchor);
+        }
+        if (value.TopologyVerificationAnchor is not null)
+        {
+            ValidateTopologyCommit(value.TopologyVerificationAnchor);
         }
 
         var bytes = new byte[Length];
-        "PML2"u8.CopyTo(bytes);
+        "PML3"u8.CopyTo(bytes);
         bytes[4] = 1;
-        WriteCommit(bytes.AsSpan(8, CommitLength), value.Committed);
-        bytes[8 + CommitLength] = value.VerificationAnchor is null ? (byte)0 : (byte)1;
-        if (value.VerificationAnchor is not null)
+        WriteCommit(bytes.AsSpan(CommittedOffset, CommitLength), value.Committed);
+        bytes[AuthorityFlagOffset] = value.AuthorityVerificationAnchor is null ? (byte)0 : (byte)1;
+        if (value.AuthorityVerificationAnchor is not null)
         {
-            WriteCommit(bytes.AsSpan(9 + CommitLength, CommitLength), value.VerificationAnchor);
+            WriteCommit(
+                bytes.AsSpan(AuthorityAnchorOffset, CommitLength),
+                value.AuthorityVerificationAnchor);
+        }
+        bytes[TopologyFlagOffset] = value.TopologyVerificationAnchor is null ? (byte)0 : (byte)1;
+        if (value.TopologyVerificationAnchor is not null)
+        {
+            WriteTopologyCommit(
+                bytes.AsSpan(TopologyAnchorOffset, TopologyCommitLength),
+                value.TopologyVerificationAnchor);
         }
 
         SHA256.HashData(bytes.AsSpan(0, PayloadLength))
@@ -1597,10 +1903,11 @@ internal static class ProductionMailboxAuthorityLkgCodec
     public static ProductionMailboxAuthorityLkg Decode(ReadOnlySpan<byte> bytes)
     {
         if (bytes.Length != Length
-            || !bytes[..4].SequenceEqual("PML2"u8)
+            || !bytes[..4].SequenceEqual("PML3"u8)
             || bytes[4] != 1
             || bytes.Slice(5, 3).IndexOfAnyExcept((byte)0) >= 0
-            || bytes[8 + CommitLength] is not (0 or 1)
+            || bytes[AuthorityFlagOffset] is not (0 or 1)
+            || bytes[TopologyFlagOffset] is not (0 or 1)
             || !CryptographicOperations.FixedTimeEquals(
                 SHA256.HashData(bytes[..PayloadLength]),
                 bytes.Slice(PayloadLength, 32)))
@@ -1609,17 +1916,23 @@ internal static class ProductionMailboxAuthorityLkgCodec
                 "Production mailbox authority LKG framing is invalid.");
         }
 
-        var committed = ReadCommit(bytes.Slice(8, CommitLength));
-        var hasAnchor = bytes[8 + CommitLength] == 1;
-        var anchorBytes = bytes.Slice(9 + CommitLength, CommitLength);
-        if (!hasAnchor && anchorBytes.IndexOfAnyExcept((byte)0) >= 0)
+        var committed = ReadCommit(bytes.Slice(CommittedOffset, CommitLength));
+        var hasAuthorityAnchor = bytes[AuthorityFlagOffset] == 1;
+        var authorityAnchorBytes = bytes.Slice(AuthorityAnchorOffset, CommitLength);
+        var hasTopologyAnchor = bytes[TopologyFlagOffset] == 1;
+        var topologyAnchorBytes = bytes.Slice(TopologyAnchorOffset, TopologyCommitLength);
+        if (!hasAuthorityAnchor && authorityAnchorBytes.IndexOfAnyExcept((byte)0) >= 0
+            || !hasTopologyAnchor && topologyAnchorBytes.IndexOfAnyExcept((byte)0) >= 0)
         {
             throw new InvalidDataException(
                 "Production mailbox authority LKG reserved bytes are not zero.");
         }
 
-        var anchor = hasAnchor ? ReadCommit(anchorBytes) : null;
-        return new(committed, anchor);
+        var authorityAnchor = hasAuthorityAnchor ? ReadCommit(authorityAnchorBytes) : null;
+        var topologyAnchor = hasTopologyAnchor
+            ? ReadTopologyCommit(topologyAnchorBytes)
+            : null;
+        return new(committed, authorityAnchor, topologyAnchor);
     }
 
     private static void WriteCommit(Span<byte> destination, ProductionMailboxAuthorityLkgCommit value)
@@ -1629,6 +1942,8 @@ internal static class ProductionMailboxAuthorityLkgCodec
         BinaryPrimitives.WriteUInt64BigEndian(destination.Slice(40, 8), value.RevocationGeneration);
         value.RevocationHeadHash.CopyTo(destination.Slice(48, 32));
         value.RevocationSnapshotHash.CopyTo(destination.Slice(80, 32));
+        BinaryPrimitives.WriteUInt64BigEndian(destination.Slice(112, 8), value.TopologyGeneration);
+        value.TopologyHash.CopyTo(destination.Slice(120, 32));
     }
 
     private static ProductionMailboxAuthorityLkgCommit ReadCommit(ReadOnlySpan<byte> source)
@@ -1638,7 +1953,9 @@ internal static class ProductionMailboxAuthorityLkgCodec
             source.Slice(8, 32).ToArray(),
             BinaryPrimitives.ReadUInt64BigEndian(source.Slice(40, 8)),
             source.Slice(48, 32).ToArray(),
-            source.Slice(80, 32).ToArray());
+            source.Slice(80, 32).ToArray(),
+            BinaryPrimitives.ReadUInt64BigEndian(source.Slice(112, 8)),
+            source.Slice(120, 32).ToArray());
         ValidateCommit(value);
         return value;
     }
@@ -1656,6 +1973,36 @@ internal static class ProductionMailboxAuthorityLkgCodec
         {
             throw new InvalidDataException(
                 "Production mailbox authority LKG commit is invalid.");
+        }
+        ValidateTopologyCommit(new(value.TopologyGeneration, value.TopologyHash));
+    }
+
+    private static void WriteTopologyCommit(
+        Span<byte> destination,
+        ProductionMailboxTopologyLkgCommit value)
+    {
+        BinaryPrimitives.WriteUInt64BigEndian(destination[..8], value.Generation);
+        value.Hash.CopyTo(destination.Slice(8, 32));
+    }
+
+    private static ProductionMailboxTopologyLkgCommit ReadTopologyCommit(
+        ReadOnlySpan<byte> source)
+    {
+        var value = new ProductionMailboxTopologyLkgCommit(
+            BinaryPrimitives.ReadUInt64BigEndian(source[..8]),
+            source.Slice(8, 32).ToArray());
+        ValidateTopologyCommit(value);
+        return value;
+    }
+
+    private static void ValidateTopologyCommit(ProductionMailboxTopologyLkgCommit value)
+    {
+        var zeroHash = value.Hash.Length == 32
+            && value.Hash.AsSpan().IndexOfAnyExcept((byte)0) < 0;
+        if (value.Hash.Length != 32 || (value.Generation == 0) != zeroHash)
+        {
+            throw new InvalidDataException(
+                "Production mailbox topology LKG commit is invalid.");
         }
     }
 }

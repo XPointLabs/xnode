@@ -1,6 +1,9 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Net.Sockets;
+using System.Net.Security;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using XNode.Core;
 using XNode.Core.Onion;
@@ -127,9 +130,12 @@ public sealed class HttpOnionPeerClient : IOnionPeerClient
 
 public static class OnionPeerHttpHandler
 {
-    public static SocketsHttpHandler Create(PeerEndpointPolicy peerEndpointPolicy)
+    public static SocketsHttpHandler Create(
+        PeerEndpointPolicy peerEndpointPolicy,
+        ReadOnlyMemory<byte> currentSpkiSha256 = default,
+        ReadOnlyMemory<byte> nextSpkiSha256 = default)
     {
-        return new SocketsHttpHandler
+        var handler = new SocketsHttpHandler
         {
             AllowAutoRedirect = false,
             UseProxy = false,
@@ -139,6 +145,49 @@ public static class OnionPeerHttpHandler
                 peerEndpointPolicy,
                 cancellationToken)
         };
+        if (!currentSpkiSha256.IsEmpty || !nextSpkiSha256.IsEmpty)
+        {
+            var current = currentSpkiSha256.ToArray();
+            var next = nextSpkiSha256.ToArray();
+            if (current.Length != 32
+                || next.Length != 32
+                || CryptographicOperations.FixedTimeEquals(current, next))
+            {
+                handler.Dispose();
+                throw new ArgumentException("Mailbox replica SPKI pins are invalid.");
+            }
+
+            handler.SslOptions.RemoteCertificateValidationCallback =
+                (_, certificate, _, errors) =>
+                {
+                    if (errors != SslPolicyErrors.None
+                        || certificate is not X509Certificate2 certificate2)
+                    {
+                        return false;
+                    }
+
+                    return MatchesPinnedSpki(certificate2, current, next);
+                };
+        }
+
+        return handler;
+    }
+
+    internal static bool MatchesPinnedSpki(
+        X509Certificate2 certificate,
+        ReadOnlySpan<byte> currentSpkiSha256,
+        ReadOnlySpan<byte> nextSpkiSha256)
+    {
+        ArgumentNullException.ThrowIfNull(certificate);
+        if (currentSpkiSha256.Length != 32 || nextSpkiSha256.Length != 32)
+        {
+            return false;
+        }
+
+        var observed = SHA256.HashData(
+            certificate.PublicKey.ExportSubjectPublicKeyInfo());
+        return CryptographicOperations.FixedTimeEquals(observed, currentSpkiSha256)
+            || CryptographicOperations.FixedTimeEquals(observed, nextSpkiSha256);
     }
 
     private static async ValueTask<Stream> ConnectAsync(

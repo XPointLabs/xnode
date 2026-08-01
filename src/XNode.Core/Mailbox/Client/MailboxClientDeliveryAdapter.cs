@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Security.Cryptography;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
+using Deep.Protocol.DeepExtension.MailboxTopology;
 
 namespace XNode.Core.Mailbox.Client;
 
@@ -79,6 +80,8 @@ public sealed partial class MailboxClientStoreAdapter
                         request.Epoch,
                         membershipCommitment.ToArray(),
                         placementCommitment.ToArray(),
+                        ProductionMailboxReplicaSelection.ComputeSelectionInputCommitment(
+                            request.PlacementId),
                         cancellationToken).ConfigureAwait(false));
             }
             catch (ArgumentException)
@@ -290,6 +293,8 @@ public sealed partial class MailboxClientStoreAdapter
                         request.Epoch,
                         membershipCommitment.ToArray(),
                         placementCommitment.ToArray(),
+                        ProductionMailboxReplicaSelection.ComputeSelectionInputCommitment(
+                            request.PlacementId),
                         cancellationToken).ConfigureAwait(false));
             }
             catch (ArgumentException)

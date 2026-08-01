@@ -4,6 +4,8 @@ using System.Security.Principal;
 using System.Runtime.Versioning;
 using Deep.Protocol.DeepExtension.MailboxAuthority;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
+using Deep.Protocol.DeepExtension.MailboxTopology;
+using Deep.Protocol.DeepExtension.MembershipRoutes;
 using Sodium;
 using XNode.Core;
 using XNode.Core.Mailbox;
@@ -31,9 +33,10 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
         Assert.True(provider.Status.ArtifactVerified);
         Assert.True(provider.Status.RevocationArtifactVerified);
         Assert.True(provider.Status.AuthorityRevocationReady);
-        Assert.False(provider.Status.ProductionMailboxRoutesReady);
-        Assert.False(provider.Status.Ready);
-        Assert.Equal("topology-artifact-unavailable", provider.Status.Reason);
+        Assert.True(provider.Status.TopologyArtifactVerified);
+        Assert.True(provider.Status.ProductionMailboxRoutesReady);
+        Assert.True(provider.Status.Ready);
+        Assert.Equal("", provider.Status.Reason);
         Assert.Equal(7UL, provider.Status.AuthorityGeneration);
         Assert.Equal("https://ingress.example.net/mau2/", provider.NodeIngress!.Endpoint.AbsoluteUri);
         Assert.False(CryptographicOperations.FixedTimeEquals(
@@ -57,7 +60,7 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
         var persisted = ProductionMailboxAuthorityLkgCodec.Decode(
             File.ReadAllBytes(fixture.LkgPath));
         Assert.Equal(8UL, persisted.Committed.Generation);
-        Assert.Equal(7UL, persisted.VerificationAnchor!.Generation);
+        Assert.Equal(7UL, persisted.AuthorityVerificationAnchor!.Generation);
     }
 
     [Fact]
@@ -105,6 +108,182 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
             {
                 IssuerPublicKey = Bytes(0x30, 32)
             }));
+    }
+
+    [Fact]
+    public async Task VerifiedCallerBoundSelectionReturnsExactlyTwoPinnedReplicas()
+    {
+        var fixture = Fixture.Create(_root);
+        var provider = fixture.Provider();
+        await provider.InitializeAsync();
+        var epoch = fixture.Authority.CurrentEpoch;
+        var selectionInput = fixture.Options.GetReadinessSelectionInputCommitment();
+
+        Assert.True(provider.TryResolve(
+            epoch.Epoch,
+            epoch.MembershipCommitment,
+            epoch.PlacementCommitment,
+            selectionInput,
+            out var selection));
+        Assert.NotNull(selection);
+        Assert.Equal(2, selection.Replicas.Count);
+        Assert.Equal(2, selection.Replicas
+            .Select(replica => Convert.ToHexString(replica.ReplicaId.Span))
+            .Distinct(StringComparer.Ordinal)
+            .Count());
+        Assert.All(selection.Replicas, replica =>
+        {
+            Assert.Equal(Uri.UriSchemeHttps, replica.HttpsEndpoint.Scheme);
+            Assert.False(CryptographicOperations.FixedTimeEquals(
+                replica.CurrentSpkiSha256.Span,
+                replica.NextSpkiSha256.Span));
+            Assert.NotEmpty(replica.CanonicalMembershipProof.ToArray());
+        });
+        Assert.False(provider.TryResolve(
+            epoch.Epoch,
+            epoch.MembershipCommitment,
+            epoch.PlacementCommitment,
+            Bytes(0xE0, 32),
+            out _));
+    }
+
+    [Fact]
+    public async Task PublishedBundleFailsClosedAfterItsSelectionExpires()
+    {
+        var fixture = Fixture.Create(_root);
+        var clock = new MutableClock(DateTimeOffset.FromUnixTimeSeconds((long)Now));
+        var provider = fixture.Provider(clock: clock);
+        await provider.InitializeAsync();
+
+        Assert.True(provider.Status.Ready);
+        clock.UtcNow = DateTimeOffset.FromUnixTimeSeconds((long)Now + 201);
+
+        Assert.False(provider.Status.Ready);
+        Assert.Equal("production-bundle-expired", provider.Status.Reason);
+        Assert.False(provider.IsConfigured);
+        Assert.True(provider.IsRevoked(Query(fixture, Bytes(0x20, 16))));
+        Assert.False(provider.TryResolve(
+            fixture.Authority.CurrentEpoch.Epoch,
+            fixture.Authority.CurrentEpoch.MembershipCommitment,
+            fixture.Authority.CurrentEpoch.PlacementCommitment,
+            fixture.Options.GetReadinessSelectionInputCommitment(),
+            out _));
+    }
+
+    [Fact]
+    public async Task ProductionFanoutUsesExactSelectedRouteProofAndSpkiPins()
+    {
+        var fixture = Fixture.Create(_root);
+        var provider = fixture.Provider();
+        await provider.InitializeAsync();
+        var authorityEpoch = fixture.Authority.CurrentEpoch;
+        var selectionInput = fixture.Options.GetReadinessSelectionInputCommitment();
+        Assert.True(provider.TryResolve(
+            authorityEpoch.Epoch,
+            authorityEpoch.MembershipCommitment,
+            authorityEpoch.PlacementCommitment,
+            selectionInput,
+            out var selection));
+        var local = selection!.Replicas[0];
+        var remote = selection.Replicas[1];
+        var localSeed = fixture.SeedFor(local.ReplicaId.Span, authorityEpoch.Epoch);
+        var peerClient = new RecordingPeerClient();
+        var fanout = new ProductionMailboxReplicaFanout(
+            provider,
+            new RouterNodeOptions
+            {
+                RouterId = Hex(local.ReplicaId.ToArray()),
+                Ed25519PrivateKey = Hex(localSeed)
+            },
+            peerClient);
+        var placementId = Bytes(0x24, 32);
+        var payload = Bytes(0x70, 32);
+
+        var receipts = await fanout.TombstoneAsync(new MailboxReplicaTombstoneContext(
+            1,
+            authorityEpoch.Epoch,
+            Bytes(0x30, 16),
+            Bytes(0x40, 32),
+            authorityEpoch.PlacementCommitment,
+            authorityEpoch.MembershipCommitment,
+            payload,
+            Now + 100,
+            Now,
+            selection.Replicas.Select(static replica => replica.ReplicaId).ToArray())
+        {
+            BlindedPlacementId = placementId
+        }, CancellationToken.None);
+
+        Assert.Single(receipts);
+        Assert.NotNull(peerClient.Peer);
+        Assert.Equal(
+            new Uri(remote.HttpsEndpoint, MailboxWireHttpContract.PeerTombstoneRoute).AbsoluteUri,
+            peerClient.Peer.Endpoint);
+        Assert.Equal(remote.CurrentSpkiSha256.ToArray(), peerClient.Peer.CurrentSpkiSha256.ToArray());
+        Assert.Equal(remote.NextSpkiSha256.ToArray(), peerClient.Peer.NextSpkiSha256.ToArray());
+        var request = MailboxPeerWireV2Codec.Decode(peerClient.CanonicalRequest.Span);
+        Assert.Equal(remote.ReplicaId.ToArray(), request.RecipientRouterId.ToArray());
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    [InlineData(false, true)]
+    public async Task MissingOrCorruptTopologyOrSelectionNeverPublishes(
+        bool missing,
+        bool selection)
+    {
+        var fixture = Fixture.Create(_root);
+        var path = selection ? fixture.SelectionPath : fixture.TopologyArtifactPath;
+        if (missing)
+        {
+            File.Delete(path);
+        }
+        else
+        {
+            File.WriteAllBytes(path, [0x01, 0x02]);
+        }
+
+        var original = File.ReadAllBytes(fixture.LkgPath);
+        var provider = fixture.Provider();
+        await provider.InitializeAsync();
+
+        Assert.False(provider.IsConfigured);
+        Assert.False(provider.Status.Ready);
+        Assert.Equal(original, File.ReadAllBytes(fixture.LkgPath));
+    }
+
+    [Fact]
+    public async Task TopologyForkRetainsPriorCompleteBundleAndDurableState()
+    {
+        var fixture = Fixture.Create(_root);
+        var provider = fixture.Provider();
+        await provider.InitializeAsync();
+        var committed = File.ReadAllBytes(fixture.LkgPath);
+        var current = ProductionMailboxTopologyCodec.Decode(
+            File.ReadAllBytes(fixture.TopologyArtifactPath));
+        var fork = fixture.SignTopology(current with
+        {
+            TopologyGeneration = current.TopologyGeneration + 1,
+            PreviousTopologyHash = Bytes(0xF0, 32)
+        });
+        File.WriteAllBytes(
+            fixture.TopologyArtifactPath,
+            ProductionMailboxTopologyCodec.Encode(fork));
+
+        await provider.InitializeAsync();
+
+        Assert.True(provider.IsConfigured);
+        Assert.False(provider.Status.Ready);
+        Assert.Equal("topology-chain-rejected", provider.Status.Reason);
+        Assert.Equal(committed, File.ReadAllBytes(fixture.LkgPath));
+        Assert.True(provider.TryResolve(
+            fixture.Authority.CurrentEpoch.Epoch,
+            fixture.Authority.CurrentEpoch.MembershipCommitment,
+            fixture.Authority.CurrentEpoch.PlacementCommitment,
+            fixture.Options.GetReadinessSelectionInputCommitment(),
+            out _));
     }
 
     [Theory]
@@ -685,19 +864,22 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
     {
         private readonly byte[] _privateKey;
         private readonly byte[] _issuerPrivateKey;
+        private readonly IReadOnlyDictionary<ulong, MembershipRouteDescriptor[]> _descriptors;
 
         private Fixture(
             RouterNodeOptions node,
             ProductionMailboxAuthorityOptions options,
             ProductionMailboxAuthority authority,
             byte[] privateKey,
-            byte[] issuerPrivateKey)
+            byte[] issuerPrivateKey,
+            IReadOnlyDictionary<ulong, MembershipRouteDescriptor[]> descriptors)
         {
             Node = node;
             Options = options;
             Authority = authority;
             _privateKey = privateKey;
             _issuerPrivateKey = issuerPrivateKey;
+            _descriptors = descriptors;
         }
 
         public RouterNodeOptions Node { get; }
@@ -705,6 +887,10 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
         public ProductionMailboxAuthority Authority { get; private set; }
         public string ArtifactPath => Options.ArtifactPath;
         public string RevocationArtifactPath => Options.RevocationArtifactPath;
+        public string TopologyArtifactPath => Options.TopologyArtifactPath;
+        public string SelectionPath => Path.Combine(
+            Options.SelectionArtifactDirectory,
+            Options.ReadinessSelectionInputCommitment + ".pms1");
         public string LkgPath => Options.LastKnownGoodPath;
 
         public static Fixture Create(string root)
@@ -713,9 +899,17 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
             Directory.CreateDirectory(data);
             var artifactPath = Path.Combine(root, "authority.pma1");
             var revocationArtifactPath = Path.Combine(root, "revocation.pmr1");
+            var topologyArtifactPath = Path.Combine(root, "topology.pmt1");
+            var selectionDirectory = Path.Combine(root, "selections");
+            Directory.CreateDirectory(selectionDirectory);
             var lkgPath = Path.Combine(data, "authority.pml1");
             var pair = PublicKeyAuth.GenerateKeyPair(Bytes(0x21, 32));
             var issuerPair = PublicKeyAuth.GenerateKeyPair(Bytes(0x22, 32));
+            var currentDescriptors = Descriptors(20, Now - 60, Now + 600);
+            var nextDescriptors = Descriptors(21, Now - 10, Now + 1200);
+            var readinessPlacementId = Bytes(0x24, 32);
+            var selectionInput = ProductionMailboxReplicaSelection
+                .ComputeSelectionInputCommitment(new BlindedPlacementId(readinessPlacementId));
             var unsigned = new ProductionMailboxAuthority
             {
                 DevelopmentOnly = false,
@@ -730,8 +924,21 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
                 MrXApprovalEd25519PublicKey = pair.PublicKey,
                 Coordinator = Endpoint("https://coordinator.example.net/", 0x61),
                 NodeIngress = Endpoint("https://ingress.example.net/mau2/", 0x71),
-                CurrentEpoch = Epoch(20, 70, Now - 60, Now + 600, 0x81),
-                NextEpoch = Epoch(21, 71, Now - 10, Now + 1200, 0x91),
+                CurrentEpoch = Epoch(
+                    20,
+                    70,
+                    Now - 60,
+                    Now + 600,
+                    MembershipRouteDescriptorCodec.ComputeRoot(currentDescriptors),
+                    MailboxPlacementCommitment.Compute(
+                        new BlindedPlacementId(readinessPlacementId))),
+                NextEpoch = Epoch(
+                    21,
+                    71,
+                    Now - 10,
+                    Now + 1200,
+                    MembershipRouteDescriptorCodec.ComputeRoot(nextDescriptors),
+                    Bytes(0x92, 32)),
                 Revocation = new()
                 {
                     SnapshotHash = Bytes(0xA1, 32),
@@ -751,6 +958,9 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
                     Enabled = true,
                     ArtifactPath = artifactPath,
                     RevocationArtifactPath = revocationArtifactPath,
+                    TopologyArtifactPath = topologyArtifactPath,
+                    SelectionArtifactDirectory = selectionDirectory,
+                    ReadinessSelectionInputCommitment = Hex(selectionInput),
                     ArtifactTrustRoot = root,
                     LastKnownGoodPath = lkgPath,
                     PinnedMrXPublicKeySha256 = Hex(SHA256.HashData(pair.PublicKey)),
@@ -759,23 +969,51 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
                 },
                 unsigned,
                 pair.PrivateKey,
-                issuerPair.PrivateKey);
+                issuerPair.PrivateKey,
+                new Dictionary<ulong, MembershipRouteDescriptor[]>
+                {
+                    [20] = currentDescriptors,
+                    [21] = nextDescriptors
+                });
             fixture.Authority = fixture.BindAndSignPair(unsigned);
             fixture.WriteArtifact(fixture.Authority);
             File.WriteAllBytes(lkgPath, ProductionMailboxAuthorityLkgCodec.Encode(new(
-                new(6, Bytes(0x31, 32), 5, Bytes(0xC1, 32), Bytes(0xD1, 32)),
+                new(
+                    6,
+                    Bytes(0x31, 32),
+                    5,
+                    Bytes(0xC1, 32),
+                    Bytes(0xD1, 32),
+                    0,
+                    new byte[32]),
+                null,
                 null)));
             return fixture;
         }
 
         public ProductionMailboxAuthorityProvider Provider(
-            IMailboxDurabilityBarrier? durability = null) => new(
+            IMailboxDurabilityBarrier? durability = null,
+            IClock? clock = null) => new(
             Options,
             Node,
-            new FixedClock(DateTimeOffset.FromUnixTimeSeconds((long)Now)),
+            clock ?? new FixedClock(DateTimeOffset.FromUnixTimeSeconds((long)Now)),
             new PermissiveSecurity(),
             new MailboxStorageSecurity(),
             durability ?? new MailboxDurabilityBarrier());
+
+        public byte[] SeedFor(ReadOnlySpan<byte> replicaId, ulong epoch)
+        {
+            for (var index = 0; index < 3; index++)
+            {
+                var seed = DescriptorSeed(epoch, index);
+                if (PublicKeyAuth.GenerateKeyPair(seed).PublicKey.AsSpan().SequenceEqual(replicaId))
+                {
+                    return seed;
+                }
+            }
+
+            throw new InvalidOperationException("Selected fixture replica seed is unavailable.");
+        }
 
         public ProductionMailboxAuthority Successor(byte[]? previousAuthorityHash = null)
         {
@@ -785,7 +1023,13 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
                 AuthorityGeneration = 8,
                 PreviousAuthorityHash = previousAuthorityHash ?? currentHash,
                 CurrentEpoch = Authority.NextEpoch,
-                NextEpoch = Epoch(22, 72, Now + 120, Now + 1800, 0xD2),
+                NextEpoch = Epoch(
+                    22,
+                    72,
+                    Now + 120,
+                    Now + 1800,
+                    Bytes(0xD2, 32),
+                    Bytes(0xD3, 32)),
                 Revocation = Authority.Revocation with
                 {
                     SnapshotHash = Bytes(0xE2, 32),
@@ -823,14 +1067,195 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
             };
             var encoded = ProductionMailboxRevocationSnapshotCodec.Encode(snapshot);
             File.WriteAllBytes(RevocationArtifactPath, encoded);
-            return Sign(authority with
+            var signedAuthority = Sign(authority with
             {
                 Revocation = authority.Revocation with
                 {
                     SnapshotHash = SHA256.HashData(encoded)
                 }
             });
+            WriteTopologyAndSelection(signedAuthority);
+            return signedAuthority;
         }
+
+        private void WriteTopologyAndSelection(ProductionMailboxAuthority authority)
+        {
+            var previousTopology = File.Exists(TopologyArtifactPath)
+                ? ProductionMailboxTopologyCodec.Decode(File.ReadAllBytes(TopologyArtifactPath))
+                : null;
+            var currentDescriptors = _descriptors[authority.CurrentEpoch.Epoch];
+            var nextDescriptors = _descriptors.TryGetValue(
+                authority.NextEpoch.Epoch,
+                out var configuredNext)
+                    ? configuredNext
+                    : currentDescriptors.Select((descriptor, index) => descriptor with
+                    {
+                        RouterId = Bytes(unchecked((byte)(0xA0 + index * 0x20)), 32),
+                        Ed25519PublicKey = Bytes(unchecked((byte)(0xB0 + index * 0x20)), 32),
+                        X25519PublicKey = Bytes(unchecked((byte)(0xC0 + index * 0x20)), 32),
+                        Epoch = authority.NextEpoch.Epoch,
+                        ValidFromUnixSeconds = authority.NextEpoch.NotBeforeUnixSeconds,
+                        ValidUntilUnixSeconds = authority.NextEpoch.NotAfterUnixSeconds
+                    }).ToArray();
+            var topology = new ProductionMailboxTopologySnapshot
+            {
+                NetworkId = authority.NetworkId,
+                AuthorityGeneration = authority.AuthorityGeneration,
+                CanonicalAuthorityHash = ProductionMailboxAuthorityCodec
+                    .ComputeCanonicalHash(authority),
+                TopologyGeneration = (previousTopology?.TopologyGeneration ?? 0) + 1,
+                PreviousTopologyHash = previousTopology is null
+                    ? new byte[32]
+                    : ProductionMailboxTopologyCodec.ComputeCanonicalHash(previousTopology),
+                IssuedAtUnixSeconds = Now - 5,
+                ExpiresAtUnixSeconds = Now + 250,
+                CurrentEpoch = TopologyEpoch(authority.CurrentEpoch, currentDescriptors),
+                NextEpoch = TopologyEpoch(authority.NextEpoch, nextDescriptors),
+                IssuerSignature = new byte[64]
+            };
+            topology = topology with
+            {
+                IssuerSignature = PublicKeyAuth.SignDetached(
+                    ProductionMailboxTopologyCodec.GetSigningBytes(topology),
+                    _issuerPrivateKey)
+            };
+            var topologyBytes = ProductionMailboxTopologyCodec.Encode(topology);
+            File.WriteAllBytes(TopologyArtifactPath, topologyBytes);
+            var verifiedTopology = ProductionMailboxTopologyVerifier.Verify(
+                topologyBytes,
+                ProductionMailboxAuthorityVerifier.Verify(
+                    authority,
+                    new ProductionMailboxAuthorityVerificationContext
+                    {
+                        PinnedMrXPublicKeySha256 = SHA256.HashData(
+                            authority.MrXApprovalEd25519PublicKey.Span),
+                        ExpectedNetworkId = authority.NetworkId,
+                        LastCommittedGeneration = authority.AuthorityGeneration - 1,
+                        LastCommittedAuthorityHash = authority.PreviousAuthorityHash,
+                        LastCommittedRevocationGeneration = authority.Revocation.Generation - 1,
+                        LastCommittedRevocationHeadHash = authority.Revocation.PreviousHeadHash,
+                        LastCommittedRevocationSnapshotHash =
+                            authority.AuthorityGeneration == 7
+                                ? Bytes(0xD1, 32)
+                                : Authority.Revocation.SnapshotHash,
+                        NowUnixSeconds = Now,
+                        ClockSkewSeconds = 0
+                    },
+                    new SodiumProductionMailboxAuthoritySignatureVerifier()),
+                new ProductionMailboxTopologyVerificationContext
+                {
+                    LastCommittedTopologyGeneration = topology.TopologyGeneration - 1,
+                    LastCommittedTopologyHash = topology.PreviousTopologyHash,
+                    NowUnixSeconds = Now,
+                    ClockSkewSeconds = 0
+                },
+                new SodiumProductionMailboxTopologySignatureVerifier());
+            var selectionInput = Options.GetReadinessSelectionInputCommitment();
+            var selected = ProductionMailboxReplicaSelection.Select(
+                topology.NetworkId.Span,
+                topology.AuthorityGeneration,
+                topology.CurrentEpoch,
+                selectionInput);
+            var proofs = MembershipRouteDescriptorCodec.BuildProofs(currentDescriptors);
+            var replicas = selected.Select(id =>
+            {
+                var index = Array.FindIndex(
+                    currentDescriptors,
+                    descriptor => descriptor.RouterId.Span.SequenceEqual(id.Span));
+                var descriptor = currentDescriptors[index];
+                var mip = new MailboxReplicaMembershipProof
+                {
+                    ReplicaId = descriptor.RouterId,
+                    SigningPublicKey = descriptor.Ed25519PublicKey,
+                    Epoch = descriptor.Epoch,
+                    MembershipCommitment = topology.CurrentEpoch.MembershipCommitment,
+                    CanonicalInclusionProof = MailboxReplicaRouteProofCodec.Encode(
+                        descriptor,
+                        proofs[index])
+                };
+                return new ProductionMailboxSelectionReplica
+                {
+                    ReplicaId = descriptor.RouterId,
+                    CanonicalMIP1Proof = MailboxPeerReplicationCodec.EncodeMembershipProof(mip)
+                };
+            }).ToArray();
+            var selection = new ProductionMailboxSelectionProof
+            {
+                Algorithm = ProductionMailboxSelectionAlgorithm.RendezvousSha256V1,
+                NetworkId = topology.NetworkId,
+                AuthorityGeneration = topology.AuthorityGeneration,
+                CanonicalAuthorityHash = topology.CanonicalAuthorityHash,
+                TopologyGeneration = topology.TopologyGeneration,
+                CanonicalTopologyHash = verifiedTopology.CanonicalTopologyHash,
+                Epoch = topology.CurrentEpoch.Epoch,
+                Generation = topology.CurrentEpoch.Generation,
+                MembershipCommitment = topology.CurrentEpoch.MembershipCommitment,
+                PlacementCommitment = topology.CurrentEpoch.PlacementCommitment,
+                SelectionInputCommitment = selectionInput,
+                IssuedAtUnixSeconds = Now - 2,
+                ExpiresAtUnixSeconds = Now + 200,
+                Replicas = replicas,
+                IssuerSignature = new byte[64]
+            };
+            selection = selection with
+            {
+                IssuerSignature = PublicKeyAuth.SignDetached(
+                    ProductionMailboxTopologyCodec.GetSelectionSigningBytes(selection),
+                    _issuerPrivateKey)
+            };
+            File.WriteAllBytes(
+                Path.Combine(
+                    Options.SelectionArtifactDirectory,
+                    Hex(selectionInput) + ".pms1"),
+                ProductionMailboxTopologyCodec.EncodeSelection(selection));
+        }
+
+        private static MembershipRouteDescriptor[] Descriptors(
+            ulong epoch,
+            ulong from,
+            ulong until) => Enumerable.Range(0, 3)
+            .Select(index =>
+            {
+                var pair = PublicKeyAuth.GenerateKeyPair(
+                    DescriptorSeed(epoch, index));
+                return new MembershipRouteDescriptor
+                {
+                    RouterId = pair.PublicKey,
+                    Ed25519PublicKey = pair.PublicKey,
+                    X25519PublicKey = Bytes(unchecked((byte)(0x50 + index * 0x20)), 32),
+                    RpcEndpoint = $"https://route-{epoch}-{index}.example.net/",
+                    Roles = MembershipRouteRole.Storage,
+                    Capabilities = MembershipRouteCapability.Storage,
+                    Epoch = epoch,
+                    ValidFromUnixSeconds = from,
+                    ValidUntilUnixSeconds = until
+                };
+            }).OrderBy(
+                static descriptor => Convert.ToHexString(descriptor.RouterId.Span),
+                StringComparer.Ordinal)
+            .ToArray();
+
+        private static byte[] DescriptorSeed(ulong epoch, int index) =>
+            Bytes(unchecked((byte)(epoch + (ulong)index * 0x20)), 32);
+
+        private static ProductionMailboxTopologyEpoch TopologyEpoch(
+            ProductionMailboxAuthorityEpoch epoch,
+            IReadOnlyList<MembershipRouteDescriptor> descriptors) => new()
+        {
+            Epoch = epoch.Epoch,
+            Generation = epoch.Generation,
+            MembershipCommitment = epoch.MembershipCommitment,
+            PlacementCommitment = epoch.PlacementCommitment,
+            NotBeforeUnixSeconds = epoch.NotBeforeUnixSeconds,
+            NotAfterUnixSeconds = epoch.NotAfterUnixSeconds,
+            Nodes = descriptors.Select((descriptor, index) => new ProductionMailboxTopologyNode
+            {
+                NodeId = descriptor.RouterId,
+                HttpsEndpoint = descriptor.RpcEndpoint,
+                CurrentSpkiSha256 = Bytes(unchecked((byte)(0x60 + index * 2)), 32),
+                NextSpkiSha256 = Bytes(unchecked((byte)(0x61 + index * 2)), 32)
+            }).ToArray()
+        };
 
         public ProductionMailboxAuthority Sign(ProductionMailboxAuthority authority)
         {
@@ -851,6 +1276,18 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
             };
         }
 
+        public ProductionMailboxTopologySnapshot SignTopology(
+            ProductionMailboxTopologySnapshot topology)
+        {
+            var unsigned = topology with { IssuerSignature = new byte[64] };
+            return unsigned with
+            {
+                IssuerSignature = PublicKeyAuth.SignDetached(
+                    ProductionMailboxTopologyCodec.GetSigningBytes(unsigned),
+                    _issuerPrivateKey)
+            };
+        }
+
         public void WriteArtifact(ProductionMailboxAuthority authority) =>
             File.WriteAllBytes(
                 ArtifactPath,
@@ -868,12 +1305,13 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
             ulong generation,
             ulong from,
             ulong until,
-            byte seed) => new()
+            byte[] membership,
+            byte[] placement) => new()
         {
             Epoch = epoch,
             Generation = generation,
-            MembershipCommitment = Bytes(seed, 32),
-            PlacementCommitment = Bytes(unchecked((byte)(seed + 1)), 32),
+            MembershipCommitment = membership,
+            PlacementCommitment = placement,
             NotBeforeUnixSeconds = from,
             NotAfterUnixSeconds = until
         };
@@ -917,9 +1355,32 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
         }
     }
 
+    private sealed class RecordingPeerClient : IMailboxReplicaPeerClient
+    {
+        public MailboxReplicaPeer? Peer { get; private set; }
+        public ReadOnlyMemory<byte> CanonicalRequest { get; private set; }
+
+        public Task<ReadOnlyMemory<byte>?> SendAsync(
+            MailboxReplicaPeer peer,
+            MailboxPeerReplicationOperation operation,
+            ReadOnlyMemory<byte> canonicalPrq2,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Peer = peer;
+            CanonicalRequest = canonicalPrq2.ToArray();
+            return Task.FromResult<ReadOnlyMemory<byte>?>(Bytes(0xA0, 32));
+        }
+    }
+
     private sealed class FixedClock(DateTimeOffset utcNow) : IClock
     {
         public DateTimeOffset UtcNow { get; } = utcNow;
+    }
+
+    private sealed class MutableClock(DateTimeOffset utcNow) : IClock
+    {
+        public DateTimeOffset UtcNow { get; set; } = utcNow;
     }
 
     private sealed class CountingBarrier(TimeSpan? delay = null) : IMailboxDurabilityBarrier

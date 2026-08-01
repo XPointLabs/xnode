@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
+using Deep.Protocol.DeepExtension.MailboxTopology;
 
 namespace XNode.Core.Mailbox.Client;
 
@@ -160,10 +161,12 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
         {
             expectedReplicaIds = NormalizeReplicaAuthority(
                 await _replicaAuthorizer.SelectReplicaIdsAsync(
-                    request.Epoch,
-                    membershipCommitment.ToArray(),
-                    placementCommitment.ToArray(),
-                    cancellationToken).ConfigureAwait(false));
+                        request.Epoch,
+                        membershipCommitment.ToArray(),
+                        placementCommitment.ToArray(),
+                        ProductionMailboxReplicaSelection.ComputeSelectionInputCommitment(
+                            request.PlacementId),
+                        cancellationToken).ConfigureAwait(false));
         }
         catch (ArgumentException)
         {

@@ -82,10 +82,19 @@ public sealed class HttpMailboxReplicaPeerClient : IMailboxReplicaPeerClient
         };
         message.Options.Set(HttpOnionPeerClient.RecipientRouterIdOption, peer.RouterId.Value);
         message.Options.Set(HttpOnionPeerClient.ExpectedPeerPathOption, contract.Route);
-        using var response = await _httpClient.SendAsync(
-            message,
-            HttpCompletionOption.ResponseHeadersRead,
-            cancellationToken).ConfigureAwait(false);
+        using var pinnedClient = peer.CurrentSpkiSha256.IsEmpty
+            && peer.NextSpkiSha256.IsEmpty
+                ? null
+                : new HttpClient(OnionPeerHttpHandler.Create(
+                    _peerEndpointPolicy,
+                    peer.CurrentSpkiSha256,
+                    peer.NextSpkiSha256), disposeHandler: true);
+        var client = pinnedClient ?? _httpClient;
+        using var response = await client.SendAsync(
+                message,
+                HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken)
+            .ConfigureAwait(false);
         if ((int)response.StatusCode != contract.SuccessStatusCode
             || response.Content.Headers.ContentLength != contract.MaximumResponseBytes
             || !string.Equals(

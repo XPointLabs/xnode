@@ -236,21 +236,34 @@ public sealed class MailboxClientActivationGuardTests
     }
 
     [Fact]
-    public void ProductionPma1Pmr1SubstrateCannotBypassMissingTopologyArtifactGate()
+    public void ProductionPma1Pmr1Pmt1CompositionMapsOnlyTheVerifiedTopologyLane()
     {
-        var exception = Assert.Throws<InvalidOperationException>(() =>
-            MailboxClientComposition.Validate(
+        var now = checked((ulong)DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+        var plan = MailboxClientComposition.Validate(
                 new MailboxClientActivationOptions { Enabled = true },
-                new MailboxClientAdapterOptions { Enabled = true },
+                new MailboxClientAdapterOptions
+                {
+                    Enabled = true,
+                    CurrentEpoch = 7,
+                    NextEpoch = 8,
+                    CurrentMembershipCommitment = new string('4', 64),
+                    NextMembershipCommitment = new string('5', 64),
+                    CurrentNotBeforeUnixSeconds = now - 60,
+                    NextNotBeforeUnixSeconds = now,
+                    CurrentExpiresAtUnixSeconds = now + 3600,
+                    NextExpiresAtUnixSeconds = now + 7200
+                },
                 new RouterNodeOptions(),
                 new ReplicatedMailboxOptions { Enabled = true },
                 isDevelopment: false,
                 productionAuthority: new ProductionMailboxAuthorityOptions
                 {
                     Enabled = true
-                }));
+                });
 
-        Assert.Contains("production topology artifact", exception.Message);
+        Assert.True(plan.RoutesMapped);
+        Assert.True(plan.ProductionTopology);
+        Assert.False(plan.DevelopmentFixture);
     }
 
     [Fact]

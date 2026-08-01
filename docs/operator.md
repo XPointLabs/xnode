@@ -616,25 +616,30 @@ The production-only public authority loader is configured independently from rou
     "enabled": true,
     "artifactPath": "/run/secrets/deep/mailbox-authority.pma1",
     "revocationArtifactPath": "/run/secrets/deep/mailbox-revocation.pmr1",
+    "topologyArtifactPath": "/run/secrets/deep/mailbox-topology.pmt1",
+    "selectionArtifactDirectory": "/run/secrets/deep/selections",
+    "readinessSelectionInputCommitment": "<64 lowercase hex>",
     "artifactTrustRoot": "/run/secrets/deep",
     "lastKnownGoodPath": "/var/lib/xnode/mailbox-authority/authority.pml1",
     "pinnedMrXPublicKeySha256": "<64 lowercase hex>",
     "expectedNetworkId": "<32 lowercase hex>",
     "clockSkewSeconds": 60,
     "maximumArtifactBytes": 65536,
-    "maximumRevocationArtifactBytes": 131072
+    "maximumRevocationArtifactBytes": 131072,
+    "maximumTopologyArtifactBytes": 4997504,
+    "maximumSelectionArtifactBytes": 8808
   }
 }
 ```
 
-This section is rejected outside `Production`. All paths must be absolute, both public PMA1 and
-PMR1 files must stay inside the explicit immutable trust root, and the LKG must stay inside
+This section is rejected outside `Production`. All paths must be absolute; PMA1, PMR1, global PMT1
+and the per-selection PMS1 directory must stay inside the explicit immutable trust root, while the LKG must stay inside
 `Node:DataDirectory`. Every
 ancestor from each file to that trust root is checked before each open and may be writable only by
-the service identity. On Linux both artifacts are owner-only `0400` regular files and the
-pre-provisioned PML2 LKG is `0600`; no traversed path may be a symlink. On Windows files and
+the service identity. On Linux all public artifacts are owner-only `0400` regular files and the
+pre-provisioned PML3 LKG is `0600`; no traversed path may be a symlink. On Windows files and
 ancestors must have the exact service owner and protected non-inherited service-only ACLs, with the
-public artifacts read-only. PML2 contains
+public artifacts read-only. PML3 contains
 only generations and SHA-256 chain state, never a private/signing key, holder, capability,
 mailbox id, or endpoint.
 
@@ -642,23 +647,26 @@ Startup performs canonical PMA1 decode, pinned Mr. X key-hash and Ed25519 verifi
 canonical PMR1 verification with the same clock observation and skew. PMR1 must match the exact
 network, authority binding, issuer, revocation generation/head/previous-head/times and snapshot
 hash declared by PMA1; its issuer signature is verified before an unknown MCG2 serial may return
-`false`. PMA1, PMR1, LKG and lock opens reject final-path links and compare native file identity
+`false`. PMA1, PMR1, PMT1, PMS1, LKG and lock opens reject final-path links and compare native file identity
 before/during/after validation. The lock is either exclusively created or opened only after exact
-validation; an unchecked `OpenOrCreate` path is never used. Only after both artifacts verify does
-XNode atomically replace and durably flush one combined LKG. The accepted immutable authority and
-revocation pair is published with one reference swap only after persistence. The LKG retains the
-prior verification anchor, so restart on the same pair is re-verified and idempotent; rollback,
-forks, mismatches and partial successor publication fail closed without advancing the durable pair.
+validation; an unchecked `OpenOrCreate` path is never used. XNode then verifies issuer-signed PMT1
+against that exact authority and a caller-bound readiness PMS1 against the same time observation.
+Only after all four artifacts verify does XNode atomically replace and durably flush one combined
+LKG. The accepted immutable authority, revocation, topology and readiness-selection bundle is
+published with one reference swap only after persistence. Separate authority and topology anchors
+permit independent exact successors and idempotent restart; rollback, forks, mismatches and
+partial successor publication fail closed without advancing the durable bundle.
 Diagnostics expose only coarse state and generations, not paths, endpoints, pins, hashes or
 exception text.
 
-After PMA1+PMR1 verification, diagnostics report
-`authorityRevocationReady=true`, while `productionMailboxRoutesReady=false` and the sanitized
-reason remains `topology-artifact-unavailable`. `/health/ready` therefore returns 503 and
-`MailboxClient:Enabled=true` remains rejected until a signed topology artifact supplies exactly
-two distinct replica IDs, canonical MIP1 proofs, and public HTTPS endpoints with current/next SPKI
-pins. `IProductionMailboxTopologyProvider` is the explicit fail-closed seam; PMA1/PMR1 data is never
-used to invent topology.
+After the complete bundle verifies, diagnostics report `authorityRevocationReady=true`,
+`topologyArtifactVerified=true`, and `productionMailboxRoutesReady=true`. Each mailbox operation
+still fails closed unless its own commitment-named PMS1 verifies for the requested blinded
+placement. The runtime recomputes rendezvous ranking, requires exactly two distinct replicas and
+canonical MIP1/RIP1 proofs, binds the proof route to the PMT HTTPS origin, and enforces the current
+or next SPKI pin during TLS. Raw mailbox identifiers, selection inputs and replica IDs are not
+logged or exposed. Official-managed PMA1 still requires public HTTPS; explicit user-managed
+private-HTTPS policy remains supported.
 
 Client HTTP is binary-only:
 
@@ -675,20 +683,19 @@ idempotency conflict 409, missing length 411, too large 413, media type/encoding
 429, dependency/quorum unavailable 503, and deadline 504. Exact byte limits, deadlines and
 admission ceilings come from `MailboxWireHttpContract`.
 
-The active native mailbox package closure is under `vendor/production-revocation-7c17735`, produced
-from accepted `deep-protocol` source `7c1773597db7d081219a083b75eb95c5d534c7b1`
-(PMR1 feature commit `d8d4ec69f4171b8b5cc3908f7b3d907d4cd31ecd`):
+The active native mailbox package closure is under `vendor/production-topology-ff9f80f`, produced
+from accepted `deep-protocol` source `ff9f80fb6c29e3ac0a725f9161ee477b658730e3`:
 
-- `Deep.Protocol.0.4.0-production.7c17735.nupkg` —
-  `e7c0c22b2d7dade2cb9714ee776ab8b662fef51166e86dbec28545ad1ec3b723`
-- `Deep.Protocol.Abstractions.0.4.0-production.7c17735.nupkg` —
-  `f9304f9d43ff2363b6472526fa7a4f1b1321046ccb9dc2cf65b1028f5b0da681`
-- `Deep.Protocol.MembershipRoutes.0.4.0-production.7c17735.nupkg` —
-  `8b112ed79f74b8af65d4e48ac19c13b8c7f252ce3ce0c931ab866f1656b957df`
-- `Deep.Protocol.Protobuf.0.4.0-production.7c17735.nupkg` —
-  `c72a832637580690632ce2d946b30466cb2effe2e3f433f7ac3d7e30f48a88e1`
+- `Deep.Protocol.0.4.0-production.ff9f80f.nupkg` —
+  `feec9ded0d02c04fda2650bb45a0b550e97915df724e99fb56f1c1976508e154`
+- `Deep.Protocol.Abstractions.0.4.0-production.ff9f80f.nupkg` —
+  `86871905258af6b63e51b8231d35fb31ad51f45a3bccd3f2574716c7b7e60851`
+- `Deep.Protocol.MembershipRoutes.0.4.0-production.ff9f80f.nupkg` —
+  `a27f7d2a841ff3fb122d1d0767da2ee87b3e8b5f547b647600271d2ba54c2825`
+- `Deep.Protocol.Protobuf.0.4.0-production.ff9f80f.nupkg` —
+  `77bd88914a8e323c0b741664e2ff1431555311550edddc8f55f66ab287365416`
 
-Core/runtime/test projects resolve the exact PMA1+PMR1 version from the local feed in locked mode.
+Core/runtime/test projects resolve the exact PMA1+PMR1+PMT1/PMS1 version from the local feed in locked mode.
 `XNode.ProfileGenerator` and its tests remain isolated on the exact older P04/ProfileCarrier
 closure because that carrier requires it.
 

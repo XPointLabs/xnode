@@ -1,12 +1,12 @@
-# ADR 0006: native MAU2 client ingress is survival-development only
+# ADR 0006: native MAU2 client ingress requires a complete verified production bundle
 
 Status: accepted. Date: 2026-07-30. Human owner: **Mr. X**.
 
 ## Decision
 
-XNode consumes the exact locked PMA1+PMR1 protocol closure built from `deep-protocol` source
-`7c1773597db7d081219a083b75eb95c5d534c7b1`, version `0.4.0-production.7c17735`, under
-`vendor/production-revocation-7c17735`.
+XNode consumes the exact locked PMA1+PMR1+PMT1/PMS1 protocol closure built from `deep-protocol`
+source `ff9f80fb6c29e3ac0a725f9161ee477b658730e3`, version
+`0.4.0-production.ff9f80f`, under `vendor/production-topology-ff9f80f`.
 
 The peer listener remains native PRQ2 Store/Tombstone with signed MRR2 and exact 2-of-2 MQR3.
 The client listener now exposes only the three P10J MAU2 routes from `MailboxWireHttpContract`.
@@ -36,12 +36,14 @@ Pre-auth admission is host-global and independent per authenticated operation; i
 remote-IP partitions. Post-verify admission stores only a domain-separated hash of operation plus
 holder public key and permits 120 requests per minute.
 
-Production/default composition remains dormant and unmapped. A production-only loader now
+Production/default composition remains dormant. An explicitly enabled production loader now
 verifies PMA1 and its hash-bound, issuer-signed complete PMR1 snapshot on the same clock observation,
 then durably commits and publishes the immutable pair atomically. Only that verified full snapshot
 may treat an unknown serial as non-revoked. Authority/revocation readiness is distinct from route
 readiness, which remains false until a signed topology artifact supplies two replicas, MIP1 proofs,
-and HTTPS/SPKI routing. Development activation requires the
+and HTTPS/SPKI routing. PMT1/PMS1 now supplies and verifies that topology; production routes are
+mapped only for the complete protected bundle and each request remains caller-bound to its own
+verified PMS1. Development activation requires the
 explicit pinned fixture: issuer, revocations, network, coordinator URL, E/E+1 commitments,
 placement ids/commitments, exactly two distinct replica identities/keys, and canonical MIP1/RIP1
 proofs. The node owns only its local replica private seed.
@@ -53,18 +55,17 @@ contract compatibility is outside this ADR and remains separately controlled.
 ## Exact dependency provenance
 
 - Deep.Protocol:
-  `e7c0c22b2d7dade2cb9714ee776ab8b662fef51166e86dbec28545ad1ec3b723`
+  `feec9ded0d02c04fda2650bb45a0b550e97915df724e99fb56f1c1976508e154`
 - Deep.Protocol.Abstractions:
-  `f9304f9d43ff2363b6472526fa7a4f1b1321046ccb9dc2cf65b1028f5b0da681`
+  `86871905258af6b63e51b8231d35fb31ad51f45a3bccd3f2574716c7b7e60851`
 - Deep.Protocol.MembershipRoutes:
-  `8b112ed79f74b8af65d4e48ac19c13b8c7f252ce3ce0c931ab866f1656b957df`
+  `a27f7d2a841ff3fb122d1d0767da2ee87b3e8b5f547b647600271d2ba54c2825`
 - Deep.Protocol.Protobuf:
-  `c72a832637580690632ce2d946b30466cb2effe2e3f433f7ac3d7e30f48a88e1`
+  `77bd88914a8e323c0b741664e2ff1431555311550edddc8f55f66ab287365416`
 
 ## Remaining production blockers
 
-1. signed PMT1 topology artifact and runtime provider;
-2. production replica authorization/fanout composition and deployment key custody;
-3. staging, mobile/Windows E2E, operational rehearsal, and independent security review.
+1. production deployment key custody and signed artifact publication automation;
+2. staging, mobile/Windows E2E, operational rehearsal, and independent security review.
 
 Until these gates close, public client ingress remains Development-only.

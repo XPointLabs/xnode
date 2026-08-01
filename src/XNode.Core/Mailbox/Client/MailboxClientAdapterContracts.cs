@@ -76,6 +76,7 @@ public interface IMailboxClientReplicaAuthorizer
         ulong epoch,
         ReadOnlyMemory<byte> membershipCommitment,
         ReadOnlyMemory<byte> placementCommitment,
+        ReadOnlyMemory<byte> selectionInputCommitment,
         CancellationToken cancellationToken);
 }
 
@@ -87,6 +88,7 @@ public sealed class RejectAllMailboxClientReplicaAuthorizer : IMailboxClientRepl
         ulong epoch,
         ReadOnlyMemory<byte> membershipCommitment,
         ReadOnlyMemory<byte> placementCommitment,
+        ReadOnlyMemory<byte> selectionInputCommitment,
         CancellationToken cancellationToken) =>
         ValueTask.FromResult<IReadOnlyList<ReadOnlyMemory<byte>>>([]);
 }
