@@ -20,8 +20,8 @@ public sealed class RestoreIsolationTests
             "XNode.ProfileGenerator",
             "XNode.ProfileGenerator.csproj"));
         Assert.Contains("<RuntimeIdentifiers>win-arm64</RuntimeIdentifiers>", project);
-        Assert.Contains("<RestoreAdditionalProjectSources>", project);
-        Assert.Contains("vendor\\p04\\packages", project);
+        Assert.Contains("<RestoreConfigFile>", project);
+        Assert.Contains("eng\\survival-beta.NuGet.Config", project);
     }
 
     [Fact]

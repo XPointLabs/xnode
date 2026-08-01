@@ -7,7 +7,7 @@
   </ItemGroup>
 
   <PropertyGroup>
-    <RestoreConfigFile>$(MSBuildThisFileDirectory)..\..\eng\mailbox-client.NuGet.Config</RestoreConfigFile>
+    <RestoreConfigFile>$(MSBuildThisFileDirectory)..\..\eng\survival-beta.NuGet.Config</RestoreConfigFile>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <RestoreLockedMode>true</RestoreLockedMode>
     <RuntimeIdentifiers>linux-x64;linux-arm64</RuntimeIdentifiers>

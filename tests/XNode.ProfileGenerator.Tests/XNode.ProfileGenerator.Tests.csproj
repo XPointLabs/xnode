@@ -7,7 +7,7 @@
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
-    <RestoreAdditionalProjectSources>$(MSBuildThisFileDirectory)..\..\vendor\p04\packages</RestoreAdditionalProjectSources>
+    <RestoreConfigFile>$(MSBuildThisFileDirectory)..\..\eng\survival-beta.NuGet.Config</RestoreConfigFile>
   </PropertyGroup>
 
   <ItemGroup>

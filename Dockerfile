@@ -12,7 +12,7 @@ RUN set -eux; \
       arm64) dotnet_arch="arm64" ;; \
       *) echo "Unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
-    dotnet restore src/XNode/XNode.csproj --arch "${dotnet_arch}"; \
+    dotnet restore src/XNode/XNode.csproj --locked-mode; \
     dotnet publish src/XNode/XNode.csproj \
       --configuration Release \
       --output /app \

@@ -9,24 +9,27 @@ public sealed class MailboxClientPackagePinTests
     private static readonly IReadOnlyDictionary<string, string> Expected =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            ["Deep.Protocol.0.3.0-p10j.2886880.nupkg"] =
-                "a41c79124f1c62c2889e7b2ea4695956272aa16de1700206cade8993c1b44abe",
-            ["Deep.Protocol.Abstractions.0.3.0-p10j.2886880.nupkg"] =
-                "4508e67aba983e91c174c8ce796df654c06892680d65e14ff78bda4d553d542c",
-            ["Deep.Protocol.MembershipRoutes.0.3.0-p10j.2886880.nupkg"] =
-                "cdb3eb8a8b2889567a25e6db437a287fb12db86d29e0819c13c9adb5fbc02327",
-            ["Deep.Protocol.Protobuf.0.3.0-p10j.2886880.nupkg"] =
-                "c97025f5d1b44fd7a955e7b69614ea2c6cca499656ccf7930029cc740208eab7"
+            ["Deep.Protocol.0.4.0-survival.e570512.nupkg"] =
+                "c331f55662985dc4837c50c9b0c5f2c6c4f5c6b66427e2ac2eb4c8565862b06e",
+            ["Deep.Protocol.Abstractions.0.4.0-survival.e570512.nupkg"] =
+                "138ace62ea38dc800f6fc392ed70c1e1860a0a2a73c7585091a66173f7012628",
+            ["Deep.Protocol.MembershipRoutes.0.4.0-survival.e570512.nupkg"] =
+                "455fa53e2c95e9d8cabab1d13ffe4b8fd6133735898a9eae9bf5b67021bf58f1",
+            ["Deep.Protocol.ProfileCarrier.0.4.0-survival.e570512.nupkg"] =
+                "48b64474f9b46e9c6e4017e20586a940ed138a8a28365195326a31d56e664ff3",
+            ["Deep.Protocol.Protobuf.0.4.0-survival.e570512.nupkg"] =
+                "0d334cf3312727648a8dd05d430a33e0cb81e1b8aae8d31ec8a748866c5bcc76"
         };
 
     [Fact]
-    public void P10jPeerMailboxPackageClosure_IsExactAndRejectsNetworkSubstitution()
+    public void SurvivalBetaProtocolClosure_IsExactAndRejectsNetworkSubstitution()
     {
         var root = FindRepositoryRoot();
         var packageDirectory = Path.Combine(
             root,
             "vendor",
-            "mailbox-peer-p10j");
+            "survival-beta-e570512",
+            "packages");
         var files = Directory.GetFiles(packageDirectory, "*.nupkg")
             .ToDictionary(static path => Path.GetFileName(path)!, StringComparer.Ordinal);
         Assert.Equal(Expected.Keys.Order(), files.Keys.Order());
@@ -45,16 +48,16 @@ public sealed class MailboxClientPackagePinTests
         var coreProject = File.ReadAllText(
             Path.Combine(root, "src", "XNode.Core", "XNode.Core.csproj"));
         Assert.Contains(
-            "Version=\"[0.3.0-p10j.2886880]\"",
+            "Version=\"[0.4.0-survival.e570512]\"",
             coreProject,
             StringComparison.Ordinal);
         Assert.Contains(
-            "Deep.Protocol.MembershipRoutes\" Version=\"[0.3.0-p10j.2886880]\"",
+            "Deep.Protocol.MembershipRoutes\" Version=\"[0.4.0-survival.e570512]\"",
             coreProject,
             StringComparison.Ordinal);
         Assert.DoesNotContain("p03b2", coreProject, StringComparison.OrdinalIgnoreCase);
 
-        var config = XDocument.Load(Path.Combine(root, "eng", "mailbox-client.NuGet.Config"));
+        var config = XDocument.Load(Path.Combine(root, "eng", "survival-beta.NuGet.Config"));
         var sources = config.Descendants("packageSource")
             .ToDictionary(
                 element => element.Attribute("key")!.Value,
@@ -64,7 +67,7 @@ public sealed class MailboxClientPackagePinTests
                 StringComparer.Ordinal);
         Assert.Equal(
             new[] { "Deep.Protocol", "Deep.Protocol.*" },
-            sources["mailbox-peer-p10j"]);
+            sources["survival-beta-protocol-closure"]);
         Assert.DoesNotContain(
             sources["nuget.org"],
             static pattern => pattern is "*" or "Deep.Protocol" or "Deep.Protocol.*");
@@ -73,28 +76,28 @@ public sealed class MailboxClientPackagePinTests
             Path.Combine(root, "src", "XNode.Core", "packages.lock.json")));
         var packages = lockDocument.RootElement.GetProperty("dependencies").GetProperty("net10.0");
         Assert.Equal(
-            "0.3.0-p10j.2886880",
+            "0.4.0-survival.e570512",
             packages.GetProperty("Deep.Protocol").GetProperty("resolved").GetString());
         Assert.Equal(
-            "8nktp5tV9oPxOZbq9g9YDq0I8tmkkqY4mdXP9hZgBEnZi1xlfPq6j6I/s1xUFt0+4/ModMlGv9X/RU0iJ/vFbw==",
+            "7TZ9uLNtVQWEqKhu5R+r23yxGIzNfhtMY0VJ8X7OPTgbsN6FJpf0DZ7/PCgjqTcUecZxBScSJ7yFxfLb+ozJCw==",
             packages.GetProperty("Deep.Protocol").GetProperty("contentHash").GetString());
         Assert.Equal(
-            "0.3.0-p10j.2886880",
+            "0.4.0-survival.e570512",
             packages.GetProperty("Deep.Protocol.MembershipRoutes").GetProperty("resolved").GetString());
         Assert.Contains("<RestoreLockedMode>true</RestoreLockedMode>", coreProject);
 
         using var manifest = JsonDocument.Parse(File.ReadAllBytes(
-            Path.Combine(packageDirectory, "package-manifest.json")));
+            Path.Combine(root, "vendor", "survival-beta-e570512", "package-provenance.json")));
         Assert.Equal(
-            "2886880d4c2060cd819765c53c77a02e1c475ea8",
-            manifest.RootElement.GetProperty("sourceCommit").GetString());
+            "e5705123836b32060ec4392e813d5b8c44635e2e",
+            manifest.RootElement.GetProperty("protocolSourceCommit").GetString());
         Assert.Equal(
             Expected.Count,
             manifest.RootElement.GetProperty("packages").GetArrayLength());
         var manifestPackages = manifest.RootElement.GetProperty("packages")
             .EnumerateArray()
             .ToDictionary(
-                element => element.GetProperty("file").GetString()!,
+                element => Path.GetFileName(element.GetProperty("file").GetString()!),
                 element => (
                     Bytes: element.GetProperty("bytes").GetInt64(),
                     Hash: element.GetProperty("sha256").GetString()!),

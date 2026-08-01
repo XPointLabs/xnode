@@ -113,21 +113,18 @@ public sealed class ProfileCarrierPackagePinTests
     }
 
     [Fact]
-    public void EveryCarrierConsumerRejectsOldPackageAndEvidenceCarrierIdentity()
+    public void HistoricalEvidenceRemainsPinnedWhileActiveConsumersUseSurvivalBeta()
     {
         var root = P04PackagePinTests.RepositoryRoot();
-        var consumers = new[]
+        var historicalConsumers = new[]
         {
             "eng/P14C3.Ed25519Probe/P14C3.Ed25519Probe.csproj",
             "eng/P14C3.Ed25519Probe/packages.lock.json",
-            "src/XNode.ProfileGenerator/XNode.ProfileGenerator.csproj",
-            "src/XNode.ProfileGenerator/packages.lock.json",
-            "tests/XNode.ProfileGenerator.Tests/packages.lock.json",
             "vendor/p04/offline-closure-manifest.json",
             "vendor/p04/package-manifest.json",
             "vendor/p04/profile-carrier-manifest.json"
         };
-        foreach (var relative in consumers)
+        foreach (var relative in historicalConsumers)
         {
             var text = File.ReadAllText(Path.Combine(
                 root,
@@ -142,6 +139,20 @@ public sealed class ProfileCarrierPackagePinTests
                 text,
                 StringComparison.OrdinalIgnoreCase);
             Assert.Contains("0.2.0-p14.69a712a", text, StringComparison.Ordinal);
+        }
+
+        foreach (var relative in new[]
+                 {
+                     "src/XNode.ProfileGenerator/XNode.ProfileGenerator.csproj",
+                     "src/XNode.ProfileGenerator/packages.lock.json",
+                     "tests/XNode.ProfileGenerator.Tests/packages.lock.json"
+                 })
+        {
+            var text = File.ReadAllText(Path.Combine(
+                root,
+                relative.Replace('/', Path.DirectorySeparatorChar)));
+            Assert.Contains("0.4.0-survival.e570512", text, StringComparison.Ordinal);
+            Assert.DoesNotContain(ExpectedVersion, text, StringComparison.Ordinal);
         }
 
         var packages = Directory.GetFiles(

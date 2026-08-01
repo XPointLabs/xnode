@@ -7,7 +7,7 @@ namespace XNode.ProfileGenerator.Tests;
 public sealed class OfflineClosureTests
 {
     [Fact]
-    public void ClosureManifestExactlyCoversAllThreeLockedP14CGraphs()
+    public void HistoricalClosureManifestRemainsInternallyExact()
     {
         var root = P04PackagePinTests.RepositoryRoot();
         var vendorRoot = Path.Combine(root, "vendor", "p04");
@@ -31,21 +31,6 @@ public sealed class OfflineClosureTests
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Count());
 
-        var locked = ReadLockedPackages(
-                Path.Combine(root, "eng", "P14C3.Ed25519Probe", "packages.lock.json"))
-            .Concat(ReadLockedPackages(
-                Path.Combine(root, "src", "XNode.ProfileGenerator", "packages.lock.json")))
-            .Concat(ReadLockedPackages(
-                Path.Combine(root, "tests", "XNode.ProfileGenerator.Tests", "packages.lock.json")))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Order(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-        var declared = packages
-            .Where(static package => package.Role != "win-arm64-sdk-runtime-pack")
-            .Select(static package => $"{package.Id}/{package.Version}")
-            .Order(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-        Assert.Equal(locked, declared, StringComparer.OrdinalIgnoreCase);
         Assert.Equal(
             new[]
             {
