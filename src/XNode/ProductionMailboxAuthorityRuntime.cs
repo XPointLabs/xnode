@@ -1185,7 +1185,9 @@ public sealed class ProductionMailboxAuthorityProvider
         IMailboxDurabilityBarrier durability)
     {
         _options = options;
-        _artifactTrustRoot = options.GetArtifactTrustRoot();
+        _artifactTrustRoot = options.Enabled
+            ? options.GetArtifactTrustRoot()
+            : string.Empty;
         _dataTrustRoot = Path.GetFullPath(node.DataDirectory)
             .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         _clock = clock;

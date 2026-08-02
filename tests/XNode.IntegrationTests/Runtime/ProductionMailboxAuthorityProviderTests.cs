@@ -21,6 +21,25 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
         $"xnode-production-authority-{Guid.NewGuid():N}");
 
     [Fact]
+    public async Task DisabledProviderAcceptsEmptyProductionConfiguration()
+    {
+        var provider = new ProductionMailboxAuthorityProvider(
+            new ProductionMailboxAuthorityOptions(),
+            new RouterNodeOptions { DataDirectory = _root },
+            new FixedClock(DateTimeOffset.FromUnixTimeSeconds((long)Now)),
+            new PermissiveSecurity(),
+            new MailboxStorageSecurity(),
+            new MailboxDurabilityBarrier());
+
+        await provider.InitializeAsync();
+
+        Assert.False(provider.IsConfigured);
+        Assert.False(provider.Status.Enabled);
+        Assert.False(provider.Status.Ready);
+        Assert.Equal("disabled", provider.Status.Reason);
+    }
+
+    [Fact]
     public async Task ValidFirstNextAndIdempotentArtifactsAdvanceExactlyOnce()
     {
         var fixture = Fixture.Create(_root);
