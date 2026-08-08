@@ -1,4 +1,4 @@
-﻿# Operator Guide
+# Operator Guide
 
 ## Architecture
 
@@ -787,18 +787,18 @@ idempotency conflict 409, missing length 411, too large 413, media type/encoding
 429, dependency/quorum unavailable 503, and deadline 504. Exact byte limits, deadlines and
 admission ceilings come from `MailboxWireHttpContract`.
 
-The active native mailbox package closure is under `vendor/production-successor-2024907`, produced
+The active native mailbox package closure is under `vendor/production-successor-1059184`, produced
 by two byte-identical normalized archive builds from accepted `deep-protocol` source
-`20249077913abfd9ad69f957aa07e57ff55b5e24`:
+`105918421eb5621bec86aeaac56013b269472aa7`:
 
-- `Deep.Protocol.0.4.0-production.2024907.nupkg` —
-  `00bfaf36679fc905c9c83b644d717367ce1f2a3864f0009ef998da714f3fddfc`
-- `Deep.Protocol.Abstractions.0.4.0-production.2024907.nupkg` —
-  `b3790c2599be43ab593364dc57b558e97d36333a56c3b3b7cd6427e78629a9a2`
-- `Deep.Protocol.MembershipRoutes.0.4.0-production.2024907.nupkg` —
-  `91698919918caba2e671dcef87d02f1fc6168d330fc852ab15e90cdb29c209d7`
-- `Deep.Protocol.Protobuf.0.4.0-production.2024907.nupkg` —
-  `c42b0463013d98a9c5d5200db5c875a6d320a2b6c80e1062b8c76ac5aac205a2`
+- `Deep.Protocol.0.4.0-production.1059184.nupkg` —
+  `e4c29cd2de20d7863cdb7af993468953208e6a8097cee4de2a7cdfb468918c7f`
+- `Deep.Protocol.Abstractions.0.4.0-production.1059184.nupkg` —
+  `dcb00f2646b5a8bcf907f3936f761a00a6f0f360386e6631cd6e6513c711efe8`
+- `Deep.Protocol.MembershipRoutes.0.4.0-production.1059184.nupkg` —
+  `c2c1f3a5179cc10d32ed479225d730b9961fc7fbe7bd2e328b96f2a3fab1447b`
+- `Deep.Protocol.Protobuf.0.4.0-production.1059184.nupkg` —
+  `8912fa06c207bf48cddd251347ab7e7544c03485dff4222a3ec2fb86b8f13a56`
 
 Core/runtime/test projects resolve the exact PMA1+PMR1+PMT1/PMS1 version from the local feed in locked mode.
 `XNode.ProfileGenerator` and its tests remain isolated on the exact older P04/ProfileCarrier
