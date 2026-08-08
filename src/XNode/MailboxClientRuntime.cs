@@ -514,6 +514,7 @@ public sealed class DevelopmentMailboxReplicaAuthority
         ulong epoch,
         ReadOnlyMemory<byte> membershipCommitment,
         ReadOnlyMemory<byte> placementCommitment,
+        ReadOnlyMemory<byte> blindedPlacementId,
         ReadOnlyMemory<byte> selectionInputCommitment,
         CancellationToken cancellationToken)
     {

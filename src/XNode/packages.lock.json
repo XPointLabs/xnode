@@ -4,31 +4,31 @@
     "net10.0": {
       "Deep.Protocol": {
         "type": "Transitive",
-        "resolved": "0.4.0-production.ff9f80f",
-        "contentHash": "KEp7dKNCJcMoR04443k7XyC+HwztryAWL19B2P2hxFAKjCBdGRRz6yDCkWi2TeB69Bd9KsPBBvvD6AE5a4wcCg==",
+        "resolved": "0.4.0-production.7c84e8b",
+        "contentHash": "0nHkgXcuT14yaRIEwum6RGrqw/WUkGpeZqConAuEzGihz6ykbWQs5j09DjRev2qmCynOuG1j37vZVbtIRhKagQ==",
         "dependencies": {
-          "Deep.Protocol.Abstractions": "0.4.0-production.ff9f80f",
-          "Deep.Protocol.Protobuf": "0.4.0-production.ff9f80f",
+          "Deep.Protocol.Abstractions": "0.4.0-production.7c84e8b",
+          "Deep.Protocol.Protobuf": "0.4.0-production.7c84e8b",
           "Sodium.Core": "1.4.1"
         }
       },
       "Deep.Protocol.Abstractions": {
         "type": "Transitive",
-        "resolved": "0.4.0-production.ff9f80f",
-        "contentHash": "/cEz/MQtrbeLJHPzaksD7Fas43Ek1laNWV0yzntIejJOZpwMaeB9v/CVsVIAY8gvwp6mYAhLhh1NNDEhGEX7pA=="
+        "resolved": "0.4.0-production.7c84e8b",
+        "contentHash": "iDhNE8f5t8PVB20i2gtONr1WRiaJc2vCSvo9vYamuT2rVqg1H5NFenFhPGUBulGnfVHl8nX+4jSbZ+LcTrQJeA=="
       },
       "Deep.Protocol.MembershipRoutes": {
         "type": "Transitive",
-        "resolved": "0.4.0-production.ff9f80f",
-        "contentHash": "D+DiNi/tkjQYOskkAWVs1DoIdXB4+rXUPSWSkbdvv5wJ28U0wg6G2ic8+BmVsF+lZx7R1KaVChF7Ac3UcPYq5A==",
+        "resolved": "0.4.0-production.7c84e8b",
+        "contentHash": "2tcjhaZb4DokOGztmcvv48v44oErua/qzb8sVq1yWSxz8/GtAC4OUbzkp1hJRemElWwa0CqwUVh2xK4jXcolxw==",
         "dependencies": {
-          "Deep.Protocol": "0.4.0-production.ff9f80f"
+          "Deep.Protocol": "0.4.0-production.7c84e8b"
         }
       },
       "Deep.Protocol.Protobuf": {
         "type": "Transitive",
-        "resolved": "0.4.0-production.ff9f80f",
-        "contentHash": "0wHfWJqxrNtUj+avLRtz4MU0meA5eKKoJHBfA0nI6JSzTS8J9+SoP3oVuFr8zIi0iIfZNkWQqZ+azYhEzrtGaA==",
+        "resolved": "0.4.0-production.7c84e8b",
+        "contentHash": "I+bGoVNBiytd61hZLqIaNd/RR7WWn2YeqKoRCioXuR8grkxYv47bHbVHdOLIWaItYGCWPtQ+9qAvEGIXwgW1ZQ==",
         "dependencies": {
           "Google.Protobuf": "3.32.1"
         }
@@ -69,8 +69,8 @@
       "xnode.core": {
         "type": "Project",
         "dependencies": {
-          "Deep.Protocol": "[0.4.0-production.ff9f80f, 0.4.0-production.ff9f80f]",
-          "Deep.Protocol.MembershipRoutes": "[0.4.0-production.ff9f80f, 0.4.0-production.ff9f80f]",
+          "Deep.Protocol": "[0.4.0-production.7c84e8b, 0.4.0-production.7c84e8b]",
+          "Deep.Protocol.MembershipRoutes": "[0.4.0-production.7c84e8b, 0.4.0-production.7c84e8b]",
           "Rebex.Elliptic.Ed25519": "[1.2.2, )",
           "Sodium.Core": "[1.4.1, )"
         }

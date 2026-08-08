@@ -1922,6 +1922,7 @@ public sealed class MailboxNativeMau2BusinessInvariantTests : IDisposable
             ulong epoch,
             ReadOnlyMemory<byte> membershipCommitment,
             ReadOnlyMemory<byte> placementCommitment,
+            ReadOnlyMemory<byte> blindedPlacementId,
             ReadOnlyMemory<byte> selectionInputCommitment,
             CancellationToken cancellationToken) =>
             ValueTask.FromResult(replicas);
@@ -1939,6 +1940,7 @@ public sealed class MailboxNativeMau2BusinessInvariantTests : IDisposable
             ulong epoch,
             ReadOnlyMemory<byte> membershipCommitment,
             ReadOnlyMemory<byte> placementCommitment,
+            ReadOnlyMemory<byte> blindedPlacementId,
             ReadOnlyMemory<byte> selectionInputCommitment,
             CancellationToken cancellationToken)
         {

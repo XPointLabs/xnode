@@ -20,6 +20,7 @@ public sealed class ProductionMailboxReplicaAuthority(
         ulong epoch,
         ReadOnlyMemory<byte> membershipCommitment,
         ReadOnlyMemory<byte> placementCommitment,
+        ReadOnlyMemory<byte> blindedPlacementId,
         ReadOnlyMemory<byte> selectionInputCommitment,
         CancellationToken cancellationToken)
     {
@@ -28,6 +29,7 @@ public sealed class ProductionMailboxReplicaAuthority(
             epoch,
             membershipCommitment,
             placementCommitment,
+            blindedPlacementId,
             selectionInputCommitment,
             out var selection);
         return ValueTask.FromResult<IReadOnlyList<ReadOnlyMemory<byte>>>(
@@ -117,6 +119,7 @@ public sealed class ProductionMailboxReplicaFanout
                 epoch,
                 membership,
                 placement,
+                placementId,
                 selectionInput,
                 out var selection)
             || selection is null

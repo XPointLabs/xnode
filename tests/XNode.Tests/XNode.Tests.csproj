@@ -13,8 +13,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Deep.Protocol" Version="[0.4.0-production.ff9f80f]" />
-    <PackageReference Include="Deep.Protocol.MembershipRoutes" Version="[0.4.0-production.ff9f80f]" />
+    <PackageReference Include="Deep.Protocol" Version="[0.4.0-production.7c84e8b]" />
+    <PackageReference Include="Deep.Protocol.MembershipRoutes" Version="[0.4.0-production.7c84e8b]" />
     <PackageReference Include="coverlet.collector" Version="6.0.4" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="xunit" Version="2.9.3" />

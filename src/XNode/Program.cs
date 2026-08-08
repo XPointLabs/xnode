@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Threading.RateLimiting;
+using System.Security.Cryptography;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
 using Deep.Protocol.DeepExtension.MembershipRoutes;
 using Microsoft.AspNetCore.Http.Features;
@@ -121,7 +122,8 @@ builder.Services.AddSingleton<IMailboxStorageSecurity, MailboxStorageSecurity>()
 builder.Services.AddSingleton<IMailboxDurabilityBarrier, MailboxDurabilityBarrier>();
 builder.Services.AddSingleton<IProductionMailboxAuthorityFileSecurity,
     ProductionMailboxAuthorityFileSecurity>();
-builder.Services.AddSingleton<ProductionMailboxAuthorityProvider>();
+    builder.Services.AddSingleton<ProductionMailboxAuthorityProvider>();
+    builder.Services.AddSingleton<ProductionMailboxClosureStore>();
 builder.Services.AddHostedService<ProductionMailboxAuthorityHostedService>();
 if (mailboxClientActivationPlan.DevelopmentFixture)
 {
@@ -313,6 +315,7 @@ app.Use(async (context, next) =>
 
     var path = context.Request.Path;
     var allowed = path.Equals("/api/peer/onion")
+        || path.Equals(ProductionMailboxClosureHttpContract.PrepositionRoute)
         || path.Equals(MailboxWireHttpContract.PeerStoreRoute)
         || path.Equals(MailboxWireHttpContract.PeerTombstoneRoute)
         || path.Equals("/health/live")
@@ -355,10 +358,13 @@ app.Use(async (context, next) =>
 
     if (path.Equals("/api/session/rpc")
         || path.Equals("/api/peer/onion")
+        || path.Equals(ProductionMailboxClosureHttpContract.PrepositionRoute)
         || path.Equals(MailboxWireHttpContract.PeerStoreRoute)
         || path.Equals(MailboxWireHttpContract.PeerTombstoneRoute))
     {
-        var maxBodyBytes = Math.Max(1, runtimeOptions.MaxPeerRequestBodyBytes);
+        var maxBodyBytes = path.Equals(ProductionMailboxClosureHttpContract.PrepositionRoute)
+            ? ProductionMailboxPrepositionCommandCodec.MaximumCommandBytes
+            : Math.Max(1, runtimeOptions.MaxPeerRequestBodyBytes);
         if (context.Request.ContentLength is > 0 and var contentLength && contentLength > maxBodyBytes)
         {
             context.Response.StatusCode = StatusCodes.Status413PayloadTooLarge;
@@ -513,6 +519,46 @@ app.MapGet("/api/network/membership-route-catalog", async (
             statusCode: StatusCodes.Status503ServiceUnavailable);
     }
 }).RequireRateLimiting("peer-onion");
+
+if (productionMailboxAuthorityOptions.Enabled)
+{
+    app.MapPost(ProductionMailboxClosureHttpContract.FetchRoute, async (
+        HttpContext context,
+        ProductionMailboxClosureStore closures,
+        CancellationToken cancellationToken) =>
+    {
+        context.Response.Headers.CacheControl = "no-store";
+        if (context.Request.ContentLength != ProductionMailboxClosureRequestCodec.EncodedLength
+            || !string.Equals(context.Request.ContentType,
+                ProductionMailboxClosureHttpContract.RequestMediaType,
+                StringComparison.OrdinalIgnoreCase))
+            return Results.NotFound();
+        var request = new byte[ProductionMailboxClosureRequestCodec.EncodedLength];
+        try
+        {
+            await context.Request.Body.ReadExactlyAsync(request, cancellationToken);
+            var closure = await closures.FetchAsync(request, cancellationToken);
+            return closure is null
+                ? Results.NotFound()
+                : Results.File(closure, ProductionMailboxClosureHttpContract.ClosureMediaType,
+                    enableRangeProcessing: false);
+        }
+        catch (Exception exception) when (exception is IOException
+            || exception is OperationCanceledException
+                && context.RequestAborted.IsCancellationRequested)
+        {
+            return Results.NotFound();
+        }
+    }).RequireRateLimiting("peer-onion");
+
+    app.MapPost(ProductionMailboxClosureHttpContract.PrepositionRoute, async (
+        HttpContext context,
+        ProductionMailboxClosureStore closures,
+        CancellationToken cancellationToken) =>
+        await ProductionMailboxClosureHttpEndpoint.HandlePrepositionAsync(
+            context, closures, peerRpcListenUri.Port, cancellationToken))
+        .RequireRateLimiting("peer-onion");
+}
 
 app.MapPost("/api/staking/quorum/sign", async (
     QuorumSignatureRequest request,

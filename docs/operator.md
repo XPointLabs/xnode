@@ -618,16 +618,22 @@ The production-only public authority loader is configured independently from rou
     "revocationArtifactPath": "/run/secrets/deep/mailbox-revocation.pmr1",
     "topologyArtifactPath": "/run/secrets/deep/mailbox-topology.pmt1",
     "selectionArtifactDirectory": "/run/secrets/deep/selections",
+    "readinessBlindedPlacementId": "<64 lowercase hex>",
     "readinessSelectionInputCommitment": "<64 lowercase hex>",
     "artifactTrustRoot": "/run/secrets/deep",
     "lastKnownGoodPath": "/var/lib/xnode/mailbox-authority/authority.pml1",
+    "closureDirectory": "/var/lib/xnode/production-mailbox-closures",
+    "closureStateHmacKeyPath": "/var/lib/xnode/secrets/closure-state-hmac.key",
+    "closurePublisherEd25519PublicKey": "<64 lowercase hex>",
     "pinnedMrXPublicKeySha256": "<64 lowercase hex>",
     "expectedNetworkId": "<32 lowercase hex>",
     "clockSkewSeconds": 60,
     "maximumArtifactBytes": 65536,
     "maximumRevocationArtifactBytes": 131072,
     "maximumTopologyArtifactBytes": 4997504,
-    "maximumSelectionArtifactBytes": 8808
+    "maximumSelectionArtifactBytes": 8840,
+    "maximumStoredClosures": 100000,
+    "maximumClosureStoreBytes": 536870912
   }
 }
 ```
@@ -659,6 +665,35 @@ partial successor publication fail closed without advancing the durable bundle.
 Diagnostics expose only coarse state and generations, not paths, endpoints, pins, hashes or
 exception text.
 
+Registry-independent refresh uses only constant-path binary POST endpoints. The public
+`/api/production-mailbox/closure` request is exactly 176 bytes and binds a timestamp, nonce and
+selection commitment to an Ed25519 proof by the mailbox owner. Neither path nor query contains a
+mailbox-derived identifier; ASP.NET request-body logging is not enabled and responses carry
+`Cache-Control: no-store`. The peer-only preposition endpoint accepts a bounded PMP1 command,
+not a bare closure: a dedicated pinned publisher signs its timestamp, nonce, exact envelope hash
+and target replica id. The host also enforces the inverse listener rule: the PMP1 route returns 404
+on the public API listener and is reachable only on the configured peer RPC port. The envelope
+always contains exact PMA1/PMR1/PMT1/PMS1/PSS1; PSS1 is
+mandatory because this cache is used only for LKG advancement.
+
+Each route occupies one atomic file named by HMAC(selection commitment), so the stable commitment
+is absent from filesystem names. Exact replay is idempotent; a stored closure can be replaced only
+by strictly higher authority and topology generations and a forward epoch/generation. Rollback,
+same-generation forks and commands for another replica fail closed under an in-process gate plus
+a native cross-process store lock. Two XNode processes must not normally share a closure directory,
+but if they do, the lock serializes reconciliation and compare-and-swap rather than allowing the
+last writer to win.
+Replacement also preserves the exact network, owner, blinded route, selection commitment and
+original durable old-PMS/authority/topology anchor. Registry therefore issues later Offline PSS1
+bridges from that same retained anchor instead of silently rebasing an offline client.
+Startup and every mutation rescan count and bytes through stable no-follow handles, reject
+unsafe/reparse/identity-swapped files, and refuse stores above both configured
+caps. Nodes retain the last publisher-authorized bridge for a route until a strictly newer bridge is
+durably installed; clients still perform full PSS/LKG verification and do not trust the cache.
+An orphan `*.tmp` atomic-write file makes startup fail closed instead of disappearing from byte
+accounting. Inspect the interrupted write and remove the orphan only after confirming the adjacent
+canonical route file is intact; restart then performs a fresh authoritative scan.
+
 After the complete bundle verifies, diagnostics report `authorityRevocationReady=true`,
 `topologyArtifactVerified=true`, and `productionMailboxRoutesReady=true`. Each mailbox operation
 still fails closed unless its own commitment-named PMS1 verifies for the requested blinded
@@ -683,17 +718,17 @@ idempotency conflict 409, missing length 411, too large 413, media type/encoding
 429, dependency/quorum unavailable 503, and deadline 504. Exact byte limits, deadlines and
 admission ceilings come from `MailboxWireHttpContract`.
 
-The active native mailbox package closure is under `vendor/production-topology-ff9f80f`, produced
-from accepted `deep-protocol` source `ff9f80fb6c29e3ac0a725f9161ee477b658730e3`:
+The active native mailbox package closure is under `vendor/production-successor-7c84e8b`, produced
+from accepted `deep-protocol` source `7c84e8b55a82797049d221264010e94af406a963`:
 
-- `Deep.Protocol.0.4.0-production.ff9f80f.nupkg` —
-  `feec9ded0d02c04fda2650bb45a0b550e97915df724e99fb56f1c1976508e154`
-- `Deep.Protocol.Abstractions.0.4.0-production.ff9f80f.nupkg` —
-  `86871905258af6b63e51b8231d35fb31ad51f45a3bccd3f2574716c7b7e60851`
-- `Deep.Protocol.MembershipRoutes.0.4.0-production.ff9f80f.nupkg` —
-  `a27f7d2a841ff3fb122d1d0767da2ee87b3e8b5f547b647600271d2ba54c2825`
-- `Deep.Protocol.Protobuf.0.4.0-production.ff9f80f.nupkg` —
-  `77bd88914a8e323c0b741664e2ff1431555311550edddc8f55f66ab287365416`
+- `Deep.Protocol.0.4.0-production.7c84e8b.nupkg` —
+  `2fb4dafdd659b0e8e9bdb5099280b57cc44ba5f56b2b380d2a869d187fb8641d`
+- `Deep.Protocol.Abstractions.0.4.0-production.7c84e8b.nupkg` —
+  `9d8f61674bd010126bfd4076525f7b9f9b6f3510847ea49d1777e355f910a17a`
+- `Deep.Protocol.MembershipRoutes.0.4.0-production.7c84e8b.nupkg` —
+  `826e4f7e1a2870afcef1479c296aef1f285e77423622e01288c57e6b9a48abc9`
+- `Deep.Protocol.Protobuf.0.4.0-production.7c84e8b.nupkg` —
+  `5d7326c2e8fe367cee0a321568a078e1fa98b77b01c86d7dea86c8295d218410`
 
 Core/runtime/test projects resolve the exact PMA1+PMR1+PMT1/PMS1 version from the local feed in locked mode.
 `XNode.ProfileGenerator` and its tests remain isolated on the exact older P04/ProfileCarrier

@@ -22,9 +22,13 @@ public sealed class ProductionMailboxAuthorityOptions
     public string RevocationArtifactPath { get; set; } = "";
     public string TopologyArtifactPath { get; set; } = "";
     public string SelectionArtifactDirectory { get; set; } = "";
+    public string ReadinessBlindedPlacementId { get; set; } = "";
     public string ReadinessSelectionInputCommitment { get; set; } = "";
     public string ArtifactTrustRoot { get; set; } = "";
     public string LastKnownGoodPath { get; set; } = "";
+    public string ClosureDirectory { get; set; } = "";
+    public string ClosureStateHmacKeyPath { get; set; } = "";
+    public string ClosurePublisherEd25519PublicKey { get; set; } = "";
     public string PinnedMrXPublicKeySha256 { get; set; } = "";
     public string ExpectedNetworkId { get; set; } = "";
     public uint ClockSkewSeconds { get; set; } = 60;
@@ -34,6 +38,8 @@ public sealed class ProductionMailboxAuthorityOptions
         ProductionMailboxTopologyConstants.MaximumTopologyArtifactBytes;
     public int MaximumSelectionArtifactBytes { get; set; } =
         ProductionMailboxTopologyConstants.MaximumSelectionArtifactBytes;
+    public int MaximumStoredClosures { get; set; } = 100_000;
+    public long MaximumClosureStoreBytes { get; set; } = 536_870_912;
 
     public void Validate(RouterNodeOptions node, bool isProduction)
     {
@@ -44,8 +50,12 @@ public sealed class ProductionMailboxAuthorityOptions
                 || !string.IsNullOrEmpty(RevocationArtifactPath)
                 || !string.IsNullOrEmpty(TopologyArtifactPath)
                 || !string.IsNullOrEmpty(SelectionArtifactDirectory)
+                || !string.IsNullOrEmpty(ReadinessBlindedPlacementId)
                 || !string.IsNullOrEmpty(ReadinessSelectionInputCommitment)
                 || !string.IsNullOrEmpty(LastKnownGoodPath)
+                || !string.IsNullOrEmpty(ClosureDirectory)
+                || !string.IsNullOrEmpty(ClosureStateHmacKeyPath)
+                || !string.IsNullOrEmpty(ClosurePublisherEd25519PublicKey)
                 || !string.IsNullOrEmpty(ArtifactTrustRoot)
                 || !string.IsNullOrEmpty(PinnedMrXPublicKeySha256)
                 || !string.IsNullOrEmpty(ExpectedNetworkId))
@@ -71,17 +81,33 @@ public sealed class ProductionMailboxAuthorityOptions
             ExpectedNetworkId,
             ProductionMailboxAuthorityConstants.NetworkIdLength,
             "network id");
-        _ = DecodeHex(
+        var readinessPlacementId = DecodeHex(
+            ReadinessBlindedPlacementId,
+            ProductionMailboxTopologyConstants.HashLength,
+            "readiness blinded placement id");
+        var readinessSelectionInput = DecodeHex(
             ReadinessSelectionInputCommitment,
             ProductionMailboxTopologyConstants.HashLength,
             "readiness selection-input commitment");
+        if (!CryptographicOperations.FixedTimeEquals(
+                ProductionMailboxReplicaSelection.ComputeSelectionInputCommitment(
+                    new BlindedPlacementId(readinessPlacementId)),
+                readinessSelectionInput))
+        {
+            throw new InvalidOperationException(
+                "MailboxClientProductionAuthority readiness selection commitment mismatch.");
+        }
+        _ = DecodeHex(ClosurePublisherEd25519PublicKey, 32,
+            "closure publisher Ed25519 public key");
         if (ClockSkewSeconds > ProductionMailboxAuthorityConstants.MaximumClockSkewSeconds
             || MaximumArtifactBytes is < 1 or > 1_048_576
             || MaximumRevocationArtifactBytes is < 1 or > 1_048_576
             || MaximumTopologyArtifactBytes is < 1
                 or > ProductionMailboxTopologyConstants.MaximumTopologyArtifactBytes
             || MaximumSelectionArtifactBytes is < 1
-                or > ProductionMailboxTopologyConstants.MaximumSelectionArtifactBytes)
+                or > ProductionMailboxTopologyConstants.MaximumSelectionArtifactBytes
+            || MaximumStoredClosures is < 1 or > 1_000_000
+            || MaximumClosureStoreBytes is < 1_048_576 or > 107_374_182_400)
         {
             throw new InvalidOperationException(
                 "MailboxClientProductionAuthority bounds are invalid.");
@@ -99,6 +125,8 @@ public sealed class ProductionMailboxAuthorityOptions
             "selection artifact directory");
         var artifactTrustRoot = RequireAbsolutePath(ArtifactTrustRoot, "artifact trust root");
         var lkg = RequireAbsolutePath(LastKnownGoodPath, "LKG");
+        var closureDirectory = RequireAbsolutePath(ClosureDirectory, "closure directory");
+        var closureHmacKey = RequireAbsolutePath(ClosureStateHmacKeyPath, "closure HMAC key");
         if (string.Equals(artifact, lkg, PathComparison)
             || string.Equals(revocationArtifact, lkg, PathComparison)
             || string.Equals(topologyArtifact, lkg, PathComparison)
@@ -116,6 +144,13 @@ public sealed class ProductionMailboxAuthorityOptions
         {
             throw new InvalidOperationException(
                 "MailboxClientProductionAuthority LKG must be inside Node:DataDirectory.");
+        }
+        if (!IsDescendant(closureDirectory, dataRoot)
+            || !IsDescendant(closureHmacKey, dataRoot)
+            || string.Equals(closureDirectory, dataRoot, PathComparison))
+        {
+            throw new InvalidOperationException(
+                "MailboxClientProductionAuthority closure state must be inside Node:DataDirectory.");
         }
 
         if (!IsDescendant(artifact, artifactTrustRoot))
@@ -152,6 +187,15 @@ public sealed class ProductionMailboxAuthorityOptions
         ReadinessSelectionInputCommitment,
         ProductionMailboxTopologyConstants.HashLength,
         "readiness selection-input commitment");
+
+    internal byte[] GetReadinessBlindedPlacementId() => DecodeHex(
+        ReadinessBlindedPlacementId,
+        ProductionMailboxTopologyConstants.HashLength,
+        "readiness blinded placement id");
+
+    internal byte[] GetClosurePublisherPublicKey() => DecodeHex(
+        ClosurePublisherEd25519PublicKey, 32,
+        "closure publisher Ed25519 public key");
 
     internal string GetArtifactTrustRoot() => Path.GetFullPath(ArtifactTrustRoot)
         .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
@@ -233,7 +277,7 @@ public sealed record ProductionMailboxTopologyReplica(
 public sealed record ProductionMailboxEpochTopology(
     ulong Epoch,
     ReadOnlyMemory<byte> MembershipCommitment,
-    ReadOnlyMemory<byte> PlacementCommitment,
+    ReadOnlyMemory<byte> MailboxPlacementCommitment,
     ReadOnlyMemory<byte> SelectionInputCommitment,
     IReadOnlyList<ProductionMailboxTopologyReplica> Replicas);
 
@@ -250,6 +294,7 @@ public interface IProductionMailboxTopologyProvider
         ulong epoch,
         ReadOnlyMemory<byte> membershipCommitment,
         ReadOnlyMemory<byte> placementCommitment,
+        ReadOnlyMemory<byte> blindedPlacementId,
         ReadOnlyMemory<byte> selectionInputCommitment,
         out ProductionMailboxEpochTopology? topology);
 }
@@ -1262,6 +1307,7 @@ public sealed class ProductionMailboxAuthorityProvider
         ulong epoch,
         ReadOnlyMemory<byte> membershipCommitment,
         ReadOnlyMemory<byte> placementCommitment,
+        ReadOnlyMemory<byte> blindedPlacementId,
         ReadOnlyMemory<byte> selectionInputCommitment,
         out ProductionMailboxEpochTopology? topology)
     {
@@ -1274,15 +1320,23 @@ public sealed class ProductionMailboxAuthorityProvider
 
         try
         {
+            var placementId = new BlindedPlacementId(blindedPlacementId.ToArray());
+            var computedSelectionInput = ProductionMailboxReplicaSelection
+                .ComputeSelectionInputCommitment(placementId);
+            if (!Fixed(computedSelectionInput, selectionInputCommitment.Span))
+            {
+                topology = null;
+                return false;
+            }
             var selection = VerifySelection(
                 bundle.Authority,
                 bundle.Topology,
-                selectionInputCommitment.Span,
+                placementId,
                 null);
             var proof = selection.Proof;
             if (proof.Epoch != epoch
                 || !Fixed(proof.MembershipCommitment.Span, membershipCommitment.Span)
-                || !Fixed(proof.PlacementCommitment.Span, placementCommitment.Span))
+                || !Fixed(proof.MailboxPlacementCommitment.Span, placementCommitment.Span))
             {
                 topology = null;
                 return false;
@@ -1291,7 +1345,7 @@ public sealed class ProductionMailboxAuthorityProvider
             topology = new(
                 proof.Epoch,
                 proof.MembershipCommitment.ToArray(),
-                proof.PlacementCommitment.ToArray(),
+                proof.MailboxPlacementCommitment.ToArray(),
                 proof.SelectionInputCommitment.ToArray(),
                 selection.Replicas.Select(static replica =>
                     new ProductionMailboxTopologyReplica(
@@ -1403,7 +1457,8 @@ public sealed class ProductionMailboxAuthorityProvider
             || query.Generation != epoch.Generation
             || !Fixed(query.NetworkId.Span, authority.NetworkId.Span)
             || !Fixed(query.IssuerPublicKey.Span, authority.MailboxIssuerEd25519PublicKey.Span)
-            || !Fixed(query.PlacementCommitment.Span, epoch.PlacementCommitment.Span)
+            || query.PlacementCommitment.Length != 32
+            || query.PlacementCommitment.Span.IndexOfAnyExcept((byte)0) < 0
             || !Fixed(query.MembershipCommitment.Span, epoch.MembershipCommitment.Span))
         {
             policy = null;
@@ -1414,7 +1469,7 @@ public sealed class ProductionMailboxAuthorityProvider
         {
             NetworkId = authority.NetworkId.ToArray(),
             Epoch = epoch.Epoch,
-            PlacementCommitment = epoch.PlacementCommitment.ToArray(),
+            PlacementCommitment = query.PlacementCommitment.ToArray(),
             MembershipCommitment = epoch.MembershipCommitment.ToArray(),
             NowUnixSeconds = 0,
             MinimumGeneration = epoch.Generation,
@@ -1546,7 +1601,7 @@ public sealed class ProductionMailboxAuthorityProvider
         var readinessSelection = VerifySelection(
             verified,
             verifiedTopology,
-            _options.GetReadinessSelectionInputCommitment(),
+            new BlindedPlacementId(_options.GetReadinessBlindedPlacementId()),
             now);
 
         if (!authorityIdempotent || !topologyIdempotent)
@@ -1596,9 +1651,11 @@ public sealed class ProductionMailboxAuthorityProvider
     private VerifiedProductionMailboxSelection VerifySelection(
         VerifiedProductionMailboxAuthority authority,
         VerifiedProductionMailboxTopology topology,
-        ReadOnlySpan<byte> selectionInputCommitment,
+        BlindedPlacementId blindedPlacementId,
         ulong? observedNow)
     {
+        var selectionInputCommitment = ProductionMailboxReplicaSelection
+            .ComputeSelectionInputCommitment(blindedPlacementId);
         var path = Path.Combine(
             _options.SelectionArtifactDirectory,
             Convert.ToHexString(selectionInputCommitment).ToLowerInvariant() + ".pms1");
@@ -1610,7 +1667,7 @@ public sealed class ProductionMailboxAuthorityProvider
             bytes,
             authority,
             topology,
-            selectionInputCommitment,
+            blindedPlacementId,
             observedNow ?? checked((ulong)_clock.UtcNow.ToUnixTimeSeconds()),
             _options.ClockSkewSeconds,
             new SodiumProductionMailboxTopologySignatureVerifier());

@@ -164,6 +164,7 @@ public sealed partial class MailboxClientStoreAdapter : IDisposable
                         request.Epoch,
                         membershipCommitment.ToArray(),
                         placementCommitment.ToArray(),
+                        request.PlacementId.Bytes.ToArray(),
                         ProductionMailboxReplicaSelection.ComputeSelectionInputCommitment(
                             request.PlacementId),
                         cancellationToken).ConfigureAwait(false));
