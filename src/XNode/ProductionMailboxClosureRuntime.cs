@@ -139,6 +139,7 @@ public sealed record ProductionMailboxClosureRequest(
     ulong TimestampUnixSeconds,
     ReadOnlyMemory<byte> Nonce,
     ReadOnlyMemory<byte> SelectionInputCommitment,
+    ReadOnlyMemory<byte> DurableOldSelectionHash,
     ReadOnlyMemory<byte> MailboxOwnerEd25519PublicKey,
     ReadOnlyMemory<byte> OwnerSignature);
 
@@ -146,7 +147,7 @@ public static class ProductionMailboxClosureRequestCodec
 {
     private static ReadOnlySpan<byte> Magic => "PMQ1"u8;
     private static ReadOnlySpan<byte> SignatureDomain => "Deep/PMQ1/owner-proof/v1"u8;
-    public const int EncodedLength = 176;
+    public const int EncodedLength = 208;
 
     public static byte[] Encode(ProductionMailboxClosureRequest value)
     {
@@ -155,8 +156,9 @@ public static class ProductionMailboxClosureRequestCodec
         BinaryPrimitives.WriteUInt64BigEndian(bytes.AsSpan(8), value.TimestampUnixSeconds);
         value.Nonce.Span.CopyTo(bytes.AsSpan(16));
         value.SelectionInputCommitment.Span.CopyTo(bytes.AsSpan(48));
-        value.MailboxOwnerEd25519PublicKey.Span.CopyTo(bytes.AsSpan(80));
-        value.OwnerSignature.Span.CopyTo(bytes.AsSpan(112));
+        value.DurableOldSelectionHash.Span.CopyTo(bytes.AsSpan(80));
+        value.MailboxOwnerEd25519PublicKey.Span.CopyTo(bytes.AsSpan(112));
+        value.OwnerSignature.Span.CopyTo(bytes.AsSpan(144));
         return bytes;
     }
 
@@ -168,18 +170,19 @@ public static class ProductionMailboxClosureRequestCodec
         var value = new ProductionMailboxClosureRequest(
             BinaryPrimitives.ReadUInt64BigEndian(encoded[8..]), encoded.Slice(16, 32).ToArray(),
             encoded.Slice(48, 32).ToArray(), encoded.Slice(80, 32).ToArray(),
-            encoded.Slice(112, 64).ToArray());
+            encoded.Slice(112, 32).ToArray(), encoded.Slice(144, 64).ToArray());
         Validate(value); return value;
     }
 
     public static byte[] GetSigningBytes(ProductionMailboxClosureRequest value)
     {
         ArgumentNullException.ThrowIfNull(value); Validate(value, allowZeroSignature: true);
-        var bytes = new byte[SignatureDomain.Length + 104];
+        var bytes = new byte[SignatureDomain.Length + 136];
         SignatureDomain.CopyTo(bytes); var offset = SignatureDomain.Length;
         BinaryPrimitives.WriteUInt64BigEndian(bytes.AsSpan(offset), value.TimestampUnixSeconds); offset += 8;
         value.Nonce.Span.CopyTo(bytes.AsSpan(offset)); offset += 32;
         value.SelectionInputCommitment.Span.CopyTo(bytes.AsSpan(offset)); offset += 32;
+        value.DurableOldSelectionHash.Span.CopyTo(bytes.AsSpan(offset)); offset += 32;
         value.MailboxOwnerEd25519PublicKey.Span.CopyTo(bytes.AsSpan(offset));
         return bytes;
     }
@@ -193,7 +196,8 @@ public static class ProductionMailboxClosureRequestCodec
                 GetSigningBytes(value), value.MailboxOwnerEd25519PublicKey.ToArray());
         }
         catch (Exception exception) when (exception is InvalidDataException
-            or CryptographicException or ArgumentException) { return false; }
+            or CryptographicException or ArgumentException)
+        { return false; }
     }
 
     public static bool IsFresh(ProductionMailboxClosureRequest value, ulong nowUnixSeconds,
@@ -209,6 +213,7 @@ public static class ProductionMailboxClosureRequestCodec
     {
         if (value.TimestampUnixSeconds == 0 || Invalid(value.Nonce, 32)
             || Invalid(value.SelectionInputCommitment, 32)
+            || Invalid(value.DurableOldSelectionHash, 32)
             || Invalid(value.MailboxOwnerEd25519PublicKey, 32)
             || value.OwnerSignature.Length != 64
             || (!allowZeroSignature && value.OwnerSignature.Span.IndexOfAnyExcept((byte)0) < 0))
@@ -332,7 +337,8 @@ public static class ProductionMailboxPrepositionCommandCodec
                 GetFrozenSigningBytes(frozen), publisherPublicKey.ToArray());
         }
         catch (Exception exception) when (exception is InvalidDataException
-            or CryptographicException or ArgumentException) { return false; }
+            or CryptographicException or ArgumentException)
+        { return false; }
     }
 
     private static void Validate(ProductionMailboxPrepositionCommand value,
@@ -415,6 +421,58 @@ public static class ProductionMailboxPrepositionCommandCodec
     }
 }
 
+internal static class ProductionMailboxClosureScheduleCodec
+{
+    private static ReadOnlySpan<byte> Magic => "PCS1"u8;
+    private const int HeaderLength = 8;
+
+    public static byte[] Encode(IReadOnlyList<byte[]> envelopes, int maximumVersions)
+    {
+        if (envelopes.Count is < 1 || envelopes.Count > maximumVersions)
+            throw new InvalidDataException("Production mailbox closure schedule count is invalid.");
+        var total = checked(HeaderLength + envelopes.Sum(static value => 4 + value.Length));
+        var output = new byte[total]; Magic.CopyTo(output); output[4] = 1;
+        output[5] = checked((byte)envelopes.Count);
+        var offset = HeaderLength;
+        foreach (var envelope in envelopes)
+        {
+            if (envelope.Length is < 28
+                or > ProductionMailboxClosureEnvelopeCodec.MaximumEnvelopeBytes)
+                throw new InvalidDataException("Production mailbox closure schedule field is invalid.");
+            BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(offset),
+                checked((uint)envelope.Length));
+            offset += 4; envelope.CopyTo(output.AsSpan(offset)); offset += envelope.Length;
+        }
+        return output;
+    }
+
+    public static IReadOnlyList<byte[]> Decode(ReadOnlySpan<byte> encoded, int maximumVersions)
+    {
+        if (encoded.Length < HeaderLength || !encoded[..4].SequenceEqual(Magic)
+            || encoded[4] != 1 || encoded[5] is 0 || encoded[5] > maximumVersions
+            || encoded[6] != 0 || encoded[7] != 0)
+            throw new InvalidDataException("Production mailbox closure schedule is invalid.");
+        var values = new List<byte[]>(encoded[5]);
+        var offset = HeaderLength;
+        for (var index = 0; index < encoded[5]; index++)
+        {
+            if (encoded.Length - offset < 4)
+                throw new InvalidDataException("Production mailbox closure schedule is truncated.");
+            var lengthValue = BinaryPrimitives.ReadUInt32BigEndian(encoded[offset..]);
+            offset += 4;
+            if (lengthValue is < 28
+                or > ProductionMailboxClosureEnvelopeCodec.MaximumEnvelopeBytes
+                || lengthValue > int.MaxValue || encoded.Length - offset < (int)lengthValue)
+                throw new InvalidDataException("Production mailbox closure schedule field is invalid.");
+            values.Add(encoded.Slice(offset, (int)lengthValue).ToArray());
+            offset += (int)lengthValue;
+        }
+        if (offset != encoded.Length || !Encode(values, maximumVersions).AsSpan().SequenceEqual(encoded))
+            throw new InvalidDataException("Production mailbox closure schedule is non-canonical.");
+        return values;
+    }
+}
+
 public sealed class ProductionMailboxClosureStore
 {
     private readonly ProductionMailboxAuthorityOptions options;
@@ -427,6 +485,8 @@ public sealed class ProductionMailboxClosureStore
     private readonly string processLockPath;
     private readonly byte[] hmacKey;
     private readonly SemaphoreSlim gate = new(1, 1);
+    private readonly SemaphoreSlim[] lineageGates = Enumerable.Range(0, 64)
+        .Select(static _ => new SemaphoreSlim(1, 1)).ToArray();
     private long storedBytes;
     private int storedClosures;
 
@@ -457,6 +517,9 @@ public sealed class ProductionMailboxClosureStore
         EnsureNoReparseAncestors(options.ClosureDirectory, dataRoot);
         processLockPath = Path.Combine(options.ClosureDirectory, ".closure-store.lock");
         using var processLock = AcquireProcessLock();
+        PruneGloballyExpiredSchedules(
+            checked((ulong)clock.UtcNow.ToUnixTimeSeconds()));
+        PruneEmptyStoreDirectories();
         ReconcileStoreState();
     }
 
@@ -482,46 +545,94 @@ public sealed class ProductionMailboxClosureStore
                 command.AuthorizedLegacyReplicaIds))
             throw new InvalidDataException(
                 "Production mailbox closure is unrelated to the authorized target replica.");
-        var path = PathFor(proof.SelectionInputCommitment.Span);
-        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        if (IsExpired(proof.ExpiresAtUnixSeconds, now, options.ClockSkewSeconds))
+            throw new InvalidDataException(
+                "Production mailbox closure candidate is already expired.");
+        var lineageGate = LineageGate(proof.SelectionInputCommitment.Span,
+            proof.OldCanonicalSelectionHash.Span);
+        await lineageGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            using var processLock = AcquireProcessLock();
-            ReconcileStoreState();
-            byte[]? existing = null;
+            await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                existing = ReadBounded(path);
-            }
-            catch (FileNotFoundException)
-            {
-                // A missing route is a new insertion under the cross-process store lock.
-            }
-            if (existing is not null)
-            {
-                if (existing.AsSpan().SequenceEqual(frozen)) return;
-                var existingProof = ValidateCacheClosure(existing);
-                EnsureStrictlyForward(existingProof, proof);
-            }
-            var existingLength = existing?.Length ?? 0;
-            if (existingLength == 0 && storedClosures >= options.MaximumStoredClosures)
-                throw new InvalidOperationException("Production mailbox closure capacity is exhausted.");
-            var projectedBytes = checked(storedBytes - existingLength + frozen.Length);
-            if (projectedBytes > options.MaximumClosureStoreBytes)
-                throw new InvalidOperationException(
-                    "Production mailbox closure byte capacity is exhausted.");
-            try
-            {
-                WriteAtomic(path, frozen);
-            }
-            catch
-            {
+                using var processLock = AcquireProcessLock();
+                PruneExpiredLineages(proof.SelectionInputCommitment.Span, now);
                 ReconcileStoreState();
-                throw;
+                var path = SchedulePath(proof.SelectionInputCommitment.Span,
+                    proof.OldCanonicalSelectionHash.Span);
+                byte[]? existingSchedule = null;
+                var versions = new List<(byte[] Bytes,
+                    ProductionMailboxSelectionSuccessorProof Proof)>();
+                try
+                {
+                    existingSchedule = ReadScheduleBounded(path);
+                    versions.AddRange(ProductionMailboxClosureScheduleCodec.Decode(
+                            existingSchedule, options.MaximumClosureVersionsPerSelection)
+                        .Select(bytes => (bytes,
+                            ValidateCacheClosure(bytes))));
+                }
+                catch (FileNotFoundException)
+                {
+                    // A missing lineage schedule is a new insertion under the process lock.
+                }
+                if (existingSchedule is null
+                    && CountLineages(proof.SelectionInputCommitment.Span)
+                        >= options.MaximumClosureLineagesPerSelection)
+                    throw new InvalidOperationException(
+                        "Production mailbox selection lineage capacity is exhausted.");
+                var exact = versions.Any(version => version.Bytes.AsSpan().SequenceEqual(frozen));
+                if (!exact && versions.Count != 0)
+                    EnsureStrictlyForward(
+                        versions.MaxBy(static version => Order(version.Proof)).Proof, proof);
+                var retained = versions.Where(version =>
+                        !IsExpired(version.Proof.ExpiresAtUnixSeconds, now,
+                            options.ClockSkewSeconds)
+                        || version.Bytes.AsSpan().SequenceEqual(frozen))
+                    .ToList();
+                if (!exact) retained.Add((frozen, proof));
+                retained = retained.OrderBy(static version => Order(version.Proof)).ToList();
+                if (retained.Count > options.MaximumClosureVersionsPerSelection)
+                    throw new InvalidOperationException(
+                        "Production mailbox route closure schedule is at its configured bound.");
+                var replacement = ProductionMailboxClosureScheduleCodec.Encode(
+                    retained.Select(static version => version.Bytes).ToArray(),
+                    options.MaximumClosureVersionsPerSelection);
+                if (existingSchedule is not null && existingSchedule.AsSpan().SequenceEqual(replacement))
+                    return;
+                var projectedClosures = checked(storedClosures - versions.Count + retained.Count);
+                var projectedBytes = checked(storedBytes - (existingSchedule?.Length ?? 0)
+                    + replacement.Length);
+                if (projectedClosures > options.MaximumStoredClosures
+                    || projectedBytes > options.MaximumClosureStoreBytes)
+                {
+                    PruneGloballyExpiredSchedules(now, path);
+                    ReconcileStoreState();
+                    projectedClosures = checked(storedClosures - versions.Count + retained.Count);
+                    projectedBytes = checked(storedBytes - (existingSchedule?.Length ?? 0)
+                        + replacement.Length);
+                }
+                if (projectedClosures > options.MaximumStoredClosures)
+                    throw new InvalidOperationException("Production mailbox closure capacity is exhausted.");
+                if (projectedBytes > options.MaximumClosureStoreBytes)
+                    throw new InvalidOperationException(
+                        "Production mailbox closure byte capacity is exhausted.");
+                EnsureLineageDirectory(proof.SelectionInputCommitment.Span,
+                    proof.OldCanonicalSelectionHash.Span);
+                try
+                {
+                    WriteAtomic(path, replacement);
+                }
+                catch
+                {
+                    ReconcileStoreState();
+                    throw;
+                }
+                ReconcileStoreState();
             }
-            ReconcileStoreState();
+            finally { gate.Release(); }
         }
-        finally { gate.Release(); }
+        finally { lineageGate.Release(); }
     }
 
     internal static void EnsureStrictlyForward(
@@ -554,7 +665,9 @@ public sealed class ProductionMailboxClosureStore
             || candidate.NewTopologyGeneration <= existing.NewTopologyGeneration
             || candidate.NewEpoch < existing.NewEpoch
             || candidate.NewEpoch == existing.NewEpoch
-                && candidate.NewEpochGeneration <= existing.NewEpochGeneration)
+                && candidate.NewEpochGeneration <= existing.NewEpochGeneration
+            || candidate.IssuedAtUnixSeconds <= existing.IssuedAtUnixSeconds
+            || candidate.ExpiresAtUnixSeconds <= existing.ExpiresAtUnixSeconds)
             throw new InvalidDataException(
                 "Production mailbox preposition command is rollback, replay fork or non-forward.");
     }
@@ -571,23 +684,39 @@ public sealed class ProductionMailboxClosureStore
         if (!ProductionMailboxClosureRequestCodec.IsFresh(request, now)
             || !ProductionMailboxClosureRequestCodec.VerifyOwner(request))
             return null;
-        var path = PathFor(request.SelectionInputCommitment.Span);
-        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var lineageGate = LineageGate(request.SelectionInputCommitment.Span,
+            request.DurableOldSelectionHash.Span);
+        await lineageGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var bytes = ReadBounded(path);
-            var proof = ValidateCacheClosure(bytes);
-            if (!Fixed(proof.SelectionInputCommitment.Span, request.SelectionInputCommitment.Span)
-                || !Fixed(proof.MailboxOwnerEd25519PublicKey.Span,
-                    request.MailboxOwnerEd25519PublicKey.Span)
-                || !IsLiveWindow(proof.IssuedAtUnixSeconds,
-                    proof.ExpiresAtUnixSeconds, now, options.ClockSkewSeconds))
-                return null;
-            return bytes;
+            ValidateLineageDirectory(request.SelectionInputCommitment.Span,
+                request.DurableOldSelectionHash.Span);
+            var live = new List<(byte[] Bytes, ProductionMailboxSelectionSuccessorProof Proof)>();
+            var schedule = ReadScheduleBounded(SchedulePath(
+                request.SelectionInputCommitment.Span,
+                request.DurableOldSelectionHash.Span));
+            foreach (var bytes in ProductionMailboxClosureScheduleCodec.Decode(
+                         schedule, options.MaximumClosureVersionsPerSelection))
+            {
+                var proof = ValidateCacheClosure(bytes);
+                if (Fixed(proof.SelectionInputCommitment.Span,
+                        request.SelectionInputCommitment.Span)
+                    && Fixed(proof.OldCanonicalSelectionHash.Span,
+                        request.DurableOldSelectionHash.Span)
+                    && Fixed(proof.MailboxOwnerEd25519PublicKey.Span,
+                        request.MailboxOwnerEd25519PublicKey.Span)
+                    && IsLiveWindow(proof.IssuedAtUnixSeconds,
+                        proof.ExpiresAtUnixSeconds, now, options.ClockSkewSeconds))
+                    live.Add((bytes, proof));
+            }
+            return live.Count == 0
+                ? null
+                : live.MaxBy(static version => Order(version.Proof)).Bytes;
         }
         catch (Exception exception) when (exception is IOException or InvalidDataException
-            or CryptographicException) { return null; }
-        finally { gate.Release(); }
+            or CryptographicException)
+        { return null; }
+        finally { lineageGate.Release(); }
     }
 
     private ProductionMailboxSelectionSuccessorProof ValidateCacheClosure(byte[] frozen)
@@ -697,13 +826,197 @@ public sealed class ProductionMailboxClosureStore
         return frozen;
     }
 
-    private string PathFor(ReadOnlySpan<byte> selection)
+    private string SelectionKey(ReadOnlySpan<byte> selection)
     {
         using var hmac = IncrementalHash.CreateHMAC(HashAlgorithmName.SHA256, hmacKey);
         hmac.AppendData("Deep/XNode/production-mailbox-closure-state/v1"u8);
         hmac.AppendData(selection);
-        return Path.Combine(options.ClosureDirectory,
-            Convert.ToHexStringLower(hmac.GetHashAndReset()) + ".pmc1");
+        return Convert.ToHexStringLower(hmac.GetHashAndReset());
+    }
+
+    private string RouteKey(ReadOnlySpan<byte> selection, ReadOnlySpan<byte> oldSelectionHash)
+    {
+        using var hmac = IncrementalHash.CreateHMAC(HashAlgorithmName.SHA256, hmacKey);
+        hmac.AppendData("Deep/XNode/production-mailbox-closure-lineage/v1"u8);
+        hmac.AppendData(selection);
+        hmac.AppendData(oldSelectionHash);
+        return Convert.ToHexStringLower(hmac.GetHashAndReset());
+    }
+
+    private string SelectionDirectory(ReadOnlySpan<byte> selection)
+    {
+        var key = SelectionKey(selection);
+        return Path.Combine(options.ClosureDirectory, key[..2], key);
+    }
+
+    private string LineageDirectory(
+        ReadOnlySpan<byte> selection, ReadOnlySpan<byte> oldSelectionHash) =>
+        Path.Combine(SelectionDirectory(selection), RouteKey(selection, oldSelectionHash));
+
+    private SemaphoreSlim LineageGate(
+        ReadOnlySpan<byte> selection, ReadOnlySpan<byte> oldSelectionHash)
+    {
+        var key = RouteKey(selection, oldSelectionHash);
+        return lineageGates[Convert.ToByte(key[..2], 16) & (lineageGates.Length - 1)];
+    }
+
+    private string SchedulePath(
+        ReadOnlySpan<byte> selection, ReadOnlySpan<byte> oldSelectionHash) =>
+        Path.Combine(LineageDirectory(selection, oldSelectionHash), "schedule.pmcs1");
+
+    private void EnsureLineageDirectory(
+        ReadOnlySpan<byte> selection, ReadOnlySpan<byte> oldSelectionHash)
+    {
+        var lineage = LineageDirectory(selection, oldSelectionHash);
+        var selectionDirectory = Path.GetDirectoryName(lineage)!;
+        var shard = Path.GetDirectoryName(selectionDirectory)!;
+        foreach (var directory in new[] { shard, selectionDirectory, lineage })
+        {
+            EnsureNoReparseAncestors(directory, dataRoot);
+            Directory.CreateDirectory(directory);
+            EnsureNoReparseAncestors(directory, dataRoot);
+            security.SecureDirectory(directory);
+        }
+    }
+
+    private void ValidateLineageDirectory(
+        ReadOnlySpan<byte> selection, ReadOnlySpan<byte> oldSelectionHash)
+    {
+        var directory = LineageDirectory(selection, oldSelectionHash);
+        if (Directory.Exists(directory)) EnsureNoReparseAncestors(directory, dataRoot);
+    }
+
+    private int CountLineages(ReadOnlySpan<byte> selection)
+    {
+        var directory = SelectionDirectory(selection);
+        if (!Directory.Exists(directory)) return 0;
+        EnsureNoReparseAncestors(directory, dataRoot);
+        var count = 0;
+        foreach (var lineage in Directory.EnumerateDirectories(
+                     directory, "*", SearchOption.TopDirectoryOnly))
+        {
+            EnsureNoReparseAncestors(lineage, dataRoot);
+            if (!File.Exists(Path.Combine(lineage, "schedule.pmcs1"))) continue;
+            count++;
+            if (count > options.MaximumClosureLineagesPerSelection)
+                throw new InvalidOperationException(
+                    "Production mailbox selection lineage capacity is exhausted.");
+        }
+        return count;
+    }
+
+    private void PruneExpiredLineages(ReadOnlySpan<byte> selection, ulong now)
+    {
+        var selectionDirectory = SelectionDirectory(selection);
+        if (!Directory.Exists(selectionDirectory)) return;
+        EnsureNoReparseAncestors(selectionDirectory, dataRoot);
+        foreach (var schedulePath in Directory.EnumerateFiles(
+                     selectionDirectory, "*.pmcs1", SearchOption.AllDirectories).ToArray())
+            PruneScheduleIfGloballyExpired(schedulePath, now);
+    }
+
+    private void PruneGloballyExpiredSchedules(ulong now, string? excludedPath = null)
+    {
+        ValidateStoreDirectory();
+        testHooks?.BeforeGlobalExpiredGc?.Invoke();
+        foreach (var schedulePath in Directory.EnumerateFiles(
+                     options.ClosureDirectory, "*.pmcs1", SearchOption.AllDirectories)
+                 .ToArray())
+        {
+            if (excludedPath is not null && string.Equals(
+                    Path.GetFullPath(schedulePath), Path.GetFullPath(excludedPath),
+                    OperatingSystem.IsWindows()
+                        ? StringComparison.OrdinalIgnoreCase
+                        : StringComparison.Ordinal))
+                continue;
+            PruneScheduleIfGloballyExpired(schedulePath, now);
+        }
+    }
+
+    private void PruneScheduleIfGloballyExpired(string schedulePath, ulong now)
+    {
+        var schedule = ReadScheduleBounded(schedulePath);
+        var proofs = ProductionMailboxClosureScheduleCodec.Decode(schedule, 16)
+            .Select(ValidateCacheClosure).ToArray();
+        if (proofs.Any(proof => !IsExpired(
+                proof.ExpiresAtUnixSeconds, now, options.ClockSkewSeconds)))
+            return;
+        ValidateRegularFilePath(schedulePath);
+        Exception? ambiguousFailure = null;
+        try
+        {
+            durability.DeleteFile(schedulePath);
+            durability.FlushParentDirectory(schedulePath);
+        }
+        catch (Exception exception) when (exception is IOException
+            or UnauthorizedAccessException)
+        {
+            ambiguousFailure = exception;
+        }
+        if (File.Exists(schedulePath))
+            throw ambiguousFailure ?? new IOException(
+                "Production mailbox expired closure schedule could not be deleted.");
+        RemoveEmptyScheduleAncestors(Path.GetDirectoryName(schedulePath)!);
+        if (ambiguousFailure is not null) throw ambiguousFailure;
+    }
+
+    private void RemoveEmptyScheduleAncestors(string lineageDirectory)
+    {
+        var stop = Path.GetFullPath(options.ClosureDirectory)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var current = Path.GetFullPath(lineageDirectory)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        while (!string.Equals(current, stop, comparison))
+        {
+            EnsureNoReparseAncestors(current, dataRoot);
+            if (Directory.EnumerateFileSystemEntries(current).Any()) return;
+            DeleteEmptyDirectoryDurably(current);
+            var parent = Path.GetDirectoryName(current);
+            if (parent is null) return;
+            current = Path.GetFullPath(parent)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+    }
+
+    private void PruneEmptyStoreDirectories()
+    {
+        ValidateStoreDirectory();
+        var maximumDirectories = checked((long)options.MaximumStoredClosures * 3 + 256);
+        var directories = Directory.EnumerateDirectories(
+                options.ClosureDirectory, "*", SearchOption.AllDirectories)
+            .Take(checked((int)Math.Min(maximumDirectories + 1, int.MaxValue)))
+            .ToArray();
+        if (directories.LongLength > maximumDirectories)
+            throw new InvalidOperationException(
+                "Production mailbox closure directory metadata exceeds its configured bound.");
+        foreach (var directory in directories.OrderByDescending(static path => path.Length))
+        {
+            if (!Directory.Exists(directory)) continue;
+            EnsureNoReparseAncestors(directory, dataRoot);
+            if (!Directory.EnumerateFileSystemEntries(directory).Any())
+                DeleteEmptyDirectoryDurably(directory);
+        }
+    }
+
+    private void DeleteEmptyDirectoryDurably(string path)
+    {
+        Exception? ambiguousFailure = null;
+        try
+        {
+            durability.DeleteDirectory(path);
+        }
+        catch (Exception exception) when (exception is IOException
+            or UnauthorizedAccessException)
+        {
+            ambiguousFailure = exception;
+        }
+        if (Directory.Exists(path))
+            throw ambiguousFailure ?? new IOException(
+                "Production mailbox empty closure directory could not be deleted.");
+        if (ambiguousFailure is not null) throw ambiguousFailure;
     }
 
     private byte[] ReadBounded(string path)
@@ -717,12 +1030,28 @@ public sealed class ProductionMailboxClosureStore
         var bytes = new byte[checked((int)stream.Length)]; stream.ReadExactly(bytes); return bytes;
     }
 
+    private byte[] ReadScheduleBounded(string path)
+    {
+        using var stream = ProductionMailboxAuthorityNativeFile.OpenStableRead(
+            path,
+            () => ValidateRegularFilePath(path),
+            () => testHooks?.AfterClosureActualOpen?.Invoke(path));
+        var maximum = checked(8L + options.MaximumClosureVersionsPerSelection
+            * (4L + ProductionMailboxClosureEnvelopeCodec.MaximumEnvelopeBytes));
+        if (stream.Length is < 8 || stream.Length > maximum)
+            throw new InvalidDataException("Production mailbox closure schedule file is outside bounds.");
+        var bytes = new byte[checked((int)stream.Length)];
+        stream.ReadExactly(bytes);
+        return bytes;
+    }
+
     private void WriteAtomic(string path, byte[] bytes)
     {
         var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
             ValidateStoreDirectory();
+            EnsureNoReparseAncestors(Path.GetDirectoryName(path)!, dataRoot);
             using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write,
                        FileShare.None, 4096, FileOptions.WriteThrough))
             { stream.Write(bytes); stream.Flush(flushToDisk: true); }
@@ -775,23 +1104,55 @@ public sealed class ProductionMailboxClosureStore
     {
         ValidateStoreDirectory();
         if (Directory.EnumerateFiles(options.ClosureDirectory, "*.tmp",
-                SearchOption.TopDirectoryOnly).Any())
+                SearchOption.AllDirectories).Any())
             throw new InvalidOperationException(
                 "Production mailbox closure store contains an incomplete atomic write.");
 
         long bytes = 0;
         var count = 0;
-        foreach (var path in Directory.EnumerateFiles(options.ClosureDirectory, "*.pmc1",
-                     SearchOption.TopDirectoryOnly))
+        var lineagesBySelection = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        foreach (var path in Directory.EnumerateFiles(options.ClosureDirectory, "*.pmcs1",
+                     SearchOption.AllDirectories))
         {
-            var canonical = ReadBounded(path);
-            bytes = checked(bytes + canonical.Length);
-            count = checked(count + 1);
+            var canonicalSchedule = ReadScheduleBounded(path);
+            var canonicalEnvelopes = ProductionMailboxClosureScheduleCodec.Decode(
+                canonicalSchedule, options.MaximumClosureVersionsPerSelection);
+            var schedule = canonicalEnvelopes
+                .Select(envelope => ValidateCacheClosure(envelope)).OrderBy(Order).ToArray();
+            var first = schedule[0];
+            var expectedPath = SchedulePath(first.SelectionInputCommitment.Span,
+                first.OldCanonicalSelectionHash.Span);
+            if (!string.Equals(Path.GetFullPath(path), Path.GetFullPath(expectedPath),
+                    OperatingSystem.IsWindows()
+                        ? StringComparison.OrdinalIgnoreCase
+                        : StringComparison.Ordinal))
+                throw new InvalidDataException(
+                    "Production mailbox closure filename is not bound to its authenticated route and content.");
+            for (var index = 1; index < schedule.Length; index++)
+                EnsureStrictlyForward(schedule[index - 1], schedule[index]);
+            if (schedule.Any(proof =>
+                    !Fixed(proof.SelectionInputCommitment.Span,
+                        first.SelectionInputCommitment.Span)
+                    || !Fixed(proof.OldCanonicalSelectionHash.Span,
+                        first.OldCanonicalSelectionHash.Span)))
+                throw new InvalidDataException(
+                    "Production mailbox closure schedule mixes authenticated lineages.");
+            var routeKey = RouteKey(first.SelectionInputCommitment.Span,
+                first.OldCanonicalSelectionHash.Span);
+            var selectionKey = SelectionKey(first.SelectionInputCommitment.Span);
+            if (!lineagesBySelection.TryGetValue(selectionKey, out var lineages))
+                lineagesBySelection[selectionKey] = lineages = new(StringComparer.Ordinal);
+            lineages.Add(routeKey);
+            if (lineages.Count > options.MaximumClosureLineagesPerSelection)
+                throw new InvalidOperationException(
+                    "Production mailbox closure store exceeds its per-selection lineage bound.");
+            bytes = checked(bytes + canonicalSchedule.Length);
+            count = checked(count + schedule.Length);
+            if (bytes > options.MaximumClosureStoreBytes
+                || count > options.MaximumStoredClosures)
+                throw new InvalidOperationException(
+                    "Production mailbox closure store exceeds configured capacity.");
         }
-        if (bytes > options.MaximumClosureStoreBytes
-            || count > options.MaximumStoredClosures)
-            throw new InvalidOperationException(
-                "Production mailbox closure store exceeds configured capacity.");
         storedBytes = bytes;
         storedClosures = count;
     }
@@ -840,7 +1201,18 @@ public sealed class ProductionMailboxClosureStore
     private static bool IsLiveWindow(ulong issuedAt, ulong expiresAt, ulong now, uint skew) =>
         (now >= issuedAt || issuedAt - now <= skew)
         && (now <= expiresAt || now - expiresAt <= skew);
+    private static bool IsExpired(ulong expiresAt, ulong now, uint skew) =>
+        now > expiresAt && now - expiresAt > skew;
+    private static (ulong Authority, ulong Topology, ulong Epoch, ulong Generation) Order(
+        ProductionMailboxSelectionSuccessorProof proof)
+    {
+        var authority = ProductionMailboxAuthorityCodec.Decode(
+            proof.CanonicalNewAuthority.Span);
+        return (authority.AuthorityGeneration, proof.NewTopologyGeneration,
+            proof.NewEpoch, proof.NewEpochGeneration);
+    }
 }
 
 internal sealed record ProductionMailboxClosureStoreTestHooks(
-    Action<string>? AfterClosureActualOpen = null);
+    Action<string>? AfterClosureActualOpen = null,
+    Action? BeforeGlobalExpiredGc = null);

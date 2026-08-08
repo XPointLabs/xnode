@@ -633,7 +633,9 @@ The production-only public authority loader is configured independently from rou
     "maximumTopologyArtifactBytes": 4997504,
     "maximumSelectionArtifactBytes": 8840,
     "maximumStoredClosures": 100000,
-    "maximumClosureStoreBytes": 536870912
+    "maximumClosureStoreBytes": 536870912,
+    "maximumClosureVersionsPerSelection": 4,
+    "maximumClosureLineagesPerSelection": 4
   }
 }
 ```
@@ -666,8 +668,8 @@ Diagnostics expose only coarse state and generations, not paths, endpoints, pins
 exception text.
 
 Registry-independent refresh uses only constant-path binary POST endpoints. The public
-`/api/production-mailbox/closure` request is exactly 176 bytes and binds a timestamp, nonce and
-selection commitment to an Ed25519 proof by the mailbox owner. Neither path nor query contains a
+`/api/production-mailbox/closure` request is exactly 208 bytes and binds a timestamp, nonce,
+selection commitment and exact durable old-PMS hash to an Ed25519 proof by the mailbox owner. Neither path nor query contains a
 mailbox-derived identifier; ASP.NET request-body logging is not enabled and responses carry
 `Cache-Control: no-store`. The peer-only preposition endpoint accepts a bounded PMP1 command,
 not a bare closure: a dedicated pinned publisher signs its timestamp, nonce, exact envelope hash
@@ -680,23 +682,40 @@ on the public API listener and is reachable only on the configured peer RPC port
 always contains exact PMA1/PMR1/PMT1/PMS1/PSS1; PSS1 is
 mandatory because this cache is used only for LKG advancement.
 
-Each route occupies one atomic file named by HMAC(selection commitment), so the stable commitment
-is absent from filesystem names. Exact replay is idempotent; a stored closure can be replaced only
-by strictly higher authority and topology generations and a forward epoch/generation. Rollback,
-same-generation forks and commands for another replica fail closed under an in-process gate plus
-a native cross-process store lock. Two XNode processes must not normally share a closure directory,
-but if they do, the lock serializes reconciliation and compare-and-swap rather than allowing the
-last writer to win.
-Replacement also preserves the exact network, owner, blinded route, selection commitment and
-original durable old-PMS/authority/topology anchor. Registry therefore issues later Offline PSS1
-bridges from that same retained anchor instead of silently rebasing an offline client.
-Startup and every mutation rescan count and bytes through stable no-follow handles, reject
+Each route lineage occupies one bounded, atomically replaced schedule file under sharded
+HMAC(selection commitment)/HMAC(selection commitment + durable old-PMS hash) directories, so
+neither stable value is present in filesystem names. Different devices at different durable old-PMS
+anchors can coexist and PMQ1 selects one exact lineage. Exact replay is idempotent. Every existing
+entry is semantically verified before a candidate is appended. The
+candidate must advance authority, topology and epoch/generation while preserving the exact network,
+owner, blinded route, selection commitment and original durable old-PMS/authority/topology anchor.
+Rollback, same-generation forks, renamed cross-route files and commands for another replica fail
+closed under an in-process gate plus a native cross-process store lock. Two XNode processes must
+not normally share a closure directory, but if they do, the lock serializes reconciliation and
+schedule append rather than allowing the last writer to win.
+Startup and every mutation reconcile count and bytes through stable no-follow handles, reject
 unsafe/reparse/identity-swapped files, and refuse stores above both configured
-caps. Nodes retain the last publisher-authorized bridge for a route until a strictly newer bridge is
-durably installed; clients still perform full PSS/LKG verification and do not trust the cache.
+caps. Fetch returns the highest forward entry whose PSS1 window is live and never serves a future
+entry early. Startup globally removes only schedules whose every entry is expired beyond skew.
+Mutation performs selection-local expiry compaction first and runs the global expired scan only on
+count/byte pressure; an ambiguous file or directory delete/parent flush fails the attempt and the
+next locked reconciliation resumes from exact disk state. Empty lineage/selection/shard directories
+are removed durably, and startup bounds then sweeps the empty tree deepest-first; an over-bound tree
+fails closed for operator inspection. A schedule containing any live or future proof is never evicted. Clients
+still perform full PSS/LKG verification and do not trust the cache.
 An orphan `*.tmp` atomic-write file makes startup fail closed instead of disappearing from byte
 accounting. Inspect the interrupted write and remove the orphan only after confirming the adjacent
 canonical route file is intact; restart then performs a fresh authoritative scan.
+
+`maximumClosureVersionsPerSelection` is an availability horizon, not merely a storage tuning
+number. Since PSS1 is limited to 24 hours, four contiguous overlapping versions can cover at most
+about four days of complete Registry/issuer outage. Operators must reserve both the global count
+and byte caps for every current and future version before promotion. Gaps between signed windows
+remain real outages. The 365-day OfflineCheckpoint old-anchor age permits recovery of a long-offline
+client after infrastructure returns; it does not promise 365 days of control-plane outage. Survival
+Beta must advertise only the configured, prepositioned contiguous horizon.
+`maximumClosureLineagesPerSelection` separately bounds simultaneous device/LKG anchors for the
+same stable selection commitment; exceeding it fails before any new schedule is written.
 
 After the complete bundle verifies, diagnostics report `authorityRevocationReady=true`,
 `topologyArtifactVerified=true`, and `productionMailboxRoutesReady=true`. Each mailbox operation

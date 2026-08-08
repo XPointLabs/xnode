@@ -11,7 +11,7 @@ public sealed class ProductionMailboxClosureContractTests
     {
         var owner = PublicKeyAuth.GenerateKeyPair(Bytes(0x31, 32));
         var unsigned = new ProductionMailboxClosureRequest(
-            2_000_000_000, Bytes(0x41, 32), Bytes(0x51, 32), owner.PublicKey,
+            2_000_000_000, Bytes(0x41, 32), Bytes(0x51, 32), Bytes(0x61, 32), owner.PublicKey,
             new byte[64]);
         var signed = unsigned with
         {
@@ -26,6 +26,10 @@ public sealed class ProductionMailboxClosureContractTests
             ProductionMailboxClosureRequestCodec.Decode(encoded)));
 
         encoded[48] ^= 0x01;
+        Assert.False(ProductionMailboxClosureRequestCodec.VerifyOwner(
+            ProductionMailboxClosureRequestCodec.Decode(encoded)));
+        encoded[48] ^= 0x01;
+        encoded[80] ^= 0x01;
         Assert.False(ProductionMailboxClosureRequestCodec.VerifyOwner(
             ProductionMailboxClosureRequestCodec.Decode(encoded)));
         Assert.Throws<InvalidDataException>(() =>

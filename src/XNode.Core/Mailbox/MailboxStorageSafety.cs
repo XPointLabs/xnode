@@ -139,6 +139,12 @@ public interface IMailboxDurabilityBarrier
         File.Delete(path);
         FlushParentDirectory(path);
     }
+
+    void DeleteDirectory(string path)
+    {
+        Directory.Delete(path);
+        FlushParentDirectory(path);
+    }
 }
 
 public sealed class MailboxDurabilityBarrier : IMailboxDurabilityBarrier
@@ -215,6 +221,27 @@ public sealed class MailboxDurabilityBarrier : IMailboxDurabilityBarrier
         }
 
         File.Delete(path);
+        FlushParentDirectory(path);
+    }
+
+    public void DeleteDirectory(string path)
+    {
+        if (!Directory.Exists(path))
+        {
+            FlushParentDirectory(path);
+            return;
+        }
+
+        if (OperatingSystem.IsWindows())
+        {
+            var deletedPath = $"{path}.{Guid.NewGuid():N}.deleted";
+            if (!MoveFileEx(path, deletedPath, MoveFileWriteThrough))
+                throw new Win32Exception(Marshal.GetLastPInvokeError());
+            Directory.Delete(deletedPath);
+            return;
+        }
+
+        Directory.Delete(path);
         FlushParentDirectory(path);
     }
 

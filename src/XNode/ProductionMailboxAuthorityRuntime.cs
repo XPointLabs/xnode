@@ -40,6 +40,8 @@ public sealed class ProductionMailboxAuthorityOptions
         ProductionMailboxTopologyConstants.MaximumSelectionArtifactBytes;
     public int MaximumStoredClosures { get; set; } = 100_000;
     public long MaximumClosureStoreBytes { get; set; } = 536_870_912;
+    public int MaximumClosureVersionsPerSelection { get; set; } = 4;
+    public int MaximumClosureLineagesPerSelection { get; set; } = 4;
 
     public void Validate(RouterNodeOptions node, bool isProduction)
     {
@@ -107,7 +109,9 @@ public sealed class ProductionMailboxAuthorityOptions
             || MaximumSelectionArtifactBytes is < 1
                 or > ProductionMailboxTopologyConstants.MaximumSelectionArtifactBytes
             || MaximumStoredClosures is < 1 or > 1_000_000
-            || MaximumClosureStoreBytes is < 1_048_576 or > 107_374_182_400)
+            || MaximumClosureStoreBytes is < 1_048_576 or > 107_374_182_400
+            || MaximumClosureVersionsPerSelection is < 2 or > 16
+            || MaximumClosureLineagesPerSelection is < 1 or > 16)
         {
             throw new InvalidOperationException(
                 "MailboxClientProductionAuthority bounds are invalid.");
@@ -1676,17 +1680,17 @@ public sealed class ProductionMailboxAuthorityProvider
     private ProductionMailboxAuthorityVerificationContext Context(
         ProductionMailboxAuthorityLkgCommit anchor,
         ulong nowUnixSeconds) => new()
-    {
-        PinnedMrXPublicKeySha256 = _options.GetPinnedMrXKeyHash(),
-        ExpectedNetworkId = _options.GetExpectedNetworkId(),
-        LastCommittedGeneration = anchor.Generation,
-        LastCommittedAuthorityHash = anchor.AuthorityHash,
-        LastCommittedRevocationGeneration = anchor.RevocationGeneration,
-        LastCommittedRevocationHeadHash = anchor.RevocationHeadHash,
-        LastCommittedRevocationSnapshotHash = anchor.RevocationSnapshotHash,
-        NowUnixSeconds = nowUnixSeconds,
-        ClockSkewSeconds = _options.ClockSkewSeconds
-    };
+        {
+            PinnedMrXPublicKeySha256 = _options.GetPinnedMrXKeyHash(),
+            ExpectedNetworkId = _options.GetExpectedNetworkId(),
+            LastCommittedGeneration = anchor.Generation,
+            LastCommittedAuthorityHash = anchor.AuthorityHash,
+            LastCommittedRevocationGeneration = anchor.RevocationGeneration,
+            LastCommittedRevocationHeadHash = anchor.RevocationHeadHash,
+            LastCommittedRevocationSnapshotHash = anchor.RevocationSnapshotHash,
+            NowUnixSeconds = nowUnixSeconds,
+            ClockSkewSeconds = _options.ClockSkewSeconds
+        };
 
     private byte[] ReadBoundedArtifact(string path, int maximumBytes, string name)
     {
