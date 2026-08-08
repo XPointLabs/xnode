@@ -907,11 +907,39 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
             new FixedClock(DateTimeOffset.FromUnixTimeSeconds((long)(Now + 61))),
             new MailboxStorageSecurity(), new MailboxDurabilityBarrier());
         Assert.Equal((1, (long)charge), restarted.StorageAccounting);
+        var releaseCommand = fixture.CapacityCommand(
+            cohort, 0, 0, revision: 2, lifetimeSeconds: 60,
+            operation: ProductionMailboxCapacityOperation.Release, nonce: 0x49,
+            timestampUnixSeconds: Now + 61);
+        var releaseReceiptBytes = await restarted.ReserveCapacityAsync(
+            releaseCommand, CancellationToken.None);
+        var releaseReceipt = ProductionMailboxCapacityReceiptCodec.Decode(
+            releaseReceiptBytes);
+        Assert.Equal(releaseReceipt.ConsumedClosureCount,
+            releaseReceipt.ReservedClosureCount);
+        Assert.Equal(releaseReceipt.ConsumedBytes, releaseReceipt.ReservedBytes);
+        Assert.Equal((uint)1, releaseReceipt.ConsumedClosureCount);
+        Assert.Equal(charge, releaseReceipt.ConsumedBytes);
+        Assert.Equal((1, (long)charge), restarted.StorageAccounting);
+
+        var releaseRestart = new ProductionMailboxClosureStore(
+            fixture.Options, fixture.Node,
+            new FixedClock(DateTimeOffset.FromUnixTimeSeconds((long)(Now + 62))),
+            new MailboxStorageSecurity(), new MailboxDurabilityBarrier());
+        Assert.Equal(releaseReceiptBytes, await releaseRestart.ReserveCapacityAsync(
+            releaseCommand, CancellationToken.None));
+        Assert.Equal((1, (long)charge), releaseRestart.StorageAccounting);
         await Assert.ThrowsAsync<InvalidOperationException>(async () =>
-            await restarted.ReserveCapacityAsync(
+            await releaseRestart.ReserveCapacityAsync(
                 fixture.CapacityCommand(Bytes(0x93, 32), 1, charge,
                     lifetimeSeconds: 60, nonce: 0x48,
-                    timestampUnixSeconds: Now + 61),
+                    timestampUnixSeconds: Now + 62),
+                CancellationToken.None));
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await releaseRestart.ReserveCapacityAsync(
+                fixture.CapacityCommand(cohort, 1, charge,
+                    revision: 3, lifetimeSeconds: 120, nonce: 0x4A,
+                    timestampUnixSeconds: Now + 62),
                 CancellationToken.None));
     }
 

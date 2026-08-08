@@ -43,6 +43,9 @@ PSS1 through their durable LKG/recovery anchor before atomic activation.
   exact hash is already the latest authoritative floor may recover the same stored PMB2 after
   command expiry or restart. Recovery is read-only and does not extend TTL or restore headroom;
   unknown, changed, same-revision-fork and superseded expired commands remain rejected.
+- An unreleased reservation that auto-expired into a terminal floor permits exactly one fresh,
+  authenticated revision-successor Release. Its node-signed PMB2 preserves actual consumed charges
+  and acknowledges zero unused headroom; Reserve/Renew remains terminally rejected.
 - PMC1 is canonical and bounded and always carries exact PMA1, PMR1, PMT1, PMS1 and PSS1. PSS1 is
   mandatory because this endpoint exists for forward LKG advancement, not ordinary bootstrap.
 - Storage is sharded under HMAC(selection commitment) and HMAC(selection commitment + old-PMS

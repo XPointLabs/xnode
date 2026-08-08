@@ -642,6 +642,15 @@ public sealed class ProductionMailboxClosureStore
             var existing = existingIndex >= 0 ? reservations[existingIndex] : null;
             var existingFloor = existing is null ? null : floors.Single(value =>
                 Fixed(value.Reservation.CohortId.Span, existing.CohortId.Span));
+            var existingReceiptOperation = existing is null
+                ? (ProductionMailboxCapacityOperation?)null
+                : ProductionMailboxCapacityReceiptCodec.Decode(
+                    existing.LastCanonicalReceipt.Span).Operation;
+            var isExpiredTerminalRelease = existing is not null
+                && existing.Terminal
+                && existingReceiptOperation
+                    == ProductionMailboxCapacityOperation.ReserveOrRenew
+                && command.Operation == ProductionMailboxCapacityOperation.Release;
             if (command.Operation == ProductionMailboxCapacityOperation.ReserveOrRenew
                 && command.Revision == ulong.MaxValue)
                 throw new InvalidOperationException(
@@ -658,13 +667,12 @@ public sealed class ProductionMailboxClosureStore
                         "Production mailbox capacity reservation cannot be created.");
             }
             else if (existing.Revision == ulong.MaxValue
-                     || existing.Terminal
+                     || existing.Terminal && !isExpiredTerminalRelease
                      || command.Revision != existing.Revision + 1
                      || !Fixed(existing.TargetReplicaId.Span,
                          command.TargetReplicaId.Span)
-                     || ProductionMailboxCapacityReceiptCodec.Decode(
-                             existing.LastCanonicalReceipt.Span).Operation
-                         == ProductionMailboxCapacityOperation.Release
+                     || existingReceiptOperation
+                        == ProductionMailboxCapacityOperation.Release
                      || command.ExpiresAtUnixSeconds <= existing.ExpiresAtUnixSeconds)
             {
                 throw new InvalidOperationException(

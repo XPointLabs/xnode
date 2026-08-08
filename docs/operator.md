@@ -714,6 +714,11 @@ byte-identical PMB2 after PMB1 expiry or restart. This is a read-only lost-respo
 not extend expiry, change counters, renew or resurrect released capacity. Unknown, changed,
 same-revision-fork and superseded expired commands are rejected coarsely.
 
+If an unreleased reservation has already auto-expired into a terminal floor, the node accepts only
+its authenticated exact revision-successor Release. The returned PMB2 binds that Release command,
+reports reserved equal to consumed, preserves every actual schedule charge, and cannot renew or
+resurrect capacity. This lets Registry finish durable post-cutover cleanup after a long outage.
+
 Each route lineage occupies one bounded, atomically replaced schedule file under sharded
 HMAC(selection commitment)/HMAC(selection commitment + durable old-PMS hash) directories, so
 neither stable value is present in filesystem names. Different devices at different durable old-PMS
