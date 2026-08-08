@@ -212,6 +212,59 @@ public sealed class ProductionMailboxClosureContractTests
     }
 
     [Fact]
+    public void CapacityReconciliationCodecs_BindExactPriorReceiptAndNodeStatus()
+    {
+        var publisher = PublicKeyAuth.GenerateKeyPair(Bytes(0x81, 32));
+        var node = PublicKeyAuth.GenerateKeyPair(Bytes(0x82, 32));
+        var priorUnsigned = new ProductionMailboxCapacityReceipt(
+            ProductionMailboxCapacityOperation.Release, 2_000_000_000,
+            2_000_003_600, Bytes(0x83, 32), node.PublicKey, 2, 65_536,
+            2, 65_536, 3, Bytes(0x84, 32), new byte[64]);
+        var prior = ProductionMailboxCapacityReceiptCodec.Encode(priorUnsigned with
+        {
+            NodeSignature = PublicKeyAuth.SignDetached(
+                ProductionMailboxCapacityReceiptCodec.GetSigningBytes(priorUnsigned),
+                node.PrivateKey)
+        });
+        var commandUnsigned = new ProductionMailboxCapacityReconciliationCommand(
+            2_000_010_000, 2_000_010_060, Bytes(0x85, 32), Bytes(0x83, 32),
+            node.PublicKey, 3, prior, SHA256.HashData(prior), Bytes(0x84, 32),
+            new byte[64]);
+        var command = ProductionMailboxCapacityReconciliationCommandCodec.Encode(
+            commandUnsigned with
+            {
+                PublisherSignature = PublicKeyAuth.SignDetached(
+                    ProductionMailboxCapacityReconciliationCommandCodec.GetSigningBytes(
+                        commandUnsigned), publisher.PrivateKey)
+            });
+        var decodedCommand = ProductionMailboxCapacityReconciliationCommandCodec.Decode(command);
+        Assert.True(ProductionMailboxCapacityReconciliationCommandCodec.VerifyPublisher(
+            decodedCommand, publisher.PublicKey));
+        Assert.Throws<InvalidDataException>(() =>
+            ProductionMailboxCapacityReconciliationCommandCodec.Decode(command[..^1]));
+
+        var responseUnsigned = new ProductionMailboxCapacityReconciliationReceipt(
+            ProductionMailboxCapacityReconciliationStatus.AbsentTerminal,
+            2_000_010_001, 2_000_010_060, Bytes(0x83, 32), node.PublicKey, 3,
+            SHA256.HashData(prior), Bytes(0x84, 32), 2, 65_536,
+            Bytes(0x86, 32), new byte[64]);
+        var response = ProductionMailboxCapacityReconciliationReceiptCodec.Encode(
+            responseUnsigned with
+            {
+                NodeSignature = PublicKeyAuth.SignDetached(
+                    ProductionMailboxCapacityReconciliationReceiptCodec.GetSigningBytes(
+                        responseUnsigned), node.PrivateKey)
+            });
+        var decodedResponse = ProductionMailboxCapacityReconciliationReceiptCodec.Decode(response);
+        Assert.True(ProductionMailboxCapacityReconciliationReceiptCodec.VerifyNode(
+            decodedResponse, node.PublicKey));
+        Assert.False(ProductionMailboxCapacityReconciliationReceiptCodec.VerifyNode(
+            decodedResponse with { AccountedBytes = 65_537 }, node.PublicKey));
+        Assert.Throws<InvalidDataException>(() =>
+            ProductionMailboxCapacityReconciliationReceiptCodec.Decode(response[..^1]));
+    }
+
+    [Fact]
     public void PrepositionCommand_BindsCapacityCohort()
     {
         var publisher = PublicKeyAuth.GenerateKeyPair(Bytes(0x75, 32));

@@ -298,6 +298,263 @@ public static class ProductionMailboxCapacityReceiptCodec
         value.Length != length || value.Span.IndexOfAnyExcept((byte)0) < 0;
 }
 
+public sealed record ProductionMailboxCapacityReconciliationCommand(
+    ulong TimestampUnixSeconds,
+    ulong ExpiresAtUnixSeconds,
+    ReadOnlyMemory<byte> Nonce,
+    ReadOnlyMemory<byte> CohortId,
+    ReadOnlyMemory<byte> TargetReplicaId,
+    ulong LastKnownRevision,
+    ReadOnlyMemory<byte> LastCanonicalReceipt,
+    ReadOnlyMemory<byte> LastReceiptSha256,
+    ReadOnlyMemory<byte> LastCommandSha256,
+    ReadOnlyMemory<byte> PublisherSignature);
+
+public static class ProductionMailboxCapacityReconciliationCommandCodec
+{
+    private static ReadOnlySpan<byte> Magic => "PMB3"u8;
+    private static ReadOnlySpan<byte> SignatureDomain =>
+        "Deep/PMB3/capacity-reconciliation-command/v1"u8;
+    public const int EncodedLength = 504;
+
+    public static byte[] Encode(ProductionMailboxCapacityReconciliationCommand value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        return EncodeCore(Freeze(value, false));
+    }
+
+    public static ProductionMailboxCapacityReconciliationCommand Decode(
+        ReadOnlySpan<byte> encoded)
+    {
+        if (encoded.Length != EncodedLength || !encoded[..4].SequenceEqual(Magic)
+            || encoded[4] != 1 || encoded.Slice(5, 3).IndexOfAnyExcept((byte)0) >= 0)
+            throw new InvalidDataException("Capacity reconciliation command header is invalid.");
+        var value = new ProductionMailboxCapacityReconciliationCommand(
+            BinaryPrimitives.ReadUInt64BigEndian(encoded[8..]),
+            BinaryPrimitives.ReadUInt64BigEndian(encoded[16..]),
+            encoded.Slice(24, 32).ToArray(), encoded.Slice(56, 32).ToArray(),
+            encoded.Slice(88, 32).ToArray(),
+            BinaryPrimitives.ReadUInt64BigEndian(encoded[120..]),
+            encoded.Slice(128, ProductionMailboxCapacityReceiptCodec.EncodedLength).ToArray(),
+            encoded.Slice(376, 32).ToArray(), encoded.Slice(408, 32).ToArray(),
+            encoded.Slice(440, 64).ToArray());
+        Validate(value); return value;
+    }
+
+    public static byte[] GetSigningBytes(
+        ProductionMailboxCapacityReconciliationCommand value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        var frozen = Freeze(value, true);
+        var encoded = EncodeCore(frozen with { PublisherSignature = new byte[64] });
+        var output = new byte[SignatureDomain.Length + 440];
+        SignatureDomain.CopyTo(output);
+        encoded.AsSpan(0, 440).CopyTo(output.AsSpan(SignatureDomain.Length));
+        return output;
+    }
+
+    public static bool VerifyPublisher(
+        ProductionMailboxCapacityReconciliationCommand value,
+        ReadOnlySpan<byte> publicKey)
+    {
+        if (publicKey.Length != 32) return false;
+        try
+        {
+            var frozen = Freeze(value, false);
+            return PublicKeyAuth.VerifyDetached(frozen.PublisherSignature.ToArray(),
+                GetSigningBytes(frozen), publicKey.ToArray());
+        }
+        catch (Exception exception) when (exception is InvalidDataException
+            or CryptographicException or ArgumentException)
+        { return false; }
+    }
+
+    private static byte[] EncodeCore(
+        ProductionMailboxCapacityReconciliationCommand value)
+    {
+        var output = new byte[EncodedLength];
+        Magic.CopyTo(output); output[4] = 1;
+        BinaryPrimitives.WriteUInt64BigEndian(output.AsSpan(8), value.TimestampUnixSeconds);
+        BinaryPrimitives.WriteUInt64BigEndian(output.AsSpan(16), value.ExpiresAtUnixSeconds);
+        value.Nonce.Span.CopyTo(output.AsSpan(24));
+        value.CohortId.Span.CopyTo(output.AsSpan(56));
+        value.TargetReplicaId.Span.CopyTo(output.AsSpan(88));
+        BinaryPrimitives.WriteUInt64BigEndian(output.AsSpan(120), value.LastKnownRevision);
+        value.LastCanonicalReceipt.Span.CopyTo(output.AsSpan(128));
+        value.LastReceiptSha256.Span.CopyTo(output.AsSpan(376));
+        value.LastCommandSha256.Span.CopyTo(output.AsSpan(408));
+        value.PublisherSignature.Span.CopyTo(output.AsSpan(440));
+        return output;
+    }
+
+    private static ProductionMailboxCapacityReconciliationCommand Freeze(
+        ProductionMailboxCapacityReconciliationCommand value, bool allowZeroSignature)
+    {
+        if (value.Nonce.Length != 32 || value.CohortId.Length != 32
+            || value.TargetReplicaId.Length != 32
+            || value.LastCanonicalReceipt.Length != ProductionMailboxCapacityReceiptCodec.EncodedLength
+            || value.LastReceiptSha256.Length != 32 || value.LastCommandSha256.Length != 32
+            || value.PublisherSignature.Length != 64)
+            throw new InvalidDataException("Capacity reconciliation command fields are invalid.");
+        var frozen = value with
+        {
+            Nonce = value.Nonce.ToArray(), CohortId = value.CohortId.ToArray(),
+            TargetReplicaId = value.TargetReplicaId.ToArray(),
+            LastCanonicalReceipt = value.LastCanonicalReceipt.ToArray(),
+            LastReceiptSha256 = value.LastReceiptSha256.ToArray(),
+            LastCommandSha256 = value.LastCommandSha256.ToArray(),
+            PublisherSignature = value.PublisherSignature.ToArray()
+        };
+        Validate(frozen, allowZeroSignature); return frozen;
+    }
+
+    private static void Validate(ProductionMailboxCapacityReconciliationCommand value,
+        bool allowZeroSignature = false)
+    {
+        var receipt = ProductionMailboxCapacityReceiptCodec.Decode(
+            value.LastCanonicalReceipt.Span);
+        if (value.TimestampUnixSeconds == 0 || value.ExpiresAtUnixSeconds <= value.TimestampUnixSeconds
+            || value.LastKnownRevision == 0 || value.Nonce.Span.IndexOfAnyExcept((byte)0) < 0
+            || value.CohortId.Span.IndexOfAnyExcept((byte)0) < 0
+            || value.TargetReplicaId.Span.IndexOfAnyExcept((byte)0) < 0
+            || value.LastReceiptSha256.Span.IndexOfAnyExcept((byte)0) < 0
+            || value.LastCommandSha256.Span.IndexOfAnyExcept((byte)0) < 0
+            || value.PublisherSignature.Length != 64
+            || !allowZeroSignature && value.PublisherSignature.Span.IndexOfAnyExcept((byte)0) < 0
+            || receipt.Revision != value.LastKnownRevision
+            || !CryptographicOperations.FixedTimeEquals(receipt.CohortId.Span, value.CohortId.Span)
+            || !CryptographicOperations.FixedTimeEquals(receipt.TargetReplicaId.Span,
+                value.TargetReplicaId.Span)
+            || !CryptographicOperations.FixedTimeEquals(receipt.CommandSha256.Span,
+                value.LastCommandSha256.Span)
+            || !CryptographicOperations.FixedTimeEquals(
+                SHA256.HashData(value.LastCanonicalReceipt.Span), value.LastReceiptSha256.Span))
+            throw new InvalidDataException("Capacity reconciliation command fields are invalid.");
+    }
+}
+
+public enum ProductionMailboxCapacityReconciliationStatus : byte
+{
+    AbsentTerminal = 1
+}
+
+public sealed record ProductionMailboxCapacityReconciliationReceipt(
+    ProductionMailboxCapacityReconciliationStatus Status,
+    ulong TimestampUnixSeconds,
+    ulong ExpiresAtUnixSeconds,
+    ReadOnlyMemory<byte> CohortId,
+    ReadOnlyMemory<byte> TargetReplicaId,
+    ulong LastKnownRevision,
+    ReadOnlyMemory<byte> LastReceiptSha256,
+    ReadOnlyMemory<byte> LastCommandSha256,
+    uint AccountedClosureCount,
+    ulong AccountedBytes,
+    ReadOnlyMemory<byte> AuthoritativeStateSha256,
+    ReadOnlyMemory<byte> NodeSignature);
+
+public static class ProductionMailboxCapacityReconciliationReceiptCodec
+{
+    private static ReadOnlySpan<byte> Magic => "PMB4"u8;
+    private static ReadOnlySpan<byte> SignatureDomain =>
+        "Deep/PMB4/capacity-reconciliation-receipt/v1"u8;
+    public const int EncodedLength = 272;
+
+    public static byte[] Encode(ProductionMailboxCapacityReconciliationReceipt value)
+    { ArgumentNullException.ThrowIfNull(value); return EncodeCore(Freeze(value, false)); }
+
+    public static ProductionMailboxCapacityReconciliationReceipt Decode(ReadOnlySpan<byte> encoded)
+    {
+        if (encoded.Length != EncodedLength || !encoded[..4].SequenceEqual(Magic)
+            || encoded[4] != 1 || encoded.Slice(6, 2).IndexOfAnyExcept((byte)0) >= 0
+            || encoded.Slice(164, 4).IndexOfAnyExcept((byte)0) >= 0)
+            throw new InvalidDataException("Capacity reconciliation receipt header is invalid.");
+        var value = new ProductionMailboxCapacityReconciliationReceipt(
+            (ProductionMailboxCapacityReconciliationStatus)encoded[5],
+            BinaryPrimitives.ReadUInt64BigEndian(encoded[8..]),
+            BinaryPrimitives.ReadUInt64BigEndian(encoded[16..]),
+            encoded.Slice(24, 32).ToArray(), encoded.Slice(56, 32).ToArray(),
+            BinaryPrimitives.ReadUInt64BigEndian(encoded[88..]),
+            encoded.Slice(96, 32).ToArray(), encoded.Slice(128, 32).ToArray(),
+            BinaryPrimitives.ReadUInt32BigEndian(encoded[160..]),
+            BinaryPrimitives.ReadUInt64BigEndian(encoded[168..]),
+            encoded.Slice(176, 32).ToArray(), encoded.Slice(208, 64).ToArray());
+        Validate(value); return value;
+    }
+
+    public static byte[] GetSigningBytes(ProductionMailboxCapacityReconciliationReceipt value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        var frozen = Freeze(value, true);
+        var encoded = EncodeCore(frozen with { NodeSignature = new byte[64] });
+        var output = new byte[SignatureDomain.Length + 208];
+        SignatureDomain.CopyTo(output); encoded.AsSpan(0, 208)
+            .CopyTo(output.AsSpan(SignatureDomain.Length)); return output;
+    }
+
+    public static bool VerifyNode(ProductionMailboxCapacityReconciliationReceipt value,
+        ReadOnlySpan<byte> publicKey)
+    {
+        if (publicKey.Length != 32) return false;
+        try
+        {
+            var frozen = Freeze(value, false);
+            return PublicKeyAuth.VerifyDetached(frozen.NodeSignature.ToArray(),
+                GetSigningBytes(frozen), publicKey.ToArray());
+        }
+        catch (Exception exception) when (exception is InvalidDataException
+            or CryptographicException or ArgumentException) { return false; }
+    }
+
+    private static byte[] EncodeCore(ProductionMailboxCapacityReconciliationReceipt value)
+    {
+        var output = new byte[EncodedLength]; Magic.CopyTo(output); output[4] = 1;
+        output[5] = (byte)value.Status;
+        BinaryPrimitives.WriteUInt64BigEndian(output.AsSpan(8), value.TimestampUnixSeconds);
+        BinaryPrimitives.WriteUInt64BigEndian(output.AsSpan(16), value.ExpiresAtUnixSeconds);
+        value.CohortId.Span.CopyTo(output.AsSpan(24));
+        value.TargetReplicaId.Span.CopyTo(output.AsSpan(56));
+        BinaryPrimitives.WriteUInt64BigEndian(output.AsSpan(88), value.LastKnownRevision);
+        value.LastReceiptSha256.Span.CopyTo(output.AsSpan(96));
+        value.LastCommandSha256.Span.CopyTo(output.AsSpan(128));
+        BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(160), value.AccountedClosureCount);
+        BinaryPrimitives.WriteUInt64BigEndian(output.AsSpan(168), value.AccountedBytes);
+        value.AuthoritativeStateSha256.Span.CopyTo(output.AsSpan(176));
+        value.NodeSignature.Span.CopyTo(output.AsSpan(208)); return output;
+    }
+
+    private static ProductionMailboxCapacityReconciliationReceipt Freeze(
+        ProductionMailboxCapacityReconciliationReceipt value, bool allowZeroSignature)
+    {
+        if (value.CohortId.Length != 32 || value.TargetReplicaId.Length != 32
+            || value.LastReceiptSha256.Length != 32 || value.LastCommandSha256.Length != 32
+            || value.AuthoritativeStateSha256.Length != 32 || value.NodeSignature.Length != 64)
+            throw new InvalidDataException("Capacity reconciliation receipt fields are invalid.");
+        var frozen = value with
+        {
+            CohortId = value.CohortId.ToArray(), TargetReplicaId = value.TargetReplicaId.ToArray(),
+            LastReceiptSha256 = value.LastReceiptSha256.ToArray(),
+            LastCommandSha256 = value.LastCommandSha256.ToArray(),
+            AuthoritativeStateSha256 = value.AuthoritativeStateSha256.ToArray(),
+            NodeSignature = value.NodeSignature.ToArray()
+        };
+        Validate(frozen, allowZeroSignature); return frozen;
+    }
+
+    private static void Validate(ProductionMailboxCapacityReconciliationReceipt value,
+        bool allowZeroSignature = false)
+    {
+        if (value.Status != ProductionMailboxCapacityReconciliationStatus.AbsentTerminal
+            || value.TimestampUnixSeconds == 0 || value.ExpiresAtUnixSeconds <= value.TimestampUnixSeconds
+            || value.LastKnownRevision == 0 || value.CohortId.Span.IndexOfAnyExcept((byte)0) < 0
+            || value.TargetReplicaId.Span.IndexOfAnyExcept((byte)0) < 0
+            || value.LastReceiptSha256.Span.IndexOfAnyExcept((byte)0) < 0
+            || value.LastCommandSha256.Span.IndexOfAnyExcept((byte)0) < 0
+            || value.AuthoritativeStateSha256.Span.IndexOfAnyExcept((byte)0) < 0
+            || !allowZeroSignature && value.NodeSignature.Span.IndexOfAnyExcept((byte)0) < 0)
+            throw new InvalidDataException("Capacity reconciliation receipt fields are invalid.");
+    }
+}
+
 internal sealed record ProductionMailboxCapacityReservation(
     ReadOnlyMemory<byte> CohortId,
     ReadOnlyMemory<byte> TargetReplicaId,

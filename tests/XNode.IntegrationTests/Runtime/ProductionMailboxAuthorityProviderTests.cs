@@ -943,6 +943,84 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
                 CancellationToken.None));
     }
 
+    [Fact]
+    public async Task CapacityReconciliation_AcknowledgesGcAbsentTerminalWithoutMutation()
+    {
+        var fixture = Fixture.Create(Path.Combine(_root, "capacity-reconcile-absent"));
+        _ = fixture.CreateDirectClosure();
+        var cohort = Bytes(0xB4, 32);
+        var initial = new ProductionMailboxClosureStore(
+            fixture.Options, fixture.Node,
+            new FixedClock(DateTimeOffset.FromUnixTimeSeconds((long)Now)),
+            new MailboxStorageSecurity(), new MailboxDurabilityBarrier());
+        var reserveReceipt = await initial.ReserveCapacityAsync(
+            fixture.CapacityCommand(cohort, 2, 65_536, lifetimeSeconds: 60),
+            CancellationToken.None);
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await initial.ReconcileAbsentCapacityAsync(
+                fixture.CapacityReconciliationCommand(reserveReceipt),
+                CancellationToken.None));
+        var afterRetention = checked(Now + 61
+            + fixture.Options.MaximumClosureReservationLifetimeSeconds
+            + (ulong)fixture.Options.ClockSkewSeconds);
+        var restarted = new ProductionMailboxClosureStore(
+            fixture.Options, fixture.Node,
+            new FixedClock(DateTimeOffset.FromUnixTimeSeconds((long)afterRetention)),
+            new MailboxStorageSecurity(), new MailboxDurabilityBarrier());
+        var before = Directory.EnumerateFiles(fixture.Options.ClosureDirectory, "*",
+                SearchOption.AllDirectories)
+            .ToDictionary(path => Path.GetRelativePath(fixture.Options.ClosureDirectory, path),
+                path => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))),
+                StringComparer.Ordinal);
+
+        var command = fixture.CapacityReconciliationCommand(
+            reserveReceipt, timestampUnixSeconds: afterRetention);
+        var canonicalReceipt = await restarted.ReconcileAbsentCapacityAsync(
+            command, CancellationToken.None);
+        var receipt = ProductionMailboxCapacityReconciliationReceiptCodec.Decode(
+            canonicalReceipt);
+
+        Assert.Equal(ProductionMailboxCapacityReconciliationStatus.AbsentTerminal,
+            receipt.Status);
+        Assert.Equal(cohort.ToArray(), receipt.CohortId.ToArray());
+        Assert.Equal(1UL, receipt.LastKnownRevision);
+        Assert.True(ProductionMailboxCapacityReconciliationReceiptCodec.VerifyNode(
+            receipt, fixture.Node.GetRouterId().ToBytes()));
+        Assert.Equal(canonicalReceipt, await restarted.ReconcileAbsentCapacityAsync(
+            command, CancellationToken.None));
+        Assert.Equal((0, 0L), restarted.StorageAccounting);
+        var after = Directory.EnumerateFiles(fixture.Options.ClosureDirectory, "*",
+                SearchOption.AllDirectories)
+            .ToDictionary(path => Path.GetRelativePath(fixture.Options.ClosureDirectory, path),
+                path => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))),
+                StringComparer.Ordinal);
+        Assert.Equal(before, after);
+
+        var apiContext = PrepositionContext(command, 7080,
+            ProductionMailboxClosureHttpContract.CapacityReconciliationCommandMediaType);
+        var apiResult = await ProductionMailboxClosureHttpEndpoint
+            .HandleCapacityReconciliationAsync(apiContext, restarted, 7443,
+                CancellationToken.None);
+        await apiResult.ExecuteAsync(apiContext);
+        Assert.Equal(StatusCodes.Status404NotFound, apiContext.Response.StatusCode);
+        var peerContext = PrepositionContext(command, 7443,
+            ProductionMailboxClosureHttpContract.CapacityReconciliationCommandMediaType);
+        var peerResult = await ProductionMailboxClosureHttpEndpoint
+            .HandleCapacityReconciliationAsync(peerContext, restarted, 7443,
+                CancellationToken.None);
+        await peerResult.ExecuteAsync(peerContext);
+        Assert.Equal(StatusCodes.Status200OK, peerContext.Response.StatusCode);
+        Assert.Equal("no-store", peerContext.Response.Headers.CacheControl);
+        Assert.Equal(
+            ProductionMailboxClosureHttpContract.CapacityReconciliationReceiptMediaType,
+            peerContext.Response.ContentType);
+
+        var fork = command.ToArray();
+        fork[408] ^= 0x01;
+        await Assert.ThrowsAsync<InvalidDataException>(async () =>
+            await restarted.ReconcileAbsentCapacityAsync(fork, CancellationToken.None));
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(1)]
@@ -2836,6 +2914,28 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
                     _issuerPrivateKey)
             };
             return ProductionMailboxCapacityCommandCodec.Encode(signed);
+        }
+
+        public byte[] CapacityReconciliationCommand(
+            ReadOnlyMemory<byte> lastCanonicalReceipt,
+            ulong? timestampUnixSeconds = null,
+            byte nonce = 0x6E)
+        {
+            var timestamp = timestampUnixSeconds ?? Now;
+            var prior = ProductionMailboxCapacityReceiptCodec.Decode(
+                lastCanonicalReceipt.Span);
+            var draft = new ProductionMailboxCapacityReconciliationCommand(
+                timestamp, checked(timestamp + 60), Bytes(nonce, 32),
+                prior.CohortId.ToArray(), prior.TargetReplicaId.ToArray(), prior.Revision,
+                lastCanonicalReceipt.ToArray(), SHA256.HashData(lastCanonicalReceipt.Span),
+                prior.CommandSha256.ToArray(), new byte[64]);
+            var signed = draft with
+            {
+                PublisherSignature = PublicKeyAuth.SignDetached(
+                    ProductionMailboxCapacityReconciliationCommandCodec.GetSigningBytes(draft),
+                    _issuerPrivateKey)
+            };
+            return ProductionMailboxCapacityReconciliationCommandCodec.Encode(signed);
         }
 
         public byte[] SameGenerationForkCommand(ClosureMaterial material)

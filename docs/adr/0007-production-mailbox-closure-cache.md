@@ -46,6 +46,12 @@ PSS1 through their durable LKG/recovery anchor before atomic activation.
 - An unreleased reservation that auto-expired into a terminal floor permits exactly one fresh,
   authenticated revision-successor Release. Its node-signed PMB2 preserves actual consumed charges
   and acknowledges zero unused headroom; Reserve/Renew remains terminally rejected.
+- After that terminal floor reaches its bounded retention and is durably collected, Registry may
+  send a fresh publisher-signed PMB3 reconciliation command containing the exact prior node-signed
+  PMB2 and bound cohort/target/revision/command/receipt hashes. Under the process lock XNode returns
+  node-signed PMB4 `AbsentTerminal` only when no floor or transfer journal exists and canonical
+  ledger plus a read-only full schedule scan exactly match accounting. The check never mutates,
+  extends or resurrects capacity.
 - PMC1 is canonical and bounded and always carries exact PMA1, PMR1, PMT1, PMS1 and PSS1. PSS1 is
   mandatory because this endpoint exists for forward LKG advancement, not ordinary bootstrap.
 - Storage is sharded under HMAC(selection commitment) and HMAC(selection commitment + old-PMS

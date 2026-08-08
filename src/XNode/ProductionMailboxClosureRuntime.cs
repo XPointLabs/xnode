@@ -15,6 +15,8 @@ public static class ProductionMailboxClosureHttpContract
     public const string PrepositionRoute = "/api/peer/production-mailbox/closure";
     public const string CapacityRoute =
         "/api/peer/production-mailbox/closure-capacity";
+    public const string CapacityReconciliationRoute =
+        "/api/peer/production-mailbox/closure-capacity-reconciliation";
     public const string RequestMediaType = "application/vnd.deep.production-mailbox-closure-request";
     public const string ClosureMediaType = "application/vnd.deep.production-mailbox-closure";
     public const string PrepositionMediaType =
@@ -23,6 +25,10 @@ public static class ProductionMailboxClosureHttpContract
         "application/vnd.deep.production-mailbox-capacity-command";
     public const string CapacityReceiptMediaType =
         "application/vnd.deep.production-mailbox-capacity-receipt";
+    public const string CapacityReconciliationCommandMediaType =
+        "application/vnd.deep.production-mailbox-capacity-reconciliation-command";
+    public const string CapacityReconciliationReceiptMediaType =
+        "application/vnd.deep.production-mailbox-capacity-reconciliation-receipt";
 
     public static bool IsPrepositionListener(int? localPort, int peerPort) =>
         localPort == peerPort;
@@ -30,6 +36,41 @@ public static class ProductionMailboxClosureHttpContract
 
 internal static class ProductionMailboxClosureHttpEndpoint
 {
+    internal static async Task<IResult> HandleCapacityReconciliationAsync(
+        HttpContext context,
+        ProductionMailboxClosureStore closures,
+        int peerPort,
+        CancellationToken cancellationToken)
+    {
+        context.Response.Headers.CacheControl = "no-store";
+        if (!ProductionMailboxClosureHttpContract.IsPrepositionListener(
+                context.Connection.LocalPort, peerPort))
+            return Results.NotFound();
+        if (context.Request.ContentLength
+                != ProductionMailboxCapacityReconciliationCommandCodec.EncodedLength
+            || !string.Equals(context.Request.ContentType,
+                ProductionMailboxClosureHttpContract.CapacityReconciliationCommandMediaType,
+                StringComparison.OrdinalIgnoreCase))
+            return Results.BadRequest();
+        var command = new byte[
+            ProductionMailboxCapacityReconciliationCommandCodec.EncodedLength];
+        try
+        {
+            await context.Request.Body.ReadExactlyAsync(command, cancellationToken);
+            var receipt = await closures.ReconcileAbsentCapacityAsync(
+                command, cancellationToken);
+            return Results.File(receipt,
+                ProductionMailboxClosureHttpContract.CapacityReconciliationReceiptMediaType,
+                enableRangeProcessing: false);
+        }
+        catch (Exception exception) when (exception is InvalidDataException
+            or CryptographicException or InvalidOperationException or IOException
+            or OverflowException
+            || exception is OperationCanceledException
+                && context.RequestAborted.IsCancellationRequested)
+        { return Results.BadRequest(); }
+    }
+
     internal static async Task<IResult> HandleCapacityAsync(
         HttpContext context,
         ProductionMailboxClosureStore closures,
@@ -722,6 +763,103 @@ public sealed class ProductionMailboxClosureStore
             EnsureCapacityIncludingReservations(lockedNow, reservations);
             CommitCapacityReservationMutation(existingFloor, replacement, reservations);
             return canonicalReceipt;
+        }
+        finally { gate.Release(); }
+    }
+
+    public async ValueTask<byte[]> ReconcileAbsentCapacityAsync(
+        ReadOnlyMemory<byte> canonicalCommand,
+        CancellationToken cancellationToken)
+    {
+        if (canonicalCommand.Length
+            != ProductionMailboxCapacityReconciliationCommandCodec.EncodedLength)
+            throw new InvalidDataException(
+                "Production mailbox capacity reconciliation command is outside bounds.");
+        var commandBytes = canonicalCommand.ToArray();
+        var command = ProductionMailboxCapacityReconciliationCommandCodec.Decode(commandBytes);
+        var target = node.GetRouterId().ToBytes();
+        var priorReceipt = ProductionMailboxCapacityReceiptCodec.Decode(
+            command.LastCanonicalReceipt.Span);
+        if (!Fixed(command.TargetReplicaId.Span, target)
+            || !ProductionMailboxCapacityReconciliationCommandCodec.VerifyPublisher(
+                command, options.GetClosurePublisherPublicKey())
+            || !ProductionMailboxCapacityReceiptCodec.VerifyNode(priorReceipt, target))
+            throw new InvalidDataException(
+                "Production mailbox capacity reconciliation authentication failed.");
+
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using var processLock = AcquireProcessLock();
+            var lockedNow = checked((ulong)clock.UtcNow.ToUnixTimeSeconds());
+            if (!IsFresh(command.TimestampUnixSeconds, lockedNow, options.ClockSkewSeconds)
+                || command.ExpiresAtUnixSeconds <= lockedNow
+                || command.ExpiresAtUnixSeconds - command.TimestampUnixSeconds
+                    > 300)
+                throw new InvalidDataException(
+                    "Production mailbox capacity reconciliation command is not fresh.");
+
+            try
+            {
+                _ = ReadProtectedBounded(capacityTransferPath,
+                    ProductionMailboxCapacityTransferJournalCodec.EncodedLength,
+                    ProductionMailboxCapacityTransferJournalCodec.EncodedLength);
+                throw new InvalidOperationException(
+                    "Production mailbox capacity transfer is pending.");
+            }
+            catch (FileNotFoundException) { }
+
+            var floors = ReadCapacityFloorStates();
+            if (floors.Any(value => Fixed(value.Reservation.CohortId.Span,
+                    command.CohortId.Span)))
+                throw new InvalidOperationException(
+                    "Production mailbox capacity cohort is not absent.");
+            var canonicalLedger = CanonicalCapacityLedger(
+                floors.Select(static value => value.Reservation).ToArray());
+            byte[]? storedLedger = null;
+            try
+            {
+                storedLedger = ReadProtectedBounded(capacityLedgerPath, 40,
+                    checked(40 + options.MaximumClosureReservations
+                        * ProductionMailboxCapacityLedgerCodec.RecordLength));
+            }
+            catch (FileNotFoundException) { }
+            if (floors.Count == 0 ? storedLedger is not null
+                : storedLedger is null || !storedLedger.AsSpan().SequenceEqual(canonicalLedger))
+                throw new InvalidOperationException(
+                    "Production mailbox capacity accounting is not authoritative.");
+
+            var accounting = ScanStoreState();
+            if (accounting.Count != storedClosures || accounting.Bytes != storedBytes)
+                throw new InvalidOperationException(
+                    "Production mailbox closure accounting is stale.");
+            var stateTranscript = new byte[32 + canonicalLedger.Length + 12];
+            "Deep/PMB4/authoritative-state/v1"u8.CopyTo(stateTranscript);
+            canonicalLedger.CopyTo(stateTranscript.AsSpan(32));
+            BinaryPrimitives.WriteUInt32BigEndian(
+                stateTranscript.AsSpan(32 + canonicalLedger.Length),
+                checked((uint)accounting.Count));
+            BinaryPrimitives.WriteUInt64BigEndian(
+                stateTranscript.AsSpan(36 + canonicalLedger.Length),
+                checked((ulong)accounting.Bytes));
+            var unsigned = new ProductionMailboxCapacityReconciliationReceipt(
+                ProductionMailboxCapacityReconciliationStatus.AbsentTerminal,
+                lockedNow, command.ExpiresAtUnixSeconds, command.CohortId.ToArray(),
+                command.TargetReplicaId.ToArray(), command.LastKnownRevision,
+                command.LastReceiptSha256.ToArray(), command.LastCommandSha256.ToArray(),
+                checked((uint)accounting.Count), checked((ulong)accounting.Bytes),
+                SHA256.HashData(stateTranscript), new byte[64]);
+            var keyPair = PublicKeyAuth.GenerateKeyPair(
+                Convert.FromHexString(node.GetEd25519PrivateKey()));
+            if (!Fixed(keyPair.PublicKey, target))
+                throw new InvalidOperationException(
+                    "Production mailbox node signing key does not match its replica id.");
+            return ProductionMailboxCapacityReconciliationReceiptCodec.Encode(unsigned with
+            {
+                NodeSignature = PublicKeyAuth.SignDetached(
+                    ProductionMailboxCapacityReconciliationReceiptCodec.GetSigningBytes(unsigned),
+                    keyPair.PrivateKey)
+            });
         }
         finally { gate.Release(); }
     }
@@ -1820,6 +1958,13 @@ public sealed class ProductionMailboxClosureStore
 
     private void ReconcileStoreState()
     {
+        var accounting = ScanStoreState();
+        storedBytes = accounting.Bytes;
+        storedClosures = accounting.Count;
+    }
+
+    private (int Count, long Bytes) ScanStoreState()
+    {
         ValidateStoreDirectory();
         if (Directory.EnumerateFiles(options.ClosureDirectory, "*.tmp",
                 SearchOption.AllDirectories).Any())
@@ -1871,8 +2016,7 @@ public sealed class ProductionMailboxClosureStore
                 throw new InvalidOperationException(
                     "Production mailbox closure store exceeds configured capacity.");
         }
-        storedBytes = bytes;
-        storedClosures = count;
+        return (count, bytes);
     }
 
     private void ValidateStoreDirectory() =>

@@ -719,6 +719,15 @@ its authenticated exact revision-successor Release. The returned PMB2 binds that
 reports reserved equal to consumed, preserves every actual schedule charge, and cannot renew or
 resurrect capacity. This lets Registry finish durable post-cutover cleanup after a long outage.
 
+If Registry remains unavailable until the bounded terminal floor is garbage-collected, it uses the
+peer-only constant-path `POST /api/peer/production-mailbox/closure-capacity-reconciliation`. The
+exact 504-byte publisher-signed PMB3 embeds the last exact node-signed PMB2 and binds cohort,
+target, revision and command/receipt hashes. XNode returns an exact 272-byte node-signed PMB4
+`AbsentTerminal` only after a read-only authoritative floor/ledger/schedule accounting check under
+the process lock. A live floor, pending transfer, invalid prior receipt, fork, corrupt ledger or
+stale accounting returns a coarse 400. The endpoint never reserves, releases, renews or extends
+capacity, is peer-listener-only and returns `Cache-Control: no-store`.
+
 Each route lineage occupies one bounded, atomically replaced schedule file under sharded
 HMAC(selection commitment)/HMAC(selection commitment + durable old-PMS hash) directories, so
 neither stable value is present in filesystem names. Different devices at different durable old-PMS
