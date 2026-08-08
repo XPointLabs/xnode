@@ -708,6 +708,12 @@ counter guarantee. Registry must keep fresh PMB2 receipts from every required re
 renewal margin; expiry or renewal failure freezes further cohort publication rather than admitting
 part of a rotation.
 
+PMB1 freshness is required for every mutation. After publisher signature and exact target
+verification, an exact command hash that is already the authoritative cohort floor may recover its
+byte-identical PMB2 after PMB1 expiry or restart. This is a read-only lost-response path: it does
+not extend expiry, change counters, renew or resurrect released capacity. Unknown, changed,
+same-revision-fork and superseded expired commands are rejected coarsely.
+
 Each route lineage occupies one bounded, atomically replaced schedule file under sharded
 HMAC(selection commitment)/HMAC(selection commitment + durable old-PMS hash) directories, so
 neither stable value is present in filesystem names. Different devices at different durable old-PMS

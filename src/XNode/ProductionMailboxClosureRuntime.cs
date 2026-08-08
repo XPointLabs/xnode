@@ -596,39 +596,16 @@ public sealed class ProductionMailboxClosureStore
                 "Production mailbox capacity command is outside bounds.");
         var commandBytes = canonicalCommand.ToArray();
         var command = ProductionMailboxCapacityCommandCodec.Decode(commandBytes);
-        var now = checked((ulong)clock.UtcNow.ToUnixTimeSeconds());
-        if (!IsFresh(command.TimestampUnixSeconds, now, options.ClockSkewSeconds)
-            || command.ExpiresAtUnixSeconds <= command.TimestampUnixSeconds
-            || command.ExpiresAtUnixSeconds <= now
-            || command.ExpiresAtUnixSeconds - command.TimestampUnixSeconds
-                < options.MinimumClosureReservationLifetimeSeconds
-            || command.ExpiresAtUnixSeconds - command.TimestampUnixSeconds
-                > options.MaximumClosureReservationLifetimeSeconds
-            || !Fixed(command.TargetReplicaId.Span, node.GetRouterId().ToBytes())
+        if (!Fixed(command.TargetReplicaId.Span, node.GetRouterId().ToBytes())
             || !ProductionMailboxCapacityCommandCodec.VerifyPublisher(
                 command, options.GetClosurePublisherPublicKey()))
             throw new InvalidDataException(
                 "Production mailbox capacity command authentication failed.");
-        if (command.Operation == ProductionMailboxCapacityOperation.ReserveOrRenew
-            && (command.ReservedClosureCount > options.MaximumStoredClosures
-                || command.ReservedBytes > (ulong)options.MaximumClosureStoreBytes))
-            throw new InvalidDataException(
-                "Production mailbox capacity command exceeds configured bounds.");
         var commandHash = SHA256.HashData(commandBytes);
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             using var processLock = AcquireProcessLock();
-            RecoverCapacityTransfer();
-            testHooks?.BeforeCapacityAdmission?.Invoke();
-            var lockedNow = checked((ulong)clock.UtcNow.ToUnixTimeSeconds());
-            if (!IsFresh(command.TimestampUnixSeconds, lockedNow,
-                    options.ClockSkewSeconds)
-                || command.ExpiresAtUnixSeconds <= lockedNow)
-                throw new InvalidDataException(
-                    "Production mailbox capacity command expired while awaiting admission.");
-            ReconcileCapacityState(lockedNow);
-            ReconcileStoreState();
             var floors = ReadCapacityFloorStates();
             var reservations = floors.Select(static value => value.Reservation).ToList();
             var existingIndex = reservations.FindIndex(value =>
@@ -637,6 +614,31 @@ public sealed class ProductionMailboxClosureStore
                 && Fixed(reservations[existingIndex].LastCommandSha256.Span,
                     commandHash))
                 return reservations[existingIndex].LastCanonicalReceipt.ToArray();
+            RecoverCapacityTransfer();
+            testHooks?.BeforeCapacityAdmission?.Invoke();
+            var lockedNow = checked((ulong)clock.UtcNow.ToUnixTimeSeconds());
+            if (!IsFresh(command.TimestampUnixSeconds, lockedNow,
+                    options.ClockSkewSeconds)
+                || command.ExpiresAtUnixSeconds <= lockedNow)
+                throw new InvalidDataException(
+                    "Production mailbox capacity command expired while awaiting admission.");
+            if (command.ExpiresAtUnixSeconds - command.TimestampUnixSeconds
+                    < options.MinimumClosureReservationLifetimeSeconds
+                || command.ExpiresAtUnixSeconds - command.TimestampUnixSeconds
+                    > options.MaximumClosureReservationLifetimeSeconds)
+                throw new InvalidDataException(
+                    "Production mailbox capacity command lifetime is outside policy.");
+            if (command.Operation == ProductionMailboxCapacityOperation.ReserveOrRenew
+                && (command.ReservedClosureCount > options.MaximumStoredClosures
+                    || command.ReservedBytes > (ulong)options.MaximumClosureStoreBytes))
+                throw new InvalidDataException(
+                    "Production mailbox capacity command exceeds configured bounds.");
+            ReconcileCapacityState(lockedNow);
+            ReconcileStoreState();
+            floors = ReadCapacityFloorStates();
+            reservations = floors.Select(static value => value.Reservation).ToList();
+            existingIndex = reservations.FindIndex(value =>
+                Fixed(value.CohortId.Span, command.CohortId.Span));
             var existing = existingIndex >= 0 ? reservations[existingIndex] : null;
             var existingFloor = existing is null ? null : floors.Single(value =>
                 Fixed(value.Reservation.CohortId.Span, existing.CohortId.Span));
@@ -681,7 +683,7 @@ public sealed class ProductionMailboxClosureStore
                 throw new InvalidOperationException(
                     "Production mailbox capacity renewal cannot revoke consumed capacity.");
             var unsignedReceipt = new ProductionMailboxCapacityReceipt(
-                command.Operation, now, command.ExpiresAtUnixSeconds,
+                command.Operation, lockedNow, command.ExpiresAtUnixSeconds,
                 command.CohortId.ToArray(), command.TargetReplicaId.ToArray(),
                 reservedCount, reservedBytes, consumedCount, consumedBytes,
                 command.Revision, commandHash, new byte[64]);
@@ -1364,8 +1366,9 @@ public sealed class ProductionMailboxClosureStore
                          journal.CohortId.Span))
                 throw new InvalidOperationException(
                     "Production mailbox capacity transfer has inconsistent floor state.");
-            ReconcileCapacityState(
-                checked((ulong)clock.UtcNow.ToUnixTimeSeconds()));
+            var recoveryNow = afterFloor.Reservation.ExpiresAtUnixSeconds == 0
+                ? 0 : afterFloor.Reservation.ExpiresAtUnixSeconds - 1;
+            ReconcileCapacityState(recoveryNow);
             ledger = ReadProtectedBounded(capacityLedgerPath, 40,
                 checked(40 + options.MaximumClosureReservations
                     * ProductionMailboxCapacityLedgerCodec.RecordLength));

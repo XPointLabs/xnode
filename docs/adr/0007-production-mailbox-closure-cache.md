@@ -39,6 +39,10 @@ PSS1 through their durable LKG/recovery anchor before atomic activation.
   Replay of an entire protected directory snapshot after terminal-floor retention is explicitly
   outside this software-only monotonicity boundary; production storage must protect the directory
   from rollback or add a hardware/external monotonic floor.
+  Mutation always requires a fresh PMB1. A publisher-authenticated, target-bound command whose
+  exact hash is already the latest authoritative floor may recover the same stored PMB2 after
+  command expiry or restart. Recovery is read-only and does not extend TTL or restore headroom;
+  unknown, changed, same-revision-fork and superseded expired commands remain rejected.
 - PMC1 is canonical and bounded and always carries exact PMA1, PMR1, PMT1, PMS1 and PSS1. PSS1 is
   mandatory because this endpoint exists for forward LKG advancement, not ordinary bootstrap.
 - Storage is sharded under HMAC(selection commitment) and HMAC(selection commitment + old-PMS
