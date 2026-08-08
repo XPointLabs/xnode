@@ -24,7 +24,21 @@ PSS1 through their durable LKG/recovery anchor before atomic activation.
   pinned closure-publisher key. Its canonical fixed-width authorization section may name at most
   two strictly sorted, unique, non-zero legacy replica ids. Each is an explicit exception and must
   be absent from both the PSS1 old-next and new selections; a legacy target is accepted only when
-  it is present in that signed set. A copied PMC1/PSS1 is not an authenticated preposition command.
+  it is present in that signed set. Its clean-break header also binds a 32-byte capacity cohort id.
+  A copied PMC1/PSS1 is not an authenticated preposition command.
+- `POST /api/peer/production-mailbox/closure-capacity` accepts only the exact fixed-size PMB1
+  publisher-signed command on the peer listener. PMB1 reserve/renew/release is bound to an opaque
+  cohort, exact target, expiry, count, bytes and monotonic revision. PMB2 is the target-node-signed
+  canonical receipt. Only unused headroom is reserved; a cohort-bound PMP1 atomically transfers
+  conservative positive schedule deltas to actual usage. Release/expiry frees no actual schedule.
+  Exact replay is byte-idempotent. The ledger is a cache rebuilt exclusively from bounded,
+  content-addressed PBF1 cohort floors with full state, monotonic state generation and predecessor
+  hash. Same-generation/non-chain marker forks fail closed. PBT1 binds old/new schedules, floors,
+  generations and ledgers and recovers them in that order, preventing valid old-ledger replay from
+  restoring already consumed headroom. Release/expiry leaves a bounded terminal floor before GC.
+  Replay of an entire protected directory snapshot after terminal-floor retention is explicitly
+  outside this software-only monotonicity boundary; production storage must protect the directory
+  from rollback or add a hardware/external monotonic floor.
 - PMC1 is canonical and bounded and always carries exact PMA1, PMR1, PMT1, PMS1 and PSS1. PSS1 is
   mandatory because this endpoint exists for forward LKG advancement, not ordinary bootstrap.
 - Storage is sharded under HMAC(selection commitment) and HMAC(selection commitment + old-PMS
@@ -69,7 +83,10 @@ old-current/old-next selected replicas and the new selected replicas required by
 publisher must derive PMP1 legacy ids only from the exact previously committed old-current PMS1;
 arbitrary ids, ids already present in old-next/new, duplicates and extra entries are forbidden.
 The same signed exception set is target-bound by each PMP1 command. Failure or capacity rejection
-keeps the new managed lane unpublished. Registry must retain an outbox and exact acknowledgements
+keeps the new managed lane unpublished. Before owner publication, Registry must hold node-signed
+PMB2 reservations on every required target with a safe renewal margin. A renewal failure freezes
+new owner commits until all receipts are renewed; partial reservation or preposition is never the
+global cutover barrier. Registry must retain an outbox and exact acknowledgements
 across restart. A closure intended to survive beyond the old 24-hour PMT/PMS window carries a
 future-live Offline PSS1 from the durable old anchor; the cache does not extend artifact expiry.
 

@@ -687,7 +687,8 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
         var scheduleLength = ProductionMailboxClosureScheduleCodec.Encode(
             [material.CanonicalEnvelope],
             fixture.Options.MaximumClosureVersionsPerSelection).Length;
-        fixture.Options.MaximumClosureStoreBytes = scheduleLength;
+        fixture.Options.MaximumClosureStoreBytes = checked(scheduleLength
+            + fixture.Options.ClosureScheduleAccountingOverheadBytes);
         var clock = new FixedClock(DateTimeOffset.FromUnixTimeSeconds((long)Now));
         var barrier = new ThrowOnceAfterReplaceBarrier();
         var store = new ProductionMailboxClosureStore(
@@ -700,10 +701,401 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
 
         Assert.Single(Directory.EnumerateFiles(
             fixture.Options.ClosureDirectory, "*.pmcs1", SearchOption.AllDirectories));
-        Assert.Equal((1, (long)scheduleLength), store.StorageAccounting);
+        Assert.Equal((1, (long)checked(scheduleLength
+            + fixture.Options.ClosureScheduleAccountingOverheadBytes)),
+            store.StorageAccounting);
         _ = new ProductionMailboxClosureStore(
             fixture.Options, fixture.Node, clock, new MailboxStorageSecurity(),
             new MailboxDurabilityBarrier());
+    }
+
+    [Fact]
+    public async Task CapacityReservation_TransfersAtomicallyAndExactReplayDoesNotDoubleCharge()
+    {
+        var fixture = Fixture.Create(Path.Combine(_root, "capacity-transfer"));
+        var material = fixture.CreateDirectClosure();
+        var cohort = Bytes(0x91, 32);
+        var scheduleLength = ProductionMailboxClosureScheduleCodec.Encode(
+            [material.CanonicalEnvelope],
+            fixture.Options.MaximumClosureVersionsPerSelection).Length;
+        var charge = checked((ulong)(scheduleLength
+            + fixture.Options.ClosureScheduleAccountingOverheadBytes));
+        fixture.Options.MaximumStoredClosures = 1;
+        fixture.Options.MaximumClosureStoreBytes = checked((long)charge);
+        var store = new ProductionMailboxClosureStore(
+            fixture.Options, fixture.Node,
+            new FixedClock(DateTimeOffset.FromUnixTimeSeconds((long)Now)),
+            new MailboxStorageSecurity(), new MailboxDurabilityBarrier());
+        var reserve = fixture.CapacityCommand(cohort, 1, charge, lifetimeSeconds: 60);
+
+        var firstReceipt = await store.ReserveCapacityAsync(reserve, CancellationToken.None);
+        var replayReceipt = await store.ReserveCapacityAsync(reserve, CancellationToken.None);
+        Assert.Equal(firstReceipt, replayReceipt);
+        Assert.True(ProductionMailboxCapacityReceiptCodec.VerifyNode(
+            ProductionMailboxCapacityReceiptCodec.Decode(firstReceipt),
+            PublicKeyAuth.GenerateKeyPair(
+                Convert.FromHexString(fixture.Node.GetEd25519PrivateKey())).PublicKey));
+
+        var preposition = fixture.PrepositionCommand(
+            material, reservationCohortId: cohort);
+        await store.PrepositionAsync(preposition, CancellationToken.None);
+        await store.PrepositionAsync(preposition, CancellationToken.None);
+        Assert.Equal((1, (long)charge), store.StorageAccounting);
+
+        var renewal = fixture.CapacityCommand(
+            cohort, 1, charge, revision: 2, lifetimeSeconds: 120, nonce: 0x47);
+        var renewed = ProductionMailboxCapacityReceiptCodec.Decode(
+            await store.ReserveCapacityAsync(renewal, CancellationToken.None));
+        Assert.Equal((uint)1, renewed.ConsumedClosureCount);
+        Assert.Equal(charge, renewed.ConsumedBytes);
+        Assert.Equal(renewed.ReservedClosureCount, renewed.ConsumedClosureCount);
+        Assert.Equal(renewed.ReservedBytes, renewed.ConsumedBytes);
+
+        var releaseCommand = fixture.CapacityCommand(
+            cohort, 0, 0, revision: 3, lifetimeSeconds: 180,
+            operation: ProductionMailboxCapacityOperation.Release, nonce: 0x50);
+        var releasedBytes = await store.ReserveCapacityAsync(
+            releaseCommand, CancellationToken.None);
+        var released = ProductionMailboxCapacityReceiptCodec.Decode(releasedBytes);
+        Assert.Equal(released.ConsumedClosureCount, released.ReservedClosureCount);
+        Assert.Equal(released.ConsumedBytes, released.ReservedBytes);
+        Assert.Equal(releasedBytes, await store.ReserveCapacityAsync(
+            releaseCommand, CancellationToken.None));
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await store.ReserveCapacityAsync(
+                fixture.CapacityCommand(cohort, 1, charge, revision: 4,
+                    lifetimeSeconds: 240, nonce: 0x51),
+                CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task CapacityRelease_FreesAllUnusedHeadroomAndCannotBeResurrected()
+    {
+        var fixture = Fixture.Create(Path.Combine(_root, "capacity-release-unused"));
+        _ = fixture.CreateDirectClosure();
+        fixture.Options.MaximumStoredClosures = 4;
+        fixture.Options.MaximumClosureStoreBytes = 65_536;
+        var store = new ProductionMailboxClosureStore(
+            fixture.Options, fixture.Node,
+            new FixedClock(DateTimeOffset.FromUnixTimeSeconds((long)Now)),
+            new MailboxStorageSecurity(), new MailboxDurabilityBarrier());
+        var cohort = Bytes(0x96, 32);
+        await store.ReserveCapacityAsync(
+            fixture.CapacityCommand(cohort, 4, 65_536), CancellationToken.None);
+        var release = fixture.CapacityCommand(
+            cohort, 0, 0, revision: 2, lifetimeSeconds: 7_200,
+            operation: ProductionMailboxCapacityOperation.Release, nonce: 0x52);
+        var receipt = ProductionMailboxCapacityReceiptCodec.Decode(
+            await store.ReserveCapacityAsync(release, CancellationToken.None));
+        Assert.Equal((uint)0, receipt.ReservedClosureCount);
+        Assert.Equal((ulong)0, receipt.ReservedBytes);
+        await store.ReserveCapacityAsync(
+            fixture.CapacityCommand(Bytes(0x97, 32), 4, 65_536, nonce: 0x53),
+            CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task CapacityReservation_ExpiryFreesOnlyUnusedAndNeverActualUsage()
+    {
+        var fixture = Fixture.Create(Path.Combine(_root, "capacity-expiry"));
+        var material = fixture.CreateDirectClosure();
+        var cohort = Bytes(0x92, 32);
+        var scheduleLength = ProductionMailboxClosureScheduleCodec.Encode(
+            [material.CanonicalEnvelope],
+            fixture.Options.MaximumClosureVersionsPerSelection).Length;
+        var charge = checked((ulong)(scheduleLength
+            + fixture.Options.ClosureScheduleAccountingOverheadBytes));
+        fixture.Options.MaximumStoredClosures = 1;
+        fixture.Options.MaximumClosureStoreBytes = checked((long)charge);
+        var store = new ProductionMailboxClosureStore(
+            fixture.Options, fixture.Node,
+            new FixedClock(DateTimeOffset.FromUnixTimeSeconds((long)Now)),
+            new MailboxStorageSecurity(), new MailboxDurabilityBarrier());
+        await store.ReserveCapacityAsync(
+            fixture.CapacityCommand(cohort, 1, charge, lifetimeSeconds: 60),
+            CancellationToken.None);
+        await store.PrepositionAsync(
+            fixture.PrepositionCommand(material, reservationCohortId: cohort),
+            CancellationToken.None);
+
+        var restarted = new ProductionMailboxClosureStore(
+            fixture.Options, fixture.Node,
+            new FixedClock(DateTimeOffset.FromUnixTimeSeconds((long)(Now + 61))),
+            new MailboxStorageSecurity(), new MailboxDurabilityBarrier());
+        Assert.Equal((1, (long)charge), restarted.StorageAccounting);
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await restarted.ReserveCapacityAsync(
+                fixture.CapacityCommand(Bytes(0x93, 32), 1, charge,
+                    lifetimeSeconds: 60, nonce: 0x48,
+                    timestampUnixSeconds: Now + 61),
+                CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    public async Task CapacityTransfer_PartialCommitRecoversAcrossRealStoreRestart(
+        int crashPhase)
+    {
+        var fixture = Fixture.Create(Path.Combine(_root, "capacity-crash"));
+        var material = fixture.CreateDirectClosure();
+        var cohort = Bytes(0x94, 32);
+        var scheduleLength = ProductionMailboxClosureScheduleCodec.Encode(
+            [material.CanonicalEnvelope],
+            fixture.Options.MaximumClosureVersionsPerSelection).Length;
+        var charge = checked((ulong)(scheduleLength
+            + fixture.Options.ClosureScheduleAccountingOverheadBytes));
+        var clock = new FixedClock(DateTimeOffset.FromUnixTimeSeconds((long)Now));
+        var armed = 1;
+        Action crash = () =>
+        {
+            if (Interlocked.Exchange(ref armed, 0) == 1)
+                throw new IOException("Injected transfer process termination.");
+        };
+        var hooks = new ProductionMailboxClosureStoreTestHooks(
+            AfterCapacityTransferJournal: crashPhase == 0 ? crash : null,
+            AfterCapacityTransferSchedule: crashPhase == 1 ? crash : null,
+            AfterCapacityTransferFloor: crashPhase == 2 ? crash : null,
+            AfterCapacityTransferLedger: crashPhase == 3 ? crash : null,
+            SimulateCapacityTransferProcessTermination: true);
+        var store = new ProductionMailboxClosureStore(
+            fixture.Options, fixture.Node, clock, new MailboxStorageSecurity(),
+            new MailboxDurabilityBarrier(), hooks);
+        await store.ReserveCapacityAsync(
+            fixture.CapacityCommand(cohort, 1, charge), CancellationToken.None);
+
+        await Assert.ThrowsAsync<IOException>(async () =>
+            await store.PrepositionAsync(
+                fixture.PrepositionCommand(material, reservationCohortId: cohort),
+                CancellationToken.None));
+        var restarted = new ProductionMailboxClosureStore(
+            fixture.Options, fixture.Node, clock, new MailboxStorageSecurity(),
+            new MailboxDurabilityBarrier());
+        await restarted.PrepositionAsync(
+            fixture.PrepositionCommand(material, reservationCohortId: cohort),
+            CancellationToken.None);
+        var renewal = ProductionMailboxCapacityReceiptCodec.Decode(
+            await restarted.ReserveCapacityAsync(
+                fixture.CapacityCommand(cohort, 1, charge, revision: 2,
+                    lifetimeSeconds: 7_200, nonce: 0x49),
+                CancellationToken.None));
+        Assert.Equal((uint)1, renewal.ConsumedClosureCount);
+        Assert.Equal(charge, renewal.ConsumedBytes);
+        Assert.False(File.Exists(Path.Combine(fixture.Options.ClosureDirectory,
+            ".closure-capacity-transfer.pbt1")));
+    }
+
+    [Fact]
+    public async Task CapacityRenewalRace_AcceptsOneForkAndExactWinnerReplays()
+    {
+        var fixture = Fixture.Create(Path.Combine(_root, "capacity-renewal-race"));
+        _ = fixture.CreateDirectClosure();
+        var cohort = Bytes(0x95, 32);
+        var store = new ProductionMailboxClosureStore(
+            fixture.Options, fixture.Node,
+            new FixedClock(DateTimeOffset.FromUnixTimeSeconds((long)Now)),
+            new MailboxStorageSecurity(), new MailboxDurabilityBarrier());
+        await store.ReserveCapacityAsync(
+            fixture.CapacityCommand(cohort, 2, 32_768), CancellationToken.None);
+        var left = fixture.CapacityCommand(
+            cohort, 3, 49_152, revision: 2, lifetimeSeconds: 7_200, nonce: 0x4A);
+        var right = fixture.CapacityCommand(
+            cohort, 4, 65_536, revision: 2, lifetimeSeconds: 7_201, nonce: 0x4B);
+        var outcomes = await Task.WhenAll(TryReserve(left), TryReserve(right));
+        Assert.Single(outcomes, static accepted => accepted);
+        var winner = outcomes[0] ? left : right;
+        var first = await store.ReserveCapacityAsync(winner, CancellationToken.None);
+        var replay = await store.ReserveCapacityAsync(winner, CancellationToken.None);
+        Assert.Equal(first, replay);
+
+        async Task<bool> TryReserve(byte[] command)
+        {
+            try
+            {
+                await store.ReserveCapacityAsync(command, CancellationToken.None);
+                return true;
+            }
+            catch (InvalidOperationException)
+            {
+                return false;
+            }
+        }
+    }
+
+    [Fact]
+    public async Task CapacityReservation_ExpiryMidSweepRejectsWriteAndLeavesNoSchedule()
+    {
+        var fixture = Fixture.Create(Path.Combine(_root, "capacity-mid-sweep-expiry"));
+        var material = fixture.CreateDirectClosure();
+        var cohort = Bytes(0x99, 32);
+        var clock = new MutableClock(DateTimeOffset.FromUnixTimeSeconds((long)Now));
+        var store = new ProductionMailboxClosureStore(
+            fixture.Options, fixture.Node, clock, new MailboxStorageSecurity(),
+            new MailboxDurabilityBarrier());
+        await store.ReserveCapacityAsync(
+            fixture.CapacityCommand(cohort, 1, 1_048_576, lifetimeSeconds: 60),
+            CancellationToken.None);
+        clock.UtcNow = DateTimeOffset.FromUnixTimeSeconds((long)(Now + 61));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await store.PrepositionAsync(
+                fixture.PrepositionCommand(material, reservationCohortId: cohort),
+                CancellationToken.None));
+        Assert.Empty(Directory.EnumerateFiles(
+            fixture.Options.ClosureDirectory, "*.pmcs1", SearchOption.AllDirectories));
+        Assert.Equal((0, 0L), store.StorageAccounting);
+    }
+
+    [Fact]
+    public async Task CapacityLedger_TamperIsRebuiltFromAuthenticatedFloorAcrossRestart()
+    {
+        var fixture = Fixture.Create(Path.Combine(_root, "capacity-ledger-tamper"));
+        _ = fixture.CreateDirectClosure();
+        var clock = new FixedClock(DateTimeOffset.FromUnixTimeSeconds((long)Now));
+        var store = new ProductionMailboxClosureStore(
+            fixture.Options, fixture.Node, clock, new MailboxStorageSecurity(),
+            new MailboxDurabilityBarrier());
+        await store.ReserveCapacityAsync(
+            fixture.CapacityCommand(Bytes(0x9A, 32), 1, 65_536),
+            CancellationToken.None);
+        var ledgerPath = Path.Combine(fixture.Options.ClosureDirectory,
+            ".closure-capacity.pbl1");
+        var bytes = File.ReadAllBytes(ledgerPath);
+        bytes[^1] ^= 0x01;
+        File.WriteAllBytes(ledgerPath, bytes);
+
+        _ = new ProductionMailboxClosureStore(
+            fixture.Options, fixture.Node, clock, new MailboxStorageSecurity(),
+            new MailboxDurabilityBarrier());
+        Assert.NotEqual(bytes, File.ReadAllBytes(ledgerPath));
+    }
+
+    [Fact]
+    public async Task CapacityFloor_RejectsLedgerRollbackBeforeTransferRenewAndRelease()
+    {
+        var fixture = Fixture.Create(Path.Combine(_root, "capacity-ledger-rollback"));
+        var material = fixture.CreateDirectClosure();
+        var cohort = Bytes(0x9B, 32);
+        var clock = new FixedClock(DateTimeOffset.FromUnixTimeSeconds((long)Now));
+        var store = new ProductionMailboxClosureStore(
+            fixture.Options, fixture.Node, clock, new MailboxStorageSecurity(),
+            new MailboxDurabilityBarrier());
+        var scheduleLength = ProductionMailboxClosureScheduleCodec.Encode(
+            [material.CanonicalEnvelope],
+            fixture.Options.MaximumClosureVersionsPerSelection).Length;
+        var charge = checked((ulong)(scheduleLength
+            + fixture.Options.ClosureScheduleAccountingOverheadBytes));
+        await store.ReserveCapacityAsync(
+            fixture.CapacityCommand(cohort, 2, charge * 2), CancellationToken.None);
+        var ledgerPath = Path.Combine(fixture.Options.ClosureDirectory,
+            ".closure-capacity.pbl1");
+        var key = File.ReadAllBytes(fixture.Options.ClosureStateHmacKeyPath);
+        var beforeTransfer = File.ReadAllBytes(ledgerPath);
+
+        await store.PrepositionAsync(
+            fixture.PrepositionCommand(material, reservationCohortId: cohort),
+            CancellationToken.None);
+        var afterTransfer = File.ReadAllBytes(ledgerPath);
+        File.WriteAllBytes(ledgerPath, beforeTransfer);
+        _ = new ProductionMailboxClosureStore(
+            fixture.Options, fixture.Node, clock, new MailboxStorageSecurity(),
+            new MailboxDurabilityBarrier());
+        var recoveredTransfer = Assert.Single(
+            ProductionMailboxCapacityLedgerCodec.Decode(
+                File.ReadAllBytes(ledgerPath), key,
+                fixture.Options.MaximumClosureReservations));
+        Assert.Equal((uint)1, recoveredTransfer.ConsumedClosureCount);
+        Assert.Equal(charge, recoveredTransfer.ConsumedBytes);
+
+        store = new ProductionMailboxClosureStore(
+            fixture.Options, fixture.Node, clock, new MailboxStorageSecurity(),
+            new MailboxDurabilityBarrier());
+        await store.ReserveCapacityAsync(
+            fixture.CapacityCommand(cohort, 3, charge * 3, revision: 2,
+                lifetimeSeconds: 7_200, nonce: 0x54), CancellationToken.None);
+        var afterRenew = File.ReadAllBytes(ledgerPath);
+        File.WriteAllBytes(ledgerPath, afterTransfer);
+        _ = new ProductionMailboxClosureStore(
+            fixture.Options, fixture.Node, clock, new MailboxStorageSecurity(),
+            new MailboxDurabilityBarrier());
+        var recoveredRenew = Assert.Single(
+            ProductionMailboxCapacityLedgerCodec.Decode(
+                File.ReadAllBytes(ledgerPath), key,
+                fixture.Options.MaximumClosureReservations));
+        Assert.Equal((ulong)2, recoveredRenew.Revision);
+        Assert.Equal((uint)3, recoveredRenew.ReservedClosureCount);
+
+        store = new ProductionMailboxClosureStore(
+            fixture.Options, fixture.Node, clock, new MailboxStorageSecurity(),
+            new MailboxDurabilityBarrier());
+        await store.ReserveCapacityAsync(
+            fixture.CapacityCommand(cohort, 0, 0, revision: 3,
+                lifetimeSeconds: 10_800,
+                operation: ProductionMailboxCapacityOperation.Release, nonce: 0x55),
+            CancellationToken.None);
+        File.WriteAllBytes(ledgerPath, afterRenew);
+        _ = new ProductionMailboxClosureStore(
+            fixture.Options, fixture.Node, clock, new MailboxStorageSecurity(),
+            new MailboxDurabilityBarrier());
+        var recoveredRelease = Assert.Single(
+            ProductionMailboxCapacityLedgerCodec.Decode(
+                File.ReadAllBytes(ledgerPath), key,
+                fixture.Options.MaximumClosureReservations));
+        Assert.True(recoveredRelease.Terminal);
+        Assert.Equal((ulong)3, recoveredRelease.Revision);
+        Assert.Equal(recoveredRelease.ConsumedClosureCount,
+            recoveredRelease.ReservedClosureCount);
+        Assert.Equal(recoveredRelease.ConsumedBytes, recoveredRelease.ReservedBytes);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task CapacityReservation_MarkerLedgerDeleteSplitsRecoverOnRestart(
+        int crashPhase)
+    {
+        var fixture = Fixture.Create(Path.Combine(_root,
+            $"capacity-reservation-split-{crashPhase}"));
+        _ = fixture.CreateDirectClosure();
+        var clock = new FixedClock(DateTimeOffset.FromUnixTimeSeconds((long)Now));
+        var initial = new ProductionMailboxClosureStore(
+            fixture.Options, fixture.Node, clock, new MailboxStorageSecurity(),
+            new MailboxDurabilityBarrier());
+        var cohort = Bytes(0x9C, 32);
+        var first = fixture.CapacityCommand(cohort, 2, 65_536);
+        await initial.ReserveCapacityAsync(first, CancellationToken.None);
+        var armed = 1;
+        Action crash = () =>
+        {
+            if (Interlocked.Exchange(ref armed, 0) == 1)
+                throw new IOException("Injected capacity state split.");
+        };
+        var hooks = new ProductionMailboxClosureStoreTestHooks(
+            AfterCapacityReservationFloor: crashPhase == 0 ? crash : null,
+            AfterCapacityReservationLedger: crashPhase == 1 ? crash : null,
+            AfterCapacityReservationDelete: crashPhase == 2 ? crash : null);
+        var writer = new ProductionMailboxClosureStore(
+            fixture.Options, fixture.Node, clock, new MailboxStorageSecurity(),
+            new MailboxDurabilityBarrier(), hooks);
+        var renewal = fixture.CapacityCommand(
+            cohort, 3, 98_304, revision: 2, lifetimeSeconds: 7_200,
+            nonce: 0x56);
+        await Assert.ThrowsAsync<IOException>(async () =>
+            await writer.ReserveCapacityAsync(renewal, CancellationToken.None));
+
+        var restarted = new ProductionMailboxClosureStore(
+            fixture.Options, fixture.Node, clock, new MailboxStorageSecurity(),
+            new MailboxDurabilityBarrier());
+        var receipt = ProductionMailboxCapacityReceiptCodec.Decode(
+            await restarted.ReserveCapacityAsync(renewal, CancellationToken.None));
+        Assert.Equal((ulong)2, receipt.Revision);
+        Assert.Equal((uint)3, receipt.ReservedClosureCount);
+        Assert.Single(Directory.EnumerateFiles(
+            fixture.Options.ClosureDirectory, ".capacity-*.pbf1",
+            SearchOption.TopDirectoryOnly));
     }
 
     [Theory]
@@ -728,6 +1120,7 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
         fixture.Options.MaximumStoredClosures = constrainBytes ? 8 : 1;
         fixture.Options.MaximumClosureStoreBytes = constrainBytes
             ? Math.Max(expiredScheduleLength, replacementScheduleLength)
+                + fixture.Options.ClosureScheduleAccountingOverheadBytes
             : 32L * 1024 * 1024;
         var initial = new ProductionMailboxClosureStore(
             fixture.Options, fixture.Node,
@@ -749,7 +1142,9 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
             replacementFixture.PrepositionCommand(replacement, 0x82),
             CancellationToken.None);
         Assert.Equal(1, restarted.StorageAccounting.Count);
-        Assert.Equal(replacementScheduleLength, restarted.StorageAccounting.Bytes);
+        Assert.Equal(replacementScheduleLength
+            + fixture.Options.ClosureScheduleAccountingOverheadBytes,
+            restarted.StorageAccounting.Bytes);
     }
 
     [Fact]
@@ -1021,7 +1416,7 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
         var malformed = new byte[ProductionMailboxPrepositionCommandCodec.HeaderLength];
         "PMP1"u8.CopyTo(malformed);
         malformed[4] = 1;
-        BinaryPrimitives.WriteUInt32BigEndian(malformed.AsSpan(176), uint.MaxValue);
+        BinaryPrimitives.WriteUInt32BigEndian(malformed.AsSpan(272), uint.MaxValue);
 
         var apiContext = PrepositionContext(malformed, apiPort);
         var apiResult = await ProductionMailboxClosureHttpEndpoint.HandlePrepositionAsync(
@@ -1039,6 +1434,107 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
         Assert.Equal("no-store", peerContext.Response.Headers.CacheControl);
         Assert.DoesNotContain(nameof(OverflowException), body, StringComparison.Ordinal);
         Assert.DoesNotContain("ProductionMailbox", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CapacityHttp_IsPeerOnlyBoundedAndReturnsNodeReceipt()
+    {
+        const int apiPort = 7080;
+        const int peerPort = 7443;
+        var fixture = Fixture.Create(Path.Combine(_root, "capacity-http"));
+        _ = fixture.CreateDirectClosure();
+        var store = new ProductionMailboxClosureStore(
+            fixture.Options, fixture.Node,
+            new FixedClock(DateTimeOffset.FromUnixTimeSeconds((long)Now)),
+            new MailboxStorageSecurity(), new MailboxDurabilityBarrier());
+        var command = fixture.CapacityCommand(Bytes(0x98, 32), 2, 65_536);
+
+        var apiContext = PrepositionContext(command, apiPort,
+            ProductionMailboxClosureHttpContract.CapacityCommandMediaType);
+        var apiResult = await ProductionMailboxClosureHttpEndpoint.HandleCapacityAsync(
+            apiContext, store, peerPort, CancellationToken.None);
+        await apiResult.ExecuteAsync(apiContext);
+        Assert.Equal(StatusCodes.Status404NotFound, apiContext.Response.StatusCode);
+
+        var peerContext = PrepositionContext(command, peerPort,
+            ProductionMailboxClosureHttpContract.CapacityCommandMediaType);
+        var peerResult = await ProductionMailboxClosureHttpEndpoint.HandleCapacityAsync(
+            peerContext, store, peerPort, CancellationToken.None);
+        await peerResult.ExecuteAsync(peerContext);
+        Assert.Equal(StatusCodes.Status200OK, peerContext.Response.StatusCode);
+        Assert.Equal("no-store", peerContext.Response.Headers.CacheControl);
+        Assert.Equal(ProductionMailboxClosureHttpContract.CapacityReceiptMediaType,
+            peerContext.Response.ContentType);
+        var canonicalReceipt = ((MemoryStream)peerContext.Response.Body).ToArray();
+        var receipt = ProductionMailboxCapacityReceiptCodec.Decode(canonicalReceipt);
+        Assert.True(ProductionMailboxCapacityReceiptCodec.VerifyNode(
+            receipt, fixture.Node.GetRouterId().ToBytes()));
+
+        var truncated = command[..^1];
+        var badContext = PrepositionContext(truncated, peerPort,
+            ProductionMailboxClosureHttpContract.CapacityCommandMediaType);
+        var badResult = await ProductionMailboxClosureHttpEndpoint.HandleCapacityAsync(
+            badContext, store, peerPort, CancellationToken.None);
+        await badResult.ExecuteAsync(badContext);
+        Assert.Equal(StatusCodes.Status400BadRequest, badContext.Response.StatusCode);
+        Assert.DoesNotContain("ProductionMailbox", await ResponseBody(badContext),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CapacityAdmission_RejectsConfiguredOverflowAndTerminalReserveCoarsely()
+    {
+        const int peerPort = 7443;
+        var fixture = Fixture.Create(Path.Combine(_root, "capacity-bounds"));
+        _ = fixture.CreateDirectClosure();
+        fixture.Options.MaximumStoredClosures = 2;
+        fixture.Options.MaximumClosureStoreBytes = 1_048_576;
+        var store = new ProductionMailboxClosureStore(
+            fixture.Options, fixture.Node,
+            new FixedClock(DateTimeOffset.FromUnixTimeSeconds((long)Now)),
+            new MailboxStorageSecurity(), new MailboxDurabilityBarrier());
+
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await store.ReserveCapacityAsync(
+                fixture.CapacityCommand(Bytes(0x9D, 32), 1, 1_048_576,
+                    revision: ulong.MaxValue, nonce: 0x57),
+                CancellationToken.None));
+        var oversized = fixture.CapacityCommand(
+            Bytes(0x9E, 32), uint.MaxValue, ulong.MaxValue, nonce: 0x58);
+        await Assert.ThrowsAsync<InvalidDataException>(async () =>
+            await store.ReserveCapacityAsync(oversized, CancellationToken.None));
+
+        var context = PrepositionContext(oversized, peerPort,
+            ProductionMailboxClosureHttpContract.CapacityCommandMediaType);
+        var result = await ProductionMailboxClosureHttpEndpoint.HandleCapacityAsync(
+            context, store, peerPort, CancellationToken.None);
+        await result.ExecuteAsync(context);
+        Assert.Equal(StatusCodes.Status400BadRequest, context.Response.StatusCode);
+        var body = await ResponseBody(context);
+        Assert.DoesNotContain(nameof(OverflowException), body, StringComparison.Ordinal);
+        Assert.DoesNotContain("ProductionMailbox", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CapacityAdmission_RevalidatesClockAfterAcquiringMutationLock()
+    {
+        var fixture = Fixture.Create(Path.Combine(_root, "capacity-stale-clock"));
+        _ = fixture.CreateDirectClosure();
+        var clock = new MutableClock(DateTimeOffset.FromUnixTimeSeconds((long)Now));
+        var hooks = new ProductionMailboxClosureStoreTestHooks(
+            BeforeCapacityAdmission: () => clock.UtcNow =
+                DateTimeOffset.FromUnixTimeSeconds((long)(Now + 1)));
+        var store = new ProductionMailboxClosureStore(
+            fixture.Options, fixture.Node, clock, new MailboxStorageSecurity(),
+            new MailboxDurabilityBarrier(), hooks);
+
+        await Assert.ThrowsAsync<InvalidDataException>(async () =>
+            await store.ReserveCapacityAsync(
+                fixture.CapacityCommand(Bytes(0x9F, 32), 1, 65_536),
+                CancellationToken.None));
+        Assert.Empty(Directory.EnumerateFiles(
+            fixture.Options.ClosureDirectory, ".capacity-*.pbf1",
+            SearchOption.TopDirectoryOnly));
     }
 
     [Fact]
@@ -1737,12 +2233,14 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
                 requireReadOnly: false));
     }
 
-    private static DefaultHttpContext PrepositionContext(byte[] body, int localPort)
+    private static DefaultHttpContext PrepositionContext(byte[] body, int localPort,
+        string? contentType = null)
     {
         var context = new DefaultHttpContext();
         context.Connection.LocalPort = localPort;
         context.Request.ContentLength = body.Length;
-        context.Request.ContentType = ProductionMailboxClosureHttpContract.PrepositionMediaType;
+        context.Request.ContentType = contentType
+            ?? ProductionMailboxClosureHttpContract.PrepositionMediaType;
         context.Request.Body = new MemoryStream(body, writable: false);
         context.Response.Body = new MemoryStream();
         context.RequestServices = new ServiceCollection().AddLogging().BuildServiceProvider();
@@ -2114,6 +2612,9 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
             };
             var canonicalSuccessor = ProductionMailboxSelectionSuccessorCodec.Encode(successor);
             Node.RouterId = Hex(oldNextSelection.Replicas[0].ReplicaId.ToArray());
+            Node.Ed25519PrivateKey = Hex(SeedFor(
+                oldNextSelection.Replicas[0].ReplicaId.Span,
+                oldNextSelection.Epoch));
             var envelope = ProductionMailboxClosureEnvelopeCodec.Encode(new(
                 newAuthorityBytes, newRevocationBytes, newTopologyBytes,
                 newSelectionBytes, canonicalSuccessor));
@@ -2130,12 +2631,13 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
         public byte[] PrepositionCommand(
             ClosureMaterial material,
             byte nonce = 0x44,
-            IReadOnlyList<ReadOnlyMemory<byte>>? authorizedLegacyReplicaIds = null)
+            IReadOnlyList<ReadOnlyMemory<byte>>? authorizedLegacyReplicaIds = null,
+            ReadOnlyMemory<byte> reservationCohortId = default)
         {
             var draft = new ProductionMailboxPrepositionCommand(
                 Now, Bytes(nonce, 32), SHA256.HashData(material.CanonicalEnvelope),
                 Node.GetRouterId().ToBytes(), authorizedLegacyReplicaIds ?? [],
-                new byte[64], material.CanonicalEnvelope);
+                new byte[64], material.CanonicalEnvelope, reservationCohortId);
             var signed = draft with
             {
                 PublisherSignature = PublicKeyAuth.SignDetached(
@@ -2143,6 +2645,31 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
                     _issuerPrivateKey)
             };
             return ProductionMailboxPrepositionCommandCodec.Encode(signed);
+        }
+
+        public byte[] CapacityCommand(
+            ReadOnlyMemory<byte> cohortId,
+            uint reservedClosureCount,
+            ulong reservedBytes,
+            ulong revision = 1,
+            ulong lifetimeSeconds = 3_600,
+            ProductionMailboxCapacityOperation operation =
+                ProductionMailboxCapacityOperation.ReserveOrRenew,
+            byte nonce = 0x46,
+            ulong? timestampUnixSeconds = null)
+        {
+            var timestamp = timestampUnixSeconds ?? Now;
+            var draft = new ProductionMailboxCapacityCommand(
+                operation, timestamp, checked(timestamp + lifetimeSeconds), Bytes(nonce, 32),
+                cohortId, Node.GetRouterId().ToBytes(), reservedClosureCount,
+                reservedBytes, revision, new byte[64]);
+            var signed = draft with
+            {
+                PublisherSignature = PublicKeyAuth.SignDetached(
+                    ProductionMailboxCapacityCommandCodec.GetSigningBytes(draft),
+                    _issuerPrivateKey)
+            };
+            return ProductionMailboxCapacityCommandCodec.Encode(signed);
         }
 
         public byte[] SameGenerationForkCommand(ClosureMaterial material)

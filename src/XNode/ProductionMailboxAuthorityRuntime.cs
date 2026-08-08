@@ -42,6 +42,10 @@ public sealed class ProductionMailboxAuthorityOptions
     public long MaximumClosureStoreBytes { get; set; } = 536_870_912;
     public int MaximumClosureVersionsPerSelection { get; set; } = 4;
     public int MaximumClosureLineagesPerSelection { get; set; } = 4;
+    public int MaximumClosureReservations { get; set; } = 128;
+    public uint MaximumClosureReservationLifetimeSeconds { get; set; } = 86_400;
+    public uint MinimumClosureReservationLifetimeSeconds { get; set; } = 60;
+    public int ClosureScheduleAccountingOverheadBytes { get; set; } = 1_024;
 
     public void Validate(RouterNodeOptions node, bool isProduction)
     {
@@ -111,7 +115,13 @@ public sealed class ProductionMailboxAuthorityOptions
             || MaximumStoredClosures is < 1 or > 1_000_000
             || MaximumClosureStoreBytes is < 1_048_576 or > 107_374_182_400
             || MaximumClosureVersionsPerSelection is < 2 or > 16
-            || MaximumClosureLineagesPerSelection is < 1 or > 16)
+            || MaximumClosureLineagesPerSelection is < 1 or > 16
+            || MaximumClosureReservations is < 1 or > 4_096
+            || MaximumClosureReservationLifetimeSeconds is < 60 or > 604_800
+            || MinimumClosureReservationLifetimeSeconds < 30
+            || MinimumClosureReservationLifetimeSeconds
+                > MaximumClosureReservationLifetimeSeconds
+            || ClosureScheduleAccountingOverheadBytes is < 256 or > 65_536)
         {
             throw new InvalidOperationException(
                 "MailboxClientProductionAuthority bounds are invalid.");

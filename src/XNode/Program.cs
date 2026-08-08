@@ -558,6 +558,14 @@ if (productionMailboxAuthorityOptions.Enabled)
         await ProductionMailboxClosureHttpEndpoint.HandlePrepositionAsync(
             context, closures, peerRpcListenUri.Port, cancellationToken))
         .RequireRateLimiting("peer-onion");
+
+    app.MapPost(ProductionMailboxClosureHttpContract.CapacityRoute, async (
+        HttpContext context,
+        ProductionMailboxClosureStore closures,
+        CancellationToken cancellationToken) =>
+        await ProductionMailboxClosureHttpEndpoint.HandleCapacityAsync(
+            context, closures, peerRpcListenUri.Port, cancellationToken))
+        .RequireRateLimiting("peer-onion");
 }
 
 app.MapPost("/api/staking/quorum/sign", async (

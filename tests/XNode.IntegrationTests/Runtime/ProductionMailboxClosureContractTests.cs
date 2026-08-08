@@ -124,13 +124,115 @@ public sealed class ProductionMailboxClosureContractTests
         var malformed = new byte[ProductionMailboxPrepositionCommandCodec.HeaderLength];
         "PMP1"u8.CopyTo(malformed);
         malformed[4] = 1;
-        BinaryPrimitives.WriteUInt32BigEndian(malformed.AsSpan(240), uint.MaxValue);
+        BinaryPrimitives.WriteUInt32BigEndian(malformed.AsSpan(272), uint.MaxValue);
 
         var failure = Assert.Throws<InvalidDataException>(() =>
             ProductionMailboxPrepositionCommandCodec.Decode(malformed));
 
         Assert.DoesNotContain(nameof(OverflowException), failure.ToString(),
             StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CapacityCommandAndReceipt_AreCanonicalTargetBoundAndAuthenticated()
+    {
+        var publisher = PublicKeyAuth.GenerateKeyPair(Bytes(0x71, 32));
+        var node = PublicKeyAuth.GenerateKeyPair(Bytes(0x72, 32));
+        var unsigned = new ProductionMailboxCapacityCommand(
+            ProductionMailboxCapacityOperation.ReserveOrRenew,
+            2_000_000_000, 2_000_003_600, Bytes(0x73, 32), Bytes(0x74, 32),
+            node.PublicKey, 12, 1_048_576, 1, new byte[64]);
+        var command = unsigned with
+        {
+            PublisherSignature = PublicKeyAuth.SignDetached(
+                ProductionMailboxCapacityCommandCodec.GetSigningBytes(unsigned),
+                publisher.PrivateKey)
+        };
+        var canonicalCommand = ProductionMailboxCapacityCommandCodec.Encode(command);
+        var decodedCommand = ProductionMailboxCapacityCommandCodec.Decode(canonicalCommand);
+        Assert.Equal(ProductionMailboxCapacityCommandCodec.EncodedLength,
+            canonicalCommand.Length);
+        Assert.True(ProductionMailboxCapacityCommandCodec.VerifyPublisher(
+            decodedCommand, publisher.PublicKey));
+        Assert.False(ProductionMailboxCapacityCommandCodec.VerifyPublisher(
+            decodedCommand with { ReservedBytes = decodedCommand.ReservedBytes + 1 },
+            publisher.PublicKey));
+
+        var unsignedReceipt = new ProductionMailboxCapacityReceipt(
+            ProductionMailboxCapacityOperation.ReserveOrRenew,
+            2_000_000_001, 2_000_003_600, command.CohortId, command.TargetReplicaId,
+            12, 1_048_576, 3, 262_144, 1, SHA256.HashData(canonicalCommand),
+            new byte[64]);
+        var receipt = unsignedReceipt with
+        {
+            NodeSignature = PublicKeyAuth.SignDetached(
+                ProductionMailboxCapacityReceiptCodec.GetSigningBytes(unsignedReceipt),
+                node.PrivateKey)
+        };
+        var canonicalReceipt = ProductionMailboxCapacityReceiptCodec.Encode(receipt);
+        var decodedReceipt = ProductionMailboxCapacityReceiptCodec.Decode(canonicalReceipt);
+        Assert.Equal(ProductionMailboxCapacityReceiptCodec.EncodedLength,
+            canonicalReceipt.Length);
+        Assert.True(ProductionMailboxCapacityReceiptCodec.VerifyNode(
+            decodedReceipt, node.PublicKey));
+        Assert.False(ProductionMailboxCapacityReceiptCodec.VerifyNode(
+            decodedReceipt with { ConsumedBytes = decodedReceipt.ConsumedBytes + 1 },
+            node.PublicKey));
+        Assert.Throws<InvalidDataException>(() =>
+            ProductionMailboxCapacityCommandCodec.Decode(canonicalCommand[..^1]));
+        Assert.Throws<InvalidDataException>(() =>
+            ProductionMailboxCapacityReceiptCodec.Decode(canonicalReceipt[..^1]));
+    }
+
+    [Fact]
+    public void CapacityCodecs_PreflightFixedFieldsBeforeCopyingHostileMemory()
+    {
+        var oversized = new byte[8 * 1024 * 1024];
+        var command = new ProductionMailboxCapacityCommand(
+            ProductionMailboxCapacityOperation.ReserveOrRenew,
+            2_000_000_000, 2_000_003_600, oversized, Bytes(0x73, 32),
+            Bytes(0x74, 32), 1, 65_536, 1, new byte[64]);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        Assert.Throws<InvalidDataException>(() =>
+            ProductionMailboxCapacityCommandCodec.GetSigningBytes(command));
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        Assert.True(allocated < 128 * 1024,
+            $"PMB1 allocated {allocated} bytes before fixed-field rejection.");
+
+        var receipt = new ProductionMailboxCapacityReceipt(
+            ProductionMailboxCapacityOperation.ReserveOrRenew,
+            2_000_000_000, 2_000_003_600, oversized, Bytes(0x75, 32),
+            1, 65_536, 0, 0, 1, Bytes(0x76, 32), new byte[64]);
+        before = GC.GetAllocatedBytesForCurrentThread();
+        Assert.False(ProductionMailboxCapacityReceiptCodec.VerifyNode(
+            receipt, Bytes(0x77, 32)));
+        allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        Assert.True(allocated < 128 * 1024,
+            $"PMB2 allocated {allocated} bytes before fixed-field rejection.");
+    }
+
+    [Fact]
+    public void PrepositionCommand_BindsCapacityCohort()
+    {
+        var publisher = PublicKeyAuth.GenerateKeyPair(Bytes(0x75, 32));
+        var envelope = ProductionMailboxClosureEnvelopeCodec.Encode(new(
+            Bytes(1, 3), Bytes(2, 5), Bytes(3, 7), Bytes(4, 11), Bytes(5, 13)));
+        var unsigned = new ProductionMailboxPrepositionCommand(
+            2_000_000_000, Bytes(0x76, 32), SHA256.HashData(envelope),
+            Bytes(0x77, 32), [], new byte[64], envelope, Bytes(0x78, 32));
+        var signed = unsigned with
+        {
+            PublisherSignature = PublicKeyAuth.SignDetached(
+                ProductionMailboxPrepositionCommandCodec.GetSigningBytes(unsigned),
+                publisher.PrivateKey)
+        };
+        var decoded = ProductionMailboxPrepositionCommandCodec.Decode(
+            ProductionMailboxPrepositionCommandCodec.Encode(signed));
+        Assert.True(ProductionMailboxPrepositionCommandCodec.VerifyPublisher(
+            decoded, publisher.PublicKey));
+        Assert.False(ProductionMailboxPrepositionCommandCodec.VerifyPublisher(
+            decoded with { ReservationCohortId = Bytes(0x79, 32) },
+            publisher.PublicKey));
     }
 
     [Fact]
@@ -172,6 +274,8 @@ public sealed class ProductionMailboxClosureContractTests
             ProductionMailboxClosureHttpContract.FetchRoute);
         Assert.Equal("/api/peer/production-mailbox/closure",
             ProductionMailboxClosureHttpContract.PrepositionRoute);
+        Assert.Equal("/api/peer/production-mailbox/closure-capacity",
+            ProductionMailboxClosureHttpContract.CapacityRoute);
         Assert.DoesNotContain("{", ProductionMailboxClosureHttpContract.FetchRoute,
             StringComparison.Ordinal);
         Assert.DoesNotContain("?", ProductionMailboxClosureHttpContract.FetchRoute,

@@ -635,7 +635,11 @@ The production-only public authority loader is configured independently from rou
     "maximumStoredClosures": 100000,
     "maximumClosureStoreBytes": 536870912,
     "maximumClosureVersionsPerSelection": 4,
-    "maximumClosureLineagesPerSelection": 4
+    "maximumClosureLineagesPerSelection": 4,
+    "maximumClosureReservations": 128,
+    "maximumClosureReservationLifetimeSeconds": 86400,
+    "minimumClosureReservationLifetimeSeconds": 60,
+    "closureScheduleAccountingOverheadBytes": 1024
   }
 }
 ```
@@ -681,6 +685,28 @@ signed set contains it. The host also enforces the inverse listener rule: the PM
 on the public API listener and is reachable only on the configured peer RPC port. The envelope
 always contains exact PMA1/PMR1/PMT1/PMS1/PSS1; PSS1 is
 mandatory because this cache is used only for LKG advancement.
+
+Before a proactive rotation sweep, Registry reserves conservative capacity through peer-only
+`POST /api/peer/production-mailbox/closure-capacity`. The request is an exact 208-byte PMB1
+publisher-signed reserve/renew/release command bound to a random opaque cohort id, target replica,
+monotonic revision, expiry, count and bytes. XNode returns an exact 248-byte PMB2 receipt signed by
+the target node. PMP1 is a clean-break 280-byte header and binds the same cohort id; a zero cohort
+is allowed only for ordinary unreserved publication, while a non-zero cohort atomically transfers
+the positive schedule count/byte delta from unused reservation headroom to actual store usage.
+The byte charge includes the configured conservative per-schedule filesystem/framing overhead.
+Exact command and schedule replay never double-charge. Renewal cannot reduce already consumed
+capacity; release or expiry frees only unused balance, and actual schedules remain charged until
+their ordinary safe expiry GC. The HMAC ledger is only a rebuildable cache. Each cohort has a
+content-addressed PBF1 floor containing the complete authoritative reservation state, monotonic
+state generation and predecessor marker hash; startup rejects marker forks and rebuilds any stale
+or replayed ledger from the highest exact chain. PBT1 binds both schedule hashes and before/after
+floor hashes/generations and recovers in journal→schedule→floor→ledger order. A bounded terminal
+floor is retained after release/expiry before deletion, so recently replayed pre-release ledgers
+cannot restore headroom. Full rollback of the complete protected closure directory beyond that
+tombstone retention remains an operator/storage-integrity boundary and is not a hardware monotonic
+counter guarantee. Registry must keep fresh PMB2 receipts from every required replica with its configured
+renewal margin; expiry or renewal failure freezes further cohort publication rather than admitting
+part of a rotation.
 
 Each route lineage occupies one bounded, atomically replaced schedule file under sharded
 HMAC(selection commitment)/HMAC(selection commitment + durable old-PMS hash) directories, so
