@@ -67,7 +67,8 @@ public sealed class ProductionMailboxClosureContractTests
             Bytes(1, 3), Bytes(2, 5), Bytes(3, 7), Bytes(4, 11), Bytes(5, 13)));
         var unsigned = new ProductionMailboxPrepositionCommand(
             2_000_000_000, Bytes(0x62, 32), SHA256.HashData(envelope),
-            Bytes(0x63, 32), new byte[64], envelope);
+            Bytes(0x63, 32), [Bytes(0x20, 32), Bytes(0x30, 32)],
+            new byte[64], envelope);
         var signed = unsigned with
         {
             PublisherSignature = PublicKeyAuth.SignDetached(
@@ -85,6 +86,32 @@ public sealed class ProductionMailboxClosureContractTests
             decoded, 2_000_000_301));
         Assert.False(ProductionMailboxPrepositionCommandCodec.VerifyPublisher(
             decoded with { TargetReplicaId = Bytes(0x64, 32) }, publisher.PublicKey));
+        Assert.False(ProductionMailboxPrepositionCommandCodec.VerifyPublisher(
+            decoded with
+            {
+                AuthorizedLegacyReplicaIds = [Bytes(0x20, 32), Bytes(0x31, 32)]
+            }, publisher.PublicKey));
+        Assert.Throws<InvalidDataException>(() =>
+            ProductionMailboxPrepositionCommandCodec.Encode(unsigned with
+            {
+                AuthorizedLegacyReplicaIds =
+                    [Bytes(0x10, 32), Bytes(0x20, 32), Bytes(0x30, 32)]
+            }));
+        Assert.Throws<InvalidDataException>(() =>
+            ProductionMailboxPrepositionCommandCodec.Encode(unsigned with
+            {
+                AuthorizedLegacyReplicaIds = [Bytes(0x20, 32), Bytes(0x20, 32)]
+            }));
+        Assert.Throws<InvalidDataException>(() =>
+            ProductionMailboxPrepositionCommandCodec.Encode(unsigned with
+            {
+                AuthorizedLegacyReplicaIds = [Bytes(0x30, 32), Bytes(0x20, 32)]
+            }));
+
+        var nonCanonicalUnusedSlot = canonical.ToArray();
+        nonCanonicalUnusedSlot[5] = 1;
+        Assert.Throws<InvalidDataException>(() =>
+            ProductionMailboxPrepositionCommandCodec.Decode(nonCanonicalUnusedSlot));
     }
 
     [Fact]
@@ -93,13 +120,36 @@ public sealed class ProductionMailboxClosureContractTests
         var malformed = new byte[ProductionMailboxPrepositionCommandCodec.HeaderLength];
         "PMP1"u8.CopyTo(malformed);
         malformed[4] = 1;
-        BinaryPrimitives.WriteUInt32BigEndian(malformed.AsSpan(176), uint.MaxValue);
+        BinaryPrimitives.WriteUInt32BigEndian(malformed.AsSpan(240), uint.MaxValue);
 
         var failure = Assert.Throws<InvalidDataException>(() =>
             ProductionMailboxPrepositionCommandCodec.Decode(malformed));
 
         Assert.DoesNotContain(nameof(OverflowException), failure.ToString(),
             StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PrepositionCommandRejectsHostileLegacyListsBeforeUnboundedAllocation()
+    {
+        var envelope = ProductionMailboxClosureEnvelopeCodec.Encode(new(
+            Bytes(1, 3), Bytes(2, 5), Bytes(3, 7), Bytes(4, 11), Bytes(5, 13)));
+        var oversized = new ProductionMailboxPrepositionCommand(
+            2_000_000_000, Bytes(0x62, 32), SHA256.HashData(envelope),
+            Bytes(0x63, 32), new OversizedNodeList(), new byte[64], envelope);
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        Assert.Throws<InvalidDataException>(() =>
+            ProductionMailboxPrepositionCommandCodec.GetSigningBytes(oversized));
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        Assert.True(allocated < 128 * 1024,
+            $"PMP1 codec allocated {allocated} bytes for a hostile legacy list.");
+
+        Assert.Throws<InvalidDataException>(() =>
+            ProductionMailboxPrepositionCommandCodec.GetSigningBytes(oversized with
+            {
+                AuthorizedLegacyReplicaIds = new UnstableNodeList()
+            }));
     }
 
     [Theory]
@@ -140,4 +190,25 @@ public sealed class ProductionMailboxClosureContractTests
 
     private static byte[] Bytes(byte value, int length) =>
         Enumerable.Repeat(value, length).ToArray();
+
+    private sealed class OversizedNodeList : IReadOnlyList<ReadOnlyMemory<byte>>
+    {
+        public int Count => int.MaxValue;
+        public ReadOnlyMemory<byte> this[int index] => throw new InvalidOperationException();
+        public IEnumerator<ReadOnlyMemory<byte>> GetEnumerator() =>
+            throw new InvalidOperationException();
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() =>
+            GetEnumerator();
+    }
+
+    private sealed class UnstableNodeList : IReadOnlyList<ReadOnlyMemory<byte>>
+    {
+        private int _countReads;
+        public int Count => Interlocked.Increment(ref _countReads) == 1 ? 2 : 1;
+        public ReadOnlyMemory<byte> this[int index] => Bytes((byte)(0x20 + index), 32);
+        public IEnumerator<ReadOnlyMemory<byte>> GetEnumerator() =>
+            throw new InvalidOperationException();
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() =>
+            GetEnumerator();
+    }
 }

@@ -298,6 +298,70 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
     }
 
     [Fact]
+    public async Task PublisherAuthorizedOldCurrentReplica_ServesFutureClosureAfterTwentyFiveHours()
+    {
+        const ulong twentyFiveHours = 25 * 60 * 60;
+        var fixture = Fixture.Create(
+            Path.Combine(_root, "legacy-old-current"),
+            survivalHorizonSeconds: 26 * 60 * 60);
+        var material = fixture.CreateDirectClosure(
+            twentyFiveHours,
+            ProductionMailboxSelectionSuccessorMode.OfflineCheckpoint);
+        var legacyTarget = material.OldCurrentReplicaIds[0].ToArray();
+        fixture.Node.RouterId = Hex(legacyTarget);
+        var nowClock = new FixedClock(DateTimeOffset.FromUnixTimeSeconds((long)Now));
+        var store = new ProductionMailboxClosureStore(
+            fixture.Options, fixture.Node, nowClock, new MailboxStorageSecurity(),
+            new MailboxDurabilityBarrier());
+
+        await Assert.ThrowsAsync<InvalidDataException>(async () =>
+            await store.PrepositionAsync(
+                fixture.PrepositionCommand(material), CancellationToken.None));
+        var command = fixture.PrepositionCommand(
+            material, 0x47, material.OldCurrentReplicaIds);
+        await store.PrepositionAsync(command, CancellationToken.None);
+
+        var ordinarySelection = ProductionMailboxTopologyCodec.DecodeSelection(
+            ProductionMailboxClosureEnvelopeCodec.Decode(material.CanonicalEnvelope)
+                .Selection.Span);
+        var ordinaryTarget = ordinarySelection.Replicas[0].ReplicaId.ToArray();
+        fixture.Node.RouterId = Hex(ordinaryTarget);
+        await Assert.ThrowsAsync<InvalidDataException>(async () =>
+            await store.PrepositionAsync(
+                fixture.PrepositionCommand(material, 0x48,
+                    [(ReadOnlyMemory<byte>)ordinaryTarget]), CancellationToken.None));
+
+        fixture.Node.RouterId = Hex(legacyTarget);
+        var tampered = ProductionMailboxPrepositionCommandCodec.Decode(command) with
+        {
+            AuthorizedLegacyReplicaIds =
+                [(ReadOnlyMemory<byte>)Bytes(0x01, 32), (ReadOnlyMemory<byte>)Bytes(0x02, 32)]
+        };
+        await Assert.ThrowsAsync<InvalidDataException>(async () =>
+            await store.PrepositionAsync(
+                ProductionMailboxPrepositionCommandCodec.Encode(tampered),
+                CancellationToken.None));
+
+        var future = checked(Now + twentyFiveHours + 1);
+        var futureClock = new FixedClock(DateTimeOffset.FromUnixTimeSeconds((long)future));
+        var restarted = new ProductionMailboxClosureStore(
+            fixture.Options, fixture.Node, futureClock, new MailboxStorageSecurity(),
+            new MailboxDurabilityBarrier());
+        var unsignedRequest = new ProductionMailboxClosureRequest(
+            future, Bytes(0x49, 32), material.SelectionInputCommitment,
+            material.OwnerPublicKey, new byte[64]);
+        var request = ProductionMailboxClosureRequestCodec.Encode(unsignedRequest with
+        {
+            OwnerSignature = PublicKeyAuth.SignDetached(
+                ProductionMailboxClosureRequestCodec.GetSigningBytes(unsignedRequest),
+                material.OwnerPrivateKey)
+        });
+
+        Assert.Equal(material.CanonicalEnvelope,
+            await restarted.FetchAsync(request, CancellationToken.None));
+    }
+
+    [Fact]
     public async Task ConcurrentPreposition_AllowsOneSameGenerationWinnerAndSurvivesRestart()
     {
         var fixture = Fixture.Create(Path.Combine(_root, "concurrent"));
@@ -1196,13 +1260,15 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
         byte[] CanonicalEnvelope,
         byte[] SelectionInputCommitment,
         byte[] OwnerPublicKey,
-        byte[] OwnerPrivateKey);
+        byte[] OwnerPrivateKey,
+        IReadOnlyList<ReadOnlyMemory<byte>> OldCurrentReplicaIds);
 
     private sealed class Fixture
     {
         private readonly byte[] _privateKey;
         private readonly byte[] _issuerPrivateKey;
         private readonly IReadOnlyDictionary<ulong, MembershipRouteDescriptor[]> _descriptors;
+        private readonly ulong _survivalHorizonSeconds;
 
         private Fixture(
             RouterNodeOptions node,
@@ -1210,7 +1276,8 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
             ProductionMailboxAuthority authority,
             byte[] privateKey,
             byte[] issuerPrivateKey,
-            IReadOnlyDictionary<ulong, MembershipRouteDescriptor[]> descriptors)
+            IReadOnlyDictionary<ulong, MembershipRouteDescriptor[]> descriptors,
+            ulong survivalHorizonSeconds)
         {
             Node = node;
             Options = options;
@@ -1218,6 +1285,7 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
             _privateKey = privateKey;
             _issuerPrivateKey = issuerPrivateKey;
             _descriptors = descriptors;
+            _survivalHorizonSeconds = survivalHorizonSeconds;
         }
 
         public RouterNodeOptions Node { get; }
@@ -1231,7 +1299,7 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
             Options.ReadinessSelectionInputCommitment + ".pms1");
         public string LkgPath => Options.LastKnownGoodPath;
 
-        public static Fixture Create(string root)
+        public static Fixture Create(string root, ulong survivalHorizonSeconds = 0)
         {
             var data = Path.Combine(root, "data");
             Directory.CreateDirectory(data);
@@ -1246,8 +1314,13 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
             File.WriteAllBytes(closureHmacKeyPath, Bytes(0x26, 32));
             var pair = PublicKeyAuth.GenerateKeyPair(Bytes(0x21, 32));
             var issuerPair = PublicKeyAuth.GenerateKeyPair(Bytes(0x22, 32));
-            var currentDescriptors = Descriptors(20, Now - 60, Now + 600);
-            var nextDescriptors = Descriptors(21, Now - 10, Now + 1200);
+            var currentUntil = checked(Now + (survivalHorizonSeconds == 0
+                ? 600UL : survivalHorizonSeconds + 3_600));
+            var nextUntil = checked(Now + (survivalHorizonSeconds == 0
+                ? 1_200UL : survivalHorizonSeconds + 7_200));
+            var authorityUntil = Now + 300;
+            var currentDescriptors = Descriptors(20, Now - 60, currentUntil);
+            var nextDescriptors = Descriptors(21, Now - 10, nextUntil);
             var readinessPlacementId = Bytes(0x24, 32);
             var selectionInput = ProductionMailboxReplicaSelection
                 .ComputeSelectionInputCommitment(new BlindedPlacementId(readinessPlacementId));
@@ -1269,7 +1342,7 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
                     20,
                     70,
                     Now - 60,
-                    Now + 600,
+                    currentUntil,
                     MembershipRouteDescriptorCodec.ComputeRoot(currentDescriptors),
                     MailboxPlacementCommitment.Compute(
                         new BlindedPlacementId(readinessPlacementId))),
@@ -1277,7 +1350,7 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
                     21,
                     71,
                     Now - 10,
-                    Now + 1200,
+                    nextUntil,
                     MembershipRouteDescriptorCodec.ComputeRoot(nextDescriptors),
                     Bytes(0x92, 32)),
                 Revocation = new()
@@ -1287,9 +1360,9 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
                     PreviousHeadHash = Bytes(0xC1, 32),
                     Generation = 6,
                     IssuedAtUnixSeconds = Now - 30,
-                    ExpiresAtUnixSeconds = Now + 300
+                    ExpiresAtUnixSeconds = authorityUntil
                 },
-                MrXApproval = Approval(Now - 30, Now + 300),
+                MrXApproval = Approval(Now - 30, authorityUntil),
                 Signature = new byte[64]
             };
             var fixture = new Fixture(
@@ -1319,7 +1392,8 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
                 {
                     [20] = currentDescriptors,
                     [21] = nextDescriptors
-                });
+                },
+                survivalHorizonSeconds);
             fixture.Authority = fixture.BindAndSignPair(unsigned);
             fixture.WriteArtifact(fixture.Authority);
             File.WriteAllBytes(lkgPath, ProductionMailboxAuthorityLkgCodec.Encode(new(
@@ -1360,9 +1434,16 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
             throw new InvalidOperationException("Selected fixture replica seed is unavailable.");
         }
 
-        public ProductionMailboxAuthority Successor(byte[]? previousAuthorityHash = null)
+        public ProductionMailboxAuthority Successor(
+            byte[]? previousAuthorityHash = null,
+            ulong activationOffsetSeconds = 0)
         {
             var currentHash = ProductionMailboxAuthorityCodec.ComputeCanonicalHash(Authority);
+            var activationTime = checked(Now + activationOffsetSeconds);
+            var successorUntil = checked(Now + (_survivalHorizonSeconds == 0
+                ? 1_800UL : _survivalHorizonSeconds + 10_800));
+            var approvalUntil = checked(Now + (_survivalHorizonSeconds == 0
+                ? 600UL : _survivalHorizonSeconds + 3_600));
             var successor = BindAndSignPair(Authority with
             {
                 AuthorityGeneration = 8,
@@ -1372,7 +1453,7 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
                     22,
                     72,
                     Now + 120,
-                    Now + 1800,
+                    successorUntil,
                     Bytes(0xD2, 32),
                     Bytes(0xD3, 32)),
                 Revocation = Authority.Revocation with
@@ -1380,14 +1461,21 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
                     SnapshotHash = Bytes(0xE2, 32),
                     PreviousHeadHash = Authority.Revocation.HeadHash,
                     HeadHash = Bytes(0xF2, 32),
-                    Generation = 7
+                    Generation = 7,
+                    IssuedAtUnixSeconds = activationTime - 30,
+                    ExpiresAtUnixSeconds = activationTime + 300
                 },
-                MrXApproval = Approval(Now - 5, Now + 600)
+                MrXApproval = activationOffsetSeconds == 0
+                    ? Approval(Now - 5, approvalUntil)
+                    : Approval(activationTime - 30, activationTime + 300)
             });
             return successor;
         }
 
-        public ClosureMaterial CreateDirectClosure()
+        public ClosureMaterial CreateDirectClosure(
+            ulong issuedAtOffsetSeconds = 0,
+            ProductionMailboxSelectionSuccessorMode mode =
+                ProductionMailboxSelectionSuccessorMode.DirectPromotion)
         {
             var oldAuthority = Authority;
             var oldAuthorityBytes = ProductionMailboxAuthorityCodec.Encode(oldAuthority);
@@ -1417,13 +1505,18 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
                     NowUnixSeconds = Now,
                     ClockSkewSeconds = 0
                 }, new SodiumProductionMailboxTopologySignatureVerifier());
+            var oldCurrentSelectionBytes = CreateSelectionBytes(
+                oldTopology, oldVerifiedTopology, oldTopology.CurrentEpoch,
+                _descriptors[oldTopology.CurrentEpoch.Epoch]);
+            var oldCurrentSelection = ProductionMailboxTopologyCodec.DecodeSelection(
+                oldCurrentSelectionBytes);
             var oldNextSelectionBytes = CreateSelectionBytes(
                 oldTopology, oldVerifiedTopology, oldTopology.NextEpoch,
                 _descriptors[oldTopology.NextEpoch.Epoch]);
             var oldNextSelection = ProductionMailboxTopologyCodec.DecodeSelection(
                 oldNextSelectionBytes);
 
-            var newAuthority = Successor();
+            var newAuthority = Successor(activationOffsetSeconds: issuedAtOffsetSeconds);
             var newAuthorityBytes = ProductionMailboxAuthorityCodec.Encode(newAuthority);
             var newRevocationBytes = File.ReadAllBytes(RevocationArtifactPath);
             var newTopologyBytes = File.ReadAllBytes(TopologyArtifactPath);
@@ -1434,7 +1527,7 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
             var placementId = Options.GetReadinessBlindedPlacementId();
             var draft = new ProductionMailboxSelectionSuccessorProof
             {
-                Mode = ProductionMailboxSelectionSuccessorMode.DirectPromotion,
+                Mode = mode,
                 NetworkId = newAuthority.NetworkId,
                 OldEpoch = oldNextSelection.Epoch,
                 OldEpochGeneration = oldNextSelection.Generation,
@@ -1452,20 +1545,22 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
                 NewCanonicalTopologyHash = SHA256.HashData(newTopologyBytes),
                 OldCanonicalSelectionHash = SHA256.HashData(oldNextSelectionBytes),
                 NewCanonicalSelectionHash = SHA256.HashData(newSelectionBytes),
-                IssuedAtUnixSeconds = Now,
-                ExpiresAtUnixSeconds = Now + 200,
+                IssuedAtUnixSeconds = checked(Now + issuedAtOffsetSeconds),
+                ExpiresAtUnixSeconds = checked(Now + issuedAtOffsetSeconds + 200),
                 CanonicalNewAuthority = newAuthorityBytes,
                 OldCanonicalSelection = oldNextSelectionBytes,
                 NewCanonicalSelection = newSelectionBytes,
                 OldIssuerSignature = new byte[64],
                 NewIssuerSignature = new byte[64]
             };
-            var withOld = draft with
-            {
-                OldIssuerSignature = PublicKeyAuth.SignDetached(
-                    ProductionMailboxSelectionSuccessorCodec.GetOldIssuerSigningBytes(draft),
-                    _issuerPrivateKey)
-            };
+            var withOld = mode == ProductionMailboxSelectionSuccessorMode.DirectPromotion
+                ? draft with
+                {
+                    OldIssuerSignature = PublicKeyAuth.SignDetached(
+                        ProductionMailboxSelectionSuccessorCodec.GetOldIssuerSigningBytes(draft),
+                        _issuerPrivateKey)
+                }
+                : draft;
             var successor = withOld with
             {
                 NewIssuerSignature = PublicKeyAuth.SignDetached(
@@ -1478,14 +1573,24 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
                 newAuthorityBytes, newRevocationBytes, newTopologyBytes,
                 newSelectionBytes, canonicalSuccessor));
             return new(envelope, Options.GetReadinessSelectionInputCommitment(),
-                owner.PublicKey, owner.PrivateKey);
+                owner.PublicKey, owner.PrivateKey,
+                oldCurrentSelection.Replicas
+                    .Select(static replica => replica.ReplicaId.ToArray())
+                    .OrderBy(static replicaId => Convert.ToHexString(replicaId),
+                        StringComparer.Ordinal)
+                    .Select(static replicaId => (ReadOnlyMemory<byte>)replicaId)
+                    .ToArray());
         }
 
-        public byte[] PrepositionCommand(ClosureMaterial material, byte nonce = 0x44)
+        public byte[] PrepositionCommand(
+            ClosureMaterial material,
+            byte nonce = 0x44,
+            IReadOnlyList<ReadOnlyMemory<byte>>? authorizedLegacyReplicaIds = null)
         {
             var draft = new ProductionMailboxPrepositionCommand(
                 Now, Bytes(nonce, 32), SHA256.HashData(material.CanonicalEnvelope),
-                Node.GetRouterId().ToBytes(), new byte[64], material.CanonicalEnvelope);
+                Node.GetRouterId().ToBytes(), authorizedLegacyReplicaIds ?? [],
+                new byte[64], material.CanonicalEnvelope);
             var signed = draft with
             {
                 PublisherSignature = PublicKeyAuth.SignDetached(
@@ -1564,6 +1669,9 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
 
         private void WriteTopologyAndSelection(ProductionMailboxAuthority authority)
         {
+            var artifactNow = authority.AuthorityGeneration > 7 && _survivalHorizonSeconds != 0
+                ? authority.Revocation.IssuedAtUnixSeconds + 30
+                : Now;
             var previousTopology = File.Exists(TopologyArtifactPath)
                 ? ProductionMailboxTopologyCodec.Decode(File.ReadAllBytes(TopologyArtifactPath))
                 : null;
@@ -1591,8 +1699,8 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
                 PreviousTopologyHash = previousTopology is null
                     ? new byte[32]
                     : ProductionMailboxTopologyCodec.ComputeCanonicalHash(previousTopology),
-                IssuedAtUnixSeconds = Now - 5,
-                ExpiresAtUnixSeconds = Now + 250,
+                IssuedAtUnixSeconds = artifactNow - 5,
+                ExpiresAtUnixSeconds = artifactNow + 250,
                 CurrentEpoch = TopologyEpoch(authority.CurrentEpoch, currentDescriptors),
                 NextEpoch = TopologyEpoch(authority.NextEpoch, nextDescriptors),
                 IssuerSignature = new byte[64]
@@ -1622,7 +1730,7 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
                             authority.AuthorityGeneration == 7
                                 ? Bytes(0xD1, 32)
                                 : Authority.Revocation.SnapshotHash,
-                        NowUnixSeconds = Now,
+                        NowUnixSeconds = artifactNow,
                         ClockSkewSeconds = 0
                     },
                     new SodiumProductionMailboxAuthoritySignatureVerifier()),
@@ -1630,7 +1738,7 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
                 {
                     LastCommittedTopologyGeneration = topology.TopologyGeneration - 1,
                     LastCommittedTopologyHash = topology.PreviousTopologyHash,
-                    NowUnixSeconds = Now,
+                    NowUnixSeconds = artifactNow,
                     ClockSkewSeconds = 0
                 },
                 new SodiumProductionMailboxTopologySignatureVerifier());
@@ -1691,8 +1799,10 @@ public sealed class ProductionMailboxAuthorityProviderTests : IDisposable
                 MailboxPlacementCommitment = MailboxPlacementCommitment.Compute(
                     new BlindedPlacementId(Options.GetReadinessBlindedPlacementId())),
                 SelectionInputCommitment = selectionInput,
-                IssuedAtUnixSeconds = Now - 2,
-                ExpiresAtUnixSeconds = Math.Min(Now + 200, epoch.NotAfterUnixSeconds),
+                IssuedAtUnixSeconds = topology.IssuedAtUnixSeconds + 3,
+                ExpiresAtUnixSeconds = Math.Min(
+                    topology.IssuedAtUnixSeconds + 205,
+                    epoch.NotAfterUnixSeconds),
                 Replicas = replicas,
                 IssuerSignature = new byte[64]
             };

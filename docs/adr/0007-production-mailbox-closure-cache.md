@@ -20,7 +20,10 @@ PSS1 through their durable LKG/recovery anchor before atomic activation.
   PMQ1 binds timestamp, nonce, selection commitment and owner public key to an Ed25519 proof.
 - `POST /api/peer/production-mailbox/closure` accepts PMP1 only on the peer listener. PMP1 binds
   timestamp, nonce, exact PMC1 SHA-256 and target replica id to a distinct signature domain and a
-  pinned closure-publisher key. A copied PMC1/PSS1 is not an authenticated preposition command.
+  pinned closure-publisher key. Its canonical fixed-width authorization section may name at most
+  two strictly sorted, unique, non-zero legacy replica ids. Each is an explicit exception and must
+  be absent from both the PSS1 old-next and new selections; a legacy target is accepted only when
+  it is present in that signed set. A copied PMC1/PSS1 is not an authenticated preposition command.
 - PMC1 is canonical and bounded and always carries exact PMA1, PMR1, PMT1, PMS1 and PSS1. PSS1 is
   mandatory because this endpoint exists for forward LKG advancement, not ordinary bootstrap.
 - The route file name is HMAC(selection commitment) under a protected node-local secret. Route,
@@ -49,8 +52,12 @@ old anchor; retired issuer private keys are not retained for this purpose.
 
 Registry rotation is not publishable until the exact new PMC1/PSS1 has been acknowledged by both
 old-current/old-next selected replicas and the new selected replicas required by policy. The
-publisher must use PMP1 for each target. Failure or capacity rejection keeps the new managed lane
-unpublished. Registry must retain an outbox and exact acknowledgements across restart.
+publisher must derive PMP1 legacy ids only from the exact previously committed old-current PMS1;
+arbitrary ids, ids already present in old-next/new, duplicates and extra entries are forbidden.
+The same signed exception set is target-bound by each PMP1 command. Failure or capacity rejection
+keeps the new managed lane unpublished. Registry must retain an outbox and exact acknowledgements
+across restart. A closure intended to survive beyond the old 24-hour PMT/PMS window carries a
+future-live Offline PSS1 from the durable old anchor; the cache does not extend artifact expiry.
 
 ## Release gates
 

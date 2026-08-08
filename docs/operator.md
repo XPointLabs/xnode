@@ -671,7 +671,11 @@ selection commitment to an Ed25519 proof by the mailbox owner. Neither path nor 
 mailbox-derived identifier; ASP.NET request-body logging is not enabled and responses carry
 `Cache-Control: no-store`. The peer-only preposition endpoint accepts a bounded PMP1 command,
 not a bare closure: a dedicated pinned publisher signs its timestamp, nonce, exact envelope hash
-and target replica id. The host also enforces the inverse listener rule: the PMP1 route returns 404
+and target replica id. PMP1 also has two fixed canonical legacy-replica slots. Registry may fill
+them only with the strictly sorted, unique old-current replica ids from the exact previously
+committed PMS1. They must not overlap the PSS1 old-next/new selections; XNode rejects redundant,
+zero, duplicate, non-canonical or unsigned changes, and accepts a legacy target only when the
+signed set contains it. The host also enforces the inverse listener rule: the PMP1 route returns 404
 on the public API listener and is reachable only on the configured peer RPC port. The envelope
 always contains exact PMA1/PMR1/PMT1/PMS1/PSS1; PSS1 is
 mandatory because this cache is used only for LKG advancement.
@@ -718,17 +722,18 @@ idempotency conflict 409, missing length 411, too large 413, media type/encoding
 429, dependency/quorum unavailable 503, and deadline 504. Exact byte limits, deadlines and
 admission ceilings come from `MailboxWireHttpContract`.
 
-The active native mailbox package closure is under `vendor/production-successor-7c84e8b`, produced
-from accepted `deep-protocol` source `7c84e8b55a82797049d221264010e94af406a963`:
+The active native mailbox package closure is under `vendor/production-successor-2024907`, produced
+by two byte-identical normalized archive builds from accepted `deep-protocol` source
+`20249077913abfd9ad69f957aa07e57ff55b5e24`:
 
-- `Deep.Protocol.0.4.0-production.7c84e8b.nupkg` —
-  `2fb4dafdd659b0e8e9bdb5099280b57cc44ba5f56b2b380d2a869d187fb8641d`
-- `Deep.Protocol.Abstractions.0.4.0-production.7c84e8b.nupkg` —
-  `9d8f61674bd010126bfd4076525f7b9f9b6f3510847ea49d1777e355f910a17a`
-- `Deep.Protocol.MembershipRoutes.0.4.0-production.7c84e8b.nupkg` —
-  `826e4f7e1a2870afcef1479c296aef1f285e77423622e01288c57e6b9a48abc9`
-- `Deep.Protocol.Protobuf.0.4.0-production.7c84e8b.nupkg` —
-  `5d7326c2e8fe367cee0a321568a078e1fa98b77b01c86d7dea86c8295d218410`
+- `Deep.Protocol.0.4.0-production.2024907.nupkg` —
+  `00bfaf36679fc905c9c83b644d717367ce1f2a3864f0009ef998da714f3fddfc`
+- `Deep.Protocol.Abstractions.0.4.0-production.2024907.nupkg` —
+  `b3790c2599be43ab593364dc57b558e97d36333a56c3b3b7cd6427e78629a9a2`
+- `Deep.Protocol.MembershipRoutes.0.4.0-production.2024907.nupkg` —
+  `91698919918caba2e671dcef87d02f1fc6168d330fc852ab15e90cdb29c209d7`
+- `Deep.Protocol.Protobuf.0.4.0-production.2024907.nupkg` —
+  `c42b0463013d98a9c5d5200db5c875a6d320a2b6c80e1062b8c76ac5aac205a2`
 
 Core/runtime/test projects resolve the exact PMA1+PMR1+PMT1/PMS1 version from the local feed in locked mode.
 `XNode.ProfileGenerator` and its tests remain isolated on the exact older P04/ProfileCarrier

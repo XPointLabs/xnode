@@ -223,6 +223,7 @@ public sealed record ProductionMailboxPrepositionCommand(
     ReadOnlyMemory<byte> Nonce,
     ReadOnlyMemory<byte> EnvelopeSha256,
     ReadOnlyMemory<byte> TargetReplicaId,
+    IReadOnlyList<ReadOnlyMemory<byte>> AuthorizedLegacyReplicaIds,
     ReadOnlyMemory<byte> PublisherSignature,
     ReadOnlyMemory<byte> CanonicalEnvelope);
 
@@ -230,23 +231,29 @@ public static class ProductionMailboxPrepositionCommandCodec
 {
     private static ReadOnlySpan<byte> Magic => "PMP1"u8;
     private static ReadOnlySpan<byte> SignatureDomain => "Deep/PMP1/preposition/v1"u8;
-    public const int HeaderLength = 184;
+    public const int MaximumAuthorizedLegacyReplicaIds = 2;
+    public const int HeaderLength = 248;
     public const int MaximumCommandBytes = HeaderLength
         + ProductionMailboxClosureEnvelopeCodec.MaximumEnvelopeBytes;
 
     public static byte[] Encode(ProductionMailboxPrepositionCommand value)
     {
-        ArgumentNullException.ThrowIfNull(value); Validate(value);
-        var bytes = new byte[checked(HeaderLength + value.CanonicalEnvelope.Length)];
+        var frozen = Freeze(value);
+        Validate(frozen);
+        var bytes = new byte[checked(HeaderLength + frozen.CanonicalEnvelope.Length)];
         Magic.CopyTo(bytes); bytes[4] = 1;
-        BinaryPrimitives.WriteUInt64BigEndian(bytes.AsSpan(8), value.TimestampUnixSeconds);
-        value.Nonce.Span.CopyTo(bytes.AsSpan(16));
-        value.EnvelopeSha256.Span.CopyTo(bytes.AsSpan(48));
-        value.TargetReplicaId.Span.CopyTo(bytes.AsSpan(80));
-        value.PublisherSignature.Span.CopyTo(bytes.AsSpan(112));
-        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(176),
-            checked((uint)value.CanonicalEnvelope.Length));
-        value.CanonicalEnvelope.Span.CopyTo(bytes.AsSpan(HeaderLength));
+        bytes[5] = checked((byte)frozen.AuthorizedLegacyReplicaIds.Count);
+        BinaryPrimitives.WriteUInt64BigEndian(bytes.AsSpan(8), frozen.TimestampUnixSeconds);
+        frozen.Nonce.Span.CopyTo(bytes.AsSpan(16));
+        frozen.EnvelopeSha256.Span.CopyTo(bytes.AsSpan(48));
+        frozen.TargetReplicaId.Span.CopyTo(bytes.AsSpan(80));
+        for (var index = 0; index < frozen.AuthorizedLegacyReplicaIds.Count; index++)
+            frozen.AuthorizedLegacyReplicaIds[index].Span.CopyTo(
+                bytes.AsSpan(112 + index * 32));
+        frozen.PublisherSignature.Span.CopyTo(bytes.AsSpan(176));
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(240),
+            checked((uint)frozen.CanonicalEnvelope.Length));
+        frozen.CanonicalEnvelope.Span.CopyTo(bytes.AsSpan(HeaderLength));
         return bytes;
     }
 
@@ -254,10 +261,17 @@ public static class ProductionMailboxPrepositionCommandCodec
     {
         if (encoded.Length is < HeaderLength or > MaximumCommandBytes
             || !encoded[..4].SequenceEqual(Magic) || encoded[4] != 1
-            || encoded.Slice(5, 3).IndexOfAnyExcept((byte)0) >= 0
-            || encoded.Slice(180, 4).IndexOfAnyExcept((byte)0) >= 0)
+            || encoded.Slice(6, 2).IndexOfAnyExcept((byte)0) >= 0
+            || encoded.Slice(244, 4).IndexOfAnyExcept((byte)0) >= 0)
             throw new InvalidDataException("Production mailbox preposition command header is invalid.");
-        var envelopeLengthValue = BinaryPrimitives.ReadUInt32BigEndian(encoded[176..]);
+        var legacyCount = encoded[5];
+        if (legacyCount > MaximumAuthorizedLegacyReplicaIds
+            || encoded.Slice(112 + legacyCount * 32,
+                    (MaximumAuthorizedLegacyReplicaIds - legacyCount) * 32)
+                .IndexOfAnyExcept((byte)0) >= 0)
+            throw new InvalidDataException(
+                "Production mailbox preposition command legacy authorization is invalid.");
+        var envelopeLengthValue = BinaryPrimitives.ReadUInt32BigEndian(encoded[240..]);
         if (envelopeLengthValue is 0
             || envelopeLengthValue > ProductionMailboxClosureEnvelopeCodec.MaximumEnvelopeBytes
             || envelopeLengthValue > int.MaxValue)
@@ -265,23 +279,38 @@ public static class ProductionMailboxPrepositionCommandCodec
         var envelopeLength = (int)envelopeLengthValue;
         if (encoded.Length - HeaderLength != envelopeLength)
             throw new InvalidDataException("Production mailbox preposition command length is invalid.");
+        var legacyReplicaIds = new ReadOnlyMemory<byte>[legacyCount];
+        for (var index = 0; index < legacyCount; index++)
+            legacyReplicaIds[index] = encoded.Slice(112 + index * 32, 32).ToArray();
         var value = new ProductionMailboxPrepositionCommand(
             BinaryPrimitives.ReadUInt64BigEndian(encoded[8..]), encoded.Slice(16, 32).ToArray(),
             encoded.Slice(48, 32).ToArray(), encoded.Slice(80, 32).ToArray(),
-            encoded.Slice(112, 64).ToArray(), encoded[HeaderLength..].ToArray());
+            legacyReplicaIds,
+            encoded.Slice(176, 64).ToArray(), encoded[HeaderLength..].ToArray());
         Validate(value); return value;
     }
 
     public static byte[] GetSigningBytes(ProductionMailboxPrepositionCommand value)
     {
-        ArgumentNullException.ThrowIfNull(value);
-        Validate(value, allowZeroSignature: true);
-        var bytes = new byte[SignatureDomain.Length + 104];
+        var frozen = Freeze(value);
+        Validate(frozen, allowZeroSignature: true);
+        return GetFrozenSigningBytes(frozen);
+    }
+
+    private static byte[] GetFrozenSigningBytes(ProductionMailboxPrepositionCommand frozen)
+    {
+        var bytes = new byte[SignatureDomain.Length + 169];
         SignatureDomain.CopyTo(bytes); var offset = SignatureDomain.Length;
-        BinaryPrimitives.WriteUInt64BigEndian(bytes.AsSpan(offset), value.TimestampUnixSeconds); offset += 8;
-        value.Nonce.Span.CopyTo(bytes.AsSpan(offset)); offset += 32;
-        value.EnvelopeSha256.Span.CopyTo(bytes.AsSpan(offset)); offset += 32;
-        value.TargetReplicaId.Span.CopyTo(bytes.AsSpan(offset));
+        BinaryPrimitives.WriteUInt64BigEndian(bytes.AsSpan(offset), frozen.TimestampUnixSeconds); offset += 8;
+        frozen.Nonce.Span.CopyTo(bytes.AsSpan(offset)); offset += 32;
+        frozen.EnvelopeSha256.Span.CopyTo(bytes.AsSpan(offset)); offset += 32;
+        frozen.TargetReplicaId.Span.CopyTo(bytes.AsSpan(offset)); offset += 32;
+        bytes[offset++] = checked((byte)frozen.AuthorizedLegacyReplicaIds.Count);
+        foreach (var legacyReplicaId in frozen.AuthorizedLegacyReplicaIds)
+        {
+            legacyReplicaId.Span.CopyTo(bytes.AsSpan(offset));
+            offset += 32;
+        }
         return bytes;
     }
 
@@ -297,8 +326,10 @@ public static class ProductionMailboxPrepositionCommandCodec
         if (publisherPublicKey.Length != 32) return false;
         try
         {
-            return PublicKeyAuth.VerifyDetached(value.PublisherSignature.ToArray(),
-                GetSigningBytes(value), publisherPublicKey.ToArray());
+            var frozen = Freeze(value);
+            Validate(frozen);
+            return PublicKeyAuth.VerifyDetached(frozen.PublisherSignature.ToArray(),
+                GetFrozenSigningBytes(frozen), publisherPublicKey.ToArray());
         }
         catch (Exception exception) when (exception is InvalidDataException
             or CryptographicException or ArgumentException) { return false; }
@@ -309,14 +340,79 @@ public static class ProductionMailboxPrepositionCommandCodec
     {
         if (value.TimestampUnixSeconds == 0 || Invalid(value.Nonce, 32)
             || Invalid(value.EnvelopeSha256, 32) || Invalid(value.TargetReplicaId, 32)
+            || value.AuthorizedLegacyReplicaIds is null
+            || value.AuthorizedLegacyReplicaIds.Count > MaximumAuthorizedLegacyReplicaIds
+            || value.AuthorizedLegacyReplicaIds.Any(static id => Invalid(id, 32))
+            || !StrictlySorted(value.AuthorizedLegacyReplicaIds)
             || value.PublisherSignature.Length != 64
             || (!allowZeroSignature && value.PublisherSignature.Span.IndexOfAnyExcept((byte)0) < 0)
             || value.CanonicalEnvelope.Length is < 28
                 or > ProductionMailboxClosureEnvelopeCodec.MaximumEnvelopeBytes)
             throw new InvalidDataException("Production mailbox preposition command fields are invalid.");
     }
+
+    private static ProductionMailboxPrepositionCommand Freeze(
+        ProductionMailboxPrepositionCommand value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        if (value.Nonce.Length != 32 || value.EnvelopeSha256.Length != 32
+            || value.TargetReplicaId.Length != 32 || value.PublisherSignature.Length != 64
+            || value.CanonicalEnvelope.Length is < 28
+                or > ProductionMailboxClosureEnvelopeCodec.MaximumEnvelopeBytes
+            || value.AuthorizedLegacyReplicaIds is null)
+            throw new InvalidDataException(
+                "Production mailbox preposition command fields are invalid.");
+        var source = value.AuthorizedLegacyReplicaIds;
+        try
+        {
+            var count = source.Count;
+            if (count > MaximumAuthorizedLegacyReplicaIds)
+                throw new InvalidDataException(
+                    "Production mailbox preposition command legacy authorization is invalid.");
+            var legacyReplicaIds = new ReadOnlyMemory<byte>[count];
+            for (var index = 0; index < count; index++)
+            {
+                if (source.Count != count)
+                    throw new InvalidDataException(
+                        "Production mailbox preposition command legacy authorization changed while being snapshotted.");
+                var replicaId = source[index];
+                if (replicaId.Length != 32)
+                    throw new InvalidDataException(
+                        "Production mailbox preposition command legacy authorization changed while being snapshotted.");
+                legacyReplicaIds[index] = replicaId.ToArray();
+            }
+            if (source.Count != count)
+                throw new InvalidDataException(
+                    "Production mailbox preposition command legacy authorization changed while being snapshotted.");
+            return value with
+            {
+                Nonce = value.Nonce.ToArray(),
+                EnvelopeSha256 = value.EnvelopeSha256.ToArray(),
+                TargetReplicaId = value.TargetReplicaId.ToArray(),
+                AuthorizedLegacyReplicaIds = legacyReplicaIds,
+                PublisherSignature = value.PublisherSignature.ToArray(),
+                CanonicalEnvelope = value.CanonicalEnvelope.ToArray()
+            };
+        }
+        catch (Exception exception) when (exception is ArgumentOutOfRangeException
+            or IndexOutOfRangeException or InvalidOperationException
+            or NotSupportedException)
+        {
+            throw new InvalidDataException(
+                "Production mailbox preposition command legacy authorization could not be snapshotted.",
+                exception);
+        }
+    }
     private static bool Invalid(ReadOnlyMemory<byte> value, int length) =>
         value.Length != length || value.Span.IndexOfAnyExcept((byte)0) < 0;
+
+    private static bool StrictlySorted(IReadOnlyList<ReadOnlyMemory<byte>> values)
+    {
+        for (var index = 1; index < values.Count; index++)
+            if (values[index - 1].Span.SequenceCompareTo(values[index].Span) >= 0)
+                return false;
+        return true;
+    }
 }
 
 public sealed class ProductionMailboxClosureStore
@@ -382,6 +478,10 @@ public sealed class ProductionMailboxClosureStore
             throw new InvalidDataException("Production mailbox preposition command authentication failed.");
         var frozen = FreezeEnvelope(command.CanonicalEnvelope.Span);
         var proof = ValidateCacheClosure(frozen);
+        if (!IsAuthorizedTarget(proof, command.TargetReplicaId.Span,
+                command.AuthorizedLegacyReplicaIds))
+            throw new InvalidDataException(
+                "Production mailbox closure is unrelated to the authorized target replica.");
         var path = PathFor(proof.SelectionInputCommitment.Span);
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -558,13 +658,32 @@ public sealed class ProductionMailboxClosureStore
             || !successor.NewCanonicalSelectionHash.Span.SequenceEqual(SHA256.HashData(
                 successor.NewCanonicalSelection.Span)))
             throw new InvalidDataException("Production mailbox closure authentication failed.");
-        var local = node.GetRouterId().ToBytes();
+        return successor;
+    }
+
+    private static bool IsAuthorizedTarget(
+        ProductionMailboxSelectionSuccessorProof successor,
+        ReadOnlySpan<byte> targetReplicaId,
+        IReadOnlyList<ReadOnlyMemory<byte>> authorizedLegacyReplicaIds)
+    {
         var oldSelection = ProductionMailboxTopologyCodec.DecodeSelection(
             successor.OldCanonicalSelection.Span);
-        if (!oldSelection.Replicas.Concat(selection.Replicas).Any(
-                replica => Fixed(replica.ReplicaId.Span, local)))
-            throw new InvalidDataException("Production mailbox closure is unrelated to this replica.");
-        return successor;
+        var newSelection = ProductionMailboxTopologyCodec.DecodeSelection(
+            successor.NewCanonicalSelection.Span);
+        var frozenTargetReplicaId = targetReplicaId.ToArray();
+        var ordinaryReplicaIds = oldSelection.Replicas.Concat(newSelection.Replicas)
+            .Select(static replica => replica.ReplicaId)
+            .ToArray();
+        if (authorizedLegacyReplicaIds.Any(legacyReplicaId =>
+                ordinaryReplicaIds.Any(ordinaryReplicaId =>
+                    Fixed(legacyReplicaId.Span, ordinaryReplicaId.Span))))
+            throw new InvalidDataException(
+                "Production mailbox legacy authorization redundantly names an ordinary replica.");
+        if (ordinaryReplicaIds.Any(replicaId =>
+                Fixed(replicaId.Span, frozenTargetReplicaId)))
+            return true;
+        return authorizedLegacyReplicaIds.Any(
+            replicaId => Fixed(replicaId.Span, frozenTargetReplicaId));
     }
 
     private static byte[] FreezeEnvelope(ReadOnlySpan<byte> value)

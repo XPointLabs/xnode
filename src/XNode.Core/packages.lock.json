@@ -4,22 +4,22 @@
     "net10.0": {
       "Deep.Protocol": {
         "type": "Direct",
-        "requested": "[0.4.0-production.7c84e8b, 0.4.0-production.7c84e8b]",
-        "resolved": "0.4.0-production.7c84e8b",
-        "contentHash": "0nHkgXcuT14yaRIEwum6RGrqw/WUkGpeZqConAuEzGihz6ykbWQs5j09DjRev2qmCynOuG1j37vZVbtIRhKagQ==",
+        "requested": "[0.4.0-production.2024907, 0.4.0-production.2024907]",
+        "resolved": "0.4.0-production.2024907",
+        "contentHash": "4UtigGZqDJyCOaVEXa2GpK2cp/O2FVpGCO026O31qYzNIEh0tv1l725o2ItCITJh4ozRJP0tGa8FohppPqVmOQ==",
         "dependencies": {
-          "Deep.Protocol.Abstractions": "0.4.0-production.7c84e8b",
-          "Deep.Protocol.Protobuf": "0.4.0-production.7c84e8b",
+          "Deep.Protocol.Abstractions": "0.4.0-production.2024907",
+          "Deep.Protocol.Protobuf": "0.4.0-production.2024907",
           "Sodium.Core": "1.4.1"
         }
       },
       "Deep.Protocol.MembershipRoutes": {
         "type": "Direct",
-        "requested": "[0.4.0-production.7c84e8b, 0.4.0-production.7c84e8b]",
-        "resolved": "0.4.0-production.7c84e8b",
-        "contentHash": "2tcjhaZb4DokOGztmcvv48v44oErua/qzb8sVq1yWSxz8/GtAC4OUbzkp1hJRemElWwa0CqwUVh2xK4jXcolxw==",
+        "requested": "[0.4.0-production.2024907, 0.4.0-production.2024907]",
+        "resolved": "0.4.0-production.2024907",
+        "contentHash": "5o9epmojmXVBpQfL9tFERjLo+IhSM6DWOcmUanowZk8KPDku9LwEao4KEyADdN3WR3lHBGgecdqxbwgSreJVWw==",
         "dependencies": {
-          "Deep.Protocol": "0.4.0-production.7c84e8b"
+          "Deep.Protocol": "0.4.0-production.2024907"
         }
       },
       "Microsoft.Extensions.Logging.Abstractions": {
@@ -48,13 +48,13 @@
       },
       "Deep.Protocol.Abstractions": {
         "type": "Transitive",
-        "resolved": "0.4.0-production.7c84e8b",
-        "contentHash": "iDhNE8f5t8PVB20i2gtONr1WRiaJc2vCSvo9vYamuT2rVqg1H5NFenFhPGUBulGnfVHl8nX+4jSbZ+LcTrQJeA=="
+        "resolved": "0.4.0-production.2024907",
+        "contentHash": "a/shd1eEhiyPcy6XSwV5NfQcgTduNTdcLys7IF9jm6ZQQrF4AqqjJNJ0CxUbtBncp2RUcDwugg8Lyw9n9KZjnw=="
       },
       "Deep.Protocol.Protobuf": {
         "type": "Transitive",
-        "resolved": "0.4.0-production.7c84e8b",
-        "contentHash": "I+bGoVNBiytd61hZLqIaNd/RR7WWn2YeqKoRCioXuR8grkxYv47bHbVHdOLIWaItYGCWPtQ+9qAvEGIXwgW1ZQ==",
+        "resolved": "0.4.0-production.2024907",
+        "contentHash": "LJZWHPkNilHuBFS9EZYMvAtTk64dwfa8LfWgzvrK3j3qNFlevUIpBgVvll4ENY2nxYpsZTLjKYJlKaZURDFxdw==",
         "dependencies": {
           "Google.Protobuf": "3.32.1"
         }
