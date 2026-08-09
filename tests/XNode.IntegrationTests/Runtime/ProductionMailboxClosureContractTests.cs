@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using Deep.Protocol.DeepExtension.MailboxTopology;
 using Sodium;
 using System.Security.Cryptography;
 
@@ -11,8 +12,8 @@ public sealed class ProductionMailboxClosureContractTests
     {
         var owner = PublicKeyAuth.GenerateKeyPair(Bytes(0x31, 32));
         var unsigned = new ProductionMailboxClosureRequest(
-            2_000_000_000, Bytes(0x41, 32), Bytes(0x51, 32), Bytes(0x61, 32), owner.PublicKey,
-            new byte[64]);
+            2_000_000_000, Bytes(0x41, 32), Bytes(0x51, 32), Bytes(0x61, 32),
+            Bytes(0x71, 32), Bytes(0x81, 32), owner.PublicKey, new byte[64]);
         var signed = unsigned with
         {
             OwnerSignature = PublicKeyAuth.SignDetached(
@@ -22,6 +23,8 @@ public sealed class ProductionMailboxClosureContractTests
         var encoded = ProductionMailboxClosureRequestCodec.Encode(signed);
 
         Assert.Equal(ProductionMailboxClosureRequestCodec.EncodedLength, encoded.Length);
+        Assert.Equal("PMQ2"u8.ToArray(), encoded[..4]);
+        Assert.Equal(2, encoded[4]);
         Assert.True(ProductionMailboxClosureRequestCodec.VerifyOwner(
             ProductionMailboxClosureRequestCodec.Decode(encoded)));
 
@@ -30,6 +33,14 @@ public sealed class ProductionMailboxClosureContractTests
             ProductionMailboxClosureRequestCodec.Decode(encoded)));
         encoded[48] ^= 0x01;
         encoded[80] ^= 0x01;
+        Assert.False(ProductionMailboxClosureRequestCodec.VerifyOwner(
+            ProductionMailboxClosureRequestCodec.Decode(encoded)));
+        encoded[80] ^= 0x01;
+        encoded[112] ^= 0x01;
+        Assert.False(ProductionMailboxClosureRequestCodec.VerifyOwner(
+            ProductionMailboxClosureRequestCodec.Decode(encoded)));
+        encoded[112] ^= 0x01;
+        encoded[144] ^= 0x01;
         Assert.False(ProductionMailboxClosureRequestCodec.VerifyOwner(
             ProductionMailboxClosureRequestCodec.Decode(encoded)));
         Assert.Throws<InvalidDataException>(() =>
@@ -47,83 +58,13 @@ public sealed class ProductionMailboxClosureContractTests
             terminal, 2_000_000_000));
     }
 
-    [Fact]
-    public void ClosureEnvelope_IsCanonicalBoundedAndRequiresSuccessor()
-    {
-        var value = new ProductionMailboxClosureEnvelope(
-            Bytes(1, 3), Bytes(2, 5), Bytes(3, 7), Bytes(4, 11), Bytes(5, 13));
-        var canonical = ProductionMailboxClosureEnvelopeCodec.Encode(value);
-        var decoded = ProductionMailboxClosureEnvelopeCodec.Decode(canonical);
-
-        Assert.Equal(canonical, ProductionMailboxClosureEnvelopeCodec.Encode(decoded));
-        Assert.Throws<InvalidDataException>(() =>
-            ProductionMailboxClosureEnvelopeCodec.Encode(value with { Successor = Array.Empty<byte>() }));
-        Assert.Throws<InvalidDataException>(() =>
-            ProductionMailboxClosureEnvelopeCodec.Decode(
-                new byte[ProductionMailboxClosureEnvelopeCodec.MaximumEnvelopeBytes + 1]));
-    }
-
-    [Fact]
-    public void PrepositionCommand_BindsEnvelopeTargetNonceAndTimestamp()
-    {
-        var publisher = PublicKeyAuth.GenerateKeyPair(Bytes(0x61, 32));
-        var envelope = ProductionMailboxClosureEnvelopeCodec.Encode(new(
-            Bytes(1, 3), Bytes(2, 5), Bytes(3, 7), Bytes(4, 11), Bytes(5, 13)));
-        var unsigned = new ProductionMailboxPrepositionCommand(
-            2_000_000_000, Bytes(0x62, 32), SHA256.HashData(envelope),
-            Bytes(0x63, 32), [Bytes(0x20, 32), Bytes(0x30, 32)],
-            new byte[64], envelope);
-        var signed = unsigned with
-        {
-            PublisherSignature = PublicKeyAuth.SignDetached(
-                ProductionMailboxPrepositionCommandCodec.GetSigningBytes(unsigned),
-                publisher.PrivateKey)
-        };
-        var canonical = ProductionMailboxPrepositionCommandCodec.Encode(signed);
-        var decoded = ProductionMailboxPrepositionCommandCodec.Decode(canonical);
-
-        Assert.True(ProductionMailboxPrepositionCommandCodec.VerifyPublisher(
-            decoded, publisher.PublicKey));
-        Assert.True(ProductionMailboxPrepositionCommandCodec.IsFresh(
-            decoded, 2_000_000_300));
-        Assert.False(ProductionMailboxPrepositionCommandCodec.IsFresh(
-            decoded, 2_000_000_301));
-        Assert.False(ProductionMailboxPrepositionCommandCodec.VerifyPublisher(
-            decoded with { TargetReplicaId = Bytes(0x64, 32) }, publisher.PublicKey));
-        Assert.False(ProductionMailboxPrepositionCommandCodec.VerifyPublisher(
-            decoded with
-            {
-                AuthorizedLegacyReplicaIds = [Bytes(0x20, 32), Bytes(0x31, 32)]
-            }, publisher.PublicKey));
-        Assert.Throws<InvalidDataException>(() =>
-            ProductionMailboxPrepositionCommandCodec.Encode(unsigned with
-            {
-                AuthorizedLegacyReplicaIds =
-                    [Bytes(0x10, 32), Bytes(0x20, 32), Bytes(0x30, 32)]
-            }));
-        Assert.Throws<InvalidDataException>(() =>
-            ProductionMailboxPrepositionCommandCodec.Encode(unsigned with
-            {
-                AuthorizedLegacyReplicaIds = [Bytes(0x20, 32), Bytes(0x20, 32)]
-            }));
-        Assert.Throws<InvalidDataException>(() =>
-            ProductionMailboxPrepositionCommandCodec.Encode(unsigned with
-            {
-                AuthorizedLegacyReplicaIds = [Bytes(0x30, 32), Bytes(0x20, 32)]
-            }));
-
-        var nonCanonicalUnusedSlot = canonical.ToArray();
-        nonCanonicalUnusedSlot[5] = 1;
-        Assert.Throws<InvalidDataException>(() =>
-            ProductionMailboxPrepositionCommandCodec.Decode(nonCanonicalUnusedSlot));
-    }
 
     [Fact]
     public void PrepositionCommand_MaximumUnsignedLengthFailsAsCoarseInvalidData()
     {
         var malformed = new byte[ProductionMailboxPrepositionCommandCodec.HeaderLength];
-        "PMP1"u8.CopyTo(malformed);
-        malformed[4] = 1;
+        "PMP2"u8.CopyTo(malformed);
+        malformed[4] = 2;
         BinaryPrimitives.WriteUInt32BigEndian(malformed.AsSpan(272), uint.MaxValue);
 
         var failure = Assert.Throws<InvalidDataException>(() =>
@@ -131,6 +72,46 @@ public sealed class ProductionMailboxClosureContractTests
 
         Assert.DoesNotContain(nameof(OverflowException), failure.ToString(),
             StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Pmc2Header_PreflightsLateEightMiBAndInvalidTagBeforeArtifactCopies()
+    {
+        var hostile = new byte[ProductionMailboxClosureEnvelopeCodec.MaximumEnvelopeBytes];
+        "PMC2"u8.CopyTo(hostile);
+        hostile[4] = 2;
+        hostile[5] = (byte)ProductionMailboxRouteAuthorizationKind.OwnerPRA2;
+        hostile.AsSpan(8, 64).Fill(0xA5);
+        // Exact ten-length table begins at 72; the late aggregate mismatch is detected before
+        // any of the hostile body can be cloned or passed to Protocol.
+        BinaryPrimitives.WriteUInt32BigEndian(hostile.AsSpan(72), 1);
+        BinaryPrimitives.WriteUInt32BigEndian(hostile.AsSpan(76), 1);
+        BinaryPrimitives.WriteUInt32BigEndian(hostile.AsSpan(80), 1);
+        BinaryPrimitives.WriteUInt32BigEndian(hostile.AsSpan(84), 1);
+        BinaryPrimitives.WriteUInt32BigEndian(hostile.AsSpan(88), 1);
+        BinaryPrimitives.WriteUInt32BigEndian(hostile.AsSpan(92), 1);
+        BinaryPrimitives.WriteUInt32BigEndian(hostile.AsSpan(96),
+            ProductionMailboxRouteAdvertisementConstants.CanonicalCertificateLength);
+        BinaryPrimitives.WriteUInt32BigEndian(hostile.AsSpan(100),
+            ProductionMailboxRouteAuthorizationConstants.CanonicalTransitionContextLength);
+        BinaryPrimitives.WriteUInt32BigEndian(hostile.AsSpan(104), 0);
+        BinaryPrimitives.WriteUInt32BigEndian(hostile.AsSpan(108),
+            ProductionMailboxRouteAuthorizationConstants.CanonicalAdvertisementV2Length);
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        Assert.Throws<InvalidDataException>(() =>
+            ProductionMailboxClosureEnvelopeCodec.Decode(hostile));
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        Assert.True(allocated < 128 * 1024,
+            $"PMC2 allocated {allocated} bytes before late aggregate rejection.");
+
+        hostile[5] = byte.MaxValue;
+        before = GC.GetAllocatedBytesForCurrentThread();
+        Assert.Throws<InvalidDataException>(() =>
+            ProductionMailboxClosureEnvelopeCodec.Decode(hostile));
+        allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        Assert.True(allocated < 128 * 1024,
+            $"PMC2 allocated {allocated} bytes before authorization-tag rejection.");
     }
 
     [Fact]
@@ -264,52 +245,6 @@ public sealed class ProductionMailboxClosureContractTests
             ProductionMailboxCapacityReconciliationReceiptCodec.Decode(response[..^1]));
     }
 
-    [Fact]
-    public void PrepositionCommand_BindsCapacityCohort()
-    {
-        var publisher = PublicKeyAuth.GenerateKeyPair(Bytes(0x75, 32));
-        var envelope = ProductionMailboxClosureEnvelopeCodec.Encode(new(
-            Bytes(1, 3), Bytes(2, 5), Bytes(3, 7), Bytes(4, 11), Bytes(5, 13)));
-        var unsigned = new ProductionMailboxPrepositionCommand(
-            2_000_000_000, Bytes(0x76, 32), SHA256.HashData(envelope),
-            Bytes(0x77, 32), [], new byte[64], envelope, Bytes(0x78, 32));
-        var signed = unsigned with
-        {
-            PublisherSignature = PublicKeyAuth.SignDetached(
-                ProductionMailboxPrepositionCommandCodec.GetSigningBytes(unsigned),
-                publisher.PrivateKey)
-        };
-        var decoded = ProductionMailboxPrepositionCommandCodec.Decode(
-            ProductionMailboxPrepositionCommandCodec.Encode(signed));
-        Assert.True(ProductionMailboxPrepositionCommandCodec.VerifyPublisher(
-            decoded, publisher.PublicKey));
-        Assert.False(ProductionMailboxPrepositionCommandCodec.VerifyPublisher(
-            decoded with { ReservationCohortId = Bytes(0x79, 32) },
-            publisher.PublicKey));
-    }
-
-    [Fact]
-    public void PrepositionCommandRejectsHostileLegacyListsBeforeUnboundedAllocation()
-    {
-        var envelope = ProductionMailboxClosureEnvelopeCodec.Encode(new(
-            Bytes(1, 3), Bytes(2, 5), Bytes(3, 7), Bytes(4, 11), Bytes(5, 13)));
-        var oversized = new ProductionMailboxPrepositionCommand(
-            2_000_000_000, Bytes(0x62, 32), SHA256.HashData(envelope),
-            Bytes(0x63, 32), new OversizedNodeList(), new byte[64], envelope);
-
-        var before = GC.GetAllocatedBytesForCurrentThread();
-        Assert.Throws<InvalidDataException>(() =>
-            ProductionMailboxPrepositionCommandCodec.GetSigningBytes(oversized));
-        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
-        Assert.True(allocated < 128 * 1024,
-            $"PMP1 codec allocated {allocated} bytes for a hostile legacy list.");
-
-        Assert.Throws<InvalidDataException>(() =>
-            ProductionMailboxPrepositionCommandCodec.GetSigningBytes(oversized with
-            {
-                AuthorizedLegacyReplicaIds = new UnstableNodeList()
-            }));
-    }
 
     [Theory]
     [InlineData(7443, 7443, true)]

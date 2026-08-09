@@ -745,11 +745,12 @@ internal static class ProductionMailboxCapacityLedgerCodec
 }
 
 internal sealed record ProductionMailboxCapacityTransferJournal(
-    bool OldScheduleExists,
+    bool OldClosureExists,
     ReadOnlyMemory<byte> SelectionInputCommitment,
     ReadOnlyMemory<byte> DurableOldSelectionHash,
-    ReadOnlyMemory<byte> OldScheduleSha256,
-    ReadOnlyMemory<byte> NewScheduleSha256,
+    ReadOnlyMemory<byte> LineageCommitment,
+    ReadOnlyMemory<byte> OldClosureSha256,
+    ReadOnlyMemory<byte> NewClosureSha256,
     ReadOnlyMemory<byte> CohortId,
     uint BeforeConsumedClosureCount,
     ulong BeforeConsumedBytes,
@@ -764,10 +765,10 @@ internal sealed record ProductionMailboxCapacityTransferJournal(
 
 internal static class ProductionMailboxCapacityTransferJournalCodec
 {
-    private static ReadOnlySpan<byte> Magic => "PBT1"u8;
+    private static ReadOnlySpan<byte> Magic => "PBT2"u8;
     private static ReadOnlySpan<byte> MacDomain =>
-        "Deep/PBT1/capacity-transfer/v1"u8;
-    internal const int EncodedLength = 368;
+        "Deep/PBT2/capacity-transfer/v2"u8;
+    internal const int EncodedLength = 400;
 
     internal static byte[] Encode(ProductionMailboxCapacityTransferJournal value,
         ReadOnlySpan<byte> hmacKey)
@@ -776,27 +777,28 @@ internal static class ProductionMailboxCapacityTransferJournalCodec
         if (hmacKey.Length != 32)
             throw new InvalidDataException("Production mailbox capacity transfer key is invalid.");
         var output = new byte[EncodedLength];
-        Magic.CopyTo(output); output[4] = 1; output[5] = value.OldScheduleExists ? (byte)1 : (byte)0;
+        Magic.CopyTo(output); output[4] = 2; output[5] = value.OldClosureExists ? (byte)1 : (byte)0;
         value.SelectionInputCommitment.Span.CopyTo(output.AsSpan(8));
         value.DurableOldSelectionHash.Span.CopyTo(output.AsSpan(40));
-        value.OldScheduleSha256.Span.CopyTo(output.AsSpan(72));
-        value.NewScheduleSha256.Span.CopyTo(output.AsSpan(104));
-        value.CohortId.Span.CopyTo(output.AsSpan(136));
-        BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(168),
+        value.LineageCommitment.Span.CopyTo(output.AsSpan(72));
+        value.OldClosureSha256.Span.CopyTo(output.AsSpan(104));
+        value.NewClosureSha256.Span.CopyTo(output.AsSpan(136));
+        value.CohortId.Span.CopyTo(output.AsSpan(168));
+        BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(200),
             value.BeforeConsumedClosureCount);
-        BinaryPrimitives.WriteUInt64BigEndian(output.AsSpan(172), value.BeforeConsumedBytes);
-        BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(180),
+        BinaryPrimitives.WriteUInt64BigEndian(output.AsSpan(204), value.BeforeConsumedBytes);
+        BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(212),
             value.AfterConsumedClosureCount);
-        BinaryPrimitives.WriteUInt64BigEndian(output.AsSpan(184), value.AfterConsumedBytes);
-        value.BeforeLedgerSha256.Span.CopyTo(output.AsSpan(192));
-        value.AfterLedgerSha256.Span.CopyTo(output.AsSpan(224));
-        value.BeforeMarkerSha256.Span.CopyTo(output.AsSpan(256));
-        value.AfterMarkerSha256.Span.CopyTo(output.AsSpan(288));
-        BinaryPrimitives.WriteUInt64BigEndian(output.AsSpan(320),
+        BinaryPrimitives.WriteUInt64BigEndian(output.AsSpan(216), value.AfterConsumedBytes);
+        value.BeforeLedgerSha256.Span.CopyTo(output.AsSpan(224));
+        value.AfterLedgerSha256.Span.CopyTo(output.AsSpan(256));
+        value.BeforeMarkerSha256.Span.CopyTo(output.AsSpan(288));
+        value.AfterMarkerSha256.Span.CopyTo(output.AsSpan(320));
+        BinaryPrimitives.WriteUInt64BigEndian(output.AsSpan(352),
             value.BeforeStateGeneration);
-        BinaryPrimitives.WriteUInt64BigEndian(output.AsSpan(328),
+        BinaryPrimitives.WriteUInt64BigEndian(output.AsSpan(360),
             value.AfterStateGeneration);
-        ComputeMac(output, hmacKey).CopyTo(output.AsSpan(336));
+        ComputeMac(output, hmacKey).CopyTo(output.AsSpan(368));
         return output;
     }
 
@@ -804,23 +806,24 @@ internal static class ProductionMailboxCapacityTransferJournalCodec
         ReadOnlySpan<byte> encoded, ReadOnlySpan<byte> hmacKey)
     {
         if (encoded.Length != EncodedLength || hmacKey.Length != 32
-            || !encoded[..4].SequenceEqual(Magic) || encoded[4] != 1
+            || !encoded[..4].SequenceEqual(Magic) || encoded[4] != 2
             || encoded[5] > 1 || encoded.Slice(6, 2).IndexOfAnyExcept((byte)0) >= 0
-            || !CryptographicOperations.FixedTimeEquals(encoded[336..],
+            || !CryptographicOperations.FixedTimeEquals(encoded[368..],
                 ComputeMac(encoded, hmacKey)))
             throw new InvalidDataException("Production mailbox capacity transfer is invalid.");
         var value = new ProductionMailboxCapacityTransferJournal(
             encoded[5] == 1, encoded.Slice(8, 32).ToArray(),
             encoded.Slice(40, 32).ToArray(), encoded.Slice(72, 32).ToArray(),
             encoded.Slice(104, 32).ToArray(), encoded.Slice(136, 32).ToArray(),
-            BinaryPrimitives.ReadUInt32BigEndian(encoded[168..]),
-            BinaryPrimitives.ReadUInt64BigEndian(encoded[172..]),
-            BinaryPrimitives.ReadUInt32BigEndian(encoded[180..]),
-            BinaryPrimitives.ReadUInt64BigEndian(encoded[184..]),
-            encoded.Slice(192, 32).ToArray(), encoded.Slice(224, 32).ToArray(),
-            encoded.Slice(256, 32).ToArray(), encoded.Slice(288, 32).ToArray(),
-            BinaryPrimitives.ReadUInt64BigEndian(encoded[320..]),
-            BinaryPrimitives.ReadUInt64BigEndian(encoded[328..]));
+            encoded.Slice(168, 32).ToArray(),
+            BinaryPrimitives.ReadUInt32BigEndian(encoded[200..]),
+            BinaryPrimitives.ReadUInt64BigEndian(encoded[204..]),
+            BinaryPrimitives.ReadUInt32BigEndian(encoded[212..]),
+            BinaryPrimitives.ReadUInt64BigEndian(encoded[216..]),
+            encoded.Slice(224, 32).ToArray(), encoded.Slice(256, 32).ToArray(),
+            encoded.Slice(288, 32).ToArray(), encoded.Slice(320, 32).ToArray(),
+            BinaryPrimitives.ReadUInt64BigEndian(encoded[352..]),
+            BinaryPrimitives.ReadUInt64BigEndian(encoded[360..]));
         Validate(value);
         if (!Encode(value, hmacKey).AsSpan().SequenceEqual(encoded))
             throw new InvalidDataException("Production mailbox capacity transfer is non-canonical.");
@@ -831,8 +834,9 @@ internal static class ProductionMailboxCapacityTransferJournalCodec
     {
         if (Invalid(value.SelectionInputCommitment, false)
             || Invalid(value.DurableOldSelectionHash, false)
-            || Invalid(value.OldScheduleSha256, !value.OldScheduleExists)
-            || Invalid(value.NewScheduleSha256, false) || Invalid(value.CohortId, false)
+            || Invalid(value.LineageCommitment, false)
+            || Invalid(value.OldClosureSha256, !value.OldClosureExists)
+            || Invalid(value.NewClosureSha256, false) || Invalid(value.CohortId, false)
             || Invalid(value.BeforeLedgerSha256, false)
             || Invalid(value.AfterLedgerSha256, false)
             || Invalid(value.BeforeMarkerSha256, false)
@@ -850,8 +854,8 @@ internal static class ProductionMailboxCapacityTransferJournalCodec
     private static byte[] ComputeMac(ReadOnlySpan<byte> encoded, ReadOnlySpan<byte> key)
     {
         using var hmac = new HMACSHA256(key.ToArray());
-        var payload = new byte[MacDomain.Length + 336];
-        MacDomain.CopyTo(payload); encoded[..336].CopyTo(payload.AsSpan(MacDomain.Length));
+        var payload = new byte[MacDomain.Length + 368];
+        MacDomain.CopyTo(payload); encoded[..368].CopyTo(payload.AsSpan(MacDomain.Length));
         return hmac.ComputeHash(payload);
     }
 }

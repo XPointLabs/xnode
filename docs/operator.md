@@ -672,35 +672,38 @@ Diagnostics expose only coarse state and generations, not paths, endpoints, pins
 exception text.
 
 Registry-independent refresh uses only constant-path binary POST endpoints. The public
-`/api/production-mailbox/closure` request is exactly 208 bytes and binds a timestamp, nonce,
-selection commitment and exact durable old-PMS hash to an Ed25519 proof by the mailbox owner. Neither path nor query contains a
+`/api/production-mailbox/closure` request is exactly 272 bytes (PMQ2) and binds a timestamp, nonce,
+selection commitment, exact durable old-PMS hash, lineage commitment, target replica and owner key
+to an Ed25519 proof by the mailbox owner. Neither path nor query contains a
 mailbox-derived identifier; ASP.NET request-body logging is not enabled and responses carry
-`Cache-Control: no-store`. The peer-only preposition endpoint accepts a bounded PMP1 command,
+`Cache-Control: no-store`. The peer-only preposition endpoint accepts a bounded PMP2 command,
 not a bare closure: a dedicated pinned publisher signs its timestamp, nonce, exact envelope hash
-and target replica id. PMP1 also has two fixed canonical legacy-replica slots. Registry may fill
-them only with the strictly sorted, unique old-current replica ids from the exact previously
-committed PMS1. They must not overlap the PSS1 old-next/new selections; XNode rejects redundant,
-zero, duplicate, non-canonical or unsigned changes, and accepts a legacy target only when the
-signed set contains it. The host also enforces the inverse listener rule: the PMP1 route returns 404
+and target replica id. PMP2 retains a legacy-count byte and two fixed legacy-replica slots solely
+for its fixed header layout; clean-break v2 requires the count and all 64 slot bytes to be zero.
+XNode accepts the target only when it is present in the verified PSS2 old or new selections. The
+host also enforces the inverse listener rule: the PMP2 route returns 404
 on the public API listener and is reachable only on the configured peer RPC port. The envelope
-always contains exact PMA1/PMR1/PMT1/PMS1/PSS1; PSS1 is
-mandatory because this cache is used only for LKG advancement.
+always contains exact PMA1/PMR1/PMT1/current+next PMS1/PSS2/PRC1/RTC1 and tagged
+Owner(PRA2) or Delegated(active RCH1 + RCA1) authorization. Protocol's cache-only verifier checks
+the closure; no client activation capability or RCD1/RDA1/RCR1/RHB1/RHC1 material is accepted.
 
 Before a proactive rotation sweep, Registry reserves conservative capacity through peer-only
 `POST /api/peer/production-mailbox/closure-capacity`. The request is an exact 208-byte PMB1
 publisher-signed reserve/renew/release command bound to a random opaque cohort id, target replica,
 monotonic revision, expiry, count and bytes. XNode returns an exact 248-byte PMB2 receipt signed by
-the target node. PMP1 is a clean-break 280-byte header and binds the same cohort id; a zero cohort
+the target node. PMP2 is a clean-break 280-byte header and binds the same cohort id, verified
+transition mode and lineage commitment; a zero cohort
 is allowed only for ordinary unreserved publication, while a non-zero cohort atomically transfers
-the positive schedule count/byte delta from unused reservation headroom to actual store usage.
-The byte charge includes the configured conservative per-schedule filesystem/framing overhead.
-Exact command and schedule replay never double-charge. Renewal cannot reduce already consumed
-capacity; release or expiry frees only unused balance, and actual schedules remain charged until
+the positive cardinality-one closure count/byte delta from unused reservation headroom to actual store usage.
+The byte charge includes the configured conservative per-closure filesystem overhead.
+Exact command and closure replay never double-charge. Renewal cannot reduce already consumed
+capacity; release or expiry frees only unused balance, and actual closures remain charged until
 their ordinary safe expiry GC. The HMAC ledger is only a rebuildable cache. Each cohort has a
 content-addressed PBF1 floor containing the complete authoritative reservation state, monotonic
 state generation and predecessor marker hash; startup rejects marker forks and rebuilds any stale
-or replayed ledger from the highest exact chain. PBT1 binds both schedule hashes and before/after
-floor hashes/generations and recovers in journal→schedule→floor→ledger order. A bounded terminal
+or replayed ledger from the highest exact chain. PBT2 binds selection, durable old-PMS hash,
+lineage commitment, old/new closure hashes and before/after
+floor hashes/generations and recovers in journal→closure→floor→ledger order. A bounded terminal
 floor is retained after release/expiry before deletion, so recently replayed pre-release ledgers
 cannot restore headroom. Full rollback of the complete protected closure directory beyond that
 tombstone retention remains an operator/storage-integrity boundary and is not a hardware monotonic
@@ -716,52 +719,53 @@ same-revision-fork and superseded expired commands are rejected coarsely.
 
 If an unreleased reservation has already auto-expired into a terminal floor, the node accepts only
 its authenticated exact revision-successor Release. The returned PMB2 binds that Release command,
-reports reserved equal to consumed, preserves every actual schedule charge, and cannot renew or
+reports reserved equal to consumed, preserves every actual closure charge, and cannot renew or
 resurrect capacity. This lets Registry finish durable post-cutover cleanup after a long outage.
 
 If Registry remains unavailable until the bounded terminal floor is garbage-collected, it uses the
 peer-only constant-path `POST /api/peer/production-mailbox/closure-capacity-reconciliation`. The
 exact 504-byte publisher-signed PMB3 embeds the last exact node-signed PMB2 and binds cohort,
 target, revision and command/receipt hashes. XNode returns an exact 272-byte node-signed PMB4
-`AbsentTerminal` only after a read-only authoritative floor/ledger/schedule accounting check under
+`AbsentTerminal` only after a read-only authoritative floor/ledger/`.pmcs2` accounting check under
 the process lock. A live floor, pending transfer, invalid prior receipt, fork, corrupt ledger or
 stale accounting returns a coarse 400. The endpoint never reserves, releases, renews or extends
 capacity, is peer-listener-only and returns `Cache-Control: no-store`.
 
-Each route lineage occupies one bounded, atomically replaced schedule file under sharded
-HMAC(selection commitment)/HMAC(selection commitment + durable old-PMS hash) directories, so
+Each route lineage occupies one bounded cardinality-one `closure.pmcs2` under sharded
+HMAC(selection commitment)/HMAC(selection commitment + durable old-PMS hash + lineage commitment)
+directories, so
 neither stable value is present in filesystem names. Different devices at different durable old-PMS
-anchors can coexist and PMQ1 selects one exact lineage. Exact replay is idempotent. Every existing
-entry is semantically verified before a candidate is appended. The
-candidate must advance authority, topology and epoch/generation while preserving the exact network,
-owner, blinded route, selection commitment and original durable old-PMS/authority/topology anchor.
-Rollback, same-generation forks, renamed cross-route files and commands for another replica fail
-closed under an in-process gate plus a native cross-process store lock. Two XNode processes must
+anchors can coexist and PMQ2 selects one exact lineage. Exact byte replay is idempotent. A distinct
+commitment for the same retained old-PMS lineage represents another device/ROL lineage and is
+allowed only within the configured per-selection cap. Every candidate preserves the exact
+network, owner, blinded route, selection commitment and durable old-PMS/authority/topology anchor.
+Forks, renamed cross-route files and commands for another replica fail
+closed under an in-process gate plus a native cross-process store lock. Fetch acquires that same
+lock and completes any pending PBT2 recovery before stable-read/response, so another process cannot
+serve a closure between journal, file, floor, ledger or parent-flush durability phases. Lock wait is
+cancellable and bounded to five seconds. The lock is released after the stable owned snapshot;
+Protocol verification then runs under only the lineage stripe, avoiding cross-lineage head-of-line
+blocking, and time windows are rechecked before response. Two XNode processes must
 not normally share a closure directory, but if they do, the lock serializes reconciliation and
-schedule append rather than allowing the last writer to win.
+cardinality-one insertion rather than allowing the last writer to win.
 Startup and every mutation reconcile count and bytes through stable no-follow handles, reject
 unsafe/reparse/identity-swapped files, and refuse stores above both configured
-caps. Fetch returns the highest forward entry whose PSS1 window is live and never serves a future
-entry early. Startup globally removes only schedules whose every entry is expired beyond skew.
+caps. Fetch returns only the exact commitment within Protocol's hard cache window (the minimum of
+all authenticated artifact expiries), never serves a future entry early, and converts expected
+Protocol parse/verification failures to a coarse miss. Startup globally removes expired `.pmcs2`
+files using count-derived bounded snapshots.
 Mutation performs selection-local expiry compaction first and runs the global expired scan only on
 count/byte pressure; an ambiguous file or directory delete/parent flush fails the attempt and the
 next locked reconciliation resumes from exact disk state. Empty lineage/selection/shard directories
 are removed durably, and startup bounds then sweeps the empty tree deepest-first; an over-bound tree
-fails closed for operator inspection. A schedule containing any live or future proof is never evicted. Clients
+fails closed for operator inspection. A live closure is never evicted. Clients
 still perform full PSS/LKG verification and do not trust the cache.
 An orphan `*.tmp` atomic-write file makes startup fail closed instead of disappearing from byte
 accounting. Inspect the interrupted write and remove the orphan only after confirming the adjacent
 canonical route file is intact; restart then performs a fresh authoritative scan.
 
-`maximumClosureVersionsPerSelection` is an availability horizon, not merely a storage tuning
-number. Since PSS1 is limited to 24 hours, four contiguous overlapping versions can cover at most
-about four days of complete Registry/issuer outage. Operators must reserve both the global count
-and byte caps for every current and future version before promotion. Gaps between signed windows
-remain real outages. The 365-day OfflineCheckpoint old-anchor age permits recovery of a long-offline
-client after infrastructure returns; it does not promise 365 days of control-plane outage. Survival
-Beta must advertise only the configured, prepositioned contiguous horizon.
 `maximumClosureLineagesPerSelection` separately bounds simultaneous device/LKG anchors for the
-same stable selection commitment; exceeding it fails before any new schedule is written.
+same stable selection commitment; exceeding it fails before any new closure is written.
 
 After the complete bundle verifies, diagnostics report `authorityRevocationReady=true`,
 `topologyArtifactVerified=true`, and `productionMailboxRoutesReady=true`. Each mailbox operation

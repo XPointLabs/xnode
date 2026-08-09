@@ -40,12 +40,11 @@ public sealed class ProductionMailboxAuthorityOptions
         ProductionMailboxTopologyConstants.MaximumSelectionArtifactBytes;
     public int MaximumStoredClosures { get; set; } = 100_000;
     public long MaximumClosureStoreBytes { get; set; } = 536_870_912;
-    public int MaximumClosureVersionsPerSelection { get; set; } = 4;
     public int MaximumClosureLineagesPerSelection { get; set; } = 4;
     public int MaximumClosureReservations { get; set; } = 128;
     public uint MaximumClosureReservationLifetimeSeconds { get; set; } = 86_400;
     public uint MinimumClosureReservationLifetimeSeconds { get; set; } = 60;
-    public int ClosureScheduleAccountingOverheadBytes { get; set; } = 1_024;
+    public int ClosureAccountingOverheadBytes { get; set; } = 1_024;
 
     public void Validate(RouterNodeOptions node, bool isProduction)
     {
@@ -114,14 +113,13 @@ public sealed class ProductionMailboxAuthorityOptions
                 or > ProductionMailboxTopologyConstants.MaximumSelectionArtifactBytes
             || MaximumStoredClosures is < 1 or > 1_000_000
             || MaximumClosureStoreBytes is < 1_048_576 or > 107_374_182_400
-            || MaximumClosureVersionsPerSelection is < 2 or > 16
             || MaximumClosureLineagesPerSelection is < 1 or > 16
             || MaximumClosureReservations is < 1 or > 4_096
             || MaximumClosureReservationLifetimeSeconds is < 60 or > 604_800
             || MinimumClosureReservationLifetimeSeconds < 30
             || MinimumClosureReservationLifetimeSeconds
                 > MaximumClosureReservationLifetimeSeconds
-            || ClosureScheduleAccountingOverheadBytes is < 256 or > 65_536)
+            || ClosureAccountingOverheadBytes is < 256 or > 65_536)
         {
             throw new InvalidOperationException(
                 "MailboxClientProductionAuthority bounds are invalid.");
@@ -660,7 +658,7 @@ internal static class ProductionMailboxAuthorityNativeFile
         }
     }
 
-    private static IDisposable AcquireLockOnce(
+    internal static IDisposable AcquireLockOnce(
         string path,
         Action validate,
         IMailboxDurabilityBarrier durability,
