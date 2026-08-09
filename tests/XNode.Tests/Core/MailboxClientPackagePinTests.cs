@@ -9,14 +9,14 @@ public sealed class MailboxClientPackagePinTests
     private static readonly IReadOnlyDictionary<string, string> Expected =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            ["Deep.Protocol.0.4.0-production.2eb8b1e.nupkg"] =
-                "247a90915853b274f95f2e2aa69b71689f666d95a29150f45152326988104a8b",
-            ["Deep.Protocol.Abstractions.0.4.0-production.2eb8b1e.nupkg"] =
-                "66cd9b24bd441daaf9127700d52e577749cb67ed4ba9ab87ce416f1de65dac79",
-            ["Deep.Protocol.MembershipRoutes.0.4.0-production.2eb8b1e.nupkg"] =
-                "cf5651b70f66a0e18b43e40274021fa948414aa300c4ce8ba63889f5638dc5c3",
-            ["Deep.Protocol.Protobuf.0.4.0-production.2eb8b1e.nupkg"] =
-                "8f8fdd8e0fd7e09e55a7eec95ef190e50d9c7235a769b5407f85adee36d6cfb7"
+            ["Deep.Protocol.0.4.0-production.588229f.nupkg"] =
+                "026b63904f04bf841348d37732208cc52e13199f6483492eb652c85ae496e498",
+            ["Deep.Protocol.Abstractions.0.4.0-production.588229f.nupkg"] =
+                "1651c6b2bb84b8320fe795920d53cd64e9f0a8b684d97993739f9b107b0e1082",
+            ["Deep.Protocol.MembershipRoutes.0.4.0-production.588229f.nupkg"] =
+                "229a74b058be8a7a4278232833aa28b5afd56e2801f7e8ebef30173a676f8da3",
+            ["Deep.Protocol.Protobuf.0.4.0-production.588229f.nupkg"] =
+                "309ce298498311d2c3aa001f99a5a72c28fd687223c461402125c194dfe7e75b"
         };
 
     [Fact]
@@ -26,7 +26,7 @@ public sealed class MailboxClientPackagePinTests
         var packageDirectory = Path.Combine(
             root,
             "vendor",
-            "production-successor-2eb8b1e",
+            "production-successor-588229f",
             "packages");
         var files = Directory.GetFiles(packageDirectory, "*.nupkg")
             .ToDictionary(static path => Path.GetFileName(path)!, StringComparer.Ordinal);
@@ -46,11 +46,11 @@ public sealed class MailboxClientPackagePinTests
         var coreProject = File.ReadAllText(
             Path.Combine(root, "src", "XNode.Core", "XNode.Core.csproj"));
         Assert.Contains(
-            "Version=\"[0.4.0-production.2eb8b1e]\"",
+            "Version=\"[0.4.0-production.588229f]\"",
             coreProject,
             StringComparison.Ordinal);
         Assert.Contains(
-            "Deep.Protocol.MembershipRoutes\" Version=\"[0.4.0-production.2eb8b1e]\"",
+            "Deep.Protocol.MembershipRoutes\" Version=\"[0.4.0-production.588229f]\"",
             coreProject,
             StringComparison.Ordinal);
         Assert.DoesNotContain("p03b2", coreProject, StringComparison.OrdinalIgnoreCase);
@@ -62,7 +62,7 @@ public sealed class MailboxClientPackagePinTests
                 element => element.Attribute("value")!.Value,
                 StringComparer.Ordinal);
         Assert.Equal(
-            "../vendor/production-successor-2eb8b1e/packages",
+            "../vendor/production-successor-588229f/packages",
             packageSources["production-successor-protocol"]);
         var sources = config.Descendants("packageSource")
             .ToDictionary(
@@ -82,23 +82,23 @@ public sealed class MailboxClientPackagePinTests
             Path.Combine(root, "src", "XNode.Core", "packages.lock.json")));
         var packages = lockDocument.RootElement.GetProperty("dependencies").GetProperty("net10.0");
         Assert.Equal(
-            "0.4.0-production.2eb8b1e",
+            "0.4.0-production.588229f",
             packages.GetProperty("Deep.Protocol").GetProperty("resolved").GetString());
         Assert.Equal(
-            "7oXxqiB4Ih1Pj5H3MTMATbrZl9EPc2/cOYNqdpbsbVeJWe4bSUtjRbV92VeslTdGGMty5jBBK7gkMSMTBMUXew==",
+            "4/DSNbwQtzdAo8iVDRX3Q/vmxMIH5GrScnME2iRndIjKTUqyrqA0J6V7nHGZPlQ+52LFfzvgB5ZVzaQSZG9tlA==",
             packages.GetProperty("Deep.Protocol").GetProperty("contentHash").GetString());
         Assert.Equal(
-            "0.4.0-production.2eb8b1e",
+            "0.4.0-production.588229f",
             packages.GetProperty("Deep.Protocol.MembershipRoutes").GetProperty("resolved").GetString());
         Assert.Equal(
-            "/b9lgdmor/rVftS9Y9ZsnRdZZo9eRt5dbXE40YoJBZd2E4jMcucqyMArEb+dG7DDcpfutRU6aE4gNO0LQTmLOA==",
+            "Epe+Gs8QOErxGLQSeqhIAijtphPIknCQImQ7G6XdJMXXwjvsLZb6SbqXyW09+vXg2jwyBh+cwdLV+Sk6KnTulw==",
             packages.GetProperty("Deep.Protocol.MembershipRoutes").GetProperty("contentHash").GetString());
         Assert.Contains("<RestoreLockedMode>true</RestoreLockedMode>", coreProject);
 
         using var manifest = JsonDocument.Parse(File.ReadAllBytes(
-            Path.Combine(root, "vendor", "production-successor-2eb8b1e", "package-manifest.json")));
+            Path.Combine(root, "vendor", "production-successor-588229f", "package-manifest.json")));
         Assert.Equal(
-            "2eb8b1eb4605216b239f63d1ad8e587a28918134",
+            "588229f6beed9266382b17ce3c8b9303e3d36b2a",
             manifest.RootElement.GetProperty("sourceCommit").GetString());
         Assert.Equal(
             "deep-local-package-closure.v1",
@@ -127,6 +127,24 @@ public sealed class MailboxClientPackagePinTests
                 new FileInfo(files[expected.Key]).Length,
                 manifestPackages[expected.Key].Bytes);
         }
+
+        var packageDocumentation = new[]
+        {
+            File.ReadAllText(Path.Combine(root, "docs", "operator.md")),
+            File.ReadAllText(Path.Combine(root, "docs", "adr",
+                "0006-mailbox-client-activation-blocker.md"))
+        };
+        foreach (var document in packageDocumentation)
+        {
+            Assert.Contains(
+                "588229f6beed9266382b17ce3c8b9303e3d36b2a",
+                document,
+                StringComparison.Ordinal);
+            foreach (var expected in Expected)
+                Assert.Contains(expected.Value, document, StringComparison.Ordinal);
+        }
+        foreach (var expected in Expected)
+            Assert.Contains(expected.Key, packageDocumentation[0], StringComparison.Ordinal);
     }
 
     private static string FindRepositoryRoot()
