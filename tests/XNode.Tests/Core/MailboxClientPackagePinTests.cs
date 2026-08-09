@@ -9,14 +9,14 @@ public sealed class MailboxClientPackagePinTests
     private static readonly IReadOnlyDictionary<string, string> Expected =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            ["Deep.Protocol.0.4.0-production.32b4d14.nupkg"] =
-                "9d49292fd16069dc13f4b669a8e17597eb38e533dbc2097905f4dc93a1d62b0b",
-            ["Deep.Protocol.Abstractions.0.4.0-production.32b4d14.nupkg"] =
-                "1af4fe4d305ab555790cd976ca1fea5f94db611a854c675a11b608991a3c25fd",
-            ["Deep.Protocol.MembershipRoutes.0.4.0-production.32b4d14.nupkg"] =
-                "e4d5feeb4e8b2634167f90634f76bc9d630087cf452876a48b6f3358f9b9e493",
-            ["Deep.Protocol.Protobuf.0.4.0-production.32b4d14.nupkg"] =
-                "f441a1875bc1d9a717e91dd2422bda1e9d08a7fa1eaeaa2b8024127689aca84e"
+            ["Deep.Protocol.0.4.0-production.cc39def.nupkg"] =
+                "6ae87c7b577b89aa42db9afdf41660c8ecd3ca5984c19b4290cb40fa53024f0d",
+            ["Deep.Protocol.Abstractions.0.4.0-production.cc39def.nupkg"] =
+                "e26432a477df59da31afc5dc8ab1b67cd828942c5095b56d568f6897abc08043",
+            ["Deep.Protocol.MembershipRoutes.0.4.0-production.cc39def.nupkg"] =
+                "7d6338ca8330b5db3db31f0cbe23aa38a4796f16bb7affbcc042c32b4ce1144a",
+            ["Deep.Protocol.Protobuf.0.4.0-production.cc39def.nupkg"] =
+                "999ff91b25a58662987c63824fcd4e0ce796ddc9de32c598efc22ce170c3bd25"
         };
 
     [Fact]
@@ -26,7 +26,7 @@ public sealed class MailboxClientPackagePinTests
         var packageDirectory = Path.Combine(
             root,
             "vendor",
-            "production-successor-32b4d14",
+            "production-successor-cc39def",
             "packages");
         var files = Directory.GetFiles(packageDirectory, "*.nupkg")
             .ToDictionary(static path => Path.GetFileName(path)!, StringComparer.Ordinal);
@@ -46,11 +46,11 @@ public sealed class MailboxClientPackagePinTests
         var coreProject = File.ReadAllText(
             Path.Combine(root, "src", "XNode.Core", "XNode.Core.csproj"));
         Assert.Contains(
-            "Version=\"[0.4.0-production.32b4d14]\"",
+            "Version=\"[0.4.0-production.cc39def]\"",
             coreProject,
             StringComparison.Ordinal);
         Assert.Contains(
-            "Deep.Protocol.MembershipRoutes\" Version=\"[0.4.0-production.32b4d14]\"",
+            "Deep.Protocol.MembershipRoutes\" Version=\"[0.4.0-production.cc39def]\"",
             coreProject,
             StringComparison.Ordinal);
         Assert.DoesNotContain("p03b2", coreProject, StringComparison.OrdinalIgnoreCase);
@@ -62,7 +62,7 @@ public sealed class MailboxClientPackagePinTests
                 element => element.Attribute("value")!.Value,
                 StringComparer.Ordinal);
         Assert.Equal(
-            "../vendor/production-successor-32b4d14/packages",
+            "../vendor/production-successor-cc39def/packages",
             packageSources["production-successor-protocol"]);
         var sources = config.Descendants("packageSource")
             .ToDictionary(
@@ -82,23 +82,23 @@ public sealed class MailboxClientPackagePinTests
             Path.Combine(root, "src", "XNode.Core", "packages.lock.json")));
         var packages = lockDocument.RootElement.GetProperty("dependencies").GetProperty("net10.0");
         Assert.Equal(
-            "0.4.0-production.32b4d14",
+            "0.4.0-production.cc39def",
             packages.GetProperty("Deep.Protocol").GetProperty("resolved").GetString());
         Assert.Equal(
-            "X3vS74s4Pfu1tpG1LRuJORE8jOtZ6Gz5RlLSjh+VGa3YWagw92I4wXhcRTnBi9D7KEOdFTFLNMQyiRXMrwHSSQ==",
+            "b0KwHBLTeNt9hI/UHckbVos6J4xOYkNl4DygB7b/8cFQv9nMB+9RcpAEJWAK5zi98BJUg2HANeWrL5Dzh2mLEQ==",
             packages.GetProperty("Deep.Protocol").GetProperty("contentHash").GetString());
         Assert.Equal(
-            "0.4.0-production.32b4d14",
+            "0.4.0-production.cc39def",
             packages.GetProperty("Deep.Protocol.MembershipRoutes").GetProperty("resolved").GetString());
         Assert.Equal(
-            "DhFDtQryAud5aanPnsC6YHArjxERk2AVtVbHlkimvQbStBIwWcwwARgzHa4I7GC+y+HfkNiT6r0fgKzPOYtbFQ==",
+            "Lszd79KT0K3ORoGiwEg/3azLCaVKHC4HWInrwrfEhWDqe7kCHcRYQ9YbB1zDCVXdM0Vr9X5JwQlppSWIXhK/zA==",
             packages.GetProperty("Deep.Protocol.MembershipRoutes").GetProperty("contentHash").GetString());
         Assert.Contains("<RestoreLockedMode>true</RestoreLockedMode>", coreProject);
 
         using var manifest = JsonDocument.Parse(File.ReadAllBytes(
-            Path.Combine(root, "vendor", "production-successor-32b4d14", "package-manifest.json")));
+            Path.Combine(root, "vendor", "production-successor-cc39def", "package-manifest.json")));
         Assert.Equal(
-            "32b4d145de6d6b008e95b3cfc6ac2943de7f78fc",
+            "cc39defbf9c24bf7d99f6346a86c7602379b62ea",
             manifest.RootElement.GetProperty("sourceCommit").GetString());
         Assert.Equal(
             "deep-local-package-closure.v1",

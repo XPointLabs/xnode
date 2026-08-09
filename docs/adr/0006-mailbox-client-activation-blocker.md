@@ -5,8 +5,8 @@ Status: accepted. Date: 2026-07-30. Human owner: **Mr. X**.
 ## Decision
 
 XNode consumes the exact locked PMA1+PMR1+PMT1/PMS1/PSS1 protocol closure built reproducibly from
-`deep-protocol` source `32b4d145de6d6b008e95b3cfc6ac2943de7f78fc`, version
-`0.4.0-production.32b4d14`, under `vendor/production-successor-32b4d14`.
+`deep-protocol` source `cc39defbf9c24bf7d99f6346a86c7602379b62ea`, version
+`0.4.0-production.cc39def`, under `vendor/production-successor-cc39def`.
 
 The peer listener remains native PRQ2 Store/Tombstone with signed MRR2 and exact 2-of-2 MQR3.
 The client listener now exposes only the three P10J MAU2 routes from `MailboxWireHttpContract`.
@@ -55,13 +55,13 @@ contract compatibility is outside this ADR and remains separately controlled.
 ## Exact dependency provenance
 
 - Deep.Protocol:
-  `9d49292fd16069dc13f4b669a8e17597eb38e533dbc2097905f4dc93a1d62b0b`
+  `6ae87c7b577b89aa42db9afdf41660c8ecd3ca5984c19b4290cb40fa53024f0d`
 - Deep.Protocol.Abstractions:
-  `1af4fe4d305ab555790cd976ca1fea5f94db611a854c675a11b608991a3c25fd`
+  `e26432a477df59da31afc5dc8ab1b67cd828942c5095b56d568f6897abc08043`
 - Deep.Protocol.MembershipRoutes:
-  `e4d5feeb4e8b2634167f90634f76bc9d630087cf452876a48b6f3358f9b9e493`
+  `7d6338ca8330b5db3db31f0cbe23aa38a4796f16bb7affbcc042c32b4ce1144a`
 - Deep.Protocol.Protobuf:
-  `f441a1875bc1d9a717e91dd2422bda1e9d08a7fa1eaeaa2b8024127689aca84e`
+  `999ff91b25a58662987c63824fcd4e0ce796ddc9de32c598efc22ce170c3bd25`
 
 ## Remaining production blockers
 
