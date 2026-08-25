@@ -13,19 +13,6 @@ internal static class TestData
         return RouterId.FromBytes(bytes);
     }
 
-    public static RelayContact Contact(byte id, string ip, int port = 1190, int signedMinutes = 0)
-    {
-        return new RelayContact
-        {
-            RouterId = Id(id),
-            PublicHost = ip,
-            PublicIp = ip,
-            PublicPort = port,
-            SignedAt = Now.AddMinutes(signedMinutes),
-            ExpiresAt = Now.AddDays(1),
-            RouterVersion = "1.0.0"
-        };
-    }
 }
 
 internal sealed class FixedClock : IClock

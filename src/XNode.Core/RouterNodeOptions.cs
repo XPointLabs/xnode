@@ -18,15 +18,9 @@ public sealed class RouterNodeOptions
 
     public string PeerRpcListenUrl { get; set; } = "http://0.0.0.0:8081";
 
-    public string PublicPeerRpcEndpoint { get; set; } = "";
-
     public string PublicHost { get; set; } = "127.0.0.1";
 
-    public string PublicIp { get; set; } = "";
-
     public int PublicPort { get; set; } = 443;
-
-    public int PublicPeerRpcPort { get; set; } = 22020;
 
     public string QuorumCoordinatorNetworks { get; set; } = "";
 

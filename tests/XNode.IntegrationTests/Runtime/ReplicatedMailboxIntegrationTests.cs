@@ -160,7 +160,6 @@ public sealed class ReplicatedMailboxIntegrationTests : IDisposable
         var handler = new CaptureHandler(responseBytes);
         var client = new HttpMailboxReplicaPeerClient(
             new HttpClient(handler),
-            XNode.Core.Runtime.PeerEndpointPolicy.PublicOnly(),
             new ReplicatedMailboxOptions
             {
                 Enabled = true,

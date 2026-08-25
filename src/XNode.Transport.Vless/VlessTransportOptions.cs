@@ -34,7 +34,7 @@ public sealed class VlessTransportOptions
 
     public string[] Capabilities { get; set; } = new[]
     {
-        "session-rpc",
+        "privacy-routing-v1",
         "client-bootstrap",
         "vless-ingress"
     };

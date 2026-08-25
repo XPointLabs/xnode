@@ -15,7 +15,7 @@ public sealed class RegistryCatalogRequestSignerTests
         var nodeId = Convert.ToHexString(signer.GetPublicKey()).ToLowerInvariant();
         var options = new RouterNodeOptions { RouterId = nodeId, Ed25519PrivateKey = seed };
         var now = DateTimeOffset.Parse("2026-06-30T10:00:00Z");
-        using var request = new HttpRequestMessage(HttpMethod.Get, "/api/relay-contacts?network=mainnet");
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/api/privacy-contacts?network=mainnet");
 
         RegistryCatalogRequestSigner.Sign(request, options, now);
 
@@ -24,7 +24,7 @@ public sealed class RegistryCatalogRequestSignerTests
         {
             version = "xpoint-registry-catalog-v1",
             method = "GET",
-            path = "/api/relay-contacts",
+            path = "/api/privacy-contacts",
             nodeId,
             timestampUnixMs = now.ToUnixTimeMilliseconds(),
             nonce

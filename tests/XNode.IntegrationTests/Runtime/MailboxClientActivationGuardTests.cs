@@ -69,7 +69,7 @@ public sealed class MailboxClientActivationGuardTests
     }
 
     [Fact]
-    public void ProgramMapsCanonicalClientRoutesOnlyBehindDisabledByDefaultComposition()
+    public void ProgramMapsMailboxOnlyThroughPrivacyExitAndPeerReplication()
     {
         var root = FindRepositoryRoot();
         var hostDirectory = Path.Combine(root, "src", "XNode");
@@ -106,16 +106,24 @@ public sealed class MailboxClientActivationGuardTests
             nameof(MailboxClientStoreAdapter),
             hostSource,
             StringComparison.Ordinal);
-        Assert.Contains(
-            nameof(MailboxWireHttpContract.StoreRoute),
+        Assert.DoesNotContain(
+            "MailboxWireHttpContract.StoreRoute",
+            hostSource,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "MailboxWireHttpContract.RetrieveRoute",
+            hostSource,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "MailboxWireHttpContract.AcknowledgeRoute",
             hostSource,
             StringComparison.Ordinal);
         Assert.Contains(
-            nameof(MailboxWireHttpContract.RetrieveRoute),
+            nameof(NativeMailboxExitDispatcher),
             hostSource,
             StringComparison.Ordinal);
         Assert.Contains(
-            nameof(MailboxWireHttpContract.AcknowledgeRoute),
+            nameof(PrivacyRoutingRuntime),
             hostSource,
             StringComparison.Ordinal);
 
@@ -170,7 +178,7 @@ public sealed class MailboxClientActivationGuardTests
             coreClientSource,
             StringComparison.Ordinal);
         Assert.Contains(
-            "onionPeerReplay = \"volatile-explicit-debt\"",
+            "privacyReplay",
             hostSource,
             StringComparison.Ordinal);
     }

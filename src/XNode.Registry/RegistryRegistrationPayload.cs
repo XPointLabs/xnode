@@ -17,7 +17,7 @@ public sealed record RegistryRegistrationPayload(
     string SigningEndpoint,
     TransportMetadata TransportStatus,
     TransportBundle Transport,
-    RelayContact RelayContact);
+    NativePrivacyContact PrivacyContact);
 
 public sealed record BlsPublicKey(string Data);
 

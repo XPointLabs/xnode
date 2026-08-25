@@ -2,7 +2,7 @@
 
 ## Architecture
 
-XNode keeps Session Router behavior in the .NET runtime and runs Xray as a supervised child process. Xray owns only VLESS ingress. It forwards accepted client traffic to the local session RPC/API ingress at `127.0.0.1:8080`.
+XNode runs the Deep-native privacy relay and mailbox exit runtime in .NET and supervises Xray only for VLESS ingress. Xray forwards accepted public traffic to the bounded managed-ingress HTTP/2 surface.
 
 The registry payload advertises the transport parameters clients need:
 
@@ -134,138 +134,69 @@ Until those items are closed, the correct answer to “is the router fully produ
 ## Health
 
 - `GET /health/live`: process liveness.
-- `GET /health/ready`: runtime, Xray, and production public-peer authorization readiness.
-- `GET /status`: runtime status, Xray supervisor status, and current registry payload.
+- `GET /health/ready`: returns `200` only when privacy routing is enabled, Xray is running or deliberately degraded, and enabled mailbox/authority dependencies are ready.
+- `GET /status`: sanitized transport, privacy-routing, mailbox and authority state. It never emits private X25519 material, MAU2 bytes, blinded mailbox identifiers, peer authentication headers, or replay IDs.
 
-Readiness semantics for transport failover:
+A node with `PrivacyRouting:Enabled=false` is live but not ready. There is no direct MAU2 compatibility readiness lane.
 
-- `ready=true` when runtime is `running`, transport is either `running` or `degraded`, and Production public-peer authorization is in verified-ticket mode.
-- `degraded` means Xray hit restart limit inside `failureWindow` and entered cooldown before next retry.
-- `transportMode` in readiness payload exposes current supervisor mode (`running`, `restarting`, `degraded`, and related states).
-- `publicPeerAuthorizationMode` exposes `DenyAll`, `UnverifiedNonProduction`, or the future `VerifiedTickets` mode. Production `DenyAll` deliberately returns `503`.
+## Deep-native privacy ingress
 
-## Session RPC Ingress
+The public client surface is HTTP/2 only:
 
-`POST /api/session/rpc` accepts Session-style RPC envelopes:
+- `POST /api/ingress/v1/frame` — one bounded opaque `DRF1` request frame;
+- `GET /api/ingress/v1/capabilities` — managed-ingress capability document;
+- `POST /api/peer/privacy/v1/frame` — authenticated peer-only relay ingress on the peer listener.
+
+Direct `/api/client/mailbox/v2/store`, `/retrieve`, and `/acknowledge` HTTP routes are not mapped. The exit node opens the final privacy layer and invokes the existing MAU2 verifier, durable outcome journal and two-replica PRQ2/MQR3 runtime in process.
+
+The public request contract requires exact HTTP/2, HTTPS scheme, `Content-Length`, `Content-Type` and `Accept` equal to `application/vnd.xpoint.deep.ingress-opaque-v1`, no query, content coding, early data, stable identity headers, cookies, tracing or redirects. Frames are admitted incrementally within `64..1572864` bytes before allocation/forwarding. Errors are canonical 64-byte `DIE1` frames and preserve before-forward versus outcome-unknown-after-forward certainty. Successful terminal replies are end-to-end sealed `DRS1` frames containing canonical `DPR1` success/evidence or stable failure codes.
+
+Each relay decrypts only its own layer. A relay layer contains a replay ID, a next router ID and an opaque inner frame. The endpoint never comes from the frame: the router ID must resolve in `PrivacyRouting:Peers`, and the configured origin, DNS result, HTTP version and TLS SPKI pins are revalidated for every outbound peer request. Peer requests additionally carry an Ed25519 signature bound to sender, recipient, timestamp, nonce and SHA-256 of the opaque frame. Both transport nonces and hop replay IDs use bounded TTL windows.
+
+## Privacy routing configuration
 
 ```json
 {
-  "id": "request-1",
-  "method": "fetch_rids",
-  "payload": {}
+  "PrivacyRouting": {
+    "enabled": true,
+    "x25519PrivateKeyPath": "/run/secrets/xnode-x25519-private",
+    "publicPeerBaseUrl": "https://node.example:443/",
+    "maximumConcurrentRequests": 64,
+    "requestsPerMinute": 600,
+    "requestTimeoutSeconds": 30,
+    "replyPaddingBlockBytes": 4096,
+    "replayCapacity": 65536,
+    "replayTtlSeconds": 300,
+    "allowInsecureHttpPeerTransport": false,
+    "peers": [
+      {
+        "routerId": "<64 lowercase hex>",
+        "baseUrl": "https://peer.example:443/",
+        "currentSpkiSha256": "<64 lowercase hex>",
+        "nextSpkiSha256": "<different 64 lowercase hex>"
+      }
+    ]
+  }
 }
 ```
 
-Supported first-pass methods are `status`, `path_ping`, `fetch_rids`, `fetch_rcs`, `select_path`, and `store_rc`.
+The X25519 private key is independently generated and stored as exactly 32 bytes of lowercase hex in an absolute secret file. It must never be derived from or converted from the router Ed25519 key. Startup fails closed for a missing, zero, uppercase/non-canonical or invalid key; duplicate/self peers; non-origin URLs; repeated TLS pins; invalid bounds; or an empty peer inventory.
 
-Runtime rejects public `report_path_result` requests. Public storage RPC results, including downstream HTTP failures, are not path-health evidence and cannot influence relay selection. The compatibility `churn-blocked router count` remains zero until XNode has an authenticated, direct peer-health plane.
+HTTPS and two distinct CA-valid SPKI pins are mandatory outside the local Development lane. `AllowInsecureHttpPeerTransport=true` is accepted only when ASP.NET Core is running in `Development`; in that lane peer origins may use HTTP and SPKI fields must be empty. This exception exists for the isolated six-node survival compose network and is rejected in UAT and Production.
 
-Private peer routing is disabled by default. The only private-LAN exception is the exact
-router-ID/RFC1918-address/port/path inventory described below. Loopback and broad private-network switches
-are not supported.
+`PublicPeerBaseUrl` is the origin advertised in the signed native privacy contact. The runtime appends the exact peer path itself. Registry heartbeat publishes `privacy-routing-v1`, the independent X25519 public key and the privacy peer endpoint.
 
-## Private Peer Endpoints for UAT
+Operational checks:
 
-Public/mainnet nodes must advertise a publicly routable peer RPC URL with the exact
-`/api/peer/onion` path. A local Docker UAT may instead enable the exact private-peer
-policy documented in `docs/ROUTER_SECURITY_TUNABLES.md`.
+1. Verify secret ownership/permissions without printing the key.
+2. Confirm every peer row has the expected router identity, origin and current/next SPKI pins.
+3. Confirm `GET /api/ingress/v1/capabilities` over HTTP/2 reports ready.
+4. Confirm `GET /health/ready` returns `200` on all relays and mailbox exits.
+5. Negative-test an unknown next router, replayed frame, oversized frame, wrong media type, redirect, DNS rebind and each TLS pin independently.
+6. Confirm direct MAU2 URLs return `404`.
 
-The exception is deliberately narrow:
+The privacy route restores single-node unlinkability under the documented non-collusion/no-global-observer assumptions. It does not hide timing, direction or padded ciphertext length from a global observer.
 
-- it binds the recipient router ID to one literal RFC1918 IPv4 `/32`, port, and exact path;
-- the same immutable policy filters route contacts and the socket address used for the connection;
-- it is disabled by default and fails startup in `Production`, on `mainnet`, or when the explicit test network identities differ;
-- loopback, private DNS names, DNS rebinding, link-local/cloud metadata, multicast, unspecified addresses, redirects, and proxies remain blocked.
-
-For UAT, set `DOTNET_ENVIRONMENT=UAT`, then set `Node:Network` and
-`Runtime:PrivatePeerNetworkIdentity` to the same explicit test identity (normally `uat`)
-and supply the complete per-recipient allowlist. Mr. X
-owns approval of that UAT inventory. Remove the entire allowlist and disable the feature
-before promoting a configuration to production.
-
-For a three-router UAT, "complete" means the following 3 x 3 matrix. Each
-router configuration must contain all three exact recipient tuples, including
-its own tuple:
-
-| Configuration loaded by | Recipient A | Recipient B | Recipient C |
-| --- | --- | --- | --- |
-| Router A | `A_ID @ 10.20.30.40:8080/api/peer/onion` | `B_ID @ 10.20.30.41:8081/api/peer/onion` | `C_ID @ 10.20.30.42:8082/api/peer/onion` |
-| Router B | `A_ID @ 10.20.30.40:8080/api/peer/onion` | `B_ID @ 10.20.30.41:8081/api/peer/onion` | `C_ID @ 10.20.30.42:8082/api/peer/onion` |
-| Router C | `A_ID @ 10.20.30.40:8080/api/peer/onion` | `B_ID @ 10.20.30.41:8081/api/peer/onion` | `C_ID @ 10.20.30.42:8082/api/peer/onion` |
-
-Replace the symbolic IDs with full router IDs and derive all three rows from
-the same Mr. X-approved inventory. Do not abbreviate IDs in configuration and
-do not replace exact tuples with ranges. Private membership mode rejects any
-allowlist whose exact unique cardinality is not three. Missing or mismatched
-local and remote tuples have the same result: a three-hop storage route fails
-with `path-not-found`. In private-only mode, a public contact cannot fill that
-gap.
-
-Validate the mode before accepting the UAT:
-
-1. Set `Runtime:AllowPublicPeerEndpoints=false` and
-   `Runtime:EnablePrivateAllowlistMembership=true` on all three routers, and
-   deny public egress at the network layer.
-2. Fetch each router's fresh signed contact from `/api/network/contact`.
-   Mr. X must verify its signature, derived router identity, freshness, and
-   exact advertised tuple before distributing it.
-3. Submit all three contacts to every router through `/api/session/rpc` with
-   method `store_rc`. The payload is the complete signed contact returned by
-   `/api/network/contact`; no unsigned contact may be synthesized from config.
-4. Confirm `/status` reports
-   `publicPeerAuthorizationMode="DenyAll"` and
-   `productionPublicRoutingReady=true`, plus:
-
-   ```json
-   {
-     "router": {
-       "privateMembership": {
-         "enabled": true,
-         "expectedRelays": 3,
-         "registeredRelays": 3,
-         "ready": true
-       }
-     }
-   }
-   ```
-
-   `ready` remains `false` when any two of the three fresh signed contacts
-   advertise the same X25519 public key, even if all three router identities
-   are registered.
-
-5. With runtime and transport healthy, confirm `/health/ready` returns `200`.
-   Before all three signed contacts are registered it must return `503`.
-6. Request a storage route and confirm it contains exactly the three expected,
-   unique router IDs, with the contacted local router as entry hop.
-7. In a disposable negative test, remove or alter each of the A, B, and C
-   tuples in turn and confirm `path-not-found`; restore the approved inventory
-   after every check.
-
-The private allowlist is a trust anchor, not membership data. A contact becomes
-registered only after `store_rc` validates its fresh Ed25519 self-signature and
-its exact allowlisted router-ID/RPC-endpoint tuple. A seed whose derived public
-ID differs from `Node:RouterId` fails startup in this mode.
-
-`DenyAll` has different readiness meaning across environments: in
-non-production private-only UAT it denies public peers while exact private
-tuples remain operational. With private membership mode enabled, healthy
-readiness is `200` only after all expected signed contacts are registered; in Production it
-means no proof-capable public routing is available, so readiness is
-intentionally `503` and `productionPublicRoutingReady=false`.
-
-## Runtime Metrics
-
-`GET /status` now includes `router.metrics` counters for key runtime flows:
-
-- RPC ingress totals and failures
-- relay/contact sync cycles and failures
-- relay contact merge/reject counts
-- heartbeat submission count
-- path selection attempts/failures
-- path repair attempts/successes
-- compatibility churn-blocked router count (currently always zero; no unauthenticated failure scoring)
-
-These counters are also persisted in heartbeat snapshots via `NodeDbStorageBackend`.
 
 ## Xray
 
@@ -345,49 +276,9 @@ The payload model is implemented in `XNode.Registry.RegistryPayload`.
 - restart/failure counters (`restartCount`, `consecutiveFailures`)
 - last lifecycle details (`lastExitReason`, `lastStartedAt`, `degradedUntil`)
 
-## C3 Resilience and Load Baseline
+## Verification
 
-Run the C3 scenario:
-
-```bash
-dotnet test xnode/tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj --configuration Release --filter "FullyQualifiedName~C3FailureAndLoadIntegrationTests" --logger trx
-```
-
-C3 test artifacts are written to:
-
-- `xnode/artifacts/test-results/c3/latest.json`
-- `xnode/artifacts/test-results/c3/latest.md`
-
-Scenario coverage:
-
-- soak: sustained runtime/session-rpc stability run
-- chaos: packet loss + peer churn + restart storm fault injection
-- load: path selection latency and session-rpc throughput
-
-SLO baseline gate (current thresholds):
-
-- soak success-rate >= 99%
-- chaos success-rate >= 55% under packet loss profile 35%
-- load throughput >= 400 req/s
-- path-select p95 <= 15 ms
-- restart storm must enter degraded mode
-
-Observed baseline (latest run):
-
-- soak success-rate: 100%
-- chaos success-rate: 57.5% (packet loss profile 35%)
-- load throughput: ~36.2k req/s
-- path-select p95: ~0.62 ms
-- restart storm: degraded mode entered
-
-Known bottlenecks and remediation plan are emitted in C3 artifacts:
-
-- bottleneck example: churn blocklist pressure under sustained loss/churn (requires a future authenticated peer-health plane)
-- remediation actions:
-  - scale path candidate pool for churn windows
-  - add authenticated direct-peer health measurements before enabling any adaptive failure scoring
-  - add supervisor restart jitter to reduce synchronized storms
-  - enforce ingress concurrency budget/backpressure at saturation
+Run `dotnet test XNode.slnx` after configuration or runtime changes. Privacy-routing tests cover relay allowlisting, unknown-next-hop rejection, sealed exit results, key/configuration guards, and peer-authentication binding.
 
 ## Canonical P10C peer mailbox runtime
 
@@ -495,15 +386,16 @@ Operational invariants:
 - metrics and status contain counts only: no router id, membership capability, mailbox, placement
   route, operation id, ciphertext or receipt bytes are logged or labeled.
 
-Ordinary onion peer replay remains process-memory-only. `/status` reports
-`onionPeerReplay=volatile-explicit-debt`; P10C does not claim durable onion replay.
+Privacy peer nonces and decrypted hop replay IDs are process-memory-only, capacity bounded and
+TTL-pruned. `/status` reports `privacyReplay=bounded-ttl`. MAU2 operation replay and canonical
+outcomes remain durable in their existing journals.
 
 ### Native MAU2 client adapter
 
-The client routes accept only MAU2 carrying an authenticated canonical `MEO1`, `MBR2`, or `MBA2`
-body and return `MQR3`, `MRP1`, or `MAR1`. They are mapped only by the explicit survival
-Development composition. Production composition still requires reviewed authority and key
-custody. There is no MCP1 envelope, V1 request decoder, translation, or fallback route.
+The in-process privacy exit accepts only MAU2 carrying an authenticated canonical `MEO1`, `MBR2`,
+or `MBA2` body and produces `MQR3`, `MRP1`, or `MAR1`. Direct client mailbox HTTP routes are not
+mapped in any environment. There is no MCP1 envelope, V1 request decoder, translation, or fallback
+route.
 
 The adapter ledger stores native MRR2 evidence and native MQR3 completion. Development ACK emits
 the exact MBA2-ordered MQR3 list in MAR1; no MQR2 transcode is permitted.
@@ -575,7 +467,7 @@ v3 is intentionally incompatible with v2, whose records lack the canonical blob/
 membership evidence needed for safe retrieval and tombstones. Operation capacity counts stores,
 ACK operation records and each ACK item.
 
-Do not expose client mailbox endpoints in production. XNode can now consume the public PMA1
+Do not add direct client mailbox endpoints. XNode can now consume the public PMA1
 issuer/epoch/NodeIngress-SPKI substrate, but it deliberately remains unready until a separate
 hash-bound revocation artifact can answer serial-level decisions. A survival-only Development
 composition exists for honest two-XNode interoperability testing. The activation decision is frozen in
@@ -791,22 +683,16 @@ idempotency conflict 409, missing length 411, too large 413, media type/encoding
 429, dependency/quorum unavailable 503, and deadline 504. Exact byte limits, deadlines and
 admission ceilings come from `MailboxWireHttpContract`.
 
-The active native mailbox package closure is under `vendor/production-successor-586054a`, produced
-by two byte-identical normalized archive builds from accepted `deep-protocol` source
-`586054ae9787a0df620c1da30b588edb89e7f7da`:
+The active privacy-routing and native mailbox protocol closure is locked under
+`vendor/production-privacy-e75bfed/packages`:
 
-- `Deep.Protocol.0.4.0-production.586054a.nupkg` —
-  `c4b8d198cf27908febeae576a252d100cf19780aa7ad8531a48ca24566a90f15`
-- `Deep.Protocol.Abstractions.0.4.0-production.586054a.nupkg` —
-  `262cc0316dbdb7730732cc49d6c69bcb4137761995c0580c720c593d9fa8973d`
-- `Deep.Protocol.MembershipRoutes.0.4.0-production.586054a.nupkg` —
-  `dd316f206c6739f5635ba47da532c67a6482172597bf878e12c43e255b3f4324`
-- `Deep.Protocol.Protobuf.0.4.0-production.586054a.nupkg` —
-  `18dc2f31870c1471130ebf9c47a0b867980a91955505463de009e65355914f77`
+- `Deep.Protocol.0.5.0-production.e75bfed.nupkg` —
+  `69578c00c503383b149c4e9bccb3f14f87d3608c9781fe684710233059060098`
+- `Deep.Protocol.MembershipRoutes.0.5.0-production.e75bfed.nupkg` —
+  `5dacdef966835452ffa2c0a404dac72524b508ebeffa3f44b79d5d290c2de75e`
 
-Core/runtime/test projects resolve the exact PMA1+PMR1+PMT1/PMS1 version from the local feed in locked mode.
-`XNode.ProfileGenerator` and its tests remain isolated on the exact older P04/ProfileCarrier
-closure because that carrier requires it.
+Core/runtime/test projects restore the exact version from the local feed in locked mode.
+`XNode.ProfileGenerator` and its tests remain isolated on their ProfileCarrier closure.
 
 The native MAU2 client adapter is active when the validated mailbox-client activation plan maps
 the development routes documented above. Startup remains fail-closed until the peer runtime,

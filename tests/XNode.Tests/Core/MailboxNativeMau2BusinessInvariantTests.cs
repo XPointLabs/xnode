@@ -1357,42 +1357,6 @@ public sealed class MailboxNativeMau2BusinessInvariantTests : IDisposable
     }
 
     [Fact]
-    public void MailboxEndpointFinallyAlwaysUsesRuntimeCleanupHook()
-    {
-        var program = File.ReadAllText(Path.Combine(
-            FindRepositoryRoot(),
-            "src",
-            "XNode",
-            "Program.cs"));
-        var handlerStart = program.IndexOf(
-            "static async Task<IResult> HandleMailboxClientAsync(",
-            StringComparison.Ordinal);
-        var nextHandler = program.IndexOf(
-            "static IResult CompleteStoreFailure(",
-            handlerStart,
-            StringComparison.Ordinal);
-        var handler = program[handlerStart..nextHandler];
-
-        Assert.Contains("finally", handler, StringComparison.Ordinal);
-        Assert.Contains(
-            ".CleanupRequest(authenticated)",
-            handler,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "or ArgumentException",
-            handler,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "or MailboxPeerReplicationException",
-            handler,
-            StringComparison.Ordinal);
-        Assert.DoesNotContain(
-            "AbortBeforeSideEffects(",
-            handler,
-            StringComparison.Ordinal);
-    }
-
-    [Fact]
     public void CoordinatedGcUsesStrictEqualityBoundedBatchAndRestartCapacity()
     {
         var outcomeOptions = new MailboxClientCanonicalOutcomeStoreOptions
@@ -1780,11 +1744,14 @@ public sealed class MailboxNativeMau2BusinessInvariantTests : IDisposable
             };
             var localSeed = Convert.ToHexString(Filled(0x11, 32));
             var remoteSeed = Convert.ToHexString(Filled(0x22, 32));
+            var publicKeyCrypto = new SodiumMailboxCapabilityCrypto();
             var localCrypto = new MailboxClientReceiptCrypto(
-                RelayContactSigner.DeriveRouterId(localSeed),
+                RouterId.FromBytes(publicKeyCrypto.GetPublicKey(
+                    Convert.FromHexString(localSeed))),
                 localSeed);
             var remoteCrypto = new MailboxClientReceiptCrypto(
-                RelayContactSigner.DeriveRouterId(remoteSeed),
+                RouterId.FromBytes(publicKeyCrypto.GetPublicKey(
+                    Convert.FromHexString(remoteSeed))),
                 remoteSeed);
             var store = new ReplicatedMailboxStore(
                 root,

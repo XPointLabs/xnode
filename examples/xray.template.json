@@ -34,7 +34,7 @@
   ],
   "outbounds": [
     {
-      "tag": "local-session-router",
+      "tag": "local-privacy-ingress",
       "protocol": "freedom",
       "settings": {
         "redirect": "127.0.0.1:8080"
@@ -47,7 +47,7 @@
       {
         "type": "field",
         "inboundTag": [ "vless-ingress" ],
-        "outboundTag": "local-session-router"
+        "outboundTag": "local-privacy-ingress"
       }
     ]
   }

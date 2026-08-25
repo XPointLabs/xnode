@@ -40,7 +40,7 @@ public sealed class XrayConfigGenerator
             {
                 new JsonObject
                 {
-                    ["tag"] = "local-session-router",
+                    ["tag"] = "local-privacy-ingress",
                     ["protocol"] = "freedom",
                     ["settings"] = new JsonObject
                     {
@@ -62,7 +62,7 @@ public sealed class XrayConfigGenerator
                     {
                         ["type"] = "field",
                         ["inboundTag"] = new JsonArray { "vless-ingress" },
-                        ["outboundTag"] = "local-session-router"
+                        ["outboundTag"] = "local-privacy-ingress"
                     }
                 }
             }

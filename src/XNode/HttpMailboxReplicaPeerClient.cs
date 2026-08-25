@@ -10,16 +10,13 @@ namespace XNode;
 public sealed class HttpMailboxReplicaPeerClient : IMailboxReplicaPeerClient
 {
     private readonly HttpClient _httpClient;
-    private readonly PeerEndpointPolicy _peerEndpointPolicy;
     private readonly ReplicatedMailboxOptions _mailboxOptions;
 
     public HttpMailboxReplicaPeerClient(
         HttpClient httpClient,
-        PeerEndpointPolicy peerEndpointPolicy,
         ReplicatedMailboxOptions mailboxOptions)
     {
         _httpClient = httpClient;
-        _peerEndpointPolicy = peerEndpointPolicy;
         _mailboxOptions = mailboxOptions;
     }
 
@@ -61,11 +58,6 @@ public sealed class HttpMailboxReplicaPeerClient : IMailboxReplicaPeerClient
                 peer.Endpoint,
                 contract.Route)
             || !Uri.TryCreate(peer.Endpoint.Trim(), UriKind.Absolute, out var uri)
-            || !_peerEndpointPolicy.TryValidatePeerRouteEndpoint(
-                peer.RouterId,
-                uri,
-                contract.Route,
-                out _)
             || uri.Scheme != Uri.UriSchemeHttps
                 && !_mailboxOptions.AllowInsecureHttpPeerTransport
             || !string.Equals(uri.AbsolutePath, contract.Route, StringComparison.Ordinal)
@@ -80,13 +72,12 @@ public sealed class HttpMailboxReplicaPeerClient : IMailboxReplicaPeerClient
         {
             Content = content
         };
-        message.Options.Set(HttpOnionPeerClient.RecipientRouterIdOption, peer.RouterId.Value);
-        message.Options.Set(HttpOnionPeerClient.ExpectedPeerPathOption, contract.Route);
+        message.Options.Set(MailboxPeerHttpHandler.ExpectedPeerPathOption, contract.Route);
         using var pinnedClient = peer.CurrentSpkiSha256.IsEmpty
             && peer.NextSpkiSha256.IsEmpty
                 ? null
-                : new HttpClient(OnionPeerHttpHandler.Create(
-                    _peerEndpointPolicy,
+                : new HttpClient(MailboxPeerHttpHandler.Create(
+                    _mailboxOptions,
                     peer.CurrentSpkiSha256,
                     peer.NextSpkiSha256), disposeHandler: true);
         var client = pinnedClient ?? _httpClient;

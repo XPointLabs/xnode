@@ -1,71 +1,25 @@
-# ADR 0006: native MAU2 client ingress requires a complete verified production bundle
+# ADR 0006: native MAU2 activation boundary
 
-Status: accepted. Date: 2026-07-30. Human owner: **Mr. X**.
+- Original status: accepted on 2026-07-30
+- Current status: superseded by the Deep-native privacy-routing clean break
+- Human owner: **Mr. X**
 
-## Decision
+## Preserved decision
 
-XNode consumes the exact locked PMA1+PMR1+PMT1/PMS1/PSS1 protocol closure built reproducibly from
-`deep-protocol` source `586054ae9787a0df620c1da30b588edb89e7f7da`, version
-`0.4.0-production.586054a`, under `vendor/production-successor-586054a`.
+The MAU2 verifier, durable replay/outcome journals, placement authority and PRQ2/MRR2/MQR3
+replication runtime remain the authoritative mailbox implementation. Their validation,
+idempotency, recovery and quorum invariants remain unchanged.
 
-The peer listener remains native PRQ2 Store/Tombstone with signed MRR2 and exact 2-of-2 MQR3.
-The client listener now exposes only the three P10J MAU2 routes from `MailboxWireHttpContract`.
-MAU2 authenticates MEO1, MBR2, or MBA2; success returns MQR3, MRP1, or MAR1. No MST1/MRT1/MAK1
-route, MCP1 compatibility envelope, translation, or fallback is present.
+## Superseding transport decision
 
-Route operation authority comes only from `AuthenticatedOperation`. Strict decoding, issuer and
-holder Ed25519 verification, generation/lifecycle/revocation policy, replay reservation, verified
-holder admission, placement authority, and pure validation precede mailbox-specific work.
+MAU2 Store, Retrieve and Acknowledge are no longer public HTTP routes. A client constructs an
+exact three-XNode privacy route. Only the exit opens the final layer and invokes the native MAU2
+dispatcher in process. The client receives a sealed DPR1 terminal result. Peer mailbox replication
+continues on the authenticated PRQ2 surface as the survival layer.
 
-Replay and exact outcomes are deliberately separate:
+The active protocol packages are exactly `0.5.0-production.e75bfed`, restored in locked mode from
+`vendor/production-privacy-e75bfed/packages`. Production readiness is fail-closed unless privacy
+routing, key independence, peer allowlisting/pins, mailbox authority and peer durability are ready.
 
-- the replay journal persists Pending and later only the SHA-256 outcome digest;
-- the canonical outcome store persists exact MQR3/MRP1/MAR1 or coarse MTO1 terminal state;
-- endpoint-maximum outcome capacity is reserved before ledger/blob/peer access;
-- exact outcome persistence completes before replay digest completion;
-- completed replay rereads the exact outcome and compares the digest in constant time.
-
-One process execution owns an opaque outcome key. Concurrent exact InFlight requests do no work.
-After an owner exits or the process restarts, only an exact durable PendingSame claim may acquire
-the recovery worker. PendingPrior is never executable. Store/ACK operation journals make recovery
-idempotent; Retrieve uses its fixed high-water snapshot. Pre-side-effect cancellation releases
-only NewReserved. Post-side-effect cancellation preserves Pending and releases only ephemeral
-execution/outcome-capacity ownership.
-
-Pre-auth admission is host-global and independent per authenticated operation; it stores no
-remote-IP partitions. Post-verify admission stores only a domain-separated hash of operation plus
-holder public key and permits 120 requests per minute.
-
-Production/default composition remains dormant. An explicitly enabled production loader now
-verifies PMA1 and its hash-bound, issuer-signed complete PMR1 snapshot on the same clock observation,
-then durably commits and publishes the immutable pair atomically. Only that verified full snapshot
-may treat an unknown serial as non-revoked. Authority/revocation readiness is distinct from route
-readiness, which remains false until a signed topology artifact supplies two replicas, MIP1 proofs,
-and HTTPS/SPKI routing. PMT1/PMS1 now supplies and verifies that topology; production routes are
-mapped only for the complete protected bundle and each request remains caller-bound to its own
-verified PMS1. Development activation requires the
-explicit pinned fixture: issuer, revocations, network, coordinator URL, E/E+1 commitments,
-placement ids/commitments, exactly two distinct replica identities/keys, and canonical MIP1/RIP1
-proofs. The node owns only its local replica private seed.
-
-Because Deep is pre-production, replay and adapter persistence schemas are clean-break. Older
-schemas are rejected unchanged; no migration or compatibility decoder is permitted. Smart
-contract compatibility is outside this ADR and remains separately controlled.
-
-## Exact dependency provenance
-
-- Deep.Protocol:
-  `c4b8d198cf27908febeae576a252d100cf19780aa7ad8531a48ca24566a90f15`
-- Deep.Protocol.Abstractions:
-  `262cc0316dbdb7730732cc49d6c69bcb4137761995c0580c720c593d9fa8973d`
-- Deep.Protocol.MembershipRoutes:
-  `dd316f206c6739f5635ba47da532c67a6482172597bf878e12c43e255b3f4324`
-- Deep.Protocol.Protobuf:
-  `18dc2f31870c1471130ebf9c47a0b867980a91955505463de009e65355914f77`
-
-## Remaining production blockers
-
-1. production deployment key custody and signed artifact publication automation;
-2. staging, mobile/Windows E2E, operational rehearsal, and independent security review.
-
-Until these gates close, public client ingress remains Development-only.
+This superseding decision is a clean break: no compatibility routes, decoder fallback or parallel
+public mailbox ingress is retained.

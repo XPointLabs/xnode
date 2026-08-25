@@ -1,5 +1,4 @@
 ﻿using XNode.Core;
-using XNode.Core.Runtime;
 using XNode.Transport.Vless;
 
 namespace XNode.Registry;
@@ -14,7 +13,7 @@ public sealed class RegistryRegistrationPayloadFactory
     private readonly RegistryPayloadFactory _payloadFactory;
     private readonly RegistryRegistrationOptions _registrationOptions;
     private readonly Bls12381RegistrationProofService _proofService;
-    private readonly ILocalRelayContactProvider _relayContactProvider;
+    private readonly ILocalPrivacyContactProvider _privacyContactProvider;
 
     public RegistryRegistrationPayloadFactory(
         RouterNodeOptions nodeOptions,
@@ -22,20 +21,20 @@ public sealed class RegistryRegistrationPayloadFactory
         RegistryPayloadFactory payloadFactory,
         RegistryRegistrationOptions registrationOptions,
         Bls12381RegistrationProofService proofService,
-        ILocalRelayContactProvider relayContactProvider)
+        ILocalPrivacyContactProvider privacyContactProvider)
     {
         _nodeOptions = nodeOptions;
         _transportOptions = transportOptions;
         _payloadFactory = payloadFactory;
         _registrationOptions = registrationOptions;
         _proofService = proofService;
-        _relayContactProvider = relayContactProvider;
+        _privacyContactProvider = privacyContactProvider;
     }
 
     public async Task<RegistryRegistrationPayload> CreateAsync(CancellationToken cancellationToken)
     {
         var runtime = _payloadFactory.Create();
-        var relayContact = _relayContactProvider.Create();
+        var privacyContact = _privacyContactProvider.Create();
         var operatorAddress = NormalizeAddress(_registrationOptions.OperatorAddress);
         var rewardsAddress = string.IsNullOrWhiteSpace(_registrationOptions.RewardsAddress)
             ? operatorAddress
@@ -66,10 +65,10 @@ public sealed class RegistryRegistrationPayloadFactory
             [
                 new ContributorStake(operatorAddress, rewardsAddress, _registrationOptions.StakeAtomic)
             ],
-            SigningEndpoint: BuildSigningEndpoint(relayContact.RpcEndpoint),
+            SigningEndpoint: BuildSigningEndpoint(privacyContact.PeerEndpoint),
             TransportStatus: runtime.Transport,
             Transport: ToTransportBundle(runtime),
-            RelayContact: relayContact);
+            PrivacyContact: privacyContact);
     }
 
     private TransportBundle ToTransportBundle(RegistryPayload payload)
@@ -131,7 +130,7 @@ public sealed class RegistryRegistrationPayloadFactory
         if (!Uri.TryCreate(peerRpcEndpoint.Trim(), UriKind.Absolute, out var uri)
             || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
         {
-            throw new InvalidOperationException("Relay contact RPC endpoint must be an absolute http(s) URL.");
+            throw new InvalidOperationException("Privacy peer endpoint must be an absolute http(s) URL.");
         }
 
         var builder = new UriBuilder(uri)
