@@ -11,13 +11,16 @@ public sealed class HttpMailboxReplicaPeerClient : IMailboxReplicaPeerClient
 {
     private readonly HttpClient _httpClient;
     private readonly ReplicatedMailboxOptions _mailboxOptions;
+    private readonly ILogger<HttpMailboxReplicaPeerClient>? _logger;
 
     public HttpMailboxReplicaPeerClient(
         HttpClient httpClient,
-        ReplicatedMailboxOptions mailboxOptions)
+        ReplicatedMailboxOptions mailboxOptions,
+        ILogger<HttpMailboxReplicaPeerClient>? logger = null)
     {
         _httpClient = httpClient;
         _mailboxOptions = mailboxOptions;
+        _logger = logger;
     }
 
     public async Task<ReadOnlyMemory<byte>?> SendAsync(
@@ -81,11 +84,24 @@ public sealed class HttpMailboxReplicaPeerClient : IMailboxReplicaPeerClient
                     peer.CurrentSpkiSha256,
                     peer.NextSpkiSha256), disposeHandler: true);
         var client = pinnedClient ?? _httpClient;
-        using var response = await client.SendAsync(
-                message,
-                HttpCompletionOption.ResponseHeadersRead,
-                cancellationToken)
-            .ConfigureAwait(false);
+        HttpResponseMessage response;
+        try
+        {
+            response = await client.SendAsync(
+                    message,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception) when (
+            exception is HttpRequestException or IOException)
+        {
+            _logger?.LogWarning(
+                "Mailbox peer transport failed before an exact response: {FailureType}.",
+                exception.GetType().Name);
+            throw;
+        }
+        using var responseScope = response;
         if ((int)response.StatusCode != contract.SuccessStatusCode
             || response.Content.Headers.ContentLength != contract.MaximumResponseBytes
             || !string.Equals(
@@ -94,6 +110,12 @@ public sealed class HttpMailboxReplicaPeerClient : IMailboxReplicaPeerClient
                 StringComparison.Ordinal)
             || response.Content.Headers.ContentEncoding.Count != 0)
         {
+            _logger?.LogWarning(
+                "Mailbox peer response rejected: status={StatusCode}, length={ContentLength}, contentTypePresent={ContentTypePresent}, encodingCount={EncodingCount}.",
+                (int)response.StatusCode,
+                response.Content.Headers.ContentLength,
+                response.Content.Headers.ContentType is not null,
+                response.Content.Headers.ContentEncoding.Count);
             return null;
         }
 
