@@ -39,11 +39,16 @@ public sealed class HttpPrivacyPeerClient : IPrivacyPeerClient
 {
     private readonly RouterNodeOptions _node;
     private readonly IClock _clock;
+    private readonly ILogger<HttpPrivacyPeerClient>? _logger;
 
-    public HttpPrivacyPeerClient(RouterNodeOptions node, IClock clock)
+    public HttpPrivacyPeerClient(
+        RouterNodeOptions node,
+        IClock clock,
+        ILogger<HttpPrivacyPeerClient>? logger = null)
     {
         _node = node;
         _clock = clock;
+        _logger = logger;
     }
 
     public async Task<PrivacyForwardResult> ForwardAsync(
@@ -98,12 +103,21 @@ public sealed class HttpPrivacyPeerClient : IPrivacyPeerClient
                 .ConfigureAwait(false);
             if (response.Version != HttpVersion.Version20)
             {
+                _logger?.LogWarning(
+                    "Privacy peer response rejected: version={HttpVersion}, status={StatusCode}.",
+                    response.Version,
+                    (int)response.StatusCode);
                 return PrivacyForwardResult.Unknown;
             }
 
             var length = response.Content.Headers.ContentLength;
             if (length is null or < 0 or > ManagedIngressLimits.MaximumOpaqueFrameBytes)
             {
+                _logger?.LogWarning(
+                    "Privacy peer response rejected: status={StatusCode}, length={ContentLength}, contentType={ContentType}.",
+                    (int)response.StatusCode,
+                    length,
+                    response.Content.Headers.ContentType?.MediaType ?? "missing");
                 return PrivacyForwardResult.Unknown;
             }
 
@@ -130,6 +144,11 @@ public sealed class HttpPrivacyPeerClient : IPrivacyPeerClient
                 body.Length,
                 ResponseHeaders(response));
             var error = ManagedIngressH2Contract.ClassifyErrorResponse(metadata, body);
+            _logger?.LogWarning(
+                "Privacy peer returned a bounded non-success response: status={StatusCode}, length={ContentLength}, classification={Classification}.",
+                (int)response.StatusCode,
+                body.Length,
+                error.Result);
             return error.Result == ManagedIngressTransportResult.RejectedBeforeForward
                 ? PrivacyForwardResult.Rejected
                 : PrivacyForwardResult.Unknown;
@@ -139,6 +158,9 @@ public sealed class HttpPrivacyPeerClient : IPrivacyPeerClient
                 or OperationCanceledException or ManagedIngressContractException
                 or InvalidDataException)
         {
+            _logger?.LogWarning(
+                "Privacy peer transport failed before an exact response: {FailureType}.",
+                exception.GetType().Name);
             return PrivacyForwardResult.Unknown;
         }
     }
