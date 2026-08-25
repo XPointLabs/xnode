@@ -692,7 +692,20 @@ The active privacy-routing and native mailbox protocol closure is locked under
   `5dacdef966835452ffa2c0a404dac72524b508ebeffa3f44b79d5d290c2de75e`
 
 Core/runtime/test projects restore the exact version from the local feed in locked mode.
-`XNode.ProfileGenerator` and its tests remain isolated on their ProfileCarrier closure.
+`XNode.ProfileGenerator` and its tests use a separate frozen DNP1 closure under
+`vendor/dnp1-survival-9a7eaed`. Its exact protocol inventory is
+`Deep.Protocol`, `Deep.Protocol.MembershipRoutes`, and
+`Deep.Protocol.ProfileCarrier`, all pinned to `0.5.0-survival.9a7eaed` from
+protocol commit `9a7eaed337286758ab43bd3706457264c3be7c55`.
+Every nuspec dependency uses an exact bracket range. The resulting runtime
+dependency set contains only `Sodium.Core` and `libsodium`; the former
+`Deep.Protocol.Abstractions`, `Deep.Protocol.Protobuf`, and `Google.Protobuf`
+dependencies are not part of the active graph. `Deep.Protocol*` can restore
+only from the repository-local feed selected by `eng/dnp1-survival.NuGet.Config`;
+the production runtime remains isolated on `eng/survival-beta.NuGet.Config`.
+Run `eng/Verify-Dnp1ProtocolClosure.ps1` before building the generator; it
+fails closed on package inventory, bytes, provenance, dependency edges,
+project pins, lock files, or source mapping drift.
 
 The native MAU2 client adapter is active when the validated mailbox-client activation plan maps
 the development routes documented above. Startup remains fail-closed until the peer runtime,

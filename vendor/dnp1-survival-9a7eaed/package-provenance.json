@@ -1,0 +1,51 @@
+{
+  "schema": "xnode-dnp1-protocol-closure.v2",
+  "version": "0.5.0-survival.9a7eaed",
+  "protocolSourceCommit": "9a7eaed337286758ab43bd3706457264c3be7c55",
+  "protocolSourceTree": "c0b23f91bfb13158ac9a28ff73fe73a1f44fc95d",
+  "sourceArchiveSha256": "3b2bd1b2db7af78341589577b3bb7051da34802289d89ea2dd3f5d143f973099",
+  "buildPathMap": "/_/deep-protocol",
+  "normalization": "Normalize-NuGetPackage/exact-all-dependencies.v1",
+  "reproducibility": "two-independent-git-archive-builds-byte-identical",
+  "networkSourcesAllowedForDeepProtocol": false,
+  "packages": [
+    {
+      "id": "Deep.Protocol",
+      "version": "0.5.0-survival.9a7eaed",
+      "file": "packages/Deep.Protocol.0.5.0-survival.9a7eaed.nupkg",
+      "bytes": 475982,
+      "sha256": "4bb199b287f7cd41332e166c6ffcf915fc6b9372fb8b80408dca5522eaed3bb9",
+      "sha512": "a7ba6d40dfdce18efbfa2fa35c569af8f966f28066a1dbed6a16990a1bca0487695edbce821b753c787c095c30a5fb53694af879e208f48ca6a41b7fc03d9838",
+      "assemblySha256": "5c7a15b97e48e344f8cc152cea636dbd14296a96a4c2864bb97ba6ee0e279c47",
+      "dependencies": [
+        "Sodium.Core=[1.4.1]"
+      ]
+    },
+    {
+      "id": "Deep.Protocol.MembershipRoutes",
+      "version": "0.5.0-survival.9a7eaed",
+      "file": "packages/Deep.Protocol.MembershipRoutes.0.5.0-survival.9a7eaed.nupkg",
+      "bytes": 184328,
+      "sha256": "cb0407979830992ee338e3b3b09c558e5c4e256f56df2da54df3eb9d98c7b3d2",
+      "sha512": "c18bbcd969bb16349e6fe5c90bc13e86c7e3eb49df71e8282a0f2a3e8ec396ff35451604b99561c5df661cb9f6046fd9019b9e1d0bcdfd0f650c53cf0b6b6d63",
+      "assemblySha256": "eee28f236eb748f408412439a591913af83a696b75bb1d205e92b30590a7cec0",
+      "dependencies": [
+        "Deep.Protocol=[0.5.0-survival.9a7eaed]"
+      ]
+    },
+    {
+      "id": "Deep.Protocol.ProfileCarrier",
+      "version": "0.5.0-survival.9a7eaed",
+      "file": "packages/Deep.Protocol.ProfileCarrier.0.5.0-survival.9a7eaed.nupkg",
+      "bytes": 72607,
+      "sha256": "43950e48ac28fd3e4c0064fa12293e3ea8b12ad6bea15e8fa173a17f4480c9e5",
+      "sha512": "cfd6b8f1ee292be275694952b8ad7859e87befb78224b04a87b694fae346e6998d97f3c699bd4bcfdd855302c77b5e6e7f4820ddf7e5392f9495a94aa0e8faa4",
+      "assemblySha256": "49f333e0c2e0fbb1d7bd407a23cded68eec5daeb106d54df910c6eeb7111824a",
+      "dependencies": [
+        "Deep.Protocol=[0.5.0-survival.9a7eaed]",
+        "libsodium=[1.0.22]",
+        "Sodium.Core=[1.4.1]"
+      ]
+    }
+  ]
+}

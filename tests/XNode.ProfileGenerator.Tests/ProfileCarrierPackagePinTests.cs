@@ -113,7 +113,7 @@ public sealed class ProfileCarrierPackagePinTests
     }
 
     [Fact]
-    public void HistoricalEvidenceRemainsPinnedWhileActiveConsumersUseSurvivalBeta()
+    public void HistoricalEvidenceRemainsPinnedWhileActiveConsumersUseDnp1ExactThree()
     {
         var root = P04PackagePinTests.RepositoryRoot();
         var historicalConsumers = new[]
@@ -143,7 +143,6 @@ public sealed class ProfileCarrierPackagePinTests
 
         foreach (var relative in new[]
                  {
-                     "src/XNode.ProfileGenerator/XNode.ProfileGenerator.csproj",
                      "src/XNode.ProfileGenerator/packages.lock.json",
                      "tests/XNode.ProfileGenerator.Tests/packages.lock.json"
                  })
@@ -151,9 +150,19 @@ public sealed class ProfileCarrierPackagePinTests
             var text = File.ReadAllText(Path.Combine(
                 root,
                 relative.Replace('/', Path.DirectorySeparatorChar)));
-            Assert.Contains("0.4.0-survival.e570512", text, StringComparison.Ordinal);
-            Assert.DoesNotContain(ExpectedVersion, text, StringComparison.Ordinal);
+            Assert.Contains("0.5.0-survival.9a7eaed", text, StringComparison.Ordinal);
+            Assert.DoesNotContain("0.4.0-survival.e570512", text, StringComparison.Ordinal);
+            Assert.DoesNotContain("Deep.Protocol.Abstractions", text, StringComparison.Ordinal);
+            Assert.DoesNotContain("Deep.Protocol.Protobuf", text, StringComparison.Ordinal);
+            Assert.DoesNotContain("Google.Protobuf", text, StringComparison.Ordinal);
         }
+
+        var props = File.ReadAllText(Path.Combine(root, "Directory.Packages.props"));
+        Assert.Contains("0.5.0-survival.9a7eaed", props, StringComparison.Ordinal);
+        var project = File.ReadAllText(Path.Combine(
+            root, "src", "XNode.ProfileGenerator", "XNode.ProfileGenerator.csproj"));
+        Assert.Contains("[$(Dnp1ProtocolPackageVersion)]", project, StringComparison.Ordinal);
+        Assert.DoesNotContain("0.5.0-survival.e75bfed", project, StringComparison.Ordinal);
 
         var packages = Directory.GetFiles(
             Path.Combine(root, "vendor", "p04", "packages"),

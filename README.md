@@ -36,8 +36,15 @@ Set `Vless__MockProcess=true` and `Vless__XrayExecutablePath=mock` when developi
 Run the full unit and integration suite:
 
 ```bash
+pwsh eng/Verify-Dnp1ProtocolClosure.ps1
 dotnet test XNode.slnx
 ```
+
+`XNode.ProfileGenerator` restores the frozen DNP1 exact-three package contour
+from the repository-local `vendor/dnp1-survival-9a7eaed/packages` feed. The
+gate rejects package additions, changed bytes, non-exact dependency ranges,
+legacy Abstractions/Protobuf packages, and a network source for
+`Deep.Protocol*`.
 
 ## Linux Publish
 

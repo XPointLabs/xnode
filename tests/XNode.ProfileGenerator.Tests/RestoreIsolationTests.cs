@@ -21,7 +21,7 @@ public sealed class RestoreIsolationTests
             "XNode.ProfileGenerator.csproj"));
         Assert.Contains("<RuntimeIdentifiers>win-arm64</RuntimeIdentifiers>", project);
         Assert.Contains("<RestoreConfigFile>", project);
-        Assert.Contains("eng\\survival-beta.NuGet.Config", project);
+        Assert.Contains("eng\\dnp1-survival.NuGet.Config", project);
     }
 
     [Fact]
@@ -164,20 +164,25 @@ public sealed class RestoreIsolationTests
     public void BuildDiscoveryAnchorsAreTrackedAndNeutral()
     {
         var root = P04PackagePinTests.RepositoryRoot();
-        var xmlAnchors = new[]
+        var neutralXmlAnchors = new[]
         {
             "Directory.Build.props",
             "Directory.Build.targets",
             "Directory.Solution.props",
-            "Directory.Solution.targets",
-            "Directory.Packages.props"
+            "Directory.Solution.targets"
         };
-        foreach (var relativePath in xmlAnchors)
+        foreach (var relativePath in neutralXmlAnchors)
         {
             var path = Path.Combine(root, relativePath);
             Assert.True(File.Exists(path), $"Missing build-discovery anchor: {relativePath}");
             Assert.Equal("<Project />", File.ReadAllText(path).Trim());
         }
+
+        var packagesProps = Path.Combine(root, "Directory.Packages.props");
+        Assert.True(File.Exists(packagesProps), "Missing Directory.Packages.props anchor.");
+        Assert.Equal(
+            "<Project>\n  <PropertyGroup>\n    <Dnp1ProtocolPackageVersion>0.5.0-survival.9a7eaed</Dnp1ProtocolPackageVersion>\n  </PropertyGroup>\n</Project>",
+            File.ReadAllText(packagesProps).Replace("\r\n", "\n").Trim());
 
         var response = Path.Combine(root, "Directory.Build.rsp");
         Assert.True(File.Exists(response), "Missing Directory.Build.rsp anchor.");
@@ -186,7 +191,9 @@ public sealed class RestoreIsolationTests
         if (IsGitRepository(root))
         {
             var tracked = TrackedFiles(root);
-            Assert.All(xmlAnchors.Append("Directory.Build.rsp"), path => Assert.Contains(path, tracked));
+            Assert.All(
+                neutralXmlAnchors.Append("Directory.Packages.props").Append("Directory.Build.rsp"),
+                path => Assert.Contains(path, tracked));
         }
     }
 
