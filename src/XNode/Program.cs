@@ -282,7 +282,9 @@ app.Use(async (context, next) =>
 
     if (privacyPeerListenUri is not null
         && context.Connection.LocalPort == privacyPeerListenUri.Port
-        && !context.Request.Path.Equals(PrivacyRoutingOptions.PeerFramePath))
+        && !context.Request.Path.Equals(PrivacyRoutingOptions.PeerFramePath)
+        && !context.Request.Path.Equals(MailboxWireHttpContract.PeerStoreRoute)
+        && !context.Request.Path.Equals(MailboxWireHttpContract.PeerTombstoneRoute))
     {
         context.Response.StatusCode = StatusCodes.Status404NotFound;
         return;
@@ -631,7 +633,7 @@ app.MapPost(MailboxWireHttpContract.PeerStoreRoute, (
         services,
         MailboxWireHttpContract.PeerStore,
         MailboxPeerReplicationOperation.Store,
-        peerRpcListenUri.Port,
+        listenerPlan.PrivacyPeerPort,
         cancellationToken));
 
 app.MapPost(MailboxWireHttpContract.PeerTombstoneRoute, (
@@ -645,7 +647,7 @@ app.MapPost(MailboxWireHttpContract.PeerTombstoneRoute, (
         services,
         MailboxWireHttpContract.PeerTombstone,
         MailboxPeerReplicationOperation.Tombstone,
-        peerRpcListenUri.Port,
+        listenerPlan.PrivacyPeerPort,
         cancellationToken));
 
 app.Run();
