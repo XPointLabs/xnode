@@ -111,11 +111,12 @@ public sealed class HttpMailboxReplicaPeerClient : IMailboxReplicaPeerClient
             || response.Content.Headers.ContentEncoding.Count != 0)
         {
             _logger?.LogWarning(
-                "Mailbox peer response rejected: status={StatusCode}, length={ContentLength}, contentTypePresent={ContentTypePresent}, encodingCount={EncodingCount}.",
+                "Mailbox peer response rejected: status={StatusCode}, length={ContentLength}, contentType={ContentType}, encodingCount={EncodingCount}, server={Server}.",
                 (int)response.StatusCode,
                 response.Content.Headers.ContentLength,
-                response.Content.Headers.ContentType is not null,
-                response.Content.Headers.ContentEncoding.Count);
+                response.Content.Headers.ContentType?.MediaType ?? "missing",
+                response.Content.Headers.ContentEncoding.Count,
+                response.Headers.Server.ToString());
             return null;
         }
 
