@@ -345,11 +345,14 @@ app.MapGet("/health/ready", (
     var mailboxPeerReady = !mailbox.Enabled || mailboxPeer.Ready;
     var mailboxClientReady =
         !mailboxClientActivationPlan.RoutesMapped || mailboxClient.Ready;
+    var privacyReady = XNodeReadinessPolicy.IsPrivacyReady(
+        privacy.Enabled,
+        app.Environment.IsDevelopment());
     var productionMailboxAuthorityReady =
         !productionMailboxAuthorityOptions.Enabled
         || productionMailboxAuthority.Status.Ready;
     var ready = transportReady
-        && privacy.Enabled
+        && privacyReady
         && mailboxPeerReady
         && mailboxClientReady
         && productionMailboxAuthorityReady;
@@ -359,7 +362,7 @@ app.MapGet("/health/ready", (
             ready = true,
             degraded = xrayStatus.Degraded,
             transportMode = xrayStatus.Mode,
-            privacyRouting = "ready",
+            privacyRouting = privacy.Enabled ? "ready" : "disabled-development",
             mailboxPeer = mailboxPeer.Status,
             mailboxClient = mailboxClient.Status,
             mailboxProductionAuthority = productionMailboxAuthority.Status
