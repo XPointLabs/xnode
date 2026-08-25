@@ -4,12 +4,12 @@ Production images are published to `ghcr.io/xpointlabs/xnode` only through the
 manual **Publish production image** GitHub Actions workflow. A push to `main`
 never publishes or changes a release tag.
 
-.NET port of the XNode runtime with Session Router semantics above the transport layer and VLESS/Xray used only as the client-to-node ingress transport.
+.NET implementation of the Deep XNode runtime, with VLESS/Xray used only as
+the client-to-node ingress transport.
 
 ## Agent Specs
 
 - Start with [`AGENTS.md`](AGENTS.md) before changing router runtime, transport, registry heartbeat, or deployment behavior.
-- Use [`docs/SESSION_PORTING.md`](docs/SESSION_PORTING.md) for Session router/path/bootstrap migration rules.
 - Keep mock Xray paths development/test-only; release rehearsal must use the no-mock profile.
 
 ## Projects
