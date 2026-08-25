@@ -9,11 +9,16 @@ also not registered; an exit invokes the native mailbox runtime in process.
 | Setting | Default | Constraint |
 | --- | ---: | --- |
 | `ManagedIngressH2ListenUrl` | empty | Optional absolute root-only HTTP(S) URL for a dedicated HTTP/2-only managed-ingress listener. Its port must be distinct from `ApiListenUrl` and `PeerRpcListenUrl`. |
+| `ManagedIngressTrustedProxyAddresses` | empty | Required with the dedicated listener. Unique exact IPv4/IPv6 literals only; for UAT use HAProxy `172.30.82.7` and chaos proxy `172.30.82.8`. |
 
 When enabled, the dedicated port serves only the frame and capability paths. Literal IP,
 `localhost`, and host-name wildcard binding follow the existing `UseUrls` host semantics. The API
 and peer listeners retain HTTP/1 support; the configuration fails closed before host startup for a
-malformed URL or port collision.
+malformed URL, port collision, or empty/malformed/non-literal/duplicate trusted-proxy list. On the
+dedicated port, the remote address must exactly match the allowlist and exactly one
+`X-Forwarded-Proto: https` value is required. The middleware consumes the header and establishes
+the HTTPS scheme before contract validation. Unknown proxies receive 404 and invalid forwarded
+scheme input receives 400. API/peer traffic does not trust or consume this header.
 
 ## `PrivacyRouting` settings
 

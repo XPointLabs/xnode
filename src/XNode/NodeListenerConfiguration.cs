@@ -21,7 +21,8 @@ internal sealed record NodeListenerBinding(
 internal sealed record NodeListenerPlan(
     NodeListenerBinding Api,
     NodeListenerBinding Peer,
-    NodeListenerBinding? ManagedIngress)
+    NodeListenerBinding? ManagedIngress,
+    IReadOnlySet<IPAddress> ManagedIngressTrustedProxyAddresses)
 {
     public int ManagedIngressPort => ManagedIngress?.Url.Port ?? Api.Url.Port;
 
@@ -92,7 +93,7 @@ internal static class NodeListenerConfiguration
 
         if (string.IsNullOrWhiteSpace(node.ManagedIngressH2ListenUrl))
         {
-            return new NodeListenerPlan(api, peer, null);
+            return new NodeListenerPlan(api, peer, null, new HashSet<IPAddress>());
         }
 
         var managedIngress = ParseManagedIngressListener(
@@ -104,7 +105,12 @@ internal static class NodeListenerConfiguration
                 "Node managed ingress, API, and peer RPC listeners must use different ports.");
         }
 
-        return new NodeListenerPlan(api, peer, managedIngress);
+        return new NodeListenerPlan(
+            api,
+            peer,
+            managedIngress,
+            ParseManagedIngressTrustedProxyAddresses(
+                node.ManagedIngressTrustedProxyAddresses));
     }
 
     private static NodeListenerBinding ParseExistingListener(
@@ -129,6 +135,65 @@ internal static class NodeListenerConfiguration
         }
 
         return CreateBinding(uri, HttpProtocols.Http2);
+    }
+
+    private static IReadOnlySet<IPAddress> ParseManagedIngressTrustedProxyAddresses(
+        string[]? values)
+    {
+        if (values is null || values.Length == 0)
+        {
+            throw new InvalidOperationException(
+                "Node:ManagedIngressTrustedProxyAddresses must contain at least one exact IP address when the dedicated managed-ingress listener is enabled.");
+        }
+
+        var addresses = new HashSet<IPAddress>();
+        foreach (var value in values)
+        {
+            if (string.IsNullOrEmpty(value)
+                || !string.Equals(value, value.Trim(), StringComparison.Ordinal)
+                || value.Contains('%', StringComparison.Ordinal)
+                || !TryParseExactIpAddressLiteral(value, out var address)
+                || address.Equals(IPAddress.Any)
+                || address.Equals(IPAddress.IPv6Any))
+            {
+                throw new InvalidOperationException(
+                    "Node:ManagedIngressTrustedProxyAddresses must contain only non-empty, unscoped IPv4 or IPv6 literals without surrounding whitespace.");
+            }
+
+            if (!addresses.Add(address))
+            {
+                throw new InvalidOperationException(
+                    "Node:ManagedIngressTrustedProxyAddresses must not contain duplicate IP addresses.");
+            }
+        }
+
+        return addresses;
+    }
+
+    private static bool TryParseExactIpAddressLiteral(
+        string value,
+        out IPAddress address)
+    {
+        address = null!;
+        if (!IPAddress.TryParse(value, out var candidate))
+        {
+            return false;
+        }
+
+        var exactLiteral = candidate.AddressFamily switch
+        {
+            System.Net.Sockets.AddressFamily.InterNetwork =>
+                string.Equals(value, candidate.ToString(), StringComparison.Ordinal),
+            System.Net.Sockets.AddressFamily.InterNetworkV6 => value.Contains(':'),
+            _ => false
+        };
+        if (!exactLiteral)
+        {
+            return false;
+        }
+
+        address = candidate;
+        return true;
     }
 
     private static bool TryParseListenerUrl(

@@ -160,17 +160,27 @@ backend without changing those listeners:
   "Node": {
     "apiListenUrl": "http://127.0.0.1:8080",
     "peerRpcListenUrl": "http://0.0.0.0:8081",
-    "managedIngressH2ListenUrl": "http://0.0.0.0:8082/"
+    "managedIngressH2ListenUrl": "http://0.0.0.0:8082/",
+    "managedIngressTrustedProxyAddresses": [ "172.30.82.7", "172.30.82.8" ]
   }
 }
 ```
 
 `ManagedIngressH2ListenUrl` must be an absolute root-only HTTP(S) URL without user info, query,
 fragment or surrounding whitespace, and its port must differ from both API and peer RPC ports.
+`ManagedIngressTrustedProxyAddresses` is mandatory when that listener is enabled and must contain
+unique exact IPv4/IPv6 literals; DNS names, CIDRs, unspecified/scoped addresses, whitespace and
+duplicates fail startup. The UAT TLS ingress and chaos proxy use the fixed `172.30.82.7` and
+`172.30.82.8` addresses shown above.
 Literal IPs bind exactly, `localhost` retains localhost binding, and other host names retain
 `UseUrls` wildcard-bind semantics. When enabled, only the managed-ingress frame and capability
 paths are served on that port, and those paths no longer accept traffic on the API listener. HTTPS
-uses the configured Kestrel default certificate; internal h2c uses `http://`.
+uses the configured Kestrel default certificate; internal h2c uses `http://`. Every dedicated-port
+request must originate from the exact proxy allowlist and carry exactly one
+`X-Forwarded-Proto: https`. XNode then consumes that header and sets the request scheme to HTTPS
+before managed-ingress contract validation. Unknown proxies receive 404; missing, duplicate or
+non-exact forwarded-proto values receive 400. The API and peer listeners never trust or consume
+this header.
 
 Each relay decrypts only its own layer. A relay layer contains a replay ID, a next router ID and an opaque inner frame. The endpoint never comes from the frame: the router ID must resolve in `PrivacyRouting:Peers`, and the configured origin, DNS result, HTTP version and TLS SPKI pins are revalidated for every outbound peer request. Peer requests additionally carry an Ed25519 signature bound to sender, recipient, timestamp, nonce and SHA-256 of the opaque frame. Both transport nonces and hop replay IDs use bounded TTL windows.
 

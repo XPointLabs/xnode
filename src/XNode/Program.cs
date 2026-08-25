@@ -263,6 +263,8 @@ builder.Services.AddRateLimiter(options =>
 
 var app = builder.Build();
 
+app.UseManagedIngressProxyTrustBoundary(listenerPlan);
+
 app.Use(async (context, next) =>
 {
     if (managedIngressListenUri is not null
