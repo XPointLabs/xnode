@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
@@ -73,6 +74,8 @@ public sealed class HttpMailboxReplicaPeerClient : IMailboxReplicaPeerClient
         content.Headers.ContentType = new MediaTypeHeaderValue(contract.RequestContentType);
         using var message = new HttpRequestMessage(HttpMethod.Post, uri)
         {
+            Version = HttpVersion.Version20,
+            VersionPolicy = HttpVersionPolicy.RequestVersionExact,
             Content = content
         };
         message.Options.Set(MailboxPeerHttpHandler.ExpectedPeerPathOption, contract.Route);
@@ -102,7 +105,8 @@ public sealed class HttpMailboxReplicaPeerClient : IMailboxReplicaPeerClient
             throw;
         }
         using var responseScope = response;
-        if ((int)response.StatusCode != contract.SuccessStatusCode
+        if (response.Version != HttpVersion.Version20
+            || (int)response.StatusCode != contract.SuccessStatusCode
             || response.Content.Headers.ContentLength != contract.MaximumResponseBytes
             || !string.Equals(
                 response.Content.Headers.ContentType?.ToString(),
@@ -111,7 +115,8 @@ public sealed class HttpMailboxReplicaPeerClient : IMailboxReplicaPeerClient
             || response.Content.Headers.ContentEncoding.Count != 0)
         {
             _logger?.LogWarning(
-                "Mailbox peer response rejected: status={StatusCode}, length={ContentLength}, contentType={ContentType}, encodingCount={EncodingCount}, server={Server}.",
+                "Mailbox peer response rejected: version={HttpVersion}, status={StatusCode}, length={ContentLength}, contentType={ContentType}, encodingCount={EncodingCount}, server={Server}.",
+                response.Version,
                 (int)response.StatusCode,
                 response.Content.Headers.ContentLength,
                 response.Content.Headers.ContentType?.MediaType ?? "missing",

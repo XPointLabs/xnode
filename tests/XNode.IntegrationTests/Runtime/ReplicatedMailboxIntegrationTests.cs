@@ -1,3 +1,4 @@
+using System.Net;
 using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
@@ -181,6 +182,8 @@ public sealed class ReplicatedMailboxIntegrationTests : IDisposable
             MailboxWireHttpContract.Prq2ContentType,
             handler.SeenContentType);
         Assert.Equal(fixture.CanonicalStore.Length, handler.SeenContentLength);
+        Assert.Equal(HttpVersion.Version20, handler.SeenVersion);
+        Assert.Equal(HttpVersionPolicy.RequestVersionExact, handler.SeenVersionPolicy);
         await Assert.ThrowsAsync<HttpRequestException>(() =>
             client.SendAsync(
                 peer with { Endpoint = "http://127.0.0.1:8081/api/peer/mailbox/replica" },
@@ -731,6 +734,8 @@ public sealed class ReplicatedMailboxIntegrationTests : IDisposable
         public Uri? SeenUri { get; private set; }
         public string? SeenContentType { get; private set; }
         public long? SeenContentLength { get; private set; }
+        public Version? SeenVersion { get; private set; }
+        public HttpVersionPolicy? SeenVersionPolicy { get; private set; }
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
@@ -739,8 +744,11 @@ public sealed class ReplicatedMailboxIntegrationTests : IDisposable
             SeenUri = request.RequestUri;
             SeenContentType = request.Content?.Headers.ContentType?.ToString();
             SeenContentLength = request.Content?.Headers.ContentLength;
+            SeenVersion = request.Version;
+            SeenVersionPolicy = request.VersionPolicy;
             var message = new HttpResponseMessage(System.Net.HttpStatusCode.OK)
             {
+                Version = HttpVersion.Version20,
                 Content = new ByteArrayContent(response)
             };
             message.Content.Headers.ContentType =
