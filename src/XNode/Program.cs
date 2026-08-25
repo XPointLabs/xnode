@@ -77,8 +77,9 @@ var listenerPlan = NodeListenerConfiguration.Create(nodeOptions);
 var apiListenUri = listenerPlan.Api.Url;
 var peerRpcListenUri = listenerPlan.Peer.Url;
 var managedIngressListenUri = listenerPlan.ManagedIngress?.Url;
+var privacyPeerListenUri = listenerPlan.PrivacyPeer?.Url;
 vlessOptions.ApiIngressPort = apiListenUri.Port;
-if (managedIngressListenUri is null)
+if (managedIngressListenUri is null && privacyPeerListenUri is null)
 {
     builder.WebHost.UseUrls(nodeOptions.ApiListenUrl, nodeOptions.PeerRpcListenUrl);
 }
@@ -279,6 +280,14 @@ app.Use(async (context, next) =>
         }
     }
 
+    if (privacyPeerListenUri is not null
+        && context.Connection.LocalPort == privacyPeerListenUri.Port
+        && !context.Request.Path.Equals(PrivacyRoutingOptions.PeerFramePath))
+    {
+        context.Response.StatusCode = StatusCodes.Status404NotFound;
+        return;
+    }
+
     if ((context.Request.Path.Equals(MailboxWireHttpContract.PeerStoreRoute)
             || context.Request.Path.Equals(MailboxWireHttpContract.PeerTombstoneRoute))
         && !HttpMethods.IsPost(context.Request.Method))
@@ -294,7 +303,8 @@ app.Use(async (context, next) =>
     }
 
     var path = context.Request.Path;
-    var allowed = path.Equals(PrivacyRoutingOptions.PeerFramePath)
+    var allowed = (privacyPeerListenUri is null
+            && path.Equals(PrivacyRoutingOptions.PeerFramePath))
         || path.Equals(ProductionMailboxClosureHttpContract.PrepositionRoute)
         || path.Equals(MailboxWireHttpContract.PeerStoreRoute)
         || path.Equals(MailboxWireHttpContract.PeerTombstoneRoute)
@@ -607,7 +617,7 @@ app.MapPost(PrivacyRoutingOptions.PeerFramePath, (
         runtime,
         node,
         clock,
-        peerRpcListenUri.Port,
+        listenerPlan.PrivacyPeerPort,
         cancellationToken));
 
 app.MapPost(MailboxWireHttpContract.PeerStoreRoute, (

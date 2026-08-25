@@ -9,6 +9,7 @@ also not registered; an exit invokes the native mailbox runtime in process.
 | Setting | Default | Constraint |
 | --- | ---: | --- |
 | `ManagedIngressH2ListenUrl` | empty | Optional absolute root-only HTTP(S) URL for a dedicated HTTP/2-only managed-ingress listener. Its port must be distinct from `ApiListenUrl` and `PeerRpcListenUrl`. |
+| `PrivacyPeerH2ListenUrl` | empty | Optional absolute root-only HTTP(S) URL for a dedicated HTTP/2-only authenticated privacy-hop listener. Its port must be distinct from every other listener. |
 | `ManagedIngressTrustedProxyAddresses` | empty | Required with the dedicated listener. Unique exact IPv4/IPv6 literals only; for UAT use HAProxy `172.30.82.7` and chaos proxy `172.30.82.8`. |
 
 When enabled, the dedicated port serves only the frame and capability paths. Literal IP,
@@ -19,6 +20,11 @@ dedicated port, the remote address must exactly match the allowlist and exactly 
 `X-Forwarded-Proto: https` value is required. The middleware consumes the header and establishes
 the HTTPS scheme before contract validation. Unknown proxies receive 404 and invalid forwarded
 scheme input receives 400. API/peer traffic does not trust or consume this header.
+
+When `PrivacyPeerH2ListenUrl` is enabled, only `/api/peer/privacy/v1/frame` is served on that
+listener and that path is removed from the mixed peer-RPC listener. This avoids the Kestrel
+cleartext `Http1AndHttp2` downgrade: authenticated privacy hops remain exact HTTP/2 over the
+Development-only h2c transport without changing the HTTP/1 mailbox/closure peer surface.
 
 ## `PrivacyRouting` settings
 

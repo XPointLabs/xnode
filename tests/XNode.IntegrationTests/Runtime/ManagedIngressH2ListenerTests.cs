@@ -19,12 +19,15 @@ public sealed class ManagedIngressH2ListenerTests
         var plan = NodeListenerConfiguration.Create(node);
 
         Assert.Equal("", node.ManagedIngressH2ListenUrl);
+        Assert.Equal("", node.PrivacyPeerH2ListenUrl);
         Assert.Empty(node.ManagedIngressTrustedProxyAddresses);
         Assert.Null(plan.ManagedIngress);
+        Assert.Null(plan.PrivacyPeer);
         Assert.Empty(plan.ManagedIngressTrustedProxyAddresses);
         Assert.Equal(HttpProtocols.Http1AndHttp2, plan.Api.Protocols);
         Assert.Equal(HttpProtocols.Http1AndHttp2, plan.Peer.Protocols);
         Assert.Equal(new Uri(node.ApiListenUrl).Port, plan.ManagedIngressPort);
+        Assert.Equal(new Uri(node.PeerRpcListenUrl).Port, plan.PrivacyPeerPort);
     }
 
     [Fact]
@@ -33,21 +36,26 @@ public sealed class ManagedIngressH2ListenerTests
         var apiPort = ReservePort();
         var peerPort = ReservePort(apiPort);
         var managedIngressPort = ReservePort(apiPort, peerPort);
+        var privacyPeerPort = ReservePort(apiPort, peerPort, managedIngressPort);
         var node = new RouterNodeOptions
         {
             ApiListenUrl = $"http://127.0.0.1:{apiPort}",
             PeerRpcListenUrl = $"http://127.0.0.1:{peerPort}",
             ManagedIngressH2ListenUrl = $"http://127.0.0.1:{managedIngressPort}",
+            PrivacyPeerH2ListenUrl = $"http://127.0.0.1:{privacyPeerPort}",
             ManagedIngressTrustedProxyAddresses = ["127.0.0.1"]
         };
         var plan = NodeListenerConfiguration.Create(node);
 
         Assert.NotNull(plan.ManagedIngress);
+        Assert.NotNull(plan.PrivacyPeer);
         Assert.Equal(HttpProtocols.Http2, plan.ManagedIngress.Protocols);
+        Assert.Equal(HttpProtocols.Http2, plan.PrivacyPeer.Protocols);
         Assert.Equal(NodeListenerBindKind.Address, plan.ManagedIngress.BindKind);
         Assert.Equal(IPAddress.Loopback, plan.ManagedIngress.Address);
         Assert.Equal(apiPort, plan.Api.Url.Port);
         Assert.Equal(managedIngressPort, plan.ManagedIngressPort);
+        Assert.Equal(privacyPeerPort, plan.PrivacyPeerPort);
         Assert.NotEqual(plan.Api.Url.Port, plan.ManagedIngressPort);
 
         var builder = WebApplication.CreateSlimBuilder();
@@ -84,6 +92,19 @@ public sealed class ManagedIngressH2ListenerTests
             response.EnsureSuccessStatusCode();
             Assert.Equal(HttpVersion.Version20, response.Version);
             Assert.Equal("HTTP/2|https|0", await response.Content.ReadAsStringAsync());
+
+            using var peerRequest = new HttpRequestMessage(
+                HttpMethod.Get,
+                $"http://127.0.0.1:{privacyPeerPort}/protocol")
+            {
+                Version = HttpVersion.Version20,
+                VersionPolicy = HttpVersionPolicy.RequestVersionExact
+            };
+            using var peerResponse = await client.SendAsync(peerRequest);
+
+            peerResponse.EnsureSuccessStatusCode();
+            Assert.Equal(HttpVersion.Version20, peerResponse.Version);
+            Assert.Equal("HTTP/2|http|0", await peerResponse.Content.ReadAsStringAsync());
         }
         finally
         {
@@ -117,6 +138,25 @@ public sealed class ManagedIngressH2ListenerTests
         var node = new RouterNodeOptions
         {
             ManagedIngressH2ListenUrl = value
+        };
+
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            NodeListenerConfiguration.Create(node));
+
+        Assert.Contains("must use different ports", error.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("http://127.0.0.1:8080")]
+    [InlineData("http://127.0.0.1:8081")]
+    [InlineData("http://127.0.0.1:8082")]
+    public void PrivacyPeerListener_RejectsEveryListenerPortCollision(string value)
+    {
+        var node = new RouterNodeOptions
+        {
+            ManagedIngressH2ListenUrl = "http://127.0.0.1:8082",
+            ManagedIngressTrustedProxyAddresses = ["127.0.0.1"],
+            PrivacyPeerH2ListenUrl = value
         };
 
         var error = Assert.Throws<InvalidOperationException>(() =>

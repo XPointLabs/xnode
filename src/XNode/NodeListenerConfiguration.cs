@@ -22,9 +22,11 @@ internal sealed record NodeListenerPlan(
     NodeListenerBinding Api,
     NodeListenerBinding Peer,
     NodeListenerBinding? ManagedIngress,
+    NodeListenerBinding? PrivacyPeer,
     IReadOnlySet<IPAddress> ManagedIngressTrustedProxyAddresses)
 {
     public int ManagedIngressPort => ManagedIngress?.Url.Port ?? Api.Url.Port;
+    public int PrivacyPeerPort => PrivacyPeer?.Url.Port ?? Peer.Url.Port;
 
     public void Configure(KestrelServerOptions kestrel)
     {
@@ -35,6 +37,10 @@ internal sealed record NodeListenerPlan(
         if (ManagedIngress is not null)
         {
             ConfigureBinding(kestrel, ManagedIngress);
+        }
+        if (PrivacyPeer is not null)
+        {
+            ConfigureBinding(kestrel, PrivacyPeer);
         }
     }
 
@@ -91,26 +97,38 @@ internal static class NodeListenerConfiguration
                 "Node API and peer RPC listeners must use different ports.");
         }
 
-        if (string.IsNullOrWhiteSpace(node.ManagedIngressH2ListenUrl))
+        var managedIngress = string.IsNullOrWhiteSpace(node.ManagedIngressH2ListenUrl)
+            ? null
+            : ParseDedicatedH2Listener(
+                node.ManagedIngressH2ListenUrl,
+                "Node:ManagedIngressH2ListenUrl");
+        var privacyPeer = string.IsNullOrWhiteSpace(node.PrivacyPeerH2ListenUrl)
+            ? null
+            : ParseDedicatedH2Listener(
+                node.PrivacyPeerH2ListenUrl,
+                "Node:PrivacyPeerH2ListenUrl");
+        var ports = new[]
         {
-            return new NodeListenerPlan(api, peer, null, new HashSet<IPAddress>());
-        }
-
-        var managedIngress = ParseManagedIngressListener(
-            node.ManagedIngressH2ListenUrl);
-        if (managedIngress.Url.Port == api.Url.Port
-            || managedIngress.Url.Port == peer.Url.Port)
+            api.Url.Port,
+            peer.Url.Port,
+            managedIngress?.Url.Port ?? -1,
+            privacyPeer?.Url.Port ?? -2
+        };
+        if (ports.Distinct().Count() != ports.Length)
         {
             throw new InvalidOperationException(
-                "Node managed ingress, API, and peer RPC listeners must use different ports.");
+                "Node API, peer RPC, managed ingress, and privacy peer listeners must use different ports.");
         }
 
         return new NodeListenerPlan(
             api,
             peer,
             managedIngress,
-            ParseManagedIngressTrustedProxyAddresses(
-                node.ManagedIngressTrustedProxyAddresses));
+            privacyPeer,
+            managedIngress is null
+                ? new HashSet<IPAddress>()
+                : ParseManagedIngressTrustedProxyAddresses(
+                    node.ManagedIngressTrustedProxyAddresses));
     }
 
     private static NodeListenerBinding ParseExistingListener(
@@ -126,12 +144,14 @@ internal static class NodeListenerConfiguration
         return CreateBinding(uri, HttpProtocols.Http1AndHttp2);
     }
 
-    private static NodeListenerBinding ParseManagedIngressListener(string value)
+    private static NodeListenerBinding ParseDedicatedH2Listener(
+        string value,
+        string configurationName)
     {
         if (!TryParseListenerUrl(value, strict: true, out var uri))
         {
             throw new InvalidOperationException(
-                "Node:ManagedIngressH2ListenUrl must be an absolute canonical HTTP(S) origin URL.");
+                $"{configurationName} must be an absolute canonical HTTP(S) origin URL.");
         }
 
         return CreateBinding(uri, HttpProtocols.Http2);

@@ -43,5 +43,5 @@ RUN set -eux; \
     rm -rf /tmp/xray /tmp/xray.zip; \
     xray version
 COPY --from=build /app .
-EXPOSE 443 8080 8081
+EXPOSE 443 8080 8081 8082 8083
 ENTRYPOINT ["dotnet", "XNode.dll"]
