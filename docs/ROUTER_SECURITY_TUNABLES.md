@@ -4,6 +4,17 @@ The XNode host exposes only the Deep-native managed ingress and authenticated pr
 surface. Direct MAU2 client HTTP routes are
 also not registered; an exit invokes the native mailbox runtime in process.
 
+## `Node` managed ingress listener
+
+| Setting | Default | Constraint |
+| --- | ---: | --- |
+| `ManagedIngressH2ListenUrl` | empty | Optional absolute root-only HTTP(S) URL for a dedicated HTTP/2-only managed-ingress listener. Its port must be distinct from `ApiListenUrl` and `PeerRpcListenUrl`. |
+
+When enabled, the dedicated port serves only the frame and capability paths. Literal IP,
+`localhost`, and host-name wildcard binding follow the existing `UseUrls` host semantics. The API
+and peer listeners retain HTTP/1 support; the configuration fails closed before host startup for a
+malformed URL or port collision.
+
 ## `PrivacyRouting` settings
 
 | Setting | Default | Constraint |

@@ -151,6 +151,27 @@ Direct `/api/client/mailbox/v2/store`, `/retrieve`, and `/acknowledge` HTTP rout
 
 The public request contract requires exact HTTP/2, HTTPS scheme, `Content-Length`, `Content-Type` and `Accept` equal to `application/vnd.xpoint.deep.ingress-opaque-v1`, no query, content coding, early data, stable identity headers, cookies, tracing or redirects. Frames are admitted incrementally within `64..1572864` bytes before allocation/forwarding. Errors are canonical 64-byte `DIE1` frames and preserve before-forward versus outcome-unknown-after-forward certainty. Successful terminal replies are end-to-end sealed `DRS1` frames containing canonical `DPR1` success/evidence or stable failure codes.
 
+Kestrel keeps the existing API and peer listeners when the dedicated managed-ingress listener is
+disabled (the default). An internal HTTP/2-only listener can be enabled for an h2c reverse-proxy
+backend without changing those listeners:
+
+```json
+{
+  "Node": {
+    "apiListenUrl": "http://127.0.0.1:8080",
+    "peerRpcListenUrl": "http://0.0.0.0:8081",
+    "managedIngressH2ListenUrl": "http://0.0.0.0:8082/"
+  }
+}
+```
+
+`ManagedIngressH2ListenUrl` must be an absolute root-only HTTP(S) URL without user info, query,
+fragment or surrounding whitespace, and its port must differ from both API and peer RPC ports.
+Literal IPs bind exactly, `localhost` retains localhost binding, and other host names retain
+`UseUrls` wildcard-bind semantics. When enabled, only the managed-ingress frame and capability
+paths are served on that port, and those paths no longer accept traffic on the API listener. HTTPS
+uses the configured Kestrel default certificate; internal h2c uses `http://`.
+
 Each relay decrypts only its own layer. A relay layer contains a replay ID, a next router ID and an opaque inner frame. The endpoint never comes from the frame: the router ID must resolve in `PrivacyRouting:Peers`, and the configured origin, DNS result, HTTP version and TLS SPKI pins are revalidated for every outbound peer request. Peer requests additionally carry an Ed25519 signature bound to sender, recipient, timestamp, nonce and SHA-256 of the opaque frame. Both transport nonces and hop replay IDs use bounded TTL windows.
 
 ## Privacy routing configuration

@@ -18,6 +18,8 @@ public sealed class RouterNodeOptions
 
     public string PeerRpcListenUrl { get; set; } = "http://0.0.0.0:8081";
 
+    public string ManagedIngressH2ListenUrl { get; set; } = "";
+
     public string PublicHost { get; set; } = "127.0.0.1";
 
     public int PublicPort { get; set; } = 443;

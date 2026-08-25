@@ -72,16 +72,20 @@ VlessProfileGuard.Validate(vlessOptions, builder.Environment.IsDevelopment());
 
 vlessOptions.PublicHost = string.IsNullOrWhiteSpace(vlessOptions.PublicHost) ? nodeOptions.PublicHost : vlessOptions.PublicHost;
 vlessOptions.PublicPort = vlessOptions.PublicPort == 0 ? nodeOptions.PublicPort : vlessOptions.PublicPort;
-vlessOptions.ApiIngressPort = new Uri(nodeOptions.ApiListenUrl).Port;
 
-var apiListenUri = new Uri(nodeOptions.ApiListenUrl);
-var peerRpcListenUri = new Uri(nodeOptions.PeerRpcListenUrl);
-if (apiListenUri.Port == peerRpcListenUri.Port)
+var listenerPlan = NodeListenerConfiguration.Create(nodeOptions);
+var apiListenUri = listenerPlan.Api.Url;
+var peerRpcListenUri = listenerPlan.Peer.Url;
+var managedIngressListenUri = listenerPlan.ManagedIngress?.Url;
+vlessOptions.ApiIngressPort = apiListenUri.Port;
+if (managedIngressListenUri is null)
 {
-    throw new InvalidOperationException("Node API and peer RPC listeners must use different ports.");
+    builder.WebHost.UseUrls(nodeOptions.ApiListenUrl, nodeOptions.PeerRpcListenUrl);
 }
-
-builder.WebHost.UseUrls(nodeOptions.ApiListenUrl, nodeOptions.PeerRpcListenUrl);
+else
+{
+    builder.WebHost.ConfigureKestrel(listenerPlan.Configure);
+}
 
 builder.Services.AddSingleton<IClock, SystemClock>();
 builder.Services.AddSingleton(nodeOptions);
@@ -261,6 +265,18 @@ var app = builder.Build();
 
 app.Use(async (context, next) =>
 {
+    if (managedIngressListenUri is not null
+        && context.Connection.LocalPort == managedIngressListenUri.Port)
+    {
+        var managedIngressPath = context.Request.Path;
+        if (!managedIngressPath.Equals(ManagedIngressH2Contract.FramePath)
+            && !managedIngressPath.Equals(ManagedIngressH2Contract.CapabilitiesPath))
+        {
+            context.Response.StatusCode = StatusCodes.Status404NotFound;
+            return;
+        }
+    }
+
     if ((context.Request.Path.Equals(MailboxWireHttpContract.PeerStoreRoute)
             || context.Request.Path.Equals(MailboxWireHttpContract.PeerTombstoneRoute))
         && !HttpMethods.IsPost(context.Request.Method))
@@ -561,7 +577,7 @@ app.MapPost(ManagedIngressH2Contract.FramePath, (
         limiter,
         runtime,
         clock,
-        apiListenUri.Port,
+        listenerPlan.ManagedIngressPort,
         cancellationToken));
 
 app.MapGet(ManagedIngressH2Contract.CapabilitiesPath, (
@@ -570,7 +586,7 @@ app.MapGet(ManagedIngressH2Contract.CapabilitiesPath, (
     PrivacyRoutingHttpEndpoint.HandleCapabilities(
         context,
         privacy,
-        apiListenUri.Port));
+        listenerPlan.ManagedIngressPort));
 
 app.MapPost(PrivacyRoutingOptions.PeerFramePath, (
     HttpContext context,
