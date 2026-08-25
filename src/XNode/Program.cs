@@ -719,6 +719,25 @@ static async Task<IResult> HandleMailboxPeerAsync(
                     MailboxHttpFailure.DependencyUnavailable,
                 _ => MailboxHttpFailure.AuthorizationFailed
             };
+            if (result.Status == MailboxPeerReceiveStatus.Malformed)
+            {
+                var protocolError = "unknown";
+                try
+                {
+                    _ = MailboxPeerWireV2Codec.Decode(body);
+                }
+                catch (MailboxPeerReplicationException exception)
+                {
+                    protocolError = exception.Error.ToString();
+                }
+                services.GetRequiredService<ILoggerFactory>()
+                    .CreateLogger("XNode.MailboxPeerIngress")
+                    .LogWarning(
+                        "Mailbox peer canonical decode rejected a bounded request: length={RequestLength}, prq2Magic={Prq2Magic}, protocolError={ProtocolError}.",
+                        body.Length,
+                        body.AsSpan().StartsWith("PRQ2"u8),
+                        protocolError);
+            }
             return result.Status == MailboxPeerReceiveStatus.Disabled
                 ? Results.NotFound()
                 : Results.StatusCode(MailboxWireHttpContract.StatusCode(failure));
