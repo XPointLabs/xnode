@@ -248,6 +248,9 @@ public static class MailboxClientComposition
 
         var proofVerifier = new MembershipRoutesMailboxReplicaProofVerifier();
         var now = checked((ulong)DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+        var currentProofTime = ProofValidationTime(
+            now,
+            adapter.CurrentExpiresAtUnixSeconds);
         ValidateProofPair(
             fixture.CurrentLocalMembershipProof,
             fixture.CurrentRemoteMembershipProof,
@@ -256,7 +259,7 @@ public static class MailboxClientComposition
             ids,
             localId,
             proofVerifier,
-            now);
+            currentProofTime);
         ValidateProofPair(
             fixture.NextLocalMembershipProof,
             fixture.NextRemoteMembershipProof,
@@ -279,6 +282,11 @@ public static class MailboxClientComposition
                 "MailboxClient Development issuer generation range does not cover E/E+1.");
         }
     }
+
+    internal static ulong ProofValidationTime(
+        ulong nowUnixSeconds,
+        ulong expiresAtUnixSeconds) =>
+        Math.Min(nowUnixSeconds, checked(expiresAtUnixSeconds - 1));
 
     private static void ValidateProofPair(
         string localEncoded,

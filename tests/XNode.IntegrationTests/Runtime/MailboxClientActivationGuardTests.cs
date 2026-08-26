@@ -424,6 +424,21 @@ public sealed class MailboxClientActivationGuardTests
     }
 
     [Fact]
+    public void DevelopmentAuthorityProofValidation_PreservesExpiredBridgeHistory()
+    {
+        Assert.Equal(
+            99UL,
+            MailboxClientComposition.ProofValidationTime(
+                nowUnixSeconds: 150,
+                expiresAtUnixSeconds: 100));
+        Assert.Equal(
+            150UL,
+            MailboxClientComposition.ProofValidationTime(
+                nowUnixSeconds: 150,
+                expiresAtUnixSeconds: 200));
+    }
+
+    [Fact]
     public void ClientIngressLimiter_ConcurrencyRejectionDoesNotConsumeRateQuota()
     {
         var limiter = new MailboxClientIngressLimiter();
