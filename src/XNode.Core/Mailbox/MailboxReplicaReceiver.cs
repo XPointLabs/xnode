@@ -14,6 +14,10 @@ public sealed class MailboxPeerAuthorityOptions
     public ulong NextEpochExpiresAtUnixSeconds { get; set; }
     public List<MailboxPeerPlacementSelection> PlacementSelections { get; set; } = [];
 
+    public bool HasNonRetiredEpoch(ulong nowUnixSeconds) =>
+        CurrentEpochExpiresAtUnixSeconds > nowUnixSeconds
+        || NextEpoch != 0 && NextEpochExpiresAtUnixSeconds > nowUnixSeconds;
+
     public void Validate(bool required)
     {
         if (!required

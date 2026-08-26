@@ -235,6 +235,23 @@ public sealed class ReplicatedMailboxTests : IDisposable
     }
 
     [Fact]
+    public void PeerAuthorityLiveness_AcceptsAnExpiredBridgeOnlyWhileNextIsLive()
+    {
+        var authority = new MailboxPeerAuthorityOptions
+        {
+            CurrentEpoch = 7,
+            CurrentEpochExpiresAtUnixSeconds = 100,
+            NextEpoch = 8,
+            NextEpochExpiresAtUnixSeconds = 200
+        };
+
+        Assert.True(authority.HasNonRetiredEpoch(150));
+        Assert.False(authority.HasNonRetiredEpoch(200));
+        authority.NextEpoch = 0;
+        Assert.False(authority.HasNonRetiredEpoch(150));
+    }
+
+    [Fact]
     public async Task PersistedPendingClaim_RecoversAfterRestartAndThenCaches()
     {
         var fixture = new PeerFixture(_root);

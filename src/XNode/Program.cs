@@ -63,11 +63,11 @@ var mailboxAuthorityForwarding = mailboxAuthorityForwardingOptions.Validate(
     nodeOptions,
     productionMailboxAuthorityOptions.Enabled);
 if (mailboxOptions.Enabled
-    && mailboxPeerAuthorityOptions.CurrentEpochExpiresAtUnixSeconds
-        <= checked((ulong)DateTimeOffset.UtcNow.ToUnixTimeSeconds()))
+    && !mailboxPeerAuthorityOptions.HasNonRetiredEpoch(
+        checked((ulong)DateTimeOffset.UtcNow.ToUnixTimeSeconds())))
 {
     throw new InvalidOperationException(
-        "MailboxPeerAuthority current epoch is already retired.");
+        "MailboxPeerAuthority has no non-retired epoch.");
 }
 if (mailboxOptions.AllowInsecureHttpPeerTransport
     && !builder.Environment.IsDevelopment())
