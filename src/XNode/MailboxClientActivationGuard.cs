@@ -60,8 +60,8 @@ public static class MailboxClientActivationGuard
         {
             StrictMau2DecoderRegistered = true,
             Ed25519Mau2VerifierRegistered = true,
-            DurableReplayJournalRegistered = true,
-            DurableCanonicalOutcomeStoreRegistered = true,
+            DurableReplayJournalRegistered = false,
+            DurableCanonicalOutcomeStoreRegistered = false,
             IssuerAuthority = "dormant-reject-all",
             RevocationPolicy = "dormant-reject-all",
             PeerRuntimeReady = true,

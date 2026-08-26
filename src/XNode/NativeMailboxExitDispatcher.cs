@@ -5,11 +5,31 @@ using XNode.Core.Mailbox.Client;
 
 namespace XNode;
 
+public enum NativeMailboxDispatchCertainty
+{
+    Completed = 0,
+    RejectedBeforeForward = 1,
+    OutcomeUnknownAfterForward = 2
+}
+
 public sealed record NativeMailboxDispatchResult(
     int StatusCode,
-    ReadOnlyMemory<byte> CanonicalBody)
+    ReadOnlyMemory<byte> CanonicalBody,
+    NativeMailboxDispatchCertainty Certainty = NativeMailboxDispatchCertainty.Completed)
 {
-    public bool Success => StatusCode == StatusCodes.Status200OK;
+    public bool Success =>
+        Certainty == NativeMailboxDispatchCertainty.Completed
+        && StatusCode == StatusCodes.Status200OK;
+
+    public static NativeMailboxDispatchResult RejectedBeforeForward() => new(
+        StatusCodes.Status503ServiceUnavailable,
+        ReadOnlyMemory<byte>.Empty,
+        NativeMailboxDispatchCertainty.RejectedBeforeForward);
+
+    public static NativeMailboxDispatchResult OutcomeUnknownAfterForward() => new(
+        StatusCodes.Status504GatewayTimeout,
+        ReadOnlyMemory<byte>.Empty,
+        NativeMailboxDispatchCertainty.OutcomeUnknownAfterForward);
 }
 
 public interface INativeMailboxExitDispatcher
@@ -20,7 +40,17 @@ public interface INativeMailboxExitDispatcher
         CancellationToken cancellationToken);
 }
 
-public sealed class NativeMailboxExitDispatcher : INativeMailboxExitDispatcher
+public interface ILocalNativeMailboxExitDispatcher
+{
+    Task<NativeMailboxDispatchResult> DispatchAsync(
+        PrivacyRoutingOperation privacyOperation,
+        ReadOnlyMemory<byte> canonicalMau2,
+        CancellationToken cancellationToken);
+}
+
+public sealed class NativeMailboxExitDispatcher
+    : INativeMailboxExitDispatcher,
+      ILocalNativeMailboxExitDispatcher
 {
     private readonly IServiceProvider _services;
 

@@ -147,7 +147,7 @@ The public client surface is HTTP/2 only:
 - `GET /api/ingress/v1/capabilities` — managed-ingress capability document;
 - `POST /api/peer/privacy/v1/frame` — authenticated peer-only relay ingress on the peer listener.
 
-Direct `/api/client/mailbox/v2/store`, `/retrieve`, and `/acknowledge` HTTP routes are not mapped. The exit node opens the final privacy layer and invokes the existing MAU2 verifier, durable outcome journal and two-replica PRQ2/MQR3 runtime in process.
+Direct `/api/client/mailbox/v2/store`, `/retrieve`, and `/acknowledge` HTTP routes are not mapped. The exit node opens the final privacy layer. An authoritative exit invokes the MAU2 verifier, durable outcome journal and two-replica PRQ2/MQR3 runtime in process. A forwarding-only exit sends the unchanged canonical MAU2 body to the explicitly pinned authoritative router over the authenticated privacy-peer transport; it never owns a client adapter, operation ledger, cursor authority, or MQR3 signing authority.
 
 The public request contract requires exact HTTP/2, HTTPS scheme, `Content-Length`, `Content-Type` and `Accept` equal to `application/vnd.xpoint.deep.ingress-opaque-v1`, no query, content coding, early data, stable identity headers, cookies, tracing or redirects. Frames are admitted incrementally within `64..1572864` bytes before allocation/forwarding. Errors are canonical 64-byte `DIE1` frames and preserve before-forward versus outcome-unknown-after-forward certainty. Successful terminal replies are end-to-end sealed `DRS1` frames containing canonical `DPR1` success/evidence or stable failure codes.
 
@@ -184,9 +184,10 @@ before managed-ingress contract validation. Unknown proxies receive 404; missing
 non-exact forwarded-proto values receive 400. The API and peer listeners never trust or consume
 this header.
 
-The optional privacy-peer listener is exact HTTP/2 and serves only
-`/api/peer/privacy/v1/frame`; when present, that path is not exposed on the mixed peer-RPC
-listener. The Survival Development topology uses h2c `8083` for this authenticated internal hop.
+The optional privacy-peer listener is exact HTTP/2 and serves the privacy frame route plus any
+explicitly enabled authoritative-mailbox bridge routes. These paths are not exposed on the mixed
+peer-RPC listener. The Survival Development topology uses h2c `8083` for authenticated internal
+hops.
 
 Each relay decrypts only its own layer. A relay layer contains a replay ID, a next router ID and an opaque inner frame. The endpoint never comes from the frame: the router ID must resolve in `PrivacyRouting:Peers`, and the configured origin, DNS result, HTTP version and TLS SPKI pins are revalidated for every outbound peer request. Peer requests additionally carry an Ed25519 signature bound to sender, recipient, timestamp, nonce and SHA-256 of the opaque frame. Both transport nonces and hop replay IDs use bounded TTL windows.
 
@@ -222,6 +223,51 @@ The X25519 private key is independently generated and stored as exactly 32 bytes
 HTTPS and two distinct CA-valid SPKI pins are mandatory outside the local Development lane. `AllowInsecureHttpPeerTransport=true` is accepted only when ASP.NET Core is running in `Development`; in that lane peer origins may use HTTP and SPKI fields must be empty. This exception exists for the isolated six-node survival compose network and is rejected in UAT and Production.
 
 `PublicPeerBaseUrl` is the origin advertised in the signed native privacy contact. The runtime appends the exact peer path itself. Registry heartbeat publishes `privacy-routing-v1`, the independent X25519 public key and the privacy peer endpoint.
+
+### Single authoritative mailbox coordinator
+
+PMA1 defines one logical coordinator. Multiple terminal privacy paths therefore must converge on
+the same coordinator rather than activate independent client adapters. Configure a forwarding-only
+exit with the authoritative router already present in its pinned `PrivacyRouting:Peers` inventory:
+
+```json
+{
+  "MailboxAuthorityForwarding": {
+    "enabled": true,
+    "authorityRouterId": "<authoritative router id>",
+    "allowedExitRouterIds": []
+  },
+  "MailboxClient": { "enabled": false },
+  "MailboxClientAdapter": { "enabled": false }
+}
+```
+
+On the authoritative router, keep forwarding disabled and allow only the exact terminal exits that
+may bridge canonical MAU2 requests:
+
+```json
+{
+  "MailboxAuthorityForwarding": {
+    "enabled": false,
+    "authorityRouterId": "",
+    "allowedExitRouterIds": [ "<forwarding exit router id>" ]
+  }
+}
+```
+
+The bridge uses exact HTTP/2 and the private `MAF1` Ed25519 transcript. `MAF1` binds sender and
+recipient router identities, Store/Retrieve/Acknowledge operation, exact constant route, timestamp,
+nonce, and SHA-256 of the unchanged MAU2. It has a dedicated bounded replay window and a separate
+admission limiter acquired before body allocation. The three peer-only paths are store, retrieve,
+and acknowledge under `/api/peer/mailbox-authority/v1/`. In Development the authority origin and
+pins come from the exact `PrivacyRouting:Peers` row. In Production they come only from the live,
+verified PMA1 `NodeIngress` current/next SPKI binding; stale or unavailable authority is rejected
+before forwarding. Only an exact bounded canonical response is accepted. Transport failure,
+timeout, malformed response, any `5xx`, or loss after dispatch is surfaced as outcome-unknown; it
+is never converted into an empty Retrieve or a second coordinator attempt. The authority allowlist
+is invalid unless the local client adapter is active, and forwarding is invalid when a local client
+adapter is active. A forwarding-only node does not register the MAU2 capability replay journal,
+canonical outcome store, operation ledger, or outcome GC service.
 
 Operational checks:
 

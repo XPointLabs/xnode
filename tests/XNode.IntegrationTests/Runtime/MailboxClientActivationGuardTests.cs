@@ -29,8 +29,8 @@ public sealed class MailboxClientActivationGuardTests
         Assert.Equal(MailboxClientActivationGuard.BlockedReason, status.Reason);
         Assert.True(status.StrictMau2DecoderRegistered);
         Assert.True(status.Ed25519Mau2VerifierRegistered);
-        Assert.True(status.DurableReplayJournalRegistered);
-        Assert.True(status.DurableCanonicalOutcomeStoreRegistered);
+        Assert.False(status.DurableReplayJournalRegistered);
+        Assert.False(status.DurableCanonicalOutcomeStoreRegistered);
         Assert.Equal("dormant-reject-all", status.IssuerAuthority);
         Assert.Equal("dormant-reject-all", status.RevocationPolicy);
         Assert.True(status.PeerRuntimeReady);
@@ -131,6 +131,10 @@ public sealed class MailboxClientActivationGuardTests
             Path.Combine(hostDirectory, "appsettings.json")));
         Assert.False(appSettings.RootElement
             .GetProperty("MailboxClient")
+            .GetProperty("enabled")
+            .GetBoolean());
+        Assert.False(appSettings.RootElement
+            .GetProperty("MailboxAuthorityForwarding")
             .GetProperty("enabled")
             .GetBoolean());
         Assert.Contains(

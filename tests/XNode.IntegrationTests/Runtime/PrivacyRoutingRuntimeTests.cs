@@ -124,6 +124,86 @@ public sealed class PrivacyRoutingRuntimeTests
     }
 
     [Fact]
+    public async Task Exit_AuthorityUnavailableBeforeForward_RemainsFallbackEligible()
+    {
+        using var first = PublicKeyBox.GenerateKeyPair();
+        using var second = PublicKeyBox.GenerateKeyPair();
+        using var exit = PublicKeyBox.GenerateKeyPair();
+        var ids = new[] { Id(21), Id(22), Id(23) };
+        using var request = PrivacyRoutingRequestBuilder.Build(
+            Route(ids, first.PublicKey, second.PublicKey, exit.PublicKey),
+            PrivacyRoutingOperation.Store,
+            Bytes(61),
+            Bytes(71),
+            [1, 2, 3],
+            256);
+        var firstLayer = Assert.IsType<PrivacyRoutingRelayLayer>(
+            PrivacyRoutingRequestCodec.Open(request.Frame.Span, first.PrivateKey));
+        var secondLayer = Assert.IsType<PrivacyRoutingRelayLayer>(
+            PrivacyRoutingRequestCodec.Open(firstLayer.InnerFrame.Span, second.PrivateKey));
+        using var configuration = Configuration(
+            exit.PrivateKey,
+            exit.PublicKey,
+            ids[0]);
+        var runtime = Runtime(
+            configuration,
+            ids[2],
+            new RecordingPeerClient(new byte[256]),
+            new RecordingMailboxDispatcher
+            {
+                Result = NativeMailboxDispatchResult.RejectedBeforeForward()
+            });
+
+        var result = await runtime.ProcessAsync(secondLayer.InnerFrame, default);
+
+        Assert.Equal(PrivacyRuntimeOutcome.UnavailableBeforeForward, result.Outcome);
+        Assert.True(result.OpaqueReply.IsEmpty);
+    }
+
+    [Fact]
+    public async Task Exit_AuthorityOutcomeUnknown_SealsTerminalOutcomeWithoutFallback()
+    {
+        using var first = PublicKeyBox.GenerateKeyPair();
+        using var second = PublicKeyBox.GenerateKeyPair();
+        using var exit = PublicKeyBox.GenerateKeyPair();
+        var ids = new[] { Id(24), Id(25), Id(26) };
+        using var request = PrivacyRoutingRequestBuilder.Build(
+            Route(ids, first.PublicKey, second.PublicKey, exit.PublicKey),
+            PrivacyRoutingOperation.Retrieve,
+            Bytes(62),
+            Bytes(72),
+            [4, 5, 6],
+            256);
+        var firstLayer = Assert.IsType<PrivacyRoutingRelayLayer>(
+            PrivacyRoutingRequestCodec.Open(request.Frame.Span, first.PrivateKey));
+        var secondLayer = Assert.IsType<PrivacyRoutingRelayLayer>(
+            PrivacyRoutingRequestCodec.Open(firstLayer.InnerFrame.Span, second.PrivateKey));
+        using var configuration = Configuration(
+            exit.PrivateKey,
+            exit.PublicKey,
+            ids[0]);
+        var runtime = Runtime(
+            configuration,
+            ids[2],
+            new RecordingPeerClient(new byte[256]),
+            new RecordingMailboxDispatcher
+            {
+                Result = NativeMailboxDispatchResult.OutcomeUnknownAfterForward()
+            });
+
+        var result = await runtime.ProcessAsync(secondLayer.InnerFrame, default);
+
+        Assert.Equal(PrivacyRuntimeOutcome.Completed, result.Outcome);
+        var opened = PrivacyRoutingResponseCodec.Open(
+            result.OpaqueReply.Span,
+            request.ReplyContext);
+        var terminal = PrivacyRoutingResultCodec.Decode(opened.Payload.Span);
+        Assert.Equal(PrivacyRoutingResultKind.Failure, terminal.Kind);
+        Assert.Equal(PrivacyRoutingFailureCode.OutcomeUnknown, terminal.FailureCode);
+        Assert.True(terminal.Retryable);
+    }
+
+    [Fact]
     public void Options_RequireCanonicalIndependentKeyAndDevelopmentOnlyHttp()
     {
         var root = Path.Combine(

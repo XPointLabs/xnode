@@ -165,7 +165,7 @@ public sealed class HttpPrivacyPeerClient : IPrivacyPeerClient
         }
     }
 
-    private static SocketsHttpHandler CreatePinnedHandler(PrivacyPeer peer)
+    internal static SocketsHttpHandler CreatePinnedHandler(PrivacyPeer peer)
     {
         var handler = new SocketsHttpHandler
         {
@@ -271,7 +271,7 @@ public sealed class HttpPrivacyPeerClient : IPrivacyPeerClient
         return headers;
     }
 
-    private static async Task<byte[]> ReadExactlyBoundedAsync(
+    internal static async Task<byte[]> ReadExactlyBoundedAsync(
         HttpContent content,
         int length,
         CancellationToken cancellationToken)

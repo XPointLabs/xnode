@@ -140,6 +140,11 @@ public sealed class PrivacyRoutingRuntime
                 PrivacyRuntimeOutcome.OutcomeUnknownAfterForward);
         }
 
+        if (dispatched.Certainty == NativeMailboxDispatchCertainty.RejectedBeforeForward)
+        {
+            return PrivacyRuntimeResult.Of(PrivacyRuntimeOutcome.UnavailableBeforeForward);
+        }
+
         var terminal = dispatched.Success
             ? PrivacyRoutingTerminalResult.Success(
                 exit.Operation,
