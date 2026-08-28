@@ -12,15 +12,33 @@ public sealed class HttpMailboxReplicaPeerClient : IMailboxReplicaPeerClient
 {
     private readonly HttpClient _httpClient;
     private readonly ReplicatedMailboxOptions _mailboxOptions;
+    private readonly DevelopmentUatPrivatePeerAddressPolicy _privatePeerAddressPolicy;
     private readonly ILogger<HttpMailboxReplicaPeerClient>? _logger;
 
     public HttpMailboxReplicaPeerClient(
         HttpClient httpClient,
         ReplicatedMailboxOptions mailboxOptions,
         ILogger<HttpMailboxReplicaPeerClient>? logger = null)
+        : this(
+            httpClient,
+            mailboxOptions,
+            DevelopmentUatPrivatePeerAddressPolicy.Disabled,
+            logger)
     {
+    }
+
+    public HttpMailboxReplicaPeerClient(
+        HttpClient httpClient,
+        ReplicatedMailboxOptions mailboxOptions,
+        DevelopmentUatPrivatePeerAddressPolicy privatePeerAddressPolicy,
+        ILogger<HttpMailboxReplicaPeerClient>? logger = null)
+    {
+        ArgumentNullException.ThrowIfNull(httpClient);
+        ArgumentNullException.ThrowIfNull(mailboxOptions);
+        ArgumentNullException.ThrowIfNull(privatePeerAddressPolicy);
         _httpClient = httpClient;
         _mailboxOptions = mailboxOptions;
+        _privatePeerAddressPolicy = privatePeerAddressPolicy;
         _logger = logger;
     }
 
@@ -85,7 +103,8 @@ public sealed class HttpMailboxReplicaPeerClient : IMailboxReplicaPeerClient
                 : new HttpClient(MailboxPeerHttpHandler.Create(
                     _mailboxOptions,
                     peer.CurrentSpkiSha256,
-                    peer.NextSpkiSha256), disposeHandler: true);
+                    peer.NextSpkiSha256,
+                    _privatePeerAddressPolicy), disposeHandler: true);
         var client = pinnedClient ?? _httpClient;
         HttpResponseMessage response;
         try

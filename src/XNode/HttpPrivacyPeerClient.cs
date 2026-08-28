@@ -216,9 +216,7 @@ public sealed class HttpPrivacyPeerClient : IPrivacyPeerClient
                 cancellationToken)
             .ConfigureAwait(false);
         var permitted = addresses
-            .Where(address => PeerNetworkAddressGuard.IsPubliclyRoutable(address)
-                || peer.AllowPrivateResolvedAddresses
-                    && PeerNetworkAddressGuard.IsPrivate(address))
+            .Where(peer.AllowsResolvedAddress)
             .ToArray();
         if (permitted.Length == 0)
         {

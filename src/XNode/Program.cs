@@ -38,12 +38,22 @@ var productionMailboxAuthorityOptions = builder.Configuration
     .Get<ProductionMailboxAuthorityOptions>() ?? new ProductionMailboxAuthorityOptions();
 var privacyRoutingOptions = builder.Configuration.GetSection("PrivacyRouting")
     .Get<PrivacyRoutingOptions>() ?? new PrivacyRoutingOptions();
+var developmentUatPrivatePeerAddressOptions = builder.Configuration
+    .GetSection("DevelopmentUatPrivatePeerAddresses")
+    .Get<DevelopmentUatPrivatePeerAddressOptions>()
+    ?? new DevelopmentUatPrivatePeerAddressOptions();
 var mailboxAuthorityForwardingOptions = builder.Configuration
     .GetSection("MailboxAuthorityForwarding")
     .Get<MailboxAuthorityForwardingOptions>() ?? new MailboxAuthorityForwardingOptions();
+var developmentUatPrivatePeerAddressPolicy =
+    developmentUatPrivatePeerAddressOptions.ValidateAndLoad(
+        nodeOptions,
+        builder.Environment.IsDevelopment(),
+        builder.Environment.IsProduction());
 var privacyRouting = privacyRoutingOptions.ValidateAndLoad(
     nodeOptions,
-    builder.Environment.IsDevelopment());
+    builder.Environment.IsDevelopment(),
+    developmentUatPrivatePeerAddressPolicy);
 mailboxOptions.Validate();
 mailboxPeerAuthorityOptions.Validate(mailboxOptions.Enabled);
 productionMailboxAuthorityOptions.Validate(
@@ -109,6 +119,7 @@ builder.Services.AddSingleton(mailboxClientAdapterOptions);
 builder.Services.AddSingleton(productionMailboxAuthorityOptions);
 builder.Services.AddSingleton(privacyRoutingOptions);
 builder.Services.AddSingleton(privacyRouting);
+builder.Services.AddSingleton(developmentUatPrivatePeerAddressPolicy);
 builder.Services.AddSingleton(mailboxAuthorityForwardingOptions);
 builder.Services.AddSingleton(mailboxAuthorityForwarding);
 builder.Services.AddSingleton<PrivacyPeerReplayGuard>();

@@ -33,9 +33,18 @@ public sealed class PrivacyRoutingOptions
 
     public PrivacyRoutingConfiguration ValidateAndLoad(
         RouterNodeOptions node,
-        bool isDevelopment)
+        bool isDevelopment) => ValidateAndLoad(
+            node,
+            isDevelopment,
+            DevelopmentUatPrivatePeerAddressPolicy.Disabled);
+
+    internal PrivacyRoutingConfiguration ValidateAndLoad(
+        RouterNodeOptions node,
+        bool isDevelopment,
+        DevelopmentUatPrivatePeerAddressPolicy privatePeerAddressPolicy)
     {
         ArgumentNullException.ThrowIfNull(node);
+        ArgumentNullException.ThrowIfNull(privatePeerAddressPolicy);
         if (!Enabled)
         {
             if (!string.IsNullOrWhiteSpace(X25519PrivateKeyPath)
@@ -136,7 +145,8 @@ public sealed class PrivacyRoutingOptions
             {
                 var peer = configured.Validate(
                     isDevelopment,
-                    AllowInsecureHttpPeerTransport);
+                    AllowInsecureHttpPeerTransport,
+                    privatePeerAddressPolicy);
                 if (peer.RouterId == localRouterId || !peers.TryAdd(peer.RouterId, peer))
                 {
                     throw new InvalidOperationException(
@@ -200,7 +210,8 @@ public sealed class PrivacyPeerOptions
 
     internal PrivacyPeer Validate(
         bool isDevelopment,
-        bool allowInsecureHttpPeerTransport)
+        bool allowInsecureHttpPeerTransport,
+        DevelopmentUatPrivatePeerAddressPolicy privatePeerAddressPolicy)
     {
         if (!XNode.Core.RouterId.TryParse(RouterId, out var routerId)
             || !Uri.TryCreate(BaseUrl.Trim(), UriKind.Absolute, out var baseUrl)
@@ -252,7 +263,8 @@ public sealed class PrivacyPeerOptions
             new Uri(baseUrl, PrivacyRoutingOptions.PeerFramePath),
             current,
             next,
-            isDevelopment);
+            isDevelopment,
+            privatePeerAddressPolicy);
     }
 }
 
@@ -318,6 +330,7 @@ public sealed class PrivacyPeer
 {
     private readonly byte[] _currentSpkiSha256;
     private readonly byte[] _nextSpkiSha256;
+    private readonly DevelopmentUatPrivatePeerAddressPolicy _privatePeerAddressPolicy;
 
     public PrivacyPeer(
         RouterId routerId,
@@ -325,12 +338,31 @@ public sealed class PrivacyPeer
         ReadOnlySpan<byte> currentSpkiSha256,
         ReadOnlySpan<byte> nextSpkiSha256,
         bool allowPrivateResolvedAddresses)
+        : this(
+            routerId,
+            endpoint,
+            currentSpkiSha256,
+            nextSpkiSha256,
+            allowPrivateResolvedAddresses,
+            DevelopmentUatPrivatePeerAddressPolicy.Disabled)
     {
+    }
+
+    internal PrivacyPeer(
+        RouterId routerId,
+        Uri endpoint,
+        ReadOnlySpan<byte> currentSpkiSha256,
+        ReadOnlySpan<byte> nextSpkiSha256,
+        bool allowPrivateResolvedAddresses,
+        DevelopmentUatPrivatePeerAddressPolicy privatePeerAddressPolicy)
+    {
+        ArgumentNullException.ThrowIfNull(privatePeerAddressPolicy);
         RouterId = routerId;
         Endpoint = endpoint;
         _currentSpkiSha256 = currentSpkiSha256.ToArray();
         _nextSpkiSha256 = nextSpkiSha256.ToArray();
         AllowPrivateResolvedAddresses = allowPrivateResolvedAddresses;
+        _privatePeerAddressPolicy = privatePeerAddressPolicy;
     }
 
     public RouterId RouterId { get; }
@@ -338,4 +370,9 @@ public sealed class PrivacyPeer
     public bool AllowPrivateResolvedAddresses { get; }
     internal ReadOnlySpan<byte> CurrentSpkiSha256 => _currentSpkiSha256;
     internal ReadOnlySpan<byte> NextSpkiSha256 => _nextSpkiSha256;
+
+    internal bool AllowsResolvedAddress(System.Net.IPAddress address) =>
+        PeerNetworkAddressGuard.IsPubliclyRoutable(address)
+        || AllowPrivateResolvedAddresses && PeerNetworkAddressGuard.IsPrivate(address)
+        || _privatePeerAddressPolicy.Allows(address);
 }

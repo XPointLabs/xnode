@@ -254,6 +254,161 @@ public sealed class PrivacyRoutingRuntimeTests
     }
 
     [Fact]
+    public void Options_AllowPrivateResolvedPeersOnlyForExplicitProductionLocalUat()
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "xnode-privacy-uat-options-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var keyPath = Path.Combine(root, "x25519.key");
+            File.WriteAllText(keyPath, new string('a', 64));
+            var options = new PrivacyRoutingOptions
+            {
+                Enabled = true,
+                X25519PrivateKeyPath = keyPath,
+                PublicPeerBaseUrl = "https://192-168-1-43.sslip.io:41801/",
+                Peers =
+                [
+                    new PrivacyPeerOptions
+                    {
+                        RouterId = Id(2).Value,
+                        BaseUrl = "https://192-168-1-43.sslip.io:41802/",
+                        CurrentSpkiSha256 = new string('c', 64),
+                        NextSpkiSha256 = new string('d', 64)
+                    }
+                ]
+            };
+            var localUat = NodeOptions();
+            localUat.Network = "local";
+            var policy = new DevelopmentUatPrivatePeerAddressOptions
+            {
+                Scope = DevelopmentUatPrivatePeerAddressOptions.RequiredScope,
+                Addresses = ["192.168.1.43"]
+            }.ValidateAndLoad(
+                localUat,
+                isDevelopment: false,
+                isProduction: true);
+
+            using (var configuration = options.ValidateAndLoad(
+                       localUat,
+                       isDevelopment: false,
+                       policy))
+            {
+                var peer = Assert.Single(configuration.Peers).Value;
+                Assert.False(peer.AllowPrivateResolvedAddresses);
+                Assert.True(peer.AllowsResolvedAddress(IPAddress.Parse("192.168.1.43")));
+                Assert.False(peer.AllowsResolvedAddress(IPAddress.Parse("192.168.1.44")));
+                Assert.False(peer.AllowsResolvedAddress(IPAddress.Loopback));
+                Assert.True(peer.AllowsResolvedAddress(IPAddress.Parse("8.8.8.8")));
+            }
+
+            var production = NodeOptions();
+            production.Network = "mainnet";
+            var binding = new DevelopmentUatPrivatePeerAddressOptions
+            {
+                Scope = DevelopmentUatPrivatePeerAddressOptions.RequiredScope,
+                Addresses = ["192.168.1.43"]
+            };
+            Assert.Throws<InvalidOperationException>(() => binding.ValidateAndLoad(
+                production,
+                isDevelopment: false,
+                isProduction: true));
+            Assert.Throws<InvalidOperationException>(() => binding.ValidateAndLoad(
+                localUat,
+                isDevelopment: true,
+                isProduction: false));
+
+            using var strictProductionLocal = options.ValidateAndLoad(
+                localUat,
+                isDevelopment: false);
+            Assert.False(Assert.Single(strictProductionLocal.Peers).Value
+                .AllowsResolvedAddress(IPAddress.Parse("192.168.1.43")));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("", "192.168.1.43")]
+    [InlineData("DEVELOPMENT-UAT-ONLY", "")]
+    [InlineData("development-uat-only", "192.168.1.43")]
+    [InlineData("DEVELOPMENT-UAT-ONLY", "192.168.001.043")]
+    [InlineData("DEVELOPMENT-UAT-ONLY", "8.8.8.8")]
+    [InlineData("DEVELOPMENT-UAT-ONLY", "127.0.0.1")]
+    [InlineData("DEVELOPMENT-UAT-ONLY", "169.254.169.254")]
+    public void DevelopmentUatPrivatePeerBinding_RejectsMalformedOrUnsafeValues(
+        string scope,
+        string address)
+    {
+        var node = NodeOptions();
+        node.Network = "local";
+        var options = new DevelopmentUatPrivatePeerAddressOptions
+        {
+            Scope = scope,
+            Addresses = string.IsNullOrEmpty(address) ? [] : [address]
+        };
+
+        Assert.Throws<InvalidOperationException>(() => options.ValidateAndLoad(
+            node,
+            isDevelopment: false,
+            isProduction: true));
+    }
+
+    [Fact]
+    public void DevelopmentUatPrivatePeerBinding_RejectsDuplicates()
+    {
+        var node = NodeOptions();
+        node.Network = "local";
+        var options = new DevelopmentUatPrivatePeerAddressOptions
+        {
+            Scope = DevelopmentUatPrivatePeerAddressOptions.RequiredScope,
+            Addresses = ["192.168.1.43", "192.168.1.43"]
+        };
+
+        Assert.Throws<InvalidOperationException>(() => options.ValidateAndLoad(
+            node,
+            isDevelopment: false,
+            isProduction: true));
+    }
+
+    [Fact]
+    public void MailboxPeerAddressGuard_RequiresPinsAndExactUatAddress()
+    {
+        var node = NodeOptions();
+        node.Network = "local";
+        var policy = new DevelopmentUatPrivatePeerAddressOptions
+        {
+            Scope = DevelopmentUatPrivatePeerAddressOptions.RequiredScope,
+            Addresses = ["192.168.1.43"]
+        }.ValidateAndLoad(node, isDevelopment: false, isProduction: true);
+
+        Assert.True(MailboxPeerHttpHandler.IsPermittedResolvedAddress(
+            IPAddress.Parse("192.168.1.43"),
+            allowPinnedPrivate: true,
+            literalHost: null,
+            policy));
+        Assert.False(MailboxPeerHttpHandler.IsPermittedResolvedAddress(
+            IPAddress.Parse("192.168.1.44"),
+            allowPinnedPrivate: true,
+            literalHost: null,
+            policy));
+        Assert.False(MailboxPeerHttpHandler.IsPermittedResolvedAddress(
+            IPAddress.Parse("192.168.1.43"),
+            allowPinnedPrivate: false,
+            literalHost: null,
+            policy));
+        Assert.True(MailboxPeerHttpHandler.IsPermittedResolvedAddress(
+            IPAddress.Parse("8.8.8.8"),
+            allowPinnedPrivate: false,
+            literalHost: null,
+            DevelopmentUatPrivatePeerAddressPolicy.Disabled));
+    }
+
+    [Fact]
     public void PeerAuthentication_BindsFrameRecipientAndCanonicalHeaders()
     {
         var seed = Enumerable.Range(1, 32).Select(static item => (byte)item).ToArray();
