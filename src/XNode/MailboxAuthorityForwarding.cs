@@ -279,8 +279,10 @@ public sealed class MailboxAuthorityForwardingClient : IMailboxAuthorityForwardi
                 or ArgumentException or InvalidOperationException)
         {
             _logger?.LogWarning(
-                "Authoritative mailbox forwarding ended without an exact response: failure={FailureType}.",
-                exception.GetType().Name);
+                "Authoritative mailbox forwarding ended without an exact response: failure={FailureType}, httpError={HttpRequestError}, inner={InnerFailureType}.",
+                exception.GetType().Name,
+                HttpPrivacyPeerClient.SafeHttpRequestError(exception),
+                exception.InnerException?.GetType().Name ?? "none");
             return NativeMailboxDispatchResult.OutcomeUnknownAfterForward();
         }
     }

@@ -159,11 +159,18 @@ public sealed class HttpPrivacyPeerClient : IPrivacyPeerClient
                 or InvalidDataException)
         {
             _logger?.LogWarning(
-                "Privacy peer transport failed before an exact response: {FailureType}.",
-                exception.GetType().Name);
+                "Privacy peer transport failed before an exact response: failure={FailureType}, httpError={HttpRequestError}, inner={InnerFailureType}.",
+                exception.GetType().Name,
+                SafeHttpRequestError(exception),
+                exception.InnerException?.GetType().Name ?? "none");
             return PrivacyForwardResult.Unknown;
         }
     }
+
+    internal static string SafeHttpRequestError(Exception exception) =>
+        exception is HttpRequestException http
+            ? http.HttpRequestError.ToString()
+            : "none";
 
     internal static SocketsHttpHandler CreatePinnedHandler(PrivacyPeer peer)
     {
