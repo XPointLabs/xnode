@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using XNode;
 using XNode.Core;
 using XNode.Core.Mailbox;
@@ -221,6 +222,20 @@ public sealed class MailboxClientActivationGuardTests
         Assert.DoesNotContain(
             typeof(MailboxClientStoreAdapter).GetProperties(),
             property => property.Name.Contains("Observer", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void TypedMailboxPeerClient_UsesTheExplicitPolicyAwareConstructor()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton(new ReplicatedMailboxOptions());
+        services.AddSingleton(DevelopmentUatPrivatePeerAddressPolicy.Disabled);
+        services.AddLogging();
+        services.AddHttpClient<IMailboxReplicaPeerClient, HttpMailboxReplicaPeerClient>();
+        using var provider = services.BuildServiceProvider();
+
+        Assert.IsType<HttpMailboxReplicaPeerClient>(
+            provider.GetRequiredService<IMailboxReplicaPeerClient>());
     }
 
     [Fact]

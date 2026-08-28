@@ -27,6 +27,7 @@ public sealed class HttpMailboxReplicaPeerClient : IMailboxReplicaPeerClient
     {
     }
 
+    [Microsoft.Extensions.DependencyInjection.ActivatorUtilitiesConstructor]
     public HttpMailboxReplicaPeerClient(
         HttpClient httpClient,
         ReplicatedMailboxOptions mailboxOptions,
