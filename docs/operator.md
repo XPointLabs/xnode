@@ -4,6 +4,12 @@
 
 XNode runs the Deep-native privacy relay and mailbox exit runtime in .NET and supervises Xray only for VLESS ingress. Xray forwards accepted public traffic to the bounded managed-ingress HTTP/2 surface.
 
+Current product status (2026-08-30): this server path is implemented, but the
+MAUI authenticated-mailbox transport does not yet dial it through its Reality
+runtime. It sends the opaque frame directly to the HTTPS entry origin. Do not
+claim censorship-resistant messenger delivery until a client-bound
+VLESS/Reality physical gate passes with direct HTTPS blocked.
+
 The registry payload advertises the transport parameters clients need:
 
 - mask domain
@@ -72,7 +78,7 @@ Use this checklist to separate three different questions:
 
 ### Current Status Snapshot
 
-As of 2026-06-01:
+As of 2026-08-30:
 
 - `GO`: Release tests pass locally (`dotnet test XNode.slnx --configuration Release`).
 - `GO`: self-contained `linux-x64` publish path works (`dotnet publish ... --configuration Release --runtime linux-x64 --self-contained true`).
@@ -84,6 +90,8 @@ As of 2026-06-01:
 - `GO`: messenger-node release rehearsal requirements are now captured in `deep-devops/docs/MESSENGER_NODE_PRODUCTION_RUNBOOK.md`.
 - `CONDITIONAL GO`: operator deployment is possible if the target host has a real Xray binary, valid Reality/TLS material, and a real `appsettings.Production.json`.
 - `NO-GO`: attached green CI/release artifacts for the real-Xray no-mock rehearsal and C3 report are still outstanding.
+- `NO-GO`: current MAUI message transport is not bound to the Xray/Reality
+  ingress; real-Xray server readiness is not proof that user messages use it.
 - `NO-GO`: program-level platform matrix, full security/compliance, and release-discipline sign-off gates are not yet closed.
 
 ### Router Build Gate

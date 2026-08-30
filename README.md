@@ -4,8 +4,13 @@ Production images are published to `ghcr.io/xpointlabs/xnode` only through the
 manual **Publish production image** GitHub Actions workflow. A push to `main`
 never publishes or changes a release tag.
 
-.NET implementation of the Deep XNode runtime, with VLESS/Xray used only as
-the client-to-node ingress transport.
+.NET implementation of the Deep XNode runtime, with VLESS/Xray available as
+the client-to-node masked ingress transport.
+
+Release status (2026-08-30): XNode can terminate VLESS/Reality and forward to
+managed ingress, but the current MAUI mailbox client still calls its signed
+entry origin directly over HTTPS. Server capability alone is not end-to-end
+anti-blocking evidence; client binding remains a release blocker.
 
 ## Agent Specs
 
