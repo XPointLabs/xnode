@@ -128,7 +128,8 @@ The remaining blockers are:
 
 - [ ] Attach the first green CI/release artifacts for the real-Xray no-mock rehearsal and C3 report.
 - [x] Close router-specific operational evidence expected by the program baseline: local C3 chaos/soak/load validation plus operational artifacts are green.
-- [ ] Close the program-level Android+iOS+Windows release matrix gate.
+- [ ] Close the program-level Android+Windows release matrix gate; iOS remains
+  unverified/non-blocking and not release-supported.
 - [ ] Close mandatory security/compliance gates: security-gate CI artifact, policy-as-code, and external audit closure.
 - [ ] Close release-discipline gates: credentialed provider canary, rollback rehearsal, post-release verification.
 
