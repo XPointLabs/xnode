@@ -122,29 +122,29 @@ public static class MailboxAuthorityForwardingHttpContract
     public const string RetrieveRoute = "/api/peer/mailbox-authority/v1/retrieve";
     public const string AcknowledgeRoute = "/api/peer/mailbox-authority/v1/acknowledge";
 
-    public static string Route(PrivacyRoutingOperation operation) => operation switch
+    public static string Route(OnionOperation operation) => operation switch
     {
-        PrivacyRoutingOperation.Store => StoreRoute,
-        PrivacyRoutingOperation.Retrieve => RetrieveRoute,
-        PrivacyRoutingOperation.Acknowledge => AcknowledgeRoute,
+        OnionOperation.Store => StoreRoute,
+        OnionOperation.Retrieve => RetrieveRoute,
+        OnionOperation.Acknowledge => AcknowledgeRoute,
         _ => throw new ArgumentOutOfRangeException(nameof(operation))
     };
 
-    public static bool TryOperation(PathString path, out PrivacyRoutingOperation operation)
+    public static bool TryOperation(PathString path, out OnionOperation operation)
     {
         if (path.Equals(StoreRoute))
         {
-            operation = PrivacyRoutingOperation.Store;
+            operation = OnionOperation.Store;
             return true;
         }
         if (path.Equals(RetrieveRoute))
         {
-            operation = PrivacyRoutingOperation.Retrieve;
+            operation = OnionOperation.Retrieve;
             return true;
         }
         if (path.Equals(AcknowledgeRoute))
         {
-            operation = PrivacyRoutingOperation.Acknowledge;
+            operation = OnionOperation.Acknowledge;
             return true;
         }
 
@@ -153,11 +153,11 @@ public static class MailboxAuthorityForwardingHttpContract
     }
 
     public static MailboxHttpEndpointContract Contract(
-        PrivacyRoutingOperation operation) => operation switch
+        OnionOperation operation) => operation switch
         {
-            PrivacyRoutingOperation.Store => MailboxWireHttpContract.Store,
-            PrivacyRoutingOperation.Retrieve => MailboxWireHttpContract.Retrieve,
-            PrivacyRoutingOperation.Acknowledge => MailboxWireHttpContract.Acknowledge,
+            OnionOperation.Store => MailboxWireHttpContract.Store,
+            OnionOperation.Retrieve => MailboxWireHttpContract.Retrieve,
+            OnionOperation.Acknowledge => MailboxWireHttpContract.Acknowledge,
             _ => throw new ArgumentOutOfRangeException(nameof(operation))
         };
 }
@@ -165,7 +165,7 @@ public static class MailboxAuthorityForwardingHttpContract
 public interface IMailboxAuthorityForwardingClient
 {
     Task<NativeMailboxDispatchResult> ForwardAsync(
-        PrivacyRoutingOperation operation,
+        OnionOperation operation,
         ReadOnlyMemory<byte> canonicalMau2,
         CancellationToken cancellationToken);
 }
@@ -193,7 +193,7 @@ public sealed class MailboxAuthorityForwardingClient : IMailboxAuthorityForwardi
     }
 
     public async Task<NativeMailboxDispatchResult> ForwardAsync(
-        PrivacyRoutingOperation operation,
+        OnionOperation operation,
         ReadOnlyMemory<byte> canonicalMau2,
         CancellationToken cancellationToken)
     {
@@ -363,9 +363,13 @@ public sealed class RoutedNativeMailboxExitDispatcher : INativeMailboxExitDispat
     }
 
     public Task<NativeMailboxDispatchResult> DispatchAsync(
-        PrivacyRoutingOperation privacyOperation,
-        ReadOnlyMemory<byte> canonicalMau2,
-        CancellationToken cancellationToken) =>
+        VerifiedCanonicalOnionRequest request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var privacyOperation = request.Operation;
+        var canonicalMau2 = request.CanonicalBytes;
+        return
         _configuration.ForwardingEnabled
             ? _forwarding.ForwardAsync(
                 privacyOperation,
@@ -375,4 +379,5 @@ public sealed class RoutedNativeMailboxExitDispatcher : INativeMailboxExitDispat
                 privacyOperation,
                 canonicalMau2,
                 cancellationToken);
+    }
 }

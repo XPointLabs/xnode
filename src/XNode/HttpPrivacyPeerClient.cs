@@ -5,6 +5,7 @@ using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using Deep.Protocol.DeepExtension.ManagedIngress;
+using Deep.Protocol.DeepExtension.PrivacyRouting;
 using XNode.Core;
 
 namespace XNode;
@@ -30,7 +31,7 @@ public sealed record PrivacyForwardResult(
 public interface IPrivacyPeerClient
 {
     Task<PrivacyForwardResult> ForwardAsync(
-        PrivacyPeer peer,
+        VerifiedOnionNextHopTransport nextHop,
         ReadOnlyMemory<byte> innerFrame,
         CancellationToken cancellationToken);
 }
@@ -52,24 +53,33 @@ public sealed class HttpPrivacyPeerClient : IPrivacyPeerClient
     }
 
     public async Task<PrivacyForwardResult> ForwardAsync(
-        PrivacyPeer peer,
+        VerifiedOnionNextHopTransport nextHop,
         ReadOnlyMemory<byte> innerFrame,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(peer);
+        ArgumentNullException.ThrowIfNull(nextHop);
+        if (nextHop.Transport != OnionNextHopTransport.TcpTls)
+        {
+            _logger?.LogWarning(
+                "Privacy peer transport rejected before forward: transport={Transport}.",
+                nextHop.Transport);
+            return PrivacyForwardResult.Rejected;
+        }
+
         try
         {
             _ = ManagedIngressH2Contract.ValidateOpaqueFrame(innerFrame.Span);
+            var recipient = RouterId.FromBytes(nextHop.NodeId.Span);
             var authentication = PrivacyPeerAuthenticator.Sign(
                 _node.GetRouterId(),
-                peer.RouterId,
+                recipient,
                 _node.GetEd25519PrivateKey(),
                 innerFrame.Span,
                 _clock.UtcNow);
             using var content = new ByteArrayContent(innerFrame.ToArray());
             content.Headers.ContentType = new MediaTypeHeaderValue(
                 ManagedIngressH2Contract.OpaqueMediaType);
-            using var request = new HttpRequestMessage(HttpMethod.Post, peer.Endpoint)
+            using var request = new HttpRequestMessage(HttpMethod.Post, Endpoint(nextHop))
             {
                 Version = HttpVersion.Version20,
                 VersionPolicy = HttpVersionPolicy.RequestVersionExact,
@@ -94,7 +104,7 @@ public sealed class HttpPrivacyPeerClient : IPrivacyPeerClient
                 PrivacyPeerAuthenticator.SignatureHeader,
                 authentication.Signature);
 
-            using var handler = CreatePinnedHandler(peer);
+            using var handler = CreatePinnedHandler(nextHop);
             using var client = new HttpClient(handler, disposeHandler: false);
             using var response = await client.SendAsync(
                     request,
@@ -172,47 +182,168 @@ public sealed class HttpPrivacyPeerClient : IPrivacyPeerClient
             ? http.HttpRequestError.ToString()
             : "none";
 
-    internal static SocketsHttpHandler CreatePinnedHandler(PrivacyPeer peer)
+    internal static SocketsHttpHandler CreatePinnedHandler(
+        VerifiedOnionNextHopTransport nextHop)
     {
+        ArgumentNullException.ThrowIfNull(nextHop);
+        var expectedAddress = Address(nextHop);
+        var expectedPort = nextHop.Port;
+        var expectedSpki = nextHop.SpkiSha256.ToArray();
         var handler = new SocketsHttpHandler
         {
             AllowAutoRedirect = false,
             UseProxy = false,
             ConnectCallback = (context, cancellationToken) => ConnectAsync(
                 context.DnsEndPoint,
-                peer,
+                expectedAddress,
+                expectedPort,
                 cancellationToken)
+        };
+        handler.SslOptions.RemoteCertificateValidationCallback =
+            (_, certificate, _, errors) =>
+                ValidatePinnedCertificate(certificate, errors, expectedSpki);
+        return handler;
+    }
+
+    internal static SocketsHttpHandler CreatePinnedHandler(PrivacyPeer peer)
+    {
+        ArgumentNullException.ThrowIfNull(peer);
+        var handler = new SocketsHttpHandler
+        {
+            AllowAutoRedirect = false,
+            UseProxy = false,
+            ConnectCallback = (context, cancellationToken) =>
+                ConnectConfiguredPeerAsync(
+                    context.DnsEndPoint,
+                    peer,
+                    cancellationToken)
         };
         if (peer.Endpoint.Scheme == Uri.UriSchemeHttps)
         {
             handler.SslOptions.RemoteCertificateValidationCallback =
                 (_, certificate, _, errors) =>
-                {
-                    if (errors != SslPolicyErrors.None
-                        || certificate is not X509Certificate2 certificate2)
-                    {
-                        return false;
-                    }
-
-                    var observed = SHA256.HashData(
-                        certificate2.PublicKey.ExportSubjectPublicKeyInfo());
-                    return CryptographicOperations.FixedTimeEquals(
-                               observed,
-                               peer.CurrentSpkiSha256)
-                           || CryptographicOperations.FixedTimeEquals(
-                               observed,
-                               peer.NextSpkiSha256);
-                };
+                    ValidatePinnedCertificate(
+                        certificate,
+                        errors,
+                        peer.CurrentSpkiSha256,
+                        peer.NextSpkiSha256);
         }
+
         return handler;
+    }
+
+    internal static bool ValidatePinnedCertificate(
+        X509Certificate? certificate,
+        SslPolicyErrors errors,
+        ReadOnlySpan<byte> currentSpkiSha256,
+        ReadOnlySpan<byte> nextSpkiSha256 = default)
+    {
+        if (certificate is not X509Certificate2 certificate2 ||
+            (errors & (SslPolicyErrors.RemoteCertificateNameMismatch |
+                SslPolicyErrors.RemoteCertificateNotAvailable)) != 0 ||
+            (errors != SslPolicyErrors.None &&
+                errors != SslPolicyErrors.RemoteCertificateChainErrors))
+        {
+            return false;
+        }
+
+        var now = DateTime.UtcNow;
+        if (certificate2.NotBefore.ToUniversalTime() > now ||
+            certificate2.NotAfter.ToUniversalTime() <= now)
+        {
+            return false;
+        }
+
+        var observed = SHA256.HashData(
+            certificate2.PublicKey.ExportSubjectPublicKeyInfo());
+        try
+        {
+            return CryptographicOperations.FixedTimeEquals(
+                       observed,
+                       currentSpkiSha256) ||
+                   (!nextSpkiSha256.IsEmpty &&
+                    CryptographicOperations.FixedTimeEquals(
+                        observed,
+                        nextSpkiSha256));
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(observed);
+        }
+    }
+
+    private static Uri Endpoint(VerifiedOnionNextHopTransport nextHop)
+    {
+        var address = Address(nextHop);
+        return new UriBuilder(
+            Uri.UriSchemeHttps,
+            address.ToString(),
+            nextHop.Port,
+            PrivacyRoutingOptions.PeerFramePath).Uri;
+    }
+
+    private static IPAddress Address(VerifiedOnionNextHopTransport nextHop)
+    {
+        var bytes = nextHop.Address.ToArray();
+        try
+        {
+            return nextHop.AddressFamily switch
+            {
+                OnionNextHopAddressFamily.IPv4 => new IPAddress(bytes.AsSpan(0, 4)),
+                OnionNextHopAddressFamily.IPv6 => new IPAddress(bytes),
+                _ => throw new InvalidDataException(
+                    "The verified ONION next-hop address family is unsupported.")
+            };
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(bytes);
+        }
     }
 
     private static async ValueTask<Stream> ConnectAsync(
         DnsEndPoint endpoint,
+        IPAddress expectedAddress,
+        ushort expectedPort,
+        CancellationToken cancellationToken)
+    {
+        if (!IPAddress.TryParse(endpoint.Host, out var requestedAddress)
+            || !requestedAddress.Equals(expectedAddress)
+            || endpoint.Port != expectedPort)
+        {
+            throw new HttpRequestException("Verified privacy peer endpoint binding changed.");
+        }
+
+        var socket = new Socket(
+            expectedAddress.AddressFamily,
+            SocketType.Stream,
+            ProtocolType.Tcp);
+        try
+        {
+            await socket.ConnectAsync(
+                    new IPEndPoint(expectedAddress, expectedPort),
+                    cancellationToken)
+                .ConfigureAwait(false);
+            return new NetworkStream(socket, ownsSocket: true);
+        }
+        catch (Exception exception) when (
+            exception is SocketException or OperationCanceledException)
+        {
+            socket.Dispose();
+            throw new HttpRequestException(
+                "Unable to connect to verified privacy peer.", exception);
+        }
+    }
+
+    private static async ValueTask<Stream> ConnectConfiguredPeerAsync(
+        DnsEndPoint endpoint,
         PrivacyPeer peer,
         CancellationToken cancellationToken)
     {
-        if (!string.Equals(endpoint.Host, peer.Endpoint.Host, StringComparison.OrdinalIgnoreCase)
+        if (!string.Equals(
+                endpoint.Host,
+                peer.Endpoint.Host,
+                StringComparison.OrdinalIgnoreCase)
             || endpoint.Port != peer.Endpoint.Port)
         {
             throw new HttpRequestException("Privacy peer endpoint binding changed.");
@@ -222,9 +353,7 @@ public sealed class HttpPrivacyPeerClient : IPrivacyPeerClient
                 endpoint.Host,
                 cancellationToken)
             .ConfigureAwait(false);
-        var permitted = addresses
-            .Where(peer.AllowsResolvedAddress)
-            .ToArray();
+        var permitted = addresses.Where(peer.AllowsResolvedAddress).ToArray();
         if (permitted.Length == 0)
         {
             throw new HttpRequestException(
@@ -234,7 +363,10 @@ public sealed class HttpPrivacyPeerClient : IPrivacyPeerClient
         Exception? last = null;
         foreach (var address in permitted)
         {
-            var socket = new Socket(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
+            var socket = new Socket(
+                address.AddressFamily,
+                SocketType.Stream,
+                ProtocolType.Tcp);
             try
             {
                 await socket.ConnectAsync(
@@ -251,7 +383,9 @@ public sealed class HttpPrivacyPeerClient : IPrivacyPeerClient
             }
         }
 
-        throw new HttpRequestException("Unable to connect to pinned privacy peer.", last);
+        throw new HttpRequestException(
+            "Unable to connect to pinned privacy peer.",
+            last);
     }
 
     private static IReadOnlyList<ManagedIngressHeader> ResponseHeaders(

@@ -121,6 +121,23 @@ function Get-PackageEntrySha256([string] $Path, [string] $EntryName) {
     finally { $archive.Dispose() }
 }
 
+function Get-FileDigest([string] $Path, [ValidateSet('SHA256', 'SHA512')] [string] $Algorithm) {
+    $stream = [IO.File]::OpenRead($Path)
+    try {
+        $hash = if ($Algorithm -ceq 'SHA256') {
+            [Security.Cryptography.SHA256]::Create()
+        }
+        else {
+            [Security.Cryptography.SHA512]::Create()
+        }
+        try {
+            return ([BitConverter]::ToString($hash.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+        }
+        finally { $hash.Dispose() }
+    }
+    finally { $stream.Dispose() }
+}
+
 if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
     throw 'DNP1 protocol closure: provenance manifest is missing.'
 }
@@ -177,9 +194,9 @@ foreach ($id in $expected.Keys) {
     }
     Assert-Equal $contract.Bytes (Get-Item -LiteralPath $path).Length "$id byte length"
     Assert-Equal $contract.Sha256 `
-        ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()) "$id SHA-256"
+        (Get-FileDigest $path SHA256) "$id SHA-256"
     Assert-Equal $contract.Sha512 `
-        ((Get-FileHash -LiteralPath $path -Algorithm SHA512).Hash.ToLowerInvariant()) "$id SHA-512"
+        (Get-FileDigest $path SHA512) "$id SHA-512"
     Assert-Equal $contract.AssemblySha256 `
         (Get-PackageEntrySha256 $path $contract.Assembly) "$id assembly SHA-256"
 

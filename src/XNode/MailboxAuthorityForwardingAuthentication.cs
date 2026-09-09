@@ -30,7 +30,7 @@ public static class MailboxAuthorityForwardingAuthenticator
         RouterId sender,
         RouterId recipient,
         string senderPrivateKeySeedHex,
-        PrivacyRoutingOperation operation,
+        OnionOperation operation,
         ReadOnlySpan<byte> canonicalMau2,
         DateTimeOffset now)
     {
@@ -72,7 +72,7 @@ public static class MailboxAuthorityForwardingAuthenticator
     public static bool Verify(
         MailboxAuthorityForwardingAuthenticationHeaders headers,
         RouterId expectedRecipient,
-        PrivacyRoutingOperation operation,
+        OnionOperation operation,
         ReadOnlySpan<byte> canonicalMau2,
         DateTimeOffset now,
         out RouterId sender,
@@ -128,7 +128,7 @@ public static class MailboxAuthorityForwardingAuthenticator
     private static byte[] BuildTranscript(
         RouterId sender,
         RouterId recipient,
-        PrivacyRoutingOperation operation,
+        OnionOperation operation,
         long timestampUnixMilliseconds,
         ReadOnlySpan<byte> nonce,
         ReadOnlySpan<byte> canonicalMau2)

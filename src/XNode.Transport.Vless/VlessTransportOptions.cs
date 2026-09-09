@@ -22,7 +22,11 @@ public sealed class VlessTransportOptions
 
     public int ApiIngressPort { get; set; } = 8080;
 
+    [System.Text.Json.Serialization.JsonIgnore]
     public string ClientId { get; set; } = "00000000-0000-0000-0000-000000000001";
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string ClientIdFile { get; set; } = "";
 
     public string MaskDomain { get; set; } = "cloudflare-dns.com";
 

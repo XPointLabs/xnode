@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Collections.ObjectModel;
+using Deep.Protocol.DeepExtension.PrivacyRouting;
 using Sodium;
 using XNode.Core;
 
@@ -14,6 +15,16 @@ public sealed class PrivacyRoutingOptions
     public string X25519PrivateKeyPath { get; set; } = "";
 
     public string PublicPeerBaseUrl { get; set; } = "";
+
+    public string StateProtectionKeyPath { get; set; } = "";
+
+    public string ReplayStateRelativePath { get; set; } = "";
+
+    public string EntropyStateRelativePath { get; set; } = "";
+
+    public string KeyVaultDirectoryRelativePath { get; set; } = "";
+
+    public OnionReceivePosition ReceivePosition { get; set; }
 
     public int MaximumConcurrentRequests { get; set; } = 64;
 
@@ -49,6 +60,11 @@ public sealed class PrivacyRoutingOptions
         {
             if (!string.IsNullOrWhiteSpace(X25519PrivateKeyPath)
                 || !string.IsNullOrWhiteSpace(PublicPeerBaseUrl)
+                || !string.IsNullOrWhiteSpace(StateProtectionKeyPath)
+                || !string.IsNullOrWhiteSpace(ReplayStateRelativePath)
+                || !string.IsNullOrWhiteSpace(EntropyStateRelativePath)
+                || !string.IsNullOrWhiteSpace(KeyVaultDirectoryRelativePath)
+                || ReceivePosition != 0
                 || Peers.Count != 0)
             {
                 throw new InvalidOperationException(
@@ -75,7 +91,7 @@ public sealed class PrivacyRoutingOptions
             || RequestTimeoutSeconds is < 1 or > 120
             || ReplyPaddingBlockBytes is < 256 or > 65_536
             || (ReplyPaddingBlockBytes & (ReplyPaddingBlockBytes - 1)) != 0
-            || ReplayCapacity is < 1_000 or > 10_000_000
+            || ReplayCapacity is < 1_000 or > 5_000_000
             || ReplayTtlSeconds is < 120 or > 3600)
         {
             throw new InvalidOperationException("PrivacyRouting resource bounds are invalid.");
@@ -87,6 +103,57 @@ public sealed class PrivacyRoutingOptions
         {
             throw new InvalidOperationException(
                 "PrivacyRouting:X25519PrivateKeyPath must name an existing absolute file.");
+        }
+
+        if (string.IsNullOrWhiteSpace(StateProtectionKeyPath)
+            || !Path.IsPathFullyQualified(StateProtectionKeyPath)
+            || !File.Exists(StateProtectionKeyPath))
+        {
+            throw new InvalidOperationException(
+                "PrivacyRouting:StateProtectionKeyPath must name an existing absolute 32-byte secret file.");
+        }
+        if (ReceivePosition is < OnionReceivePosition.Ingress or > OnionReceivePosition.Exit)
+        {
+            throw new InvalidOperationException(
+                "PrivacyRouting:ReceivePosition must be Ingress, Core, or Exit.");
+        }
+
+        var replayStatePath = ResolveStatePath(
+            node.DataDirectory,
+            ReplayStateRelativePath,
+            "PrivacyRouting:ReplayStateRelativePath");
+        var entropyStatePath = ResolveStatePath(
+            node.DataDirectory,
+            EntropyStateRelativePath,
+            "PrivacyRouting:EntropyStateRelativePath");
+        var keyVaultDirectory = ResolveStatePath(
+            node.DataDirectory,
+            KeyVaultDirectoryRelativePath,
+            "PrivacyRouting:KeyVaultDirectoryRelativePath");
+        if (SamePath(replayStatePath, entropyStatePath)
+            || SamePath(replayStatePath, keyVaultDirectory)
+            || SamePath(entropyStatePath, keyVaultDirectory)
+            || SamePath(StateProtectionKeyPath, X25519PrivateKeyPath)
+            || !string.IsNullOrWhiteSpace(node.Ed25519PrivateKeyPath)
+                && SamePath(StateProtectionKeyPath, node.Ed25519PrivateKeyPath))
+        {
+            throw new InvalidOperationException(
+                "PrivacyRouting secrets, durable stores, and key-vault paths must be distinct.");
+        }
+
+        var stateProtectionKey = File.ReadAllBytes(StateProtectionKeyPath);
+        try
+        {
+            if (stateProtectionKey.Length != 32
+                || stateProtectionKey.AsSpan().IndexOfAnyExcept((byte)0) < 0)
+            {
+                throw new InvalidOperationException(
+                    "PrivacyRouting:StateProtectionKeyPath must contain exactly 32 nonzero bytes.");
+            }
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(stateProtectionKey);
         }
 
 
@@ -171,7 +238,12 @@ public sealed class PrivacyRoutingOptions
                 TimeSpan.FromSeconds(RequestTimeoutSeconds),
                 ReplyPaddingBlockBytes,
                 ReplayCapacity,
-                TimeSpan.FromSeconds(ReplayTtlSeconds));
+                TimeSpan.FromSeconds(ReplayTtlSeconds),
+                Path.GetFullPath(StateProtectionKeyPath),
+                replayStatePath,
+                entropyStatePath,
+                keyVaultDirectory,
+                ReceivePosition);
         }
         catch
         {
@@ -196,6 +268,44 @@ public sealed class PrivacyRoutingOptions
 
         return decoded;
     }
+
+    private static string ResolveStatePath(
+        string dataDirectory,
+        string relativePath,
+        string name)
+    {
+        if (string.IsNullOrWhiteSpace(relativePath)
+            || Path.IsPathFullyQualified(relativePath)
+            || relativePath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                .Any(static part => part is "" or "." or ".."))
+        {
+            throw new InvalidOperationException(
+                $"{name} must be a clean relative path inside Node:DataDirectory.");
+        }
+
+        var root = Path.GetFullPath(dataDirectory);
+        var resolved = Path.GetFullPath(Path.Combine(root, relativePath));
+        var prefix = root.EndsWith(Path.DirectorySeparatorChar)
+            ? root
+            : root + Path.DirectorySeparatorChar;
+        if (!resolved.StartsWith(
+                prefix,
+                OperatingSystem.IsWindows()
+                    ? StringComparison.OrdinalIgnoreCase
+                    : StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException($"{name} must remain inside Node:DataDirectory.");
+        }
+        return resolved;
+    }
+
+    private static bool SamePath(string left, string right) => string.Equals(
+        Path.GetFullPath(left),
+        Path.GetFullPath(right),
+        OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal);
+
 }
 
 public sealed class PrivacyPeerOptions
@@ -275,7 +385,7 @@ public sealed class PrivacyRoutingConfiguration : IDisposable
         new Dictionary<RouterId, PrivacyPeer>(), 1, 1,
         TimeSpan.FromSeconds(1), 1024, 1, TimeSpan.FromSeconds(1));
 
-    public PrivacyRoutingConfiguration(
+    internal PrivacyRoutingConfiguration(
         bool enabled,
         byte[] privateKey,
         byte[] publicKey,
@@ -286,11 +396,19 @@ public sealed class PrivacyRoutingConfiguration : IDisposable
         TimeSpan requestTimeout,
         int replyPaddingBlockBytes,
         int replayCapacity,
-        TimeSpan replayTtl)
+        TimeSpan replayTtl,
+        string stateProtectionKeyPath = "",
+        string replayStatePath = "",
+        string entropyStatePath = "",
+        string keyVaultDirectory = "",
+        OnionReceivePosition receivePosition = 0)
     {
         Enabled = enabled;
         PrivateKey = privateKey;
         _publicKey = publicKey.ToArray();
+        _keyHandleId = enabled
+            ? PrivacyRoutingProductionComposition.DeriveKeyHandle(publicKey)
+            : [];
         PublicPeerEndpoint = publicPeerEndpoint;
         Peers = new ReadOnlyDictionary<RouterId, PrivacyPeer>(
             peers.ToDictionary(static item => item.Key, static item => item.Value));
@@ -300,11 +418,17 @@ public sealed class PrivacyRoutingConfiguration : IDisposable
         ReplyPaddingBlockBytes = replyPaddingBlockBytes;
         ReplayCapacity = replayCapacity;
         ReplayTtl = replayTtl;
+        StateProtectionKeyPath = stateProtectionKeyPath;
+        ReplayStatePath = replayStatePath;
+        EntropyStatePath = entropyStatePath;
+        KeyVaultDirectory = keyVaultDirectory;
+        ReceivePosition = receivePosition;
     }
 
     public bool Enabled { get; }
     internal ReadOnlySpan<byte> PrivateKeySpan => PrivateKey;
     public byte[] PublicKey => _publicKey.ToArray();
+    internal ReadOnlyMemory<byte> KeyHandleId => _keyHandleId.ToArray();
     public Uri PublicPeerEndpoint { get; }
     public IReadOnlyDictionary<RouterId, PrivacyPeer> Peers { get; }
     public int MaximumConcurrentRequests { get; }
@@ -313,6 +437,11 @@ public sealed class PrivacyRoutingConfiguration : IDisposable
     public int ReplyPaddingBlockBytes { get; }
     public int ReplayCapacity { get; }
     public TimeSpan ReplayTtl { get; }
+    internal string StateProtectionKeyPath { get; }
+    internal string ReplayStatePath { get; }
+    internal string EntropyStatePath { get; }
+    internal string KeyVaultDirectory { get; }
+    internal OnionReceivePosition ReceivePosition { get; }
 
     public void Dispose()
     {
@@ -324,6 +453,7 @@ public sealed class PrivacyRoutingConfiguration : IDisposable
 
     private byte[] PrivateKey { get; }
     private readonly byte[] _publicKey;
+    private readonly byte[] _keyHandleId;
 }
 
 public sealed class PrivacyPeer

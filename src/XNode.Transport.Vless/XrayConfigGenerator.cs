@@ -1,6 +1,7 @@
 ﻿using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
+using System.Text;
 
 namespace XNode.Transport.Vless;
 
@@ -79,14 +80,43 @@ public sealed class XrayConfigGenerator
         VlessTransportOptions options,
         CancellationToken cancellationToken = default)
     {
-        var directory = Path.GetDirectoryName(options.GeneratedConfigPath);
+        var configPath = Path.GetFullPath(options.GeneratedConfigPath);
+        var directory = Path.GetDirectoryName(configPath);
         if (!string.IsNullOrWhiteSpace(directory))
         {
             Directory.CreateDirectory(directory);
         }
 
-        await File.WriteAllTextAsync(options.GeneratedConfigPath, Generate(options), cancellationToken)
-            .ConfigureAwait(false);
+        var temporaryPath = $"{configPath}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            var streamOptions = new FileStreamOptions
+            {
+                Mode = FileMode.CreateNew,
+                Access = FileAccess.Write,
+                Share = FileShare.None,
+                Options = FileOptions.Asynchronous | FileOptions.WriteThrough
+            };
+            if (!OperatingSystem.IsWindows())
+            {
+                streamOptions.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+            }
+
+            await using (var stream = new FileStream(temporaryPath, streamOptions))
+            await using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
+            {
+                await writer.WriteAsync(Generate(options).AsMemory(), cancellationToken)
+                    .ConfigureAwait(false);
+                await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
+                stream.Flush(flushToDisk: true);
+            }
+
+            File.Move(temporaryPath, configPath, overwrite: true);
+        }
+        finally
+        {
+            File.Delete(temporaryPath);
+        }
     }
 
     private static JsonObject BuildStreamSettings(VlessTransportOptions options)

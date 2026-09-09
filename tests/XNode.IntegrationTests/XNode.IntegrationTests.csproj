@@ -4,6 +4,7 @@
     <RestoreConfigFile>$(MSBuildThisFileDirectory)..\..\eng\survival-beta.NuGet.Config</RestoreConfigFile>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <RestoreLockedMode>true</RestoreLockedMode>
+    <NuGetLockFilePath Condition="'$(DeepProtocolLocalCutover)' == 'true'">$(MSBuildThisFileDirectory)..\..\artifacts\local-protocol-cutover\locks\$(MSBuildProjectName).packages.lock.json</NuGetLockFilePath>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>

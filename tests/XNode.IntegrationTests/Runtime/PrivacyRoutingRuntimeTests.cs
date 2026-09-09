@@ -1,7 +1,10 @@
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using Deep.Protocol.DeepExtension.ManagedIngress;
 using Deep.Protocol.DeepExtension.PrivacyRouting;
-using Sodium;
-using System.Net;
-using XNode;
+using Deep.Protocol.XPointNetworkV1;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
 using XNode.Core;
 
 namespace XNode.IntegrationTests.Runtime;
@@ -9,563 +12,438 @@ namespace XNode.IntegrationTests.Runtime;
 public sealed class PrivacyRoutingRuntimeTests
 {
     [Fact]
-    public async Task Relay_UsesOnlyPinnedRouterIdAndForwardsOpaqueInnerFrame()
+    public void EnabledOptionsRejectIncompleteProductionStateConfiguration()
     {
-        using var first = PublicKeyBox.GenerateKeyPair();
-        using var second = PublicKeyBox.GenerateKeyPair();
-        using var exit = PublicKeyBox.GenerateKeyPair();
-        var ids = new[] { Id(1), Id(2), Id(3) };
-        using var request = PrivacyRoutingRequestBuilder.Build(
-            Route(ids, first.PublicKey, second.PublicKey, exit.PublicKey),
-            PrivacyRoutingOperation.Store,
-            Bytes(41),
-            Bytes(51),
-            [7, 8, 9],
-            256);
-        var forwardedReply = Enumerable.Repeat((byte)0x6a, 256).ToArray();
-        var peerClient = new RecordingPeerClient(forwardedReply);
-        using var configuration = Configuration(
-            first.PrivateKey,
-            first.PublicKey,
-            ids[1]);
-        var runtime = Runtime(
-            configuration,
-            ids[0],
-            peerClient,
-            new RecordingMailboxDispatcher());
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            new PrivacyRoutingOptions { Enabled = true }.ValidateAndLoad(
+                new RouterNodeOptions(),
+                isDevelopment: true));
 
-        var result = await runtime.ProcessAsync(request.Frame, default);
-
-        Assert.Equal(PrivacyRuntimeOutcome.Completed, result.Outcome);
-        Assert.Equal(forwardedReply, result.OpaqueReply);
-        Assert.Equal(ids[1], peerClient.Peer!.RouterId);
-        var openedSecond = PrivacyRoutingRequestCodec.Open(
-            peerClient.Frame.Span,
-            second.PrivateKey);
-        Assert.IsType<PrivacyRoutingRelayLayer>(openedSecond);
+        Assert.Contains("X25519PrivateKeyPath", exception.Message,
+            StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task Relay_RejectsNextRouterAbsentFromPinnedInventoryBeforeForward()
+    public void PublicFailClosedRuntimeHasNoProductionCapability()
     {
-        using var first = PublicKeyBox.GenerateKeyPair();
-        using var second = PublicKeyBox.GenerateKeyPair();
-        using var exit = PublicKeyBox.GenerateKeyPair();
-        var ids = new[] { Id(1), Id(2), Id(3) };
-        using var request = PrivacyRoutingRequestBuilder.Build(
-            Route(ids, first.PublicKey, second.PublicKey, exit.PublicKey),
-            PrivacyRoutingOperation.Store,
-            Bytes(41),
-            Bytes(51),
-            [7, 8, 9],
-            256);
-        var peerClient = new RecordingPeerClient(new byte[256]);
-        using var configuration = Configuration(
-            first.PrivateKey,
-            first.PublicKey,
-            Id(99));
-        var runtime = Runtime(
-            configuration,
-            ids[0],
-            peerClient,
-            new RecordingMailboxDispatcher());
+        var effects = new Effects();
+        var runtime = Runtime(PrivacyRoutingConfiguration.Disabled, effects);
 
-        var result = await runtime.ProcessAsync(request.Frame, default);
+        Assert.False(runtime.ProductionCapabilityAvailable);
+        var root = FindRepositoryRoot();
+        var program = File.ReadAllText(Path.Combine(root, "src", "XNode", "Program.cs"));
 
-        Assert.Equal(
-            PrivacyRuntimeOutcome.UnauthorizedNextHopBeforeForward,
-            result.Outcome);
-        Assert.Null(peerClient.Peer);
+        Assert.Contains("AddProductionPrivacyRoutingBoundary", program,
+            StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task Exit_SealsCanonicalDpr1SuccessToClientReplyKey()
+    public void EnabledCompositionRejectsMissingVerifiedAuthoritySource()
     {
-        using var first = PublicKeyBox.GenerateKeyPair();
-        using var second = PublicKeyBox.GenerateKeyPair();
-        using var exit = PublicKeyBox.GenerateKeyPair();
-        var ids = new[] { Id(1), Id(2), Id(3) };
-        var mau2 = new byte[] { 7, 8, 9 };
-        using var request = PrivacyRoutingRequestBuilder.Build(
-            Route(ids, first.PublicKey, second.PublicKey, exit.PublicKey),
-            PrivacyRoutingOperation.Store,
-            Bytes(41),
-            Bytes(51),
-            mau2,
-            256);
-        var firstLayer = Assert.IsType<PrivacyRoutingRelayLayer>(
-            PrivacyRoutingRequestCodec.Open(request.Frame.Span, first.PrivateKey));
-        var secondLayer = Assert.IsType<PrivacyRoutingRelayLayer>(
-            PrivacyRoutingRequestCodec.Open(firstLayer.InnerFrame.Span, second.PrivateKey));
-        var mailbox = new RecordingMailboxDispatcher
-        {
-            Result = new NativeMailboxDispatchResult(200, new byte[] { 4, 5, 6 })
-        };
-        using var configuration = Configuration(
-            exit.PrivateKey,
-            exit.PublicKey,
-            ids[0]);
-        var runtime = Runtime(
-            configuration,
-            ids[2],
-            new RecordingPeerClient(new byte[256]),
-            mailbox);
+        var services = new ServiceCollection();
+        using var configuration = EnabledTestConfiguration();
 
-        var result = await runtime.ProcessAsync(secondLayer.InnerFrame, default);
+        var failure = Assert.Throws<InvalidOperationException>(() =>
+            services.AddProductionPrivacyRoutingBoundary(
+                configuration,
+                new RouterNodeOptions
+                {
+                    RouterId = new string('1', RouterId.HexLength),
+                    IsRelay = true
+                }));
 
-        Assert.Equal(PrivacyRuntimeOutcome.Completed, result.Outcome);
-        Assert.Equal(mau2, mailbox.Payload);
-        var opened = PrivacyRoutingResponseCodec.Open(
-            result.OpaqueReply.Span,
-            request.ReplyContext);
-        var terminal = PrivacyRoutingResultCodec.Decode(opened.Payload.Span);
-        Assert.Equal(PrivacyRoutingResultKind.Success, terminal.Kind);
-        Assert.Equal(new byte[] { 4, 5, 6 }, terminal.Body);
+        Assert.Contains(nameof(IContactVerifiedAuthoritySnapshotSource), failure.Message,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            services,
+            static descriptor => descriptor.ServiceType == typeof(PrivacyRoutingRuntime));
     }
 
     [Fact]
-    public async Task Exit_AuthorityUnavailableBeforeForward_RemainsFallbackEligible()
+    public void ProductionCompositionConnectsAuthenticatedContactResolveClientWhenOwnerExists()
     {
-        using var first = PublicKeyBox.GenerateKeyPair();
-        using var second = PublicKeyBox.GenerateKeyPair();
-        using var exit = PublicKeyBox.GenerateKeyPair();
-        var ids = new[] { Id(21), Id(22), Id(23) };
-        using var request = PrivacyRoutingRequestBuilder.Build(
-            Route(ids, first.PublicKey, second.PublicKey, exit.PublicKey),
-            PrivacyRoutingOperation.Store,
-            Bytes(61),
-            Bytes(71),
-            [1, 2, 3],
-            256);
-        var firstLayer = Assert.IsType<PrivacyRoutingRelayLayer>(
-            PrivacyRoutingRequestCodec.Open(request.Frame.Span, first.PrivateKey));
-        var secondLayer = Assert.IsType<PrivacyRoutingRelayLayer>(
-            PrivacyRoutingRequestCodec.Open(firstLayer.InnerFrame.Span, second.PrivateKey));
-        using var configuration = Configuration(
-            exit.PrivateKey,
-            exit.PublicKey,
-            ids[0]);
-        var runtime = Runtime(
+        var services = new ServiceCollection();
+        using var configuration = EnabledTestConfiguration();
+        services.AddSingleton<IContactVerifiedAuthoritySnapshotSource>(static _ => null!);
+        services.AddSingleton<IPrivacyRoutedContactRecipientResolveEvidenceIngestion>(
+            static _ => null!);
+
+        services.AddProductionPrivacyRoutingBoundary(
             configuration,
-            ids[2],
-            new RecordingPeerClient(new byte[256]),
-            new RecordingMailboxDispatcher
+            new RouterNodeOptions
             {
-                Result = NativeMailboxDispatchResult.RejectedBeforeForward()
+                RouterId = new string('1', RouterId.HexLength),
+                IsRelay = true
             });
 
-        var result = await runtime.ProcessAsync(secondLayer.InnerFrame, default);
+        Assert.Contains(services, descriptor =>
+            descriptor.ServiceType == typeof(IPrivacyRoutedContactRecipientResolveClient)
+            && descriptor.ImplementationType
+                == typeof(PrivacyRoutedContactRecipientResolveClient));
+    }
+
+    [Fact]
+    public async Task CompleteCurrentBindingActivatesOnlyTheFullyComposedRuntime()
+    {
+        var effects = new Effects();
+        using var configuration = EnabledTestConfiguration();
+        var capability = new PrivacyRoutingProductionCapability(
+            configuration,
+            new FixedBindingSource(Binding(configuration)));
+        var keyAgreement = new OnionKeyAgreementAuthority(new NoOpVault());
+        var replay = new OnionReplayAuthority(new NoOpReplayStore());
+        var codec = new PrivacyRoutingCodec(
+            new OnionEntropyAuthority(new NoOpEntropyLedger()),
+            keyAgreement);
+        var runtime = new PrivacyRoutingRuntime(
+            configuration,
+            effects,
+            Terminal(effects),
+            capability,
+            keyAgreement,
+            replay,
+            codec);
+
+        Assert.False(runtime.ProductionCapabilityAvailable);
+        await capability.StartAsync(default);
+        Assert.True(runtime.ProductionCapabilityAvailable);
+        await capability.StopAsync(default);
+        Assert.False(runtime.ProductionCapabilityAvailable);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task StaleOrMismatchedBindingNeverActivates(bool stale)
+    {
+        using var configuration = EnabledTestConfiguration();
+        var binding = stale
+            ? new OnionHostReceiveBinding(
+                (VerifiedOnionNetworkContext)RuntimeHelpers.GetUninitializedObject(
+                    typeof(VerifiedOnionNetworkContext)),
+                configuration.ReceivePosition,
+                Bytes(0x51),
+                configuration.KeyHandleId.Span)
+            : Binding(configuration, OnionReceivePosition.Core);
+        var capability = new PrivacyRoutingProductionCapability(
+            configuration,
+            new FixedBindingSource(binding));
+
+        await Assert.ThrowsAnyAsync<Exception>(async () =>
+            await capability.StartAsync(default));
+
+        Assert.False(capability.IsVerified);
+    }
+
+    [Fact]
+    public void RuntimeUsesOnlyProtocolOwnedReceiveAndNextHopCapabilities()
+    {
+        var root = FindRepositoryRoot();
+        var runtime = File.ReadAllText(Path.Combine(
+            root, "src", "XNode", "PrivacyRoutingRuntime.cs"));
+
+        Assert.Contains("OnionLocalNodeKeyFactory.Bind", runtime,
+            StringComparison.Ordinal);
+        Assert.Contains("OnionReceiveContextSelector.Select", runtime,
+            StringComparison.Ordinal);
+        Assert.Contains("relay.NextHop", runtime, StringComparison.Ordinal);
+        Assert.DoesNotContain("NextRouterId", runtime, StringComparison.Ordinal);
+        Assert.DoesNotContain("configuration.Peers", runtime, StringComparison.Ordinal);
+        Assert.DoesNotContain("RouterId.FromBytes", runtime, StringComparison.Ordinal);
+
+        var forward = Assert.Single(typeof(IPrivacyPeerClient).GetMethods());
+        Assert.Equal(
+            typeof(VerifiedOnionNextHopTransport),
+            forward.GetParameters()[0].ParameterType);
+    }
+
+    [Fact]
+    public void PartialVerifiedBoundaryCompositionIsRejected()
+    {
+        var effects = new Effects();
+        var exception = Assert.Throws<ArgumentException>(() =>
+            new PrivacyRoutingRuntime(
+                PrivacyRoutingConfiguration.Disabled,
+                effects,
+                Terminal(effects),
+                new PrivacyRoutingProductionCapability(
+                    PrivacyRoutingConfiguration.Disabled,
+                    new UnavailableBindingSource()),
+                keyAgreement: null,
+                replay: null,
+                codec: null));
+
+        Assert.Contains("must be supplied atomically", exception.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RuntimeIsUnavailableWithoutForwardingContactOrMailboxEffects()
+    {
+        var effects = new Effects();
+        var runtime = Runtime(PrivacyRoutingConfiguration.Disabled, effects);
+
+        var result = await runtime.ProcessAsync("attacker-controlled-frame"u8.ToArray(), default);
 
         Assert.Equal(PrivacyRuntimeOutcome.UnavailableBeforeForward, result.Outcome);
-        Assert.True(result.OpaqueReply.IsEmpty);
+        Assert.Empty(result.OpaqueReply.ToArray());
+        Assert.Equal(0, effects.PeerCalls);
+        Assert.Equal(0, effects.ContactCalls);
+        Assert.Equal(0, effects.MailboxCalls);
+        Assert.Equal(0, effects.AuthorityForwardingCalls);
     }
 
     [Fact]
-    public async Task Exit_AuthorityOutcomeUnknown_SealsTerminalOutcomeWithoutFallback()
+    public async Task DisabledPublicIngressReturnsCoarse503WithoutAnySideEffects()
     {
-        using var first = PublicKeyBox.GenerateKeyPair();
-        using var second = PublicKeyBox.GenerateKeyPair();
-        using var exit = PublicKeyBox.GenerateKeyPair();
-        var ids = new[] { Id(24), Id(25), Id(26) };
-        using var request = PrivacyRoutingRequestBuilder.Build(
-            Route(ids, first.PublicKey, second.PublicKey, exit.PublicKey),
-            PrivacyRoutingOperation.Retrieve,
-            Bytes(62),
-            Bytes(72),
-            [4, 5, 6],
-            256);
-        var firstLayer = Assert.IsType<PrivacyRoutingRelayLayer>(
-            PrivacyRoutingRequestCodec.Open(request.Frame.Span, first.PrivateKey));
-        var secondLayer = Assert.IsType<PrivacyRoutingRelayLayer>(
-            PrivacyRoutingRequestCodec.Open(firstLayer.InnerFrame.Span, second.PrivateKey));
-        using var configuration = Configuration(
-            exit.PrivateKey,
-            exit.PublicKey,
-            ids[0]);
-        var runtime = Runtime(
+        var effects = new Effects();
+        var configuration = PrivacyRoutingConfiguration.Disabled;
+        var context = new DefaultHttpContext();
+        context.Connection.LocalPort = 8443;
+        context.Response.Body = new MemoryStream();
+
+        var result = await PrivacyRoutingHttpEndpoint.HandlePublicAsync(
+            context,
             configuration,
-            ids[2],
-            new RecordingPeerClient(new byte[256]),
-            new RecordingMailboxDispatcher
-            {
-                Result = NativeMailboxDispatchResult.OutcomeUnknownAfterForward()
-            });
+            new PrivacyIngressLimiter(configuration),
+            Runtime(configuration, effects),
+            new FixedClock(),
+            apiListenerPort: 8443,
+            default);
+        await result.ExecuteAsync(context);
 
-        var result = await runtime.ProcessAsync(secondLayer.InnerFrame, default);
-
-        Assert.Equal(PrivacyRuntimeOutcome.Completed, result.Outcome);
-        var opened = PrivacyRoutingResponseCodec.Open(
-            result.OpaqueReply.Span,
-            request.ReplyContext);
-        var terminal = PrivacyRoutingResultCodec.Decode(opened.Payload.Span);
-        Assert.Equal(PrivacyRoutingResultKind.Failure, terminal.Kind);
-        Assert.Equal(PrivacyRoutingFailureCode.OutcomeUnknown, terminal.FailureCode);
-        Assert.True(terminal.Retryable);
+        Assert.Equal(StatusCodes.Status503ServiceUnavailable, context.Response.StatusCode);
+        Assert.Equal(ManagedIngressH2Contract.ErrorMediaType, context.Response.ContentType);
+        Assert.Equal(0, effects.PeerCalls);
+        Assert.Equal(0, effects.ContactCalls);
+        Assert.Equal(0, effects.MailboxCalls);
+        Assert.Equal(0, effects.AuthorityForwardingCalls);
     }
 
     [Fact]
-    public void Options_RequireCanonicalIndependentKeyAndDevelopmentOnlyHttp()
+    public async Task EvenDirectEnabledConfigurationCannotBypassInactiveCapability()
     {
-        var root = Path.Combine(
-            Path.GetTempPath(),
-            "xnode-privacy-options-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(root);
-        try
-        {
-            var keyPath = Path.Combine(root, "x25519.key");
-            File.WriteAllText(keyPath, new string('a', 64));
-            var options = new PrivacyRoutingOptions
-            {
-                Enabled = true,
-                X25519PrivateKeyPath = keyPath,
-                PublicPeerBaseUrl = "http://10.0.0.10:8081/",
-                AllowInsecureHttpPeerTransport = true,
-                Peers =
-                [
-                    new PrivacyPeerOptions
-                    {
-                        RouterId = Id(2).Value,
-                        BaseUrl = "http://10.0.0.11:8081/"
-                    }
-                ]
-            };
+        var effects = new Effects();
+        using var configuration = EnabledTestConfiguration();
+        var runtime = Runtime(configuration, effects);
 
-            using var configuration = options.ValidateAndLoad(
-                NodeOptions(),
-                isDevelopment: true);
+        var result = await runtime.ProcessAsync(new byte[4096], default);
 
-            Assert.Equal(
-                ScalarMult.Base(Convert.FromHexString(new string('a', 64))),
-                configuration.PublicKey);
-            Assert.Throws<InvalidOperationException>(() =>
-                options.ValidateAndLoad(
-                    NodeOptions(),
-                    isDevelopment: false));
-            File.WriteAllText(keyPath, new string('A', 64));
-            Assert.Throws<InvalidOperationException>(() =>
-                options.ValidateAndLoad(
-                    NodeOptions(),
-                    isDevelopment: true));
-        }
-        finally
-        {
-            Directory.Delete(root, recursive: true);
-        }
-    }
-
-    [Fact]
-    public void Options_AllowPrivateResolvedPeersOnlyForExplicitProductionLocalUat()
-    {
-        var root = Path.Combine(
-            Path.GetTempPath(),
-            "xnode-privacy-uat-options-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(root);
-        try
-        {
-            var keyPath = Path.Combine(root, "x25519.key");
-            File.WriteAllText(keyPath, new string('a', 64));
-            var options = new PrivacyRoutingOptions
-            {
-                Enabled = true,
-                X25519PrivateKeyPath = keyPath,
-                PublicPeerBaseUrl = "https://192-168-1-43.sslip.io:41801/",
-                Peers =
-                [
-                    new PrivacyPeerOptions
-                    {
-                        RouterId = Id(2).Value,
-                        BaseUrl = "https://192-168-1-43.sslip.io:41802/",
-                        CurrentSpkiSha256 = new string('c', 64),
-                        NextSpkiSha256 = new string('d', 64)
-                    }
-                ]
-            };
-            var localUat = NodeOptions();
-            localUat.Network = "local";
-            var policy = new DevelopmentUatPrivatePeerAddressOptions
-            {
-                Scope = DevelopmentUatPrivatePeerAddressOptions.RequiredScope,
-                Addresses = ["192.168.1.43"]
-            }.ValidateAndLoad(
-                localUat,
-                isDevelopment: false,
-                isProduction: true);
-
-            using (var configuration = options.ValidateAndLoad(
-                       localUat,
-                       isDevelopment: false,
-                       policy))
-            {
-                var peer = Assert.Single(configuration.Peers).Value;
-                Assert.False(peer.AllowPrivateResolvedAddresses);
-                Assert.True(peer.AllowsResolvedAddress(IPAddress.Parse("192.168.1.43")));
-                Assert.False(peer.AllowsResolvedAddress(IPAddress.Parse("192.168.1.44")));
-                Assert.False(peer.AllowsResolvedAddress(IPAddress.Loopback));
-                Assert.True(peer.AllowsResolvedAddress(IPAddress.Parse("8.8.8.8")));
-            }
-
-            var production = NodeOptions();
-            production.Network = "mainnet";
-            var binding = new DevelopmentUatPrivatePeerAddressOptions
-            {
-                Scope = DevelopmentUatPrivatePeerAddressOptions.RequiredScope,
-                Addresses = ["192.168.1.43"]
-            };
-            Assert.Throws<InvalidOperationException>(() => binding.ValidateAndLoad(
-                production,
-                isDevelopment: false,
-                isProduction: true));
-            Assert.Throws<InvalidOperationException>(() => binding.ValidateAndLoad(
-                localUat,
-                isDevelopment: true,
-                isProduction: false));
-
-            using var strictProductionLocal = options.ValidateAndLoad(
-                localUat,
-                isDevelopment: false);
-            Assert.False(Assert.Single(strictProductionLocal.Peers).Value
-                .AllowsResolvedAddress(IPAddress.Parse("192.168.1.43")));
-        }
-        finally
-        {
-            Directory.Delete(root, recursive: true);
-        }
-    }
-
-    [Theory]
-    [InlineData("", "192.168.1.43")]
-    [InlineData("DEVELOPMENT-UAT-ONLY", "")]
-    [InlineData("development-uat-only", "192.168.1.43")]
-    [InlineData("DEVELOPMENT-UAT-ONLY", "192.168.001.043")]
-    [InlineData("DEVELOPMENT-UAT-ONLY", "8.8.8.8")]
-    [InlineData("DEVELOPMENT-UAT-ONLY", "127.0.0.1")]
-    [InlineData("DEVELOPMENT-UAT-ONLY", "169.254.169.254")]
-    public void DevelopmentUatPrivatePeerBinding_RejectsMalformedOrUnsafeValues(
-        string scope,
-        string address)
-    {
-        var node = NodeOptions();
-        node.Network = "local";
-        var options = new DevelopmentUatPrivatePeerAddressOptions
-        {
-            Scope = scope,
-            Addresses = string.IsNullOrEmpty(address) ? [] : [address]
-        };
-
-        Assert.Throws<InvalidOperationException>(() => options.ValidateAndLoad(
-            node,
-            isDevelopment: false,
-            isProduction: true));
-    }
-
-    [Fact]
-    public void DevelopmentUatPrivatePeerBinding_RejectsDuplicates()
-    {
-        var node = NodeOptions();
-        node.Network = "local";
-        var options = new DevelopmentUatPrivatePeerAddressOptions
-        {
-            Scope = DevelopmentUatPrivatePeerAddressOptions.RequiredScope,
-            Addresses = ["192.168.1.43", "192.168.1.43"]
-        };
-
-        Assert.Throws<InvalidOperationException>(() => options.ValidateAndLoad(
-            node,
-            isDevelopment: false,
-            isProduction: true));
-    }
-
-    [Fact]
-    public void MailboxPeerAddressGuard_RequiresPinsAndExactUatAddress()
-    {
-        var node = NodeOptions();
-        node.Network = "local";
-        var policy = new DevelopmentUatPrivatePeerAddressOptions
-        {
-            Scope = DevelopmentUatPrivatePeerAddressOptions.RequiredScope,
-            Addresses = ["192.168.1.43"]
-        }.ValidateAndLoad(node, isDevelopment: false, isProduction: true);
-
-        Assert.True(MailboxPeerHttpHandler.IsPermittedResolvedAddress(
-            IPAddress.Parse("192.168.1.43"),
-            allowPinnedPrivate: true,
-            literalHost: null,
-            policy));
-        Assert.False(MailboxPeerHttpHandler.IsPermittedResolvedAddress(
-            IPAddress.Parse("192.168.1.44"),
-            allowPinnedPrivate: true,
-            literalHost: null,
-            policy));
-        Assert.False(MailboxPeerHttpHandler.IsPermittedResolvedAddress(
-            IPAddress.Parse("192.168.1.43"),
-            allowPinnedPrivate: false,
-            literalHost: null,
-            policy));
-        Assert.True(MailboxPeerHttpHandler.IsPermittedResolvedAddress(
-            IPAddress.Parse("8.8.8.8"),
-            allowPinnedPrivate: false,
-            literalHost: null,
-            DevelopmentUatPrivatePeerAddressPolicy.Disabled));
-    }
-
-    [Fact]
-    public void PeerAuthentication_BindsFrameRecipientAndCanonicalHeaders()
-    {
-        var seed = Enumerable.Range(1, 32).Select(static item => (byte)item).ToArray();
-        var signer = new Rebex.Security.Cryptography.Ed25519();
-        signer.FromSeed(seed);
-        var sender = RouterId.FromBytes(signer.GetPublicKey());
-        var recipient = Id(99);
-        var frame = Enumerable.Repeat((byte)0x51, 256).ToArray();
-        var now = DateTimeOffset.FromUnixTimeSeconds(1_800_000_000);
-        var headers = PrivacyPeerAuthenticator.Sign(
-            sender,
-            recipient,
-            Convert.ToHexString(seed).ToLowerInvariant(),
-            frame,
-            now);
-
-        Assert.True(PrivacyPeerAuthenticator.Verify(
-            headers,
-            recipient,
-            frame,
-            now,
-            out var verified,
-            out _));
-        Assert.Equal(sender, verified);
-        Assert.False(PrivacyPeerAuthenticator.Verify(
-            headers with { Signature = headers.Signature.ToUpperInvariant() },
-            recipient,
-            frame,
-            now,
-            out _,
-            out _));
-        frame[0] ^= 1;
-        Assert.False(PrivacyPeerAuthenticator.Verify(
-            headers,
-            recipient,
-            frame,
-            now,
-            out _,
-            out _));
-    }
-
-    [Theory]
-    [InlineData("127.0.0.1")]
-    [InlineData("10.20.30.40")]
-    [InlineData("100.64.0.1")]
-    [InlineData("169.254.169.254")]
-    [InlineData("192.0.2.1")]
-    [InlineData("::1")]
-    [InlineData("fc00::1")]
-    [InlineData("2001:db8::1")]
-    public void PeerAddressGuard_BlocksNonPublicAndSpecialPurposeTargets(string value)
-    {
-        Assert.False(PeerNetworkAddressGuard.IsPubliclyRoutable(IPAddress.Parse(value)));
-    }
-
-    [Theory]
-    [InlineData("8.8.8.8")]
-    [InlineData("2606:4700:4700::1111")]
-    public void PeerAddressGuard_AllowsGlobalTargets(string value)
-    {
-        Assert.True(PeerNetworkAddressGuard.IsPubliclyRoutable(IPAddress.Parse(value)));
+        Assert.Equal(PrivacyRuntimeOutcome.UnavailableBeforeForward, result.Outcome);
+        Assert.Equal(0, effects.PeerCalls);
+        Assert.Equal(0, effects.ContactCalls);
+        Assert.Equal(0, effects.MailboxCalls);
+        Assert.Equal(0, effects.AuthorityForwardingCalls);
     }
 
     private static PrivacyRoutingRuntime Runtime(
         PrivacyRoutingConfiguration configuration,
-        RouterId localId,
-        IPrivacyPeerClient peerClient,
-        INativeMailboxExitDispatcher mailbox) => new(
-            configuration,
-            new PrivacyRoutingReplayGuard(configuration),
-            peerClient,
-            mailbox,
-            new RouterNodeOptions { RouterId = localId.Value },
-            new FixedClock(DateTimeOffset.FromUnixTimeSeconds(1_800_000_000)));
+        Effects effects)
+        => new(configuration, effects, Terminal(effects));
 
-    private static PrivacyRoutingConfiguration Configuration(
-        byte[] privateKey,
-        byte[] publicKey,
-        RouterId peerId) => new(
-            true,
-            privateKey.ToArray(),
-            publicKey.ToArray(),
-            new Uri("https://node.example/"),
-            new Dictionary<RouterId, PrivacyPeer>
-            {
-                [peerId] = new PrivacyPeer(
-                    peerId,
-                    new Uri("https://peer.example/api/peer/privacy/v1/frame"),
-                    Bytes(61),
-                    Bytes(71),
-                    false)
-            },
-            8,
-            60,
-            TimeSpan.FromSeconds(10),
-            256,
-            1000,
-            TimeSpan.FromMinutes(5));
-
-    private static IReadOnlyList<PrivacyRoutingHop> Route(
-        RouterId[] ids,
-        byte[] first,
-        byte[] second,
-        byte[] exit) =>
-        [
-            new PrivacyRoutingHop(ids[0].ToBytes(), first),
-            new PrivacyRoutingHop(ids[1].ToBytes(), second),
-            new PrivacyRoutingHop(ids[2].ToBytes(), exit)
-        ];
-
-    private static RouterId Id(byte value) => RouterId.FromBytes(Bytes(value));
-
-    private static RouterNodeOptions NodeOptions() => new()
+    private static PrivacyTerminalExitDispatcher Terminal(Effects effects)
     {
-        RouterId = Id(1).Value,
-        Ed25519PrivateKey = new string('b', 64),
-        IsRelay = true
-    };
+        var routedMailbox = new RoutedNativeMailboxExitDispatcher(
+            new MailboxAuthorityForwardingConfiguration(
+                authority: null,
+                allowedExitRouterIds: new HashSet<RouterId>()),
+            effects,
+            effects);
+        return new PrivacyTerminalExitDispatcher(routedMailbox, effects);
+    }
+
+    private static PrivacyRoutingConfiguration EnabledTestConfiguration() => new(
+        enabled: true,
+        privateKey: Enumerable.Repeat((byte)0x31, 32).ToArray(),
+        publicKey: Enumerable.Repeat((byte)0x32, 32).ToArray(),
+        publicPeerEndpoint: new Uri("https://disabled.invalid/"),
+        peers: new Dictionary<RouterId, PrivacyPeer>(),
+        maximumConcurrentRequests: 1,
+        requestsPerMinute: 1,
+        requestTimeout: TimeSpan.FromSeconds(1),
+        replyPaddingBlockBytes: 1024,
+        replayCapacity: 1,
+        replayTtl: TimeSpan.FromSeconds(1),
+        stateProtectionKeyPath: Path.Combine(Path.GetTempPath(), "xnode-privacy-test", "state.key"),
+        replayStatePath: Path.Combine(Path.GetTempPath(), "xnode-privacy-test", "replay.bin"),
+        entropyStatePath: Path.Combine(Path.GetTempPath(), "xnode-privacy-test", "entropy.bin"),
+        keyVaultDirectory: Path.Combine(Path.GetTempPath(), "xnode-privacy-test", "vault"),
+        receivePosition: OnionReceivePosition.Ingress);
+
+    private static OnionHostReceiveBinding Binding(
+        PrivacyRoutingConfiguration configuration,
+        OnionReceivePosition? position = null) => new(
+            CompleteNetwork(),
+            position ?? configuration.ReceivePosition,
+            Bytes(0x41),
+            configuration.KeyHandleId.Span);
+
+    private static VerifiedOnionNetworkContext CompleteNetwork()
+    {
+        var protocol = typeof(VerifiedOnionNetworkContext).Assembly;
+        var lease = (OnionTrustedTimeLease)RuntimeHelpers.GetUninitializedObject(
+            typeof(OnionTrustedTimeLease));
+        SetField(lease, "_timeProvider", TimeProvider.System);
+        SetField(lease, "_createdTimestamp", TimeProvider.System.GetTimestamp());
+        SetField(lease, "_lifetime", TimeSpan.FromMinutes(1));
+        SetField(lease, "_bootId", Bytes(0x31));
+        var closureType = protocol.GetType(
+            "Deep.Protocol.XPointNetworkV1.VerifiedOnionNetworkClosure",
+            throwOnError: true)!;
+        var closure = RuntimeHelpers.GetUninitializedObject(closureType);
+        var lkg = new XPointNetworkProtectedLkg(
+            Enumerable.Repeat((byte)0x11, 16).ToArray(),
+            Reference("XNH1", 0x21),
+            1,
+            Bytes(0x22),
+            Reference("XNV1", 0x23),
+            0,
+            Reference("XNA1", 0x24));
+        var network = (VerifiedOnionNetworkContext)RuntimeHelpers.GetUninitializedObject(
+            typeof(VerifiedOnionNetworkContext));
+        SetField(network, "_networkId", Enumerable.Repeat((byte)0x11, 16).ToArray());
+        SetField(network, "<TrustedTime>k__BackingField", lease);
+        SetField(network, "<Closure>k__BackingField", closure);
+        SetField(network, "<ProtectedLkg>k__BackingField", lkg);
+        return network;
+    }
+
+    private static void SetField(object target, string name, object value) =>
+        target.GetType().GetField(
+            name,
+            BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(target, value);
+
+    private static byte[] Reference(string magic, byte marker)
+    {
+        var value = new byte[38];
+        System.Text.Encoding.ASCII.GetBytes(magic, value);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16BigEndian(value.AsSpan(4, 2), 1);
+        value.AsSpan(6).Fill(marker);
+        return value;
+    }
 
     private static byte[] Bytes(byte value) => Enumerable.Repeat(value, 32).ToArray();
 
-    private sealed class RecordingPeerClient(byte[] reply) : IPrivacyPeerClient
+    private static string FindRepositoryRoot()
     {
-        public PrivacyPeer? Peer { get; private set; }
-        public ReadOnlyMemory<byte> Frame { get; private set; }
+        var current = new DirectoryInfo(AppContext.BaseDirectory);
+        while (current is not null)
+        {
+            if (File.Exists(Path.Combine(current.FullName, "XNode.slnx")))
+            {
+                return current.FullName;
+            }
+
+            current = current.Parent;
+        }
+
+        throw new InvalidOperationException("XNode repository root was not found.");
+    }
+
+    private sealed class Effects :
+        IPrivacyPeerClient,
+        ILocalNativeMailboxExitDispatcher,
+        IMailboxAuthorityForwardingClient,
+        IContactServiceOpaqueDispatcher
+    {
+        public int PeerCalls { get; private set; }
+        public int MailboxCalls { get; private set; }
+        public int AuthorityForwardingCalls { get; private set; }
+        public int ContactCalls { get; private set; }
 
         public Task<PrivacyForwardResult> ForwardAsync(
-            PrivacyPeer peer,
+            VerifiedOnionNextHopTransport nextHop,
             ReadOnlyMemory<byte> innerFrame,
             CancellationToken cancellationToken)
         {
-            Peer = peer;
-            Frame = innerFrame;
-            return Task.FromResult(new PrivacyForwardResult(
-                reply,
-                PrivacyForwardFailure.None));
+            PeerCalls++;
+            return Task.FromResult(PrivacyForwardResult.Rejected);
         }
-    }
 
-    private sealed class RecordingMailboxDispatcher : INativeMailboxExitDispatcher
-    {
-        public NativeMailboxDispatchResult Result { get; init; } =
-            new(503, ReadOnlyMemory<byte>.Empty);
-        public ReadOnlyMemory<byte> Payload { get; private set; }
-
-        public Task<NativeMailboxDispatchResult> DispatchAsync(
-            PrivacyRoutingOperation privacyOperation,
+        Task<NativeMailboxDispatchResult> ILocalNativeMailboxExitDispatcher.DispatchAsync(
+            OnionOperation privacyOperation,
             ReadOnlyMemory<byte> canonicalMau2,
             CancellationToken cancellationToken)
         {
-            Payload = canonicalMau2;
-            return Task.FromResult(Result);
+            MailboxCalls++;
+            return Task.FromResult(NativeMailboxDispatchResult.RejectedBeforeForward());
+        }
+
+        Task<NativeMailboxDispatchResult> IMailboxAuthorityForwardingClient.ForwardAsync(
+            OnionOperation operation,
+            ReadOnlyMemory<byte> canonicalMau2,
+            CancellationToken cancellationToken)
+        {
+            AuthorityForwardingCalls++;
+            return Task.FromResult(NativeMailboxDispatchResult.RejectedBeforeForward());
+        }
+
+        public ValueTask<ReadOnlyMemory<byte>> DispatchAsync(
+            ContactServiceOperation operation,
+            ReadOnlyMemory<byte> canonicalRequest,
+            CancellationToken cancellationToken)
+        {
+            ContactCalls++;
+            return ValueTask.FromResult(ReadOnlyMemory<byte>.Empty);
         }
     }
 
-    private sealed class FixedClock(DateTimeOffset now) : IClock
+    private sealed class UnavailableBindingSource : IOnionHostReceiveBindingSource
     {
-        public DateTimeOffset UtcNow { get; } = now;
+        public ValueTask<OnionHostReceiveBinding> GetCurrentAsync(
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("Not expected by this test.");
+    }
+
+    private sealed class FixedBindingSource(OnionHostReceiveBinding binding)
+        : IOnionHostReceiveBindingSource
+    {
+        public ValueTask<OnionHostReceiveBinding> GetCurrentAsync(
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(binding);
+        }
+    }
+
+    private sealed class NoOpVault : IOnionKeyAgreementVault
+    {
+        public ValueTask<byte[]> DeriveX25519SharedSecretAsync(
+            OnionKeyHandle keyHandle,
+            ReadOnlyMemory<byte> peerPublicKey,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult(Bytes(0x61));
+    }
+
+    private sealed class NoOpReplayStore : IOnionDurableReplayStore
+    {
+        public ValueTask<IOnionDurableReplayTransaction> BeginAsync(
+            OnionReplayScope scope,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult<IOnionDurableReplayTransaction>(new NoOpReplayTransaction());
+    }
+
+    private sealed class NoOpReplayTransaction : IOnionDurableReplayTransaction
+    {
+        public ValueTask<OnionReplayCommitOutcome> CommitAsync(
+            ReadOnlyMemory<byte> replayId,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult(OnionReplayCommitOutcome.Committed);
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class NoOpEntropyLedger : IOnionEntropyUniquenessLedger
+    {
+        public ValueTask<OnionEntropyCommitOutcome> CommitAsync(
+            OnionEntropyCommitmentBatch batch,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult(OnionEntropyCommitOutcome.Committed);
+    }
+
+    private sealed class FixedClock : IClock
+    {
+        public DateTimeOffset UtcNow { get; } =
+            DateTimeOffset.FromUnixTimeSeconds(1_800_000_000);
     }
 }

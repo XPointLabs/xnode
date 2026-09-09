@@ -22,4 +22,27 @@ public sealed class QuorumCoordinatorAccessTests
     {
         Assert.False(QuorumCoordinatorAccess.IsAllowed(IPAddress.Parse(remote), networks));
     }
+
+    [Fact]
+    public void SigningEndpointRequiresPeerRpcListenerAndConfiguredCoordinator()
+    {
+        var coordinator = IPAddress.Parse("172.20.0.12");
+        const string networks = "172.16.0.0/12";
+
+        Assert.True(QuorumCoordinatorAccess.IsAllowed(
+            localPort: 8081,
+            peerRpcPort: 8081,
+            coordinator,
+            networks));
+        Assert.False(QuorumCoordinatorAccess.IsAllowed(
+            localPort: 8080,
+            peerRpcPort: 8081,
+            coordinator,
+            networks));
+        Assert.False(QuorumCoordinatorAccess.IsAllowed(
+            localPort: 8081,
+            peerRpcPort: 8081,
+            IPAddress.Parse("203.0.113.9"),
+            networks));
+    }
 }

@@ -7,18 +7,28 @@
     <RestoreConfigFile>$(MSBuildThisFileDirectory)..\..\eng\survival-beta.NuGet.Config</RestoreConfigFile>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <RestoreLockedMode>true</RestoreLockedMode>
+    <NuGetLockFilePath Condition="'$(DeepProtocolLocalCutover)' == 'true'">$(MSBuildThisFileDirectory)..\..\artifacts\local-protocol-cutover\locks\$(MSBuildProjectName).packages.lock.json</NuGetLockFilePath>
     <RuntimeIdentifiers>linux-x64;linux-arm64</RuntimeIdentifiers>
   </PropertyGroup>
 
-  <ItemGroup>
+  <ItemGroup Condition="'$(DeepProtocolLocalCutover)' != 'true'">
     <PackageReference Include="Deep.Protocol" Version="[0.5.0-production.e75bfed]" />
     <PackageReference Include="Deep.Protocol.MembershipRoutes" Version="[0.5.0-production.e75bfed]" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(DeepProtocolLocalCutover)' == 'true'">
+    <PackageReference Include="Deep.Protocol" Version="[$(DeepProtocolLocalPackageVersion)]" />
+    <PackageReference Include="Deep.Protocol.MembershipRoutes" Version="[$(DeepProtocolLocalPackageVersion)]" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.0" />
     <PackageReference Include="Rebex.Elliptic.Ed25519" Version="1.2.2" />
     <PackageReference Include="Sodium.Core" Version="1.4.1" />
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="XNode" />
     <InternalsVisibleTo Include="XNode.Tests" />
     <InternalsVisibleTo Include="XNode.IntegrationTests" />
   </ItemGroup>

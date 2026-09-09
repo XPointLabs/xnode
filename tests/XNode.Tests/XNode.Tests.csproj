@@ -10,11 +10,20 @@
     <RestoreConfigFile>$(MSBuildThisFileDirectory)..\..\eng\survival-beta.NuGet.Config</RestoreConfigFile>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <RestoreLockedMode>true</RestoreLockedMode>
+    <NuGetLockFilePath Condition="'$(DeepProtocolLocalCutover)' == 'true'">$(MSBuildThisFileDirectory)..\..\artifacts\local-protocol-cutover\locks\$(MSBuildProjectName).packages.lock.json</NuGetLockFilePath>
   </PropertyGroup>
 
-  <ItemGroup>
+  <ItemGroup Condition="'$(DeepProtocolLocalCutover)' != 'true'">
     <PackageReference Include="Deep.Protocol" Version="[0.5.0-production.e75bfed]" />
     <PackageReference Include="Deep.Protocol.MembershipRoutes" Version="[0.5.0-production.e75bfed]" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(DeepProtocolLocalCutover)' == 'true'">
+    <PackageReference Include="Deep.Protocol" Version="[$(DeepProtocolLocalPackageVersion)]" />
+    <PackageReference Include="Deep.Protocol.MembershipRoutes" Version="[$(DeepProtocolLocalPackageVersion)]" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="6.0.4" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="xunit" Version="2.9.3" />

@@ -143,10 +143,14 @@ Until those items are closed, the correct answer to “is the router fully produ
 ## Health
 
 - `GET /health/live`: process liveness.
-- `GET /health/ready`: returns `200` only when privacy routing is enabled, Xray is running or deliberately degraded, and enabled mailbox/authority dependencies are ready.
+- `GET /health/ready`: returns `200` only when privacy routing is enabled, Xray is running or deliberately degraded, enabled mailbox/authority dependencies are ready, and every terminal selected under `RequiredTerminals` has an active verified-authority runtime composition.
 - `GET /status`: sanitized transport, privacy-routing, mailbox and authority state. It never emits private X25519 material, MAU2 bytes, blinded mailbox identifiers, peer authentication headers, or replay IDs.
 
 A node with `PrivacyRouting:Enabled=false` is live but not ready. There is no direct MAU2 compatibility readiness lane.
+`RequiredTerminals:Contact=true` or `RequiredTerminals:GroupControl=true` reports
+`required-unavailable` and returns `503` until the corresponding ContactService
+or GroupControlService production composition is active. Development mode does
+not bypass an explicitly required terminal.
 
 ## Deep-native privacy ingress
 
@@ -208,6 +212,11 @@ Each relay decrypts only its own layer. A relay layer contains a replay ID, a ne
     "enabled": true,
     "x25519PrivateKeyPath": "/run/secrets/xnode-x25519-private",
     "publicPeerBaseUrl": "https://node.example:443/",
+    "stateProtectionKeyPath": "/run/secrets/xnode-onion-state-key",
+    "replayStateRelativePath": "privacy-routing-v1/replay.state",
+    "entropyStateRelativePath": "privacy-routing-v1/entropy.state",
+    "keyVaultDirectoryRelativePath": "privacy-routing-v1/key-vault",
+    "receivePosition": "Ingress",
     "maximumConcurrentRequests": 64,
     "requestsPerMinute": 600,
     "requestTimeoutSeconds": 30,
@@ -226,6 +235,18 @@ Each relay decrypts only its own layer. A relay layer contains a replay ID, a ne
   }
 }
 ```
+
+Activation is atomic and fail closed. `StateProtectionKeyPath` is a separate raw
+32-byte secret (not hexadecimal text) and must not reuse the node Ed25519 or
+ONION X25519 secret. The three state paths must be distinct clean relative paths
+inside `Node:DataDirectory`. `ReceivePosition` must match the local node role in
+the current Protocol-verified XND1 view. Startup also requires the production
+Contact authority source because it owns the current XNA1/XVP1/XNV1/XNH1/XND1,
+PMT2 and DTT1 verification closure. Missing, stale, cross-network, duplicate-owner
+or wrong-role authority leaves the capability unavailable and fails enabled-node
+startup before ingress can accept traffic. The X25519 scalar is imported into an
+authenticated opaque-handle slot; a pre-existing slot with different key material
+is rejected rather than overwritten.
 
 The X25519 private key is independently generated and stored as exactly 32 bytes of lowercase hex in an absolute secret file. It must never be derived from or converted from the router Ed25519 key. Startup fails closed for a missing, zero, uppercase/non-canonical or invalid key; duplicate/self peers; non-origin URLs; repeated TLS pins; invalid bounds; or an empty peer inventory.
 
@@ -810,6 +831,45 @@ write-through replacement and file/parent durability barriers. A crash after res
 an explicit `Pending` record; it is never silently retried as new, and only recovery with the
 exact claim can complete it. Diagnostics expose counts only, never issuer, serial, operation,
 request or capability bytes.
+
+### Contact route-closure Registry adapter
+
+The canonical route-closure distribution contract is owned by
+`../../docs/architecture/CONTACT-RESOLVER-V1.md` section 3.2.1. XNode's adapter is
+default-dormant. It is enabled only together with the complete production
+`ContactAuthority` and `ContactService` composition:
+
+```json
+{
+  "ContactRouteClosure": {
+    "enabled": true,
+    "registryOrigin": "https://registry.example",
+    "stateRelativePath": "contact-route-closure-v1/lkg.bin",
+    "maximumProtectedStateBytes": 4194304,
+    "requestTimeoutSeconds": 5
+  }
+}
+```
+
+`registryOrigin` is an HTTPS origin only. Paths, query, fragment, userinfo,
+escaping, HTTP and redirects are rejected. The adapter sends the exact 50-byte
+`networkId16 + locatorHash32` request to the fixed endpoint, accepts only the
+exact binary response contract with `Content-Length` and `no-store`, then
+independently decodes XIR1 and all six records and invokes Protocol
+`ContactCodec.VerifyRouteUpdateClosure`. HTTP, TLS and Registry manifest bytes
+never mint authority.
+
+The recipient-specific `VerifiedContactNetworkAuthority` and exact XIR1 must
+come from the in-process Protocol-minted current authority snapshot source.
+The built-in source remains closed until that recipient authority producer is
+composed; in that state the operation returns the same coarse unavailable
+outcome without contacting Registry. There is no client/direct fallback.
+
+The protected per-locator LKG lives inside `Node.DataDirectory`. It tracks the
+authority, XIR1, XRR1, XRA1, XRC1, XSS1, PMT2 and PMS2 lineages. Restart replay
+is idempotent; rollback, changed bytes at the same generation, changed lineage
+identity and a previously latched fork fail closed. A corrupt protected state
+prevents host startup rather than being reset or migrated.
 
 Side-effect-free post-verification cancellation may instead persist `Released`. This is not a
 deletion: the counter floor and exact claim digest survive restart, exact retry can reserve it

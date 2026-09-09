@@ -4,6 +4,13 @@ namespace XNode.Core;
 
 public static class QuorumCoordinatorAccess
 {
+    public static bool IsAllowed(
+        int localPort,
+        int peerRpcPort,
+        IPAddress? remoteAddress,
+        string? configuredNetworks) =>
+        localPort == peerRpcPort && IsAllowed(remoteAddress, configuredNetworks);
+
     public static bool IsAllowed(IPAddress? remoteAddress, string? configuredNetworks)
     {
         if (remoteAddress is null || string.IsNullOrWhiteSpace(configuredNetworks))

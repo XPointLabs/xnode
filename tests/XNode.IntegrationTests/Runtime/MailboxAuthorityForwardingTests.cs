@@ -80,7 +80,7 @@ public sealed class MailboxAuthorityForwardingTests
     }
 
     [Fact]
-    public async Task ExitRouter_ForwardsCanonicalBodyWithoutTouchingLocalAdapter()
+    public void ExitRouter_ExposesOnlyVerifiedOnionRequestBoundary()
     {
         var local = new RecordingLocalDispatcher();
         var forwarding = new RecordingForwardingClient(
@@ -97,17 +97,13 @@ public sealed class MailboxAuthorityForwardingTests
             configuration,
             local,
             forwarding);
-        var body = Enumerable.Repeat((byte)0x51, 512).ToArray();
+        INativeMailboxExitDispatcher boundary = routed;
+        Func<VerifiedCanonicalOnionRequest, CancellationToken,
+            Task<NativeMailboxDispatchResult>> dispatch = boundary.DispatchAsync;
 
-        var result = await routed.DispatchAsync(
-            PrivacyRoutingOperation.Store,
-            body,
-            CancellationToken.None);
-
-        Assert.True(result.Success);
+        Assert.NotNull(dispatch);
         Assert.Equal(0, local.Calls);
-        Assert.Equal(1, forwarding.Calls);
-        Assert.Equal(body, forwarding.LastBody);
+        Assert.Equal(0, forwarding.Calls);
     }
 
     [Fact]
@@ -131,18 +127,18 @@ public sealed class MailboxAuthorityForwardingTests
         var body = Enumerable.Repeat(
             (byte)0x31,
             MailboxAuthorityForwardingHttpContract.Contract(
-                PrivacyRoutingOperation.Store).MinimumRequestBytes).ToArray();
+                OnionOperation.Store).MinimumRequestBytes).ToArray();
         var authentication = MailboxAuthorityForwardingAuthenticator.Sign(
             exit.Id,
             authority.Id,
             exit.SeedHex,
-            PrivacyRoutingOperation.Store,
+            OnionOperation.Store,
             body,
             now);
         Assert.False(MailboxAuthorityForwardingAuthenticator.Verify(
             authentication,
             authority.Id,
-            PrivacyRoutingOperation.Retrieve,
+            OnionOperation.Retrieve,
             body,
             now,
             out _,
@@ -201,7 +197,7 @@ public sealed class MailboxAuthorityForwardingTests
         var body = Enumerable.Repeat(
             (byte)0x32,
             MailboxAuthorityForwardingHttpContract.Contract(
-                PrivacyRoutingOperation.Store).MinimumRequestBytes).ToArray();
+                OnionOperation.Store).MinimumRequestBytes).ToArray();
 
         async Task<DefaultHttpContext> InvokeAsync()
         {
@@ -209,7 +205,7 @@ public sealed class MailboxAuthorityForwardingTests
                 exit.Id,
                 authority.Id,
                 exit.SeedHex,
-                PrivacyRoutingOperation.Store,
+                OnionOperation.Store,
                 body,
                 now);
             var context = Context(body, authentication);
@@ -246,10 +242,10 @@ public sealed class MailboxAuthorityForwardingTests
         context.Request.Path = MailboxAuthorityForwardingHttpContract.StoreRoute;
         context.Request.ContentType =
             MailboxAuthorityForwardingHttpContract.Contract(
-                PrivacyRoutingOperation.Store).RequestContentType;
+                OnionOperation.Store).RequestContentType;
         context.Request.Headers.Accept =
             MailboxAuthorityForwardingHttpContract.Contract(
-                PrivacyRoutingOperation.Store).ResponseContentType;
+                OnionOperation.Store).ResponseContentType;
         context.Request.ContentLength = body.Length;
         context.Request.Body = new MemoryStream(body);
         context.Response.Body = new MemoryStream();
@@ -332,7 +328,7 @@ public sealed class MailboxAuthorityForwardingTests
             new(503, ReadOnlyMemory<byte>.Empty);
 
         public Task<NativeMailboxDispatchResult> DispatchAsync(
-            PrivacyRoutingOperation privacyOperation,
+            OnionOperation privacyOperation,
             ReadOnlyMemory<byte> canonicalMau2,
             CancellationToken cancellationToken)
         {
@@ -349,7 +345,7 @@ public sealed class MailboxAuthorityForwardingTests
         public byte[] LastBody { get; private set; } = [];
 
         public Task<NativeMailboxDispatchResult> ForwardAsync(
-            PrivacyRoutingOperation operation,
+            OnionOperation operation,
             ReadOnlyMemory<byte> canonicalMau2,
             CancellationToken cancellationToken)
         {

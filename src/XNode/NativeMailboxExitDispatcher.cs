@@ -35,15 +35,14 @@ public sealed record NativeMailboxDispatchResult(
 public interface INativeMailboxExitDispatcher
 {
     Task<NativeMailboxDispatchResult> DispatchAsync(
-        PrivacyRoutingOperation privacyOperation,
-        ReadOnlyMemory<byte> canonicalMau2,
+        VerifiedCanonicalOnionRequest request,
         CancellationToken cancellationToken);
 }
 
 public interface ILocalNativeMailboxExitDispatcher
 {
     Task<NativeMailboxDispatchResult> DispatchAsync(
-        PrivacyRoutingOperation privacyOperation,
+        OnionOperation privacyOperation,
         ReadOnlyMemory<byte> canonicalMau2,
         CancellationToken cancellationToken);
 }
@@ -60,18 +59,35 @@ public sealed class NativeMailboxExitDispatcher
     }
 
     public async Task<NativeMailboxDispatchResult> DispatchAsync(
-        PrivacyRoutingOperation privacyOperation,
+        VerifiedCanonicalOnionRequest request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return await DispatchCoreAsync(
+            request.Operation,
+            request.CanonicalBytes,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    Task<NativeMailboxDispatchResult> ILocalNativeMailboxExitDispatcher.DispatchAsync(
+        OnionOperation privacyOperation,
+        ReadOnlyMemory<byte> canonicalMau2,
+        CancellationToken cancellationToken) =>
+        DispatchCoreAsync(privacyOperation, canonicalMau2, cancellationToken);
+
+    private async Task<NativeMailboxDispatchResult> DispatchCoreAsync(
+        OnionOperation privacyOperation,
         ReadOnlyMemory<byte> canonicalMau2,
         CancellationToken cancellationToken)
     {
         (MailboxAuthenticatedOperation operation, MailboxHttpEndpointContract contract) =
             privacyOperation switch
         {
-            PrivacyRoutingOperation.Store =>
+            OnionOperation.Store =>
                 (MailboxAuthenticatedOperation.Store, MailboxWireHttpContract.Store),
-            PrivacyRoutingOperation.Retrieve =>
+            OnionOperation.Retrieve =>
                 (MailboxAuthenticatedOperation.Retrieve, MailboxWireHttpContract.Retrieve),
-            PrivacyRoutingOperation.Acknowledge =>
+            OnionOperation.Acknowledge =>
                 (MailboxAuthenticatedOperation.Ack, MailboxWireHttpContract.Acknowledge),
             _ => throw new ArgumentOutOfRangeException(nameof(privacyOperation))
         };

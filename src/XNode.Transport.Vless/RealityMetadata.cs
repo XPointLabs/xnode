@@ -9,6 +9,9 @@ public sealed class RealityMetadata
     [System.Text.Json.Serialization.JsonIgnore]
     public string PrivateKey { get; set; } = "";
 
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string PrivateKeyFile { get; set; } = "";
+
     public string ShortId { get; set; } = "";
 
     public string Fingerprint { get; set; } = "chrome";

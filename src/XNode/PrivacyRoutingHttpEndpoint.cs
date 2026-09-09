@@ -17,9 +17,19 @@ public static class PrivacyRoutingHttpEndpoint
         int apiListenerPort,
         CancellationToken cancellationToken)
     {
-        if (!configuration.Enabled || context.Connection.LocalPort != apiListenerPort)
+        if (context.Connection.LocalPort != apiListenerPort)
         {
             return Results.NotFound();
+        }
+
+        if (!configuration.Enabled)
+        {
+            return Failure(
+                StatusCodes.Status503ServiceUnavailable,
+                ManagedIngressErrorClass.Unavailable,
+                ManagedIngressOutcomeCertainty.BeforeForward,
+                retryable: true,
+                retryAfterSeconds: 1);
         }
 
         try
@@ -51,9 +61,22 @@ public static class PrivacyRoutingHttpEndpoint
         int peerListenerPort,
         CancellationToken cancellationToken)
     {
-        if (!configuration.Enabled
-            || context.Connection.LocalPort != peerListenerPort
-            || context.Request.Protocol != "HTTP/2"
+        if (context.Connection.LocalPort != peerListenerPort)
+        {
+            return Results.NotFound();
+        }
+
+        if (!configuration.Enabled)
+        {
+            return Failure(
+                StatusCodes.Status503ServiceUnavailable,
+                ManagedIngressErrorClass.Unavailable,
+                ManagedIngressOutcomeCertainty.BeforeForward,
+                retryable: true,
+                retryAfterSeconds: 1);
+        }
+
+        if (context.Request.Protocol != "HTTP/2"
             || !HttpMethods.IsPost(context.Request.Method)
             || !context.Request.Path.Equals(PrivacyRoutingOptions.PeerFramePath)
             || context.Request.QueryString.HasValue
@@ -149,6 +172,7 @@ public static class PrivacyRoutingHttpEndpoint
     public static IResult HandleCapabilities(
         HttpContext context,
         PrivacyRoutingConfiguration configuration,
+        PrivacyRoutingRuntime runtime,
         int apiListenerPort)
     {
         if (context.Connection.LocalPort != apiListenerPort)
@@ -161,6 +185,7 @@ public static class PrivacyRoutingHttpEndpoint
             ManagedIngressH2Contract.ValidateCapabilityRequest(
                 RequestMetadata(context.Request));
             var document = configuration.Enabled
+                && runtime.ProductionCapabilityAvailable
                 ? ManagedIngressCapabilityDocument.V1Ready()
                 : new ManagedIngressCapabilityDocument
                 {
