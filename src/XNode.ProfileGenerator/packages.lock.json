@@ -6,9 +6,9 @@
         "type": "Direct",
         "requested": "[0.5.0-survival.9a7eaed, 0.5.0-survival.9a7eaed]",
         "resolved": "0.5.0-survival.9a7eaed",
-        "contentHash": "bS/XP1jC4EdbJ+SExC2X6NqgjsQ69fdkFxbCmCb5RLWQiAE02fdhS22mrGq5ZST9q9iEl9nHwYTNG3HSlZ4Nnw==",
+        "contentHash": "p7ptQN/c4Y77+i+jXFaa+Plm8oBmodvtahaZChvKBIdpXtvOght1PHh8CVwwpftTaUr4eeII9IympBt/wD2YOA==",
         "dependencies": {
-          "Sodium.Core": "1.4.1"
+          "Sodium.Core": "[1.4.1]"
         }
       },
       "Deep.Protocol.MembershipRoutes": {
