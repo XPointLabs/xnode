@@ -1000,16 +1000,12 @@ internal static class ProductionMailboxAuthorityNativeFile
         {
             var value = WindowsIdentityFor(handle);
             return new(value.VolumeSerialNumber,
-                ((ulong)value.FileIndexHigh << 32) | value.FileIndexLow,
-                0,
-                0);
+                ((ulong)value.FileIndexHigh << 32) | value.FileIndexLow);
         }
 
         var stat = LinuxIdentityFor(handle);
         return new(((ulong)stat.DeviceMajor << 32) | stat.DeviceMinor,
-            stat.Inode,
-            stat.UserId,
-            stat.Mode);
+            stat.Inode);
     }
 
     [SupportedOSPlatform("windows")]
@@ -1043,9 +1039,7 @@ internal static class ProductionMailboxAuthorityNativeFile
 
     private readonly record struct FileIdentity(
         ulong Device,
-        ulong File,
-        uint UserId,
-        ushort Mode);
+        ulong File);
 
     private sealed class NativeLockLease(
         FileStream stream,
