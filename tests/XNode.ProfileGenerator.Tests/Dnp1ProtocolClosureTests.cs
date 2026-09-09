@@ -174,7 +174,7 @@ public sealed class Dnp1ProtocolClosureTests
             "Verify-Dnp1ProtocolClosure.ps1");
         var startInfo = new ProcessStartInfo
         {
-            FileName = "powershell.exe",
+            FileName = OperatingSystem.IsWindows() ? "powershell.exe" : "pwsh",
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
