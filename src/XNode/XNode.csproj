@@ -17,6 +17,11 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(DeepProtocolSourceCutover)' == 'true'">
+    <RestoreLockedMode>false</RestoreLockedMode>
+    <NuGetLockFilePath>$(BaseIntermediateOutputPath)packages.source-cutover.lock.json</NuGetLockFilePath>
+  </PropertyGroup>
+
   <ItemGroup>
     <InternalsVisibleTo Include="XNode.IntegrationTests" />
   </ItemGroup>

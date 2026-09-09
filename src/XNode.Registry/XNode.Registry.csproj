@@ -23,4 +23,9 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(DeepProtocolSourceCutover)' == 'true'">
+    <RestoreLockedMode>false</RestoreLockedMode>
+    <NuGetLockFilePath>$(BaseIntermediateOutputPath)packages.source-cutover.lock.json</NuGetLockFilePath>
+  </PropertyGroup>
+
 </Project>

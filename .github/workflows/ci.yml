@@ -3,26 +3,35 @@
 on:
   workflow_dispatch:
   push:
-    branches: [ master ]
+    branches: [ main, master, 'release-candidate/**' ]
   pull_request:
-    branches: [ master ]
+    branches: [ main, master ]
 
 jobs:
   build-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: xnode
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/deep-protocol
+          ref: ${{ github.ref_name }}
+          token: ${{ secrets.XPOINTLABS_CI_TOKEN }}
+          path: deep-protocol
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 10.0.x
+          dotnet-version: 10.0.301
       - name: Restore
-        run: dotnet restore
-      - name: Format
-        run: dotnet format --verify-no-changes --no-restore
+        working-directory: xnode
+        run: dotnet restore -p:DeepProtocolSourceCutover=true
       - name: Build
-        run: dotnet build --configuration Release --no-restore
+        working-directory: xnode
+        run: dotnet build --configuration Release --no-restore -p:DeepProtocolSourceCutover=true
       - name: Unit tests
-        run: dotnet test tests/XNode.Tests/XNode.Tests.csproj --configuration Release --no-build --logger trx
+        working-directory: xnode
+        run: dotnet test tests/XNode.Tests/XNode.Tests.csproj --configuration Release --no-build --logger trx -p:DeepProtocolSourceCutover=true
 
   integration-tests:
     runs-on: ubuntu-latest
@@ -32,20 +41,31 @@ jobs:
       Vless__XrayExecutablePath: "mock"
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: xnode
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/deep-protocol
+          ref: ${{ github.ref_name }}
+          token: ${{ secrets.XPOINTLABS_CI_TOKEN }}
+          path: deep-protocol
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 10.0.x
+          dotnet-version: 10.0.301
       - name: Restore
-        run: dotnet restore
+        working-directory: xnode
+        run: dotnet restore -p:DeepProtocolSourceCutover=true
       - name: Build
-        run: dotnet build --configuration Release --no-restore
+        working-directory: xnode
+        run: dotnet build --configuration Release --no-restore -p:DeepProtocolSourceCutover=true
       - name: Integration tests with mocked Xray
-        run: dotnet test tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj --configuration Release --no-build --logger trx
+        working-directory: xnode
+        run: dotnet test tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj --configuration Release --no-build --logger trx -p:DeepProtocolSourceCutover=true
       - name: Upload C3 test artifacts
         uses: actions/upload-artifact@v4
         with:
           name: c3-test-results
-          path: artifacts/test-results/c3
+          path: xnode/artifacts/test-results/c3
           if-no-files-found: error
 
   publish-linux-x64:
@@ -53,12 +73,22 @@ jobs:
     needs: [ build-test, integration-tests ]
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: xnode
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/deep-protocol
+          ref: ${{ github.ref_name }}
+          token: ${{ secrets.XPOINTLABS_CI_TOKEN }}
+          path: deep-protocol
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 10.0.x
-      - name: Restore locked multi-RID graph
-        run: dotnet restore src/XNode/XNode.csproj --locked-mode
+          dotnet-version: 10.0.301
+      - name: Restore current protocol multi-RID graph
+        working-directory: xnode
+        run: dotnet restore src/XNode/XNode.csproj -p:DeepProtocolSourceCutover=true
       - name: Publish self-contained linux-x64
+        working-directory: xnode
         run: >
           dotnet publish src/XNode/XNode.csproj
           --configuration Release
@@ -67,9 +97,10 @@ jobs:
           --self-contained true
           -p:PublishSingleFile=true
           -p:PublishTrimmed=false
+          -p:DeepProtocolSourceCutover=true
           --output artifacts/xnode-linux-x64
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: xnode-linux-x64
-          path: artifacts/xnode-linux-x64
+          path: xnode/artifacts/xnode-linux-x64

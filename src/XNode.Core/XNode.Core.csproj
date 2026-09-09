@@ -11,14 +11,24 @@
     <RuntimeIdentifiers>linux-x64;linux-arm64</RuntimeIdentifiers>
   </PropertyGroup>
 
-  <ItemGroup Condition="'$(DeepProtocolLocalCutover)' != 'true'">
+  <PropertyGroup Condition="'$(DeepProtocolSourceCutover)' == 'true'">
+    <RestoreLockedMode>false</RestoreLockedMode>
+    <NuGetLockFilePath>$(BaseIntermediateOutputPath)packages.source-cutover.lock.json</NuGetLockFilePath>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(DeepProtocolLocalCutover)' != 'true' and '$(DeepProtocolSourceCutover)' != 'true'">
     <PackageReference Include="Deep.Protocol" Version="[0.5.0-production.e75bfed]" />
     <PackageReference Include="Deep.Protocol.MembershipRoutes" Version="[0.5.0-production.e75bfed]" />
   </ItemGroup>
 
-  <ItemGroup Condition="'$(DeepProtocolLocalCutover)' == 'true'">
+  <ItemGroup Condition="'$(DeepProtocolLocalCutover)' == 'true' and '$(DeepProtocolSourceCutover)' != 'true'">
     <PackageReference Include="Deep.Protocol" Version="[$(DeepProtocolLocalPackageVersion)]" />
     <PackageReference Include="Deep.Protocol.MembershipRoutes" Version="[$(DeepProtocolLocalPackageVersion)]" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(DeepProtocolSourceCutover)' == 'true'">
+    <ProjectReference Include="..\..\..\deep-protocol\src\Deep.Protocol\Deep.Protocol.csproj" />
+    <ProjectReference Include="..\..\..\deep-protocol\src\Deep.Protocol.MembershipRoutes\Deep.Protocol.MembershipRoutes.csproj" />
   </ItemGroup>
 
   <ItemGroup>
