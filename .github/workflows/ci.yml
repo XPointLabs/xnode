@@ -60,7 +60,7 @@ jobs:
         run: dotnet build tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj --configuration Release --no-restore -p:DeepProtocolSourceCutover=true
       - name: Integration tests with mocked Xray
         working-directory: xnode
-        run: dotnet test tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj --configuration Release --no-build --logger trx -p:DeepProtocolSourceCutover=true
+        run: dotnet test tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj --configuration Release --no-build --logger trx --results-directory artifacts/test-results/c3 -p:DeepProtocolSourceCutover=true
       - name: Upload C3 test artifacts
         uses: actions/upload-artifact@v4
         with:
