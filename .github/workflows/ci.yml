@@ -9,7 +9,7 @@ on:
 
 jobs:
   build-test:
-    runs-on: [self-hosted, Linux, X64, ubuntu-latest]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -18,7 +18,7 @@ jobs:
         with:
           repository: ${{ github.repository_owner }}/deep-protocol
           ref: ${{ github.ref_name }}
-          token: ${{ secrets.XPOINTLABS_CI_TOKEN }}
+          token: ${{ secrets.XPOINTLABS_CI_TOKEN || github.token }}
           path: deep-protocol
       - uses: actions/setup-dotnet@v4
         env:
@@ -36,7 +36,7 @@ jobs:
         run: dotnet test tests/XNode.Tests/XNode.Tests.csproj --configuration Release --no-build --logger trx -p:DeepProtocolSourceCutover=true
 
   integration-tests:
-    runs-on: [self-hosted, Linux, X64, ubuntu-latest]
+    runs-on: ubuntu-latest
     needs: build-test
     env:
       Vless__MockProcess: "true"
@@ -49,7 +49,7 @@ jobs:
         with:
           repository: ${{ github.repository_owner }}/deep-protocol
           ref: ${{ github.ref_name }}
-          token: ${{ secrets.XPOINTLABS_CI_TOKEN }}
+          token: ${{ secrets.XPOINTLABS_CI_TOKEN || github.token }}
           path: deep-protocol
       - uses: actions/setup-dotnet@v4
         env:
@@ -73,7 +73,7 @@ jobs:
           if-no-files-found: error
 
   publish-linux-x64:
-    runs-on: [self-hosted, Linux, X64, ubuntu-latest]
+    runs-on: ubuntu-latest
     needs: [ build-test, integration-tests ]
     steps:
       - uses: actions/checkout@v4
@@ -83,7 +83,7 @@ jobs:
         with:
           repository: ${{ github.repository_owner }}/deep-protocol
           ref: ${{ github.ref_name }}
-          token: ${{ secrets.XPOINTLABS_CI_TOKEN }}
+          token: ${{ secrets.XPOINTLABS_CI_TOKEN || github.token }}
           path: deep-protocol
       - uses: actions/setup-dotnet@v4
         env:
