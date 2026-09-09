@@ -14,8 +14,9 @@
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(DeepProtocolSourceCutover)' == 'true'">
+    <RestorePackagesWithLockFile>false</RestorePackagesWithLockFile>
     <RestoreLockedMode>false</RestoreLockedMode>
-    <NuGetLockFilePath>$(BaseIntermediateOutputPath)packages.source-cutover.lock.json</NuGetLockFilePath>
+    <NuGetLockFilePath>$(BaseIntermediateOutputPath)source-cutover\packages.lock.json</NuGetLockFilePath>
   </PropertyGroup>
 
   <ItemGroup>
