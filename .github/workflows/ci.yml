@@ -25,10 +25,10 @@ jobs:
           dotnet-version: 10.0.301
       - name: Restore
         working-directory: xnode
-        run: dotnet restore -p:DeepProtocolSourceCutover=true
+        run: dotnet restore tests/XNode.Tests/XNode.Tests.csproj -p:DeepProtocolSourceCutover=true
       - name: Build
         working-directory: xnode
-        run: dotnet build --configuration Release --no-restore -p:DeepProtocolSourceCutover=true
+        run: dotnet build tests/XNode.Tests/XNode.Tests.csproj --configuration Release --no-restore -p:DeepProtocolSourceCutover=true
       - name: Unit tests
         working-directory: xnode
         run: dotnet test tests/XNode.Tests/XNode.Tests.csproj --configuration Release --no-build --logger trx -p:DeepProtocolSourceCutover=true
@@ -54,10 +54,10 @@ jobs:
           dotnet-version: 10.0.301
       - name: Restore
         working-directory: xnode
-        run: dotnet restore -p:DeepProtocolSourceCutover=true
+        run: dotnet restore tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj -p:DeepProtocolSourceCutover=true
       - name: Build
         working-directory: xnode
-        run: dotnet build --configuration Release --no-restore -p:DeepProtocolSourceCutover=true
+        run: dotnet build tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj --configuration Release --no-restore -p:DeepProtocolSourceCutover=true
       - name: Integration tests with mocked Xray
         working-directory: xnode
         run: dotnet test tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj --configuration Release --no-build --logger trx -p:DeepProtocolSourceCutover=true
