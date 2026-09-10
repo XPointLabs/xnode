@@ -78,18 +78,22 @@ Use this checklist to separate three different questions:
 
 ### Current Status Snapshot
 
-As of 2026-08-30:
+As of 2026-09-10:
 
 - `GO`: Release tests pass locally (`dotnet test XNode.slnx --configuration Release`).
 - `GO`: self-contained `linux-x64` publish path works (`dotnet publish ... --configuration Release --runtime linux-x64 --self-contained true`).
 - `GO`: production profiles reject mocked VLESS/Xray settings at startup.
 - `GO`: devops release rehearsal can run a real Xray-backed router locally via `deep-devops/scripts/test-env.ps1 -RequireRouterNoMock`; latest managed external smoke/full runs reported `routerTransportMode=running` and `routerTransportMocked=false`.
 - `GO`: devops CI wiring now runs backend-external smoke/full with `-RequireRouterNoMock`.
-- `GO`: router C3 chaos/soak/load/restart-storm validation is green locally and publishes `artifacts/test-results/c3/latest.json` plus `latest.md`.
+- `GO`: the current native-privacy C3 baseline runs fail-closed
+  soak/malformed-frame chaos/concurrent load plus a real supervisor restart-storm
+  probe, and publishes `artifacts/test-results/c3/latest.json` plus `latest.md`.
+  Its report explicitly excludes authority-bound multi-hop acceptance.
 - `GO`: devops real-Xray image supports `XNODE_XRAY_SHA256` archive verification for release rehearsals.
 - `GO`: messenger-node release rehearsal requirements are now captured in `deep-devops/docs/MESSENGER_NODE_PRODUCTION_RUNBOOK.md`.
 - `CONDITIONAL GO`: operator deployment is possible if the target host has a real Xray binary, valid Reality/TLS material, and a real `appsettings.Production.json`.
-- `NO-GO`: attached green CI/release artifacts for the real-Xray no-mock rehearsal and C3 report are still outstanding.
+- `NO-GO`: authority-bound multi-hop staging evidence is still outstanding; the
+  C3 CI baseline is deliberately not a substitute for that release gate.
 - `NO-GO`: current MAUI message transport is not bound to the Xray/Reality
   ingress; real-Xray server readiness is not proof that user messages use it.
 - `NO-GO`: program-level platform matrix, full security/compliance, and release-discipline sign-off gates are not yet closed.
@@ -126,8 +130,12 @@ This section is still `NO-GO` today.
 
 The remaining blockers are:
 
-- [ ] Attach the first green CI/release artifacts for the real-Xray no-mock rehearsal and C3 report.
-- [x] Close router-specific operational evidence expected by the program baseline: local C3 chaos/soak/load validation plus operational artifacts are green.
+- [ ] Attach the first green CI/release artifacts for the real-Xray no-mock
+  rehearsal and current native-privacy C3 report.
+- [x] Close the CI-safe router baseline: native-privacy fail-closed
+  soak/chaos/load and supervisor restart-storm evidence is green.
+- [ ] Close authority-bound multi-hop staging acceptance with production-shaped
+  authority material and real node-to-node forwarding.
 - [ ] Close the program-level Android+Windows release matrix gate; iOS remains
   unverified/non-blocking and not release-supported.
 - [ ] Close mandatory security/compliance gates: security-gate CI artifact, policy-as-code, and external audit closure.
