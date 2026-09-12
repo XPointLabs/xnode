@@ -56,6 +56,35 @@ public sealed class HttpsContactAuthorityArtifactPackageSourceTests
         Assert.Equal(new byte[] { 0xaa }, package.ExactOrderedPmt2Chain[0].ToArray());
     }
 
+    [Fact]
+    public async Task RestartRequestCarriesExactEmptyGenesisDirectoryFloor()
+    {
+        byte[]? observed = null;
+        var directoryHash = Bytes(32, 0x61);
+        var handler = new DelegateHandler(async request =>
+        {
+            observed = await request.Content!.ReadAsByteArrayAsync();
+            return Response(request, EncodeResponse(observed));
+        });
+        var source = Source(handler);
+        var request = new ContactAuthorityArtifactRequest(
+            Nonce,
+            BootId,
+            123,
+            LeafKey,
+            directoryTreeSize: 0,
+            directoryHash);
+
+        _ = await source.FetchAsync(request, default);
+
+        Assert.NotNull(observed);
+        Assert.Equal(124, observed.Length);
+        Assert.Equal((ushort)1, BinaryPrimitives.ReadUInt16BigEndian(observed.AsSpan(6, 2)));
+        Assert.Equal((uint)124, BinaryPrimitives.ReadUInt32BigEndian(observed.AsSpan(8, 4)));
+        Assert.Equal((ulong)0, BinaryPrimitives.ReadUInt64BigEndian(observed.AsSpan(84, 8)));
+        Assert.Equal(directoryHash, observed.AsSpan(92, 32).ToArray());
+    }
+
     [Theory]
     [InlineData("http://registry.example")]
     [InlineData("https://user@registry.example")]

@@ -481,8 +481,10 @@ internal static class ContactAuthorityDirectoryCodec
     internal const int MaximumChainArtifacts = 4_096;
     internal const long MaximumPackageBytes = 68L * 1024 * 1024;
 
-    private const int RequestBytes = 84;
+    private const int MinimumRequestBytes = 84;
+    private const int DirectoryFloorBytes = 40;
     private const ushort Version = 1;
+    private const ushort DirectoryFloorFlag = 0x0001;
     private const ushort ForwardFlag = 0x0001;
 
     internal static byte[] EncodeRequest(
@@ -491,15 +493,32 @@ internal static class ContactAuthorityDirectoryCodec
     {
         ArgumentNullException.ThrowIfNull(genesisPin);
         ArgumentNullException.ThrowIfNull(request);
-        var bytes = new byte[RequestBytes];
+        var hasDirectoryFloor = request.DirectoryTreeSize.HasValue;
+        if (hasDirectoryFloor != !request.DirectoryCoreHash.IsEmpty)
+        {
+            throw new InvalidOperationException(
+                "The Contact authority directory floor is incomplete.");
+        }
+        var requestBytes = hasDirectoryFloor
+            ? MinimumRequestBytes + DirectoryFloorBytes
+            : MinimumRequestBytes;
+        var bytes = new byte[requestBytes];
         "CDQ1"u8.CopyTo(bytes);
         BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(4, 2), Version);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(6, 2), 0);
-        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(8, 4), RequestBytes);
+        BinaryPrimitives.WriteUInt16BigEndian(
+            bytes.AsSpan(6, 2), hasDirectoryFloor ? DirectoryFloorFlag : (ushort)0);
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(8, 4), checked((uint)requestBytes));
         genesisPin.NetworkId.Span.CopyTo(bytes.AsSpan(12, 16));
         request.CopyNonceTo(bytes.AsSpan(28, 32));
         request.CopyBootIdTo(bytes.AsSpan(60, 16));
         BinaryPrimitives.WriteUInt64BigEndian(bytes.AsSpan(76, 8), request.NonceCreatedAt);
+        if (hasDirectoryFloor)
+        {
+            BinaryPrimitives.WriteUInt64BigEndian(
+                bytes.AsSpan(MinimumRequestBytes, 8), request.DirectoryTreeSize!.Value);
+            request.DirectoryCoreHash.Span.CopyTo(
+                bytes.AsSpan(MinimumRequestBytes + 8, 32));
+        }
         return bytes;
     }
 

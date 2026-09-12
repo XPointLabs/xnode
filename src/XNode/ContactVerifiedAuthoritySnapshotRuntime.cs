@@ -18,6 +18,7 @@ public sealed class ContactAuthorityArtifactRequest
     private readonly byte[] nonce;
     private readonly byte[] bootId;
     private readonly byte[] directoryLeafKey;
+    private readonly byte[]? directoryCoreHash;
 
     internal ContactAuthorityArtifactRequest(
         ReadOnlySpan<byte> nonce,
@@ -31,10 +32,27 @@ public sealed class ContactAuthorityArtifactRequest
         NonceCreatedAt = nonceCreatedAt;
     }
 
+    internal ContactAuthorityArtifactRequest(
+        ReadOnlySpan<byte> nonce,
+        ReadOnlySpan<byte> bootId,
+        ulong nonceCreatedAt,
+        ReadOnlySpan<byte> directoryLeafKey,
+        ulong directoryTreeSize,
+        ReadOnlySpan<byte> directoryCoreHash)
+        : this(nonce, bootId, nonceCreatedAt, directoryLeafKey)
+    {
+        DirectoryTreeSize = directoryTreeSize;
+        this.directoryCoreHash = Required(
+            directoryCoreHash, 32, nameof(directoryCoreHash));
+    }
+
     public ReadOnlyMemory<byte> Nonce => nonce.ToArray();
     public ReadOnlyMemory<byte> BootId => bootId.ToArray();
     public ulong NonceCreatedAt { get; }
     public ReadOnlyMemory<byte> DirectoryLeafKey => directoryLeafKey.ToArray();
+    internal ulong? DirectoryTreeSize { get; }
+    internal ReadOnlyMemory<byte> DirectoryCoreHash =>
+        directoryCoreHash?.ToArray() ?? ReadOnlyMemory<byte>.Empty;
 
     internal bool NonceMatches(ReadOnlySpan<byte> value) => Fixed(nonce, value);
     internal bool BootIdMatches(ReadOnlySpan<byte> value) => Fixed(bootId, value);
@@ -416,11 +434,19 @@ internal sealed class ProductionContactVerifiedAuthoritySnapshotSource
             var started = await monotonicClock.ReadAsync(cancellationToken).ConfigureAwait(false)
                 ?? throw new InvalidOperationException("The Contact monotonic clock returned no reading.");
             var nonce = RandomNumberGenerator.GetBytes(32);
-            var request = new ContactAuthorityArtifactRequest(
-                nonce,
-                started.BootId.Span,
-                started.SampleSeconds,
-                directoryLeafKey);
+            var request = previous is null
+                ? new ContactAuthorityArtifactRequest(
+                    nonce,
+                    started.BootId.Span,
+                    started.SampleSeconds,
+                    directoryLeafKey)
+                : new ContactAuthorityArtifactRequest(
+                    nonce,
+                    started.BootId.Span,
+                    started.SampleSeconds,
+                    directoryLeafKey,
+                    previous.AdhTreeSize,
+                    previous.Adh1CoreHash);
             ContactAuthorityArtifactPackage package;
             try
             {
