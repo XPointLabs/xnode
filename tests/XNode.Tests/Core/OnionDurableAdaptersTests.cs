@@ -390,6 +390,39 @@ public sealed class OnionDurableAdaptersTests
         Assert.All(vault.WrappingKeyForTests.ToArray(), item => Assert.Equal(0, item));
     }
 
+    [Fact]
+    public void ReadOnlyMountedInputSecretsAreValidatedWithoutPermissionMutation()
+    {
+        using var fixture = new Fixture();
+        var security = new ReadOnlyInputSecretSecurity(
+            fixture.ProtectionKeyPath,
+            fixture.WrappingKeyPath);
+        using var entropy = new DurableOnionEntropyUniquenessLedger(
+            fixture.EntropyPath,
+            fixture.ProtectionKeyPath,
+            new DurableOnionEntropyLedgerOptions { MaximumCommitments = 1_000 },
+            security,
+            null,
+            null);
+        var handle = Bytes(0xc2);
+        var scalar = Bytes(0xc3);
+        FileOnionKeyAgreementVault.EnsureSlot(
+            fixture.SlotDirectory,
+            handle,
+            scalar,
+            fixture.WrappingKeyPath,
+            security);
+        using var vault = new FileOnionKeyAgreementVault(
+            fixture.SlotDirectory,
+            fixture.WrappingKeyPath,
+            null,
+            security,
+            null);
+
+        Assert.Contains(Path.GetFullPath(fixture.ProtectionKeyPath), security.Validated);
+        Assert.Contains(Path.GetFullPath(fixture.WrappingKeyPath), security.Validated);
+    }
+
     private static OnionEntropyCommitmentBatch Batch(params byte[][] commitments)
     {
         var constructor = typeof(OnionEntropyCommitmentBatch).GetConstructors(
@@ -466,6 +499,41 @@ public sealed class OnionDurableAdaptersTests
     {
         public void SecureDirectory(string path) => Directory.CreateDirectory(path);
         public void SecureFile(string path) { }
+    }
+
+    private sealed class ReadOnlyInputSecretSecurity(params string[] inputSecretPaths)
+        : IMailboxStorageSecurity
+    {
+        private readonly HashSet<string> inputSecrets = inputSecretPaths
+            .Select(Path.GetFullPath)
+            .ToHashSet(OperatingSystem.IsWindows()
+                ? StringComparer.OrdinalIgnoreCase
+                : StringComparer.Ordinal);
+
+        internal HashSet<string> Validated { get; } = new(
+            OperatingSystem.IsWindows()
+                ? StringComparer.OrdinalIgnoreCase
+                : StringComparer.Ordinal);
+
+        public void SecureDirectory(string path) => Directory.CreateDirectory(path);
+
+        public void SecureFile(string path)
+        {
+            if (inputSecrets.Contains(Path.GetFullPath(path)))
+            {
+                throw new IOException("A read-only mounted input secret cannot be rewritten.");
+            }
+        }
+
+        public void ValidateSecureFile(string path)
+        {
+            var fullPath = Path.GetFullPath(path);
+            if (!inputSecrets.Contains(fullPath))
+            {
+                throw new InvalidOperationException("Unexpected security input validation target.");
+            }
+            Validated.Add(fullPath);
+        }
     }
 
     private sealed class FailingDurability : IMailboxDurabilityBarrier

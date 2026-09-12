@@ -11,6 +11,8 @@ public interface IMailboxStorageSecurity
     void SecureDirectory(string path);
 
     void SecureFile(string path);
+
+    void ValidateSecureFile(string path) => SecureFile(path);
 }
 
 public sealed class MailboxStorageSecurity : IMailboxStorageSecurity
@@ -47,6 +49,33 @@ public sealed class MailboxStorageSecurity : IMailboxStorageSecurity
         if (actual != (UnixFileMode.UserRead | UnixFileMode.UserWrite))
         {
             throw new UnauthorizedAccessException("Mailbox file permissions could not be restricted.");
+        }
+    }
+
+    public void ValidateSecureFile(string path)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            var file = new FileInfo(path);
+            if (!file.Exists)
+            {
+                throw new FileNotFoundException("Mailbox security input is unavailable.", path);
+            }
+            VerifyWindowsAcl(file.GetAccessControl(), GetServiceSid());
+            return;
+        }
+
+        var attributes = File.GetAttributes(path);
+        if ((attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0)
+        {
+            throw new UnauthorizedAccessException(
+                "Mailbox security input must be a regular file.");
+        }
+        var actual = File.GetUnixFileMode(path);
+        if (actual != (UnixFileMode.UserRead | UnixFileMode.UserWrite))
+        {
+            throw new UnauthorizedAccessException(
+                "Mailbox security input permissions are not restricted to the service account.");
         }
     }
 

@@ -71,7 +71,7 @@ public sealed class FileOnionKeyAgreementVault : IOnionKeyAgreementVault, IDispo
             throw new FileNotFoundException("The ONION key-vault wrapping key is unavailable.");
         }
 
-        this.security.SecureFile(keyPath);
+        this.security.ValidateSecureFile(keyPath);
         var loaded = secretReader.ReadSecret(keyPath, 32);
         try
         {
@@ -196,7 +196,7 @@ public sealed class FileOnionKeyAgreementVault : IOnionKeyAgreementVault, IDispo
         {
             throw new FileNotFoundException("The ONION key-vault wrapping key is unavailable.");
         }
-        security.SecureFile(keyPath);
+        security.ValidateSecureFile(keyPath);
         var wrappingKey = secretReader.ReadSecret(keyPath, 32);
         byte[]? envelope = null;
         byte[]? plaintext = null;

@@ -104,7 +104,7 @@ internal sealed class OnionDurableFile : IDisposable
             throw new FileNotFoundException("The ONION state protection key is unavailable.");
         }
 
-        this.security.SecureFile(keyPath);
+        this.security.ValidateSecureFile(keyPath);
         var loadedKey = secretReader.ReadSecret(keyPath, 32);
         try
         {
