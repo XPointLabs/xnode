@@ -36,7 +36,7 @@ public sealed class RouterNodeOptions
     {
         if (!string.IsNullOrWhiteSpace(Ed25519PrivateKey))
         {
-            return Ed25519PrivateKey.Trim();
+            return NormalizeEd25519PrivateKey(Ed25519PrivateKey);
         }
 
         if (string.IsNullOrWhiteSpace(Ed25519PrivateKeyPath))
@@ -58,6 +58,24 @@ public sealed class RouterNodeOptions
                 $"Node:Ed25519PrivateKeyPath '{Ed25519PrivateKeyPath}' is empty.");
         }
 
-        return key;
+        return NormalizeEd25519PrivateKey(key);
+    }
+
+    private static string NormalizeEd25519PrivateKey(string value)
+    {
+        var normalized = value.Trim();
+        if (normalized.StartsWith("0x", StringComparison.Ordinal))
+        {
+            normalized = normalized[2..];
+        }
+
+        if (normalized.Length != 64 || !normalized.All(static character =>
+                character is >= '0' and <= '9' or >= 'a' and <= 'f' or >= 'A' and <= 'F'))
+        {
+            throw new InvalidOperationException(
+                "Node Ed25519 private seed must be a 32-byte hexadecimal value, optionally prefixed with '0x'.");
+        }
+
+        return normalized.ToLowerInvariant();
     }
 }
