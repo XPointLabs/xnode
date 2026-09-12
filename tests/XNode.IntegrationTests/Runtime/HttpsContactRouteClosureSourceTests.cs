@@ -9,6 +9,7 @@ using Deep.Protocol.ContactV1;
 using Deep.Protocol.DeepNative;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using XNode.Core;
 using XNode.Core.Mailbox;
 
@@ -249,7 +250,7 @@ public sealed class HttpsContactRouteClosureSourceTests
 
         var route = services.Last(descriptor =>
             descriptor.ServiceType == typeof(IVerifiedContactRouteClosureSource));
-        Assert.Equal(typeof(HttpsVerifiedContactRouteClosureSource), route.ImplementationType);
+        Assert.NotNull(route.ImplementationFactory);
         Assert.DoesNotContain(services, descriptor =>
             descriptor.ServiceType == typeof(IVerifiedContactRouteClosureSource)
             && descriptor.ImplementationType == typeof(ClosedVerifiedContactRouteClosureSource));
@@ -295,13 +296,22 @@ public sealed class HttpsContactRouteClosureSourceTests
         services.AddSingleton<IContactRouteRecipientAuthoritySource>(recipient);
         services.AddSingleton<IContactRouteNetworkAuthorityVerifier>(mint);
         services.AddSingleton<IContactRouteClosureArtifactCodec, FakeArtifactCodec>();
+        services.AddSingleton<IContactRecipientResolveEvidenceVerifier,
+            RejectingRecipientResolveEvidenceVerifier>();
         services.AddProductionContactRouteClosure(Configuration(temporary.Path));
         await using var provider = services.BuildServiceProvider();
 
         var source = provider.GetRequiredService<IContactRouteVerifiedAuthoritySnapshotSource>();
+        var routeSource = provider.GetRequiredService<IVerifiedContactRouteClosureSource>();
+        var hostedServices = provider.GetServices<IHostedService>().ToArray();
         var result = await source.ReadCurrentAsync(NetworkId, LocatorHash, default);
 
         Assert.IsType<ProductionContactRouteVerifiedAuthoritySnapshotSource>(source);
+        Assert.IsType<HttpsVerifiedContactRouteClosureSource>(routeSource);
+        Assert.Contains(hostedServices,
+            service => service is ContactRecipientResolveEvidenceCacheHostedService);
+        Assert.Contains(hostedServices,
+            service => service is ContactRouteClosureLineageHostedService);
         Assert.NotNull(result);
         Assert.Equal(1, current.Calls);
         Assert.Equal(1, recipient.Calls);
@@ -632,6 +642,15 @@ public sealed class HttpsContactRouteClosureSourceTests
             ReadOnlyMemory<byte> networkId,
             ReadOnlyMemory<byte> locatorHash,
             CancellationToken cancellationToken) => ValueTask.FromResult(snapshot);
+    }
+
+    private sealed class RejectingRecipientResolveEvidenceVerifier
+        : IContactRecipientResolveEvidenceVerifier
+    {
+        public ValueTask<VerifiedContactRecipientResolveObservation?> VerifyCurrentAsync(
+            ContactRecipientResolveEvidenceSubmission submission,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult<VerifiedContactRecipientResolveObservation?>(null);
     }
 
     private sealed class FixedCurrentAuthoritySource(

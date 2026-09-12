@@ -1320,11 +1320,19 @@ internal static class ProductionContactRouteClosureHostComposition
             ProductionContactRouteVerifiedAuthoritySnapshotSource>();
         services.TryAddSingleton<IContactRouteClosureProtocolVerifier,
             ContactRouteClosureProtocolVerifier>();
-        services.TryAddSingleton<IContactRouteClosureLineageStore,
-            FileContactRouteClosureLineageStore>();
+        services.TryAddSingleton<IContactRouteClosureLineageStore>(provider =>
+            new FileContactRouteClosureLineageStore(
+                provider.GetRequiredService<ProductionContactRouteClosureConfiguration>(),
+                provider.GetRequiredService<IDataProtectionProvider>(),
+                provider.GetRequiredService<IMailboxStorageSecurity>(),
+                provider.GetRequiredService<IMailboxDurabilityBarrier>()));
         services.AddHostedService<ContactRouteClosureLineageHostedService>();
-        services.AddSingleton<IVerifiedContactRouteClosureSource,
-            HttpsVerifiedContactRouteClosureSource>();
+        services.AddSingleton<IVerifiedContactRouteClosureSource>(provider =>
+            new HttpsVerifiedContactRouteClosureSource(
+                provider.GetRequiredService<IContactRouteClosureArtifactSource>(),
+                provider.GetRequiredService<IContactRouteVerifiedAuthoritySnapshotSource>(),
+                provider.GetRequiredService<IContactRouteClosureProtocolVerifier>(),
+                provider.GetRequiredService<IContactRouteClosureLineageStore>()));
         return services;
     }
 }
