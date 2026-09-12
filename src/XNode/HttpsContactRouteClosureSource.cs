@@ -1293,7 +1293,12 @@ internal static class ProductionContactRouteClosureHostComposition
             ProductionContactRecipientEvidenceCacheConfiguration.FromRouteClosure(configuration));
         services.TryAddSingleton<IContactRecipientResolveEvidenceVerifier,
             ProtocolContactRecipientResolveEvidenceVerifier>();
-        services.TryAddSingleton<FileContactRecipientResolveEvidenceCache>();
+        services.TryAddSingleton(provider => new FileContactRecipientResolveEvidenceCache(
+            provider.GetRequiredService<ProductionContactRecipientEvidenceCacheConfiguration>(),
+            provider.GetRequiredService<IContactRecipientResolveEvidenceVerifier>(),
+            provider.GetRequiredService<IDataProtectionProvider>(),
+            provider.GetRequiredService<IMailboxStorageSecurity>(),
+            provider.GetRequiredService<IMailboxDurabilityBarrier>()));
         services.TryAddSingleton<IContactRouteRecipientResolveClosureSource>(provider =>
             provider.GetRequiredService<FileContactRecipientResolveEvidenceCache>());
         services.TryAddSingleton<IContactPreKeyRecipientResolveEvidenceSource>(provider =>

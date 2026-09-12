@@ -222,6 +222,12 @@ public sealed class ContactRecipientResolveEvidenceCacheTests
     {
         using var temporary = new TemporaryDirectory();
         var services = new ServiceCollection();
+        services.AddDataProtection().PersistKeysToFileSystem(
+            new DirectoryInfo(Path.Combine(temporary.Path, "keys")));
+        services.AddSingleton<IContactRecipientResolveEvidenceVerifier>(
+            new UnavailableVerifier());
+        services.AddSingleton<IMailboxStorageSecurity, MailboxStorageSecurity>();
+        services.AddSingleton<IMailboxDurabilityBarrier, MailboxDurabilityBarrier>();
         services.AddProductionContactRouteClosure(new(
             new ContactRouteClosureHttpSourceOptions(
                 "https://registry.example", TimeSpan.FromSeconds(5)),
@@ -239,7 +245,8 @@ public sealed class ContactRecipientResolveEvidenceCacheTests
             && descriptor.ImplementationType
                 == typeof(PrivacyRoutedContactRecipientResolveEvidenceIngestion));
         Assert.Contains(services, descriptor =>
-            descriptor.ServiceType == typeof(FileContactRecipientResolveEvidenceCache));
+            descriptor.ServiceType == typeof(FileContactRecipientResolveEvidenceCache)
+            && descriptor.ImplementationFactory is not null);
         Assert.Contains(services, descriptor =>
             descriptor.ServiceType == typeof(IContactPreKeyRecipientResolveEvidenceSource));
         Assert.Contains(services, descriptor =>
@@ -250,6 +257,9 @@ public sealed class ContactRecipientResolveEvidenceCacheTests
             descriptor.ServiceType == typeof(IContactRouteRecipientResolveClosureSource)
             && descriptor.ImplementationType
                 == typeof(ClosedContactRouteRecipientResolveClosureSource));
+
+        using var provider = services.BuildServiceProvider();
+        Assert.NotNull(provider.GetRequiredService<FileContactRecipientResolveEvidenceCache>());
     }
 
     private static FileContactRecipientResolveEvidenceCache Cache(
