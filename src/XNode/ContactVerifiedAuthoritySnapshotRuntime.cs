@@ -1005,7 +1005,7 @@ internal static class ContactAuthorityDurableStateCodec
         };
         reader.EnsureEnd();
         _ = state.ToNetworkLkg();
-        if (state.AdhTreeSize == 0 || state.ExactAdh1.Length == 0
+        if (state.ExactAdh1.Length == 0
             || state.Adh1CoreHash.IndexOfAnyExcept((byte)0) < 0)
         {
             throw new InvalidDataException("The protected Contact directory LKG is invalid.");

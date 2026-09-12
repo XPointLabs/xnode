@@ -259,6 +259,32 @@ public sealed class HttpsContactAuthorityArtifactPackageSourceTests
         Assert.Equal(expected.Xna1Chain[0], actual.Xna1Chain[0]);
     }
 
+    [Fact]
+    public async Task EmptyDirectoryGenesisStateCanBeReadAfterProcessStyleRestart()
+    {
+        using var temporary = new TemporaryDirectory();
+        var stateDirectory = System.IO.Path.Combine(temporary.Path, "contact-authority-v1");
+        var keys = System.IO.Path.Combine(stateDirectory, "dataprotection-keys");
+        var statePath = System.IO.Path.Combine(stateDirectory, "authority.state");
+        Directory.CreateDirectory(stateDirectory);
+        Directory.CreateDirectory(keys);
+        var expected = State(adhTreeSize: 0);
+
+        var firstProvider = DataProtectionProvider.Create(
+            new DirectoryInfo(keys),
+            builder => builder.SetApplicationName("XPoint.XNode.ContactAuthority.v1"));
+        await Store(statePath, temporary.Path, firstProvider).CommitAsync(expected, default);
+
+        var restartedProvider = DataProtectionProvider.Create(
+            new DirectoryInfo(keys),
+            builder => builder.SetApplicationName("XPoint.XNode.ContactAuthority.v1"));
+        var actual = await Store(statePath, temporary.Path, restartedProvider).ReadAsync(default);
+
+        Assert.NotNull(actual);
+        Assert.Equal((ulong)0, actual.AdhTreeSize);
+        Assert.Equal(expected.Adh1CoreHash, actual.Adh1CoreHash);
+    }
+
     private static HttpsContactAuthorityArtifactPackageSource Source(HttpMessageHandler handler) =>
         new(new HttpClient(handler), Options("https://registry.example"));
 
@@ -389,7 +415,7 @@ public sealed class HttpsContactAuthorityArtifactPackageSourceTests
             new NoOpStorageSecurity(),
             new TestDurability());
 
-    private static ContactAuthorityDurableState State()
+    private static ContactAuthorityDurableState State(ulong adhTreeSize = 2)
     {
         var chain = new[] { Bytes(4, 0x41) };
         return new ContactAuthorityDurableState
@@ -399,7 +425,7 @@ public sealed class HttpsContactAuthorityArtifactPackageSourceTests
             ExactAdh1 = Bytes(16, 0x50),
             Adh1CoreHash = Bytes(32, 0x60),
             AdhGeneration = 1,
-            AdhTreeSize = 2,
+            AdhTreeSize = adhTreeSize,
             HeadCoreReference = Reference("XNH1", 0x71),
             HeadTreeSize = 2,
             HeadRoot = Bytes(32, 0x71),
