@@ -137,14 +137,15 @@ public sealed class ContactResolverApplicationServiceTests
         using var coordinator = fixture.CreateCoordinator(fixture.FirstReplica, second);
         var service = new ContactResolverApplicationService(coordinator);
         var locator = Hash("application/one-time");
-        var publish = new ContactResolverPublishRequest(DcrRequest(
+        var publication = DcrRequest(
             locator,
             "one-time/publish",
             0,
             Zero32(),
             Ciphertext("one-time", 64),
             fixture.Clock,
-            usageLimit: 1));
+            usageLimit: 1);
+        var publish = new ContactResolverPublishRequest(publication);
         Assert.Equal(
             ContactResolverApplicationStatus.Committed,
             (await service.PublishDcrAsync(publish)).Status);
@@ -153,8 +154,7 @@ public sealed class ContactResolverApplicationServiceTests
             Hash("one-time/redeem-operation"),
             Hash("one-time/redeem-request"),
             locator,
-            Enumerable.Repeat((byte)0x42,
-                OpaqueDcrResolveRequest.MinimumRouteClosureBytes).ToArray(),
+            publication.CanonicalRouteClosure.ToArray(),
             checked((ulong)fixture.Clock.UtcNow.ToUnixTimeSeconds()));
         var partial = await service.ResolveCurrentDcrAsync(redeem);
         Assert.Equal(ContactResolverApplicationStatus.OutcomeUnknown, partial.Status);
@@ -217,8 +217,7 @@ public sealed class ContactResolverApplicationServiceTests
                 Hash("preflight-mismatch/operation"),
                 Hash("preflight-mismatch/request"),
                 locator,
-                Enumerable.Repeat((byte)0x43,
-                    OpaqueDcrResolveRequest.MinimumRouteClosureBytes).ToArray(),
+                publication.CanonicalRouteClosure.ToArray(),
                 checked((ulong)fixture.Clock.UtcNow.ToUnixTimeSeconds())));
 
         Assert.Equal(ContactResolverApplicationStatus.TemporarilyUnavailable,
@@ -233,8 +232,7 @@ public sealed class ContactResolverApplicationServiceTests
                 Hash("preflight-mismatch/fresh-operation"),
                 Hash("preflight-mismatch/fresh-request"),
                 locator,
-                Enumerable.Repeat((byte)0x44,
-                    OpaqueDcrResolveRequest.MinimumRouteClosureBytes).ToArray(),
+                publication.CanonicalRouteClosure.ToArray(),
                 checked((ulong)fixture.Clock.UtcNow.ToUnixTimeSeconds())));
         Assert.Equal(ContactResolverApplicationStatus.Committed, fresh.Status);
         Assert.Equal(2, fresh.DurableReplicaCount);
@@ -369,6 +367,7 @@ public sealed class ContactResolverApplicationServiceTests
             predecessor,
             SHA256.HashData(ciphertext),
             ciphertext,
+            Enumerable.Repeat((byte)0x41, OpaqueDcrResolveRequest.MinimumRouteClosureBytes).ToArray(),
             usageLimit,
             checked((ulong)clock.UtcNow.AddDays(1).ToUnixTimeSeconds()));
 

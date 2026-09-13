@@ -240,7 +240,8 @@ internal sealed class ContactResolverApplicationService
         && left.UsageLimit == right.UsageLimit
         && left.EffectiveExpiresAtUnixSeconds == right.EffectiveExpiresAtUnixSeconds
         && OpaqueValue.FixedEquals(left.ObjectCiphertextHash, right.ObjectCiphertextHash)
-        && left.Ciphertext.AsSpan().SequenceEqual(right.Ciphertext);
+        && left.Ciphertext.AsSpan().SequenceEqual(right.Ciphertext)
+        && left.CanonicalRouteClosure.AsSpan().SequenceEqual(right.CanonicalRouteClosure);
 
     private static bool Same(OpaqueXurEvent left, OpaqueXurEvent right) =>
         left.Generation == right.Generation

@@ -28,11 +28,16 @@ public sealed class ContactResolverOpaqueStoreTests
             var first = store.ResolveCurrentDcr(locator);
             Assert.Equal(ContactResolverReadDisposition.Current, first.Disposition);
             Assert.Equal(ciphertext, first.Publication!.Ciphertext);
+            Assert.Equal(request.CanonicalRouteClosure.ToArray(),
+                first.Publication.CanonicalRouteClosure);
             first.Publication.Ciphertext[0] ^= 0xff;
             first.Publication.ObjectCiphertextHash[0] ^= 0xff;
+            first.Publication.CanonicalRouteClosure[0] ^= 0xff;
             var second = store.ResolveCurrentDcr(locator);
             Assert.Equal(ciphertext, second.Publication!.Ciphertext);
             Assert.Equal(SHA256.HashData(ciphertext), second.Publication.ObjectCiphertextHash);
+            Assert.Equal(request.CanonicalRouteClosure.ToArray(),
+                second.Publication.CanonicalRouteClosure);
         }
     }
 
@@ -74,6 +79,12 @@ public sealed class ContactResolverOpaqueStoreTests
             Assert.Equal(
                 ContactResolverMutationDisposition.Committed,
                 store.PublishDcr(publication).Disposition);
+            var mismatchedRoute = routeClosure.ToArray();
+            mismatchedRoute[0] ^= 0xff;
+            Assert.Equal(
+                ContactResolverResolveDisposition.Conflict,
+                store.ResolveDcr(new OpaqueDcrResolveRequest(
+                    locator, operation, requestHash, mismatchedRoute, responseTime)).Disposition);
             var committed = store.ResolveDcr(
                 new OpaqueDcrResolveRequest(
                     locator, operation, requestHash, routeClosure, responseTime));
@@ -252,7 +263,8 @@ public sealed class ContactResolverOpaqueStoreTests
     private static OpaqueDcrPublishRequest DcrRequest(byte[] locator, string operation, ulong generation,
         ReadOnlySpan<byte> predecessor, byte[] ciphertext, FixedClock clock, uint usageLimit = 0, ulong? expiresAt = null) =>
         new(locator, Hash("operation/" + operation), Hash("request/" + operation + Convert.ToHexString(SHA256.HashData(ciphertext))),
-            generation, predecessor, SHA256.HashData(ciphertext), ciphertext, usageLimit,
+            generation, predecessor, SHA256.HashData(ciphertext), ciphertext,
+            Enumerable.Repeat((byte)0x41, OpaqueDcrResolveRequest.MinimumRouteClosureBytes).ToArray(), usageLimit,
             expiresAt ?? checked((ulong)clock.UtcNow.AddDays(1).ToUnixTimeSeconds()));
 
     private static OpaqueXurWriteRequest XurRequest(byte[] capability, string operation, ulong generation,

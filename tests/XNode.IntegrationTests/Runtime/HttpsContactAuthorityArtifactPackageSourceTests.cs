@@ -228,7 +228,7 @@ public sealed class HttpsContactAuthorityArtifactPackageSourceTests
     }
 
     [Fact]
-    public void FullExplicitConfigurationComposesHttpsSourceAndProductionBoundary()
+    public void FullExplicitConfigurationComposesAuthorityWithoutLocatorRouteSource()
     {
         using var temporary = new TemporaryDirectory();
         var node = Node(temporary.Path);
@@ -251,8 +251,8 @@ public sealed class HttpsContactAuthorityArtifactPackageSourceTests
         Assert.True(plan.MapReplicaEndpoint);
         Assert.IsType<HttpsContactAuthorityArtifactPackageSource>(
             provider.GetRequiredService<IContactAuthorityArtifactPackageSource>());
-        Assert.IsType<ClosedVerifiedContactRouteClosureSource>(
-            provider.GetRequiredService<IVerifiedContactRouteClosureSource>());
+        Assert.DoesNotContain(services,
+            descriptor => descriptor.ServiceType == typeof(IVerifiedContactRouteClosureSource));
         Assert.Contains(services,
             descriptor => descriptor.ServiceType == typeof(IContactServiceOpaqueDispatcher)
                 && descriptor.ImplementationFactory is not null);

@@ -321,6 +321,30 @@ internal sealed class ContactReplicaRequestReceiver
                     U64(result.ResponseUnixSeconds));
                 break;
             }
+            case ContactServiceReceiptKind.ResolveRead
+                when requestKind == Deep.Protocol.XPointNetworkV1.ContactServiceRequestKind.ResolveInvite
+                    && operation == ContactReplicaRpcOperation.ReadCurrentDcr:
+            {
+                var request = Xiq1Codec.Decode(payload.Span);
+                var result = await local.Binding.ResolverReplica.ResolveCurrentDcrAsync(
+                    request.LocatorHash,
+                    cancellationToken).ConfigureAwait(false);
+                if (result.Disposition != ContactResolverReadDisposition.Current
+                    || result.Publication is null
+                    || result.Publication.CanonicalRouteClosure.Length == 0)
+                {
+                    throw new ContactServiceReceiptAuthorityException(
+                        "The local resolver replica has no durable publication for the read receipt.");
+                }
+                expected = Concat(
+                    request.RequestHash.ToArray(),
+                    request.LocatorHash.ToArray(),
+                    U64(result.Publication.Generation),
+                    U64(result.Publication.EffectiveExpiresAtUnixSeconds),
+                    result.Publication.ObjectCiphertextHash,
+                    SHA256.HashData(result.Publication.CanonicalRouteClosure));
+                break;
+            }
             default:
                 throw new ContactServiceReceiptAuthorityException(
                     "The receipt kind is not authorized by the exact operation placement.");

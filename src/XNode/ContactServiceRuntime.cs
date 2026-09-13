@@ -37,6 +37,8 @@ public sealed class ContactServicePersistenceOptions
     public int ReplicaTimeoutSeconds { get; set; } = 5;
     public int ReplayCapacity { get; set; } = 100_000;
     public int ReplayTtlSeconds { get; set; } = 300;
+    public int RecipientEvidenceMaximumProtectedStateBytes { get; set; } = 16 * 1024 * 1024;
+    public int RecipientEvidenceMaximumEntries { get; set; } = 4_096;
 
     internal TimeSpan ReplicaTimeout => TimeSpan.FromSeconds(ReplicaTimeoutSeconds);
     internal TimeSpan ReplayTtl => TimeSpan.FromSeconds(ReplayTtlSeconds);
@@ -45,7 +47,9 @@ public sealed class ContactServicePersistenceOptions
     {
         if (ReplicaTimeoutSeconds is < 1 or > 30
             || ReplayCapacity is < 1_000 or > 10_000_000
-            || ReplayTtlSeconds is < 120 or > 3_600)
+            || ReplayTtlSeconds is < 120 or > 3_600
+            || RecipientEvidenceMaximumProtectedStateBytes is < 4_096 or > 128 * 1024 * 1024
+            || RecipientEvidenceMaximumEntries is < 16 or > 65_536)
         {
             throw new InvalidOperationException("ContactService transport resource bounds are invalid.");
         }
@@ -69,13 +73,11 @@ internal sealed class ContactServiceAuthoritySources
 {
     internal ContactServiceAuthoritySources(
         IContactServicePlacementAuthoritySource placements,
-        IContactRouteClosureSource routeClosures,
         IContactPublicationAuthorizationVerifier publicationAuthorizations,
         IContactPreKeyRecipientAuthoritySource? preKeyRecipients = null,
         IContactVerifiedAuthoritySnapshotSource? snapshots = null)
     {
         Placements = placements ?? throw new ArgumentNullException(nameof(placements));
-        RouteClosures = routeClosures ?? throw new ArgumentNullException(nameof(routeClosures));
         PublicationAuthorizations = publicationAuthorizations
             ?? throw new ArgumentNullException(nameof(publicationAuthorizations));
         PreKeyRecipients = preKeyRecipients;
@@ -83,7 +85,6 @@ internal sealed class ContactServiceAuthoritySources
     }
 
     internal IContactServicePlacementAuthoritySource Placements { get; }
-    internal IContactRouteClosureSource RouteClosures { get; }
     internal IContactPublicationAuthorizationVerifier PublicationAuthorizations { get; }
     internal IContactPreKeyRecipientAuthoritySource? PreKeyRecipients { get; }
     internal IContactVerifiedAuthoritySnapshotSource? Snapshots { get; }
@@ -91,17 +92,7 @@ internal sealed class ContactServiceAuthoritySources
     internal static ContactServiceAuthoritySources ForTransportTests(
         IContactServicePlacementAuthoritySource placements) => new(
             placements,
-            new RejectingRouteClosureSource(),
             new RejectAllContactPublicationAuthorizationVerifier());
-
-    private sealed class RejectingRouteClosureSource : IContactRouteClosureSource
-    {
-        public ValueTask<ReadOnlyMemory<byte>?> ReadAsync(
-            ReadOnlyMemory<byte> networkId,
-            ReadOnlyMemory<byte> locatorHash,
-            CancellationToken cancellationToken) =>
-            ValueTask.FromResult<ReadOnlyMemory<byte>?>(null);
-    }
 
 }
 
@@ -429,7 +420,6 @@ internal sealed class ProductionContactServiceOpaqueDispatcher :
                     local.Binding,
                     new ContactServiceReplicaBinding(remote, remote, remote)
                 ],
-                authorities.RouteClosures,
                 new ExactContactRequestContextVerifier(placement),
                 authorities.PublicationAuthorizations,
                 local.AuthorizationSaga,
@@ -574,7 +564,7 @@ internal static class ContactServiceHostComposition
     /// <summary>
     /// Explicit production activation path. Merely configuring ContactService is
     /// insufficient: raw artifact, protected monotonic clock, data-protection and
-    /// verified route sources must already be registered in DI.
+    /// verified authority sources must already be registered in DI.
     /// </summary>
     internal static ContactServiceHostCompositionPlan AddProductionContactServiceBoundary(
         this IServiceCollection services,
@@ -587,7 +577,6 @@ internal static class ContactServiceHostComposition
         RequireRegistered<IContactAuthorityArtifactPackageSource>(services);
         RequireRegistered<IOnionMonotonicClock>(services);
         RequireRegistered<IDataProtectionProvider>(services);
-        RequireRegistered<IVerifiedContactRouteClosureSource>(services);
 
         var plan = ContactServiceHostCompositionPlan.CreateForDeferredAuthorities(options);
         services.TryAddSingleton(authorityOptions);
@@ -612,14 +601,8 @@ internal static class ContactServiceHostComposition
             provider.GetRequiredService<IContactVerifiedAuthoritySnapshotSource>()));
         services.TryAddSingleton<IContactPublicationAuthorizationVerifier>(provider =>
             provider.GetRequiredService<VerifiedContactPublicationAuthorizationVerifier>());
-        services.TryAddSingleton<VerifiedContactRouteClosureSource>(provider => new(
-            provider.GetRequiredService<IVerifiedContactRouteClosureSource>(),
-            provider.GetRequiredService<IClock>()));
-        services.TryAddSingleton<IContactRouteClosureSource>(provider =>
-            provider.GetRequiredService<VerifiedContactRouteClosureSource>());
         services.TryAddSingleton<ContactServiceAuthoritySources>(provider => new(
             provider.GetRequiredService<IContactServicePlacementAuthoritySource>(),
-            provider.GetRequiredService<IContactRouteClosureSource>(),
             provider.GetRequiredService<IContactPublicationAuthorizationVerifier>(),
             provider.GetRequiredService<IContactPreKeyRecipientAuthoritySource>(),
             provider.GetRequiredService<IContactVerifiedAuthoritySnapshotSource>()));

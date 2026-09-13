@@ -717,8 +717,7 @@ internal static class ProductionContactAuthorityHostComposition
         this IServiceCollection services,
         RouterNodeOptions node,
         ContactServicePersistenceOptions contact,
-        ProductionContactAuthorityConfiguration configuration,
-        ProductionContactRouteClosureConfiguration? routeClosure = null)
+        ProductionContactAuthorityConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(node);
@@ -738,16 +737,6 @@ internal static class ProductionContactAuthorityHostComposition
                 UseCookies = false,
                 AutomaticDecompression = DecompressionMethods.None
             });
-        if (routeClosure is null)
-        {
-            services.TryAddSingleton<IVerifiedContactRouteClosureSource,
-                ClosedVerifiedContactRouteClosureSource>();
-        }
-        else
-        {
-            services.AddProductionContactRouteClosure(routeClosure);
-        }
-
         var keyDirectory = Path.Combine(
             Path.GetFullPath(node.DataDirectory),
             "contact-authority-v1",
@@ -755,6 +744,10 @@ internal static class ProductionContactAuthorityHostComposition
         services.AddDataProtection()
             .SetApplicationName("XPoint.XNode.ContactAuthority.v1")
             .PersistKeysToFileSystem(new DirectoryInfo(keyDirectory));
+        services.AddProductionContactRecipientEvidence(
+            ProductionContactRecipientEvidenceCacheConfiguration.FromContactService(
+                node,
+                contact));
         return services.AddProductionContactServiceBoundary(
             contact,
             configuration.Persistence);

@@ -43,10 +43,6 @@ var contactServiceOptions = builder.Configuration.GetSection("ContactService")
     .Get<ContactServicePersistenceOptions>() ?? new ContactServicePersistenceOptions();
 var productionContactAuthorityOptions = builder.Configuration.GetSection("ContactAuthority")
     .Get<ProductionContactAuthorityOptions>() ?? new ProductionContactAuthorityOptions();
-var productionContactRouteClosureOptions = builder.Configuration
-    .GetSection("ContactRouteClosure")
-    .Get<ProductionContactRouteClosureOptions>()
-    ?? new ProductionContactRouteClosureOptions();
 var groupControlServiceOptions = builder.Configuration.GetSection("GroupControlService")
     .Get<GroupControlServiceOptions>() ?? new GroupControlServiceOptions();
 var productionGroupControlAuthorityOptions = builder.Configuration
@@ -76,9 +72,6 @@ var privacyRouting = privacyRoutingOptions.ValidateAndLoad(
 var productionContactAuthority = productionContactAuthorityOptions.ValidateAndLoad(
     nodeOptions,
     contactServiceOptions);
-var productionContactRouteClosure = productionContactRouteClosureOptions.ValidateAndLoad(
-    nodeOptions,
-    productionContactAuthority is not null);
 var productionGroupControlAuthority = productionGroupControlAuthorityOptions.ValidateAndLoad(
     nodeOptions,
     groupControlServiceOptions,
@@ -155,7 +148,6 @@ builder.Services.AddSingleton(privacyRoutingOptions);
 builder.Services.AddSingleton(privacyRouting);
 builder.Services.AddSingleton(contactServiceOptions);
 builder.Services.AddSingleton(productionContactAuthorityOptions);
-builder.Services.AddSingleton(productionContactRouteClosureOptions);
 builder.Services.AddSingleton(groupControlServiceOptions);
 builder.Services.AddSingleton(productionGroupControlAuthorityOptions);
 builder.Services.AddSingleton(developmentUatPrivatePeerAddressPolicy);
@@ -184,8 +176,7 @@ var contactServicePlan = productionContactAuthority is null
     : builder.Services.AddProductionContactAuthorityBoundary(
         nodeOptions,
         contactServiceOptions,
-        productionContactAuthority,
-        productionContactRouteClosure);
+        productionContactAuthority);
 var groupControlServicePlan = productionGroupControlAuthority is null
     ? builder.Services.AddGroupControlServiceBoundary(groupControlServiceOptions)
     : builder.Services.AddProductionGroupControlAuthorityBoundary(

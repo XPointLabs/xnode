@@ -840,44 +840,23 @@ an explicit `Pending` record; it is never silently retried as new, and only reco
 exact claim can complete it. Diagnostics expose counts only, never issuer, serial, operation,
 request or capability bytes.
 
-### Contact route-closure Registry adapter
+### Contact route closure and recipient evidence
 
-The canonical route-closure distribution contract is owned by
-`../../docs/architecture/CONTACT-RESOLVER-V1.md` section 3.2.1. XNode's adapter is
-default-dormant. It is enabled only together with the complete production
-`ContactAuthority` and `ContactService` composition:
+The canonical route closure is part of the threshold-authorized XPU1
+publication and is durably replicated with the opaque DCR ciphertext. Resolve
+returns those exact published bytes; XNode never sends a contact locator to
+Registry and production startup has no `ContactRouteClosure` Registry adapter.
+The permanent resolve response includes two authenticated `resolve-read`
+receipts, while a one-time resolve includes the existing durable claim receipts.
 
-```json
-{
-  "ContactRouteClosure": {
-    "enabled": true,
-    "registryOrigin": "https://registry.example",
-    "stateRelativePath": "contact-route-closure-v1/lkg.bin",
-    "maximumProtectedStateBytes": 4194304,
-    "requestTimeoutSeconds": 5
-  }
-}
-```
-
-`registryOrigin` is an HTTPS origin only. Paths, query, fragment, userinfo,
-escaping, HTTP and redirects are rejected. The adapter sends the exact 50-byte
-`networkId16 + locatorHash32` request to the fixed endpoint, accepts only the
-exact binary response contract with `Content-Length` and `no-store`, then
-independently decodes XIR1 and all six records and invokes Protocol
-`ContactCodec.VerifyRouteUpdateClosure`. HTTP, TLS and Registry manifest bytes
-never mint authority.
-
-The recipient-specific `VerifiedContactNetworkAuthority` and exact XIR1 must
-come from the in-process Protocol-minted current authority snapshot source.
-The built-in source remains closed until that recipient authority producer is
-composed; in that state the operation returns the same coarse unavailable
-outcome without contacting Registry. There is no client/direct fallback.
-
-The protected per-locator LKG lives inside `Node.DataDirectory`. It tracks the
-authority, XIR1, XRR1, XRA1, XRC1, XSS1, PMT2 and PMS2 lineages. Restart replay
-is idempotent; rollback, changed bytes at the same generation, changed lineage
-identity and a previously latched fork fail closed. A corrupt protected state
-prevents host startup rather than being reset or migrated.
+Verified recipient evidence learned from an authenticated XIS1 response remains
+in a separate protected cache below
+`<Node.DataDirectory>/contact-authority-v1/recipient-resolve-evidence-v1.bin`.
+Its limits are `ContactService:RecipientEvidenceMaximumProtectedStateBytes` and
+`ContactService:RecipientEvidenceMaximumEntries`. This cache never performs a
+locator lookup; it only retains Protocol-verified resolve/claim evidence needed
+to authorize later pre-key operations. Corrupt or rolled-back protected state
+fails closed at startup.
 
 Side-effect-free post-verification cancellation may instead persist `Released`. This is not a
 deletion: the counter floor and exact claim digest survive restart, exact retry can reserve it

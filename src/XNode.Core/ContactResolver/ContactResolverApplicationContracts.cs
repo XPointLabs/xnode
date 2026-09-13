@@ -294,6 +294,7 @@ internal sealed class ContactResolverApplicationResult
             item.Generation,
             item.ObjectCiphertextHash.ToArray(),
             item.Ciphertext.ToArray(),
+            item.CanonicalRouteClosure.ToArray(),
             item.UsageLimit,
             item.EffectiveExpiresAtUnixSeconds);
 

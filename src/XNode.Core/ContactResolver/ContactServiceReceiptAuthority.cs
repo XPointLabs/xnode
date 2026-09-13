@@ -13,7 +13,8 @@ internal enum ContactServiceReceiptKind
     PublishCommit = 1,
     UpdateCommit = 2,
     PreKeyClaimCommit = 3,
-    InviteClaimCommit = 4
+    InviteClaimCommit = 4,
+    ResolveRead = 5
 }
 
 internal sealed class ContactServiceReplicaReceiptRequest
@@ -154,6 +155,7 @@ internal static class ContactServiceReceiptTranscript
         ContactServiceReceiptKind.UpdateCommit => 80,
         ContactServiceReceiptKind.PreKeyClaimCommit => 138,
         ContactServiceReceiptKind.InviteClaimCommit => 160,
+        ContactServiceReceiptKind.ResolveRead => 144,
         _ => throw new ArgumentOutOfRangeException(nameof(kind))
     };
 
@@ -170,6 +172,8 @@ internal static class ContactServiceReceiptTranscript
                 "Deep/ContactResolver/V1/prekey-claim-commit",
             ContactServiceReceiptKind.InviteClaimCommit =>
                 "Deep/ContactResolver/V1/invite-claim-commit",
+            ContactServiceReceiptKind.ResolveRead =>
+                "Deep/ContactResolver/V1/resolve-read",
             _ => throw new ArgumentOutOfRangeException(nameof(request))
         };
         var label = Encoding.ASCII.GetBytes(domain);

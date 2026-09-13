@@ -160,7 +160,7 @@ internal interface IVerifiedContactRouteClosureSource
 /// </summary>
 internal sealed class VerifiedContactRouteClosureSource(
     IVerifiedContactRouteClosureSource source,
-    IClock clock) : IContactRouteClosureSource
+    IClock clock)
 {
     private readonly IVerifiedContactRouteClosureSource source =
         source ?? throw new ArgumentNullException(nameof(source));

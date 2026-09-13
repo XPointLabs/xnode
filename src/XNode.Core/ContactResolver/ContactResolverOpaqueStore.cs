@@ -75,7 +75,7 @@ internal sealed class ContactResolverOpaqueStoreOptions
 internal sealed class OpaqueDcrPublishRequest
 {
     private readonly byte[] locatorHash, operationId, requestHash, predecessorObjectHash,
-        objectCiphertextHash, ciphertext;
+        objectCiphertextHash, ciphertext, routeClosure;
 
     internal OpaqueDcrPublishRequest(
         ReadOnlySpan<byte> locatorHash32,
@@ -85,6 +85,7 @@ internal sealed class OpaqueDcrPublishRequest
         ReadOnlySpan<byte> predecessorObjectHash32,
         ReadOnlySpan<byte> objectCiphertextHash32,
         ReadOnlySpan<byte> ciphertext,
+        ReadOnlySpan<byte> canonicalRouteClosure,
         uint usageLimit,
         ulong effectiveExpiresAtUnixSeconds)
     {
@@ -110,7 +111,13 @@ internal sealed class OpaqueDcrPublishRequest
         {
             throw new ArgumentOutOfRangeException(nameof(usageLimit));
         }
+        if (canonicalRouteClosure.Length is < OpaqueDcrResolveRequest.MinimumRouteClosureBytes
+            or > OpaqueDcrResolveRequest.MaximumRouteClosureBytes)
+        {
+            throw new ArgumentOutOfRangeException(nameof(canonicalRouteClosure));
+        }
         this.ciphertext = ciphertext.ToArray();
+        routeClosure = canonicalRouteClosure.ToArray();
         Generation = generation;
         UsageLimit = usageLimit;
         EffectiveExpiresAtUnixSeconds = effectiveExpiresAtUnixSeconds;
@@ -123,6 +130,7 @@ internal sealed class OpaqueDcrPublishRequest
     internal ReadOnlySpan<byte> PredecessorObjectHash => predecessorObjectHash;
     internal ReadOnlySpan<byte> ObjectCiphertextHash => objectCiphertextHash;
     internal ReadOnlySpan<byte> Ciphertext => ciphertext;
+    internal ReadOnlySpan<byte> CanonicalRouteClosure => routeClosure;
     internal uint UsageLimit { get; }
     internal ulong EffectiveExpiresAtUnixSeconds { get; }
 }
@@ -253,6 +261,7 @@ internal sealed record OpaqueDcrPublication(
     ulong Generation,
     byte[] ObjectCiphertextHash,
     byte[] Ciphertext,
+    byte[] CanonicalRouteClosure,
     uint UsageLimit,
     ulong EffectiveExpiresAtUnixSeconds);
 
@@ -396,7 +405,8 @@ internal sealed class ContactResolverOpaqueStore : IDisposable
                     return ContactResolverMutationResult.Empty(ContactResolverMutationDisposition.StaleGeneration);
                 }
                 if (state.Publications.Count >= options.MaximumPublicationLocators
-                    || PublicationBytes() + request.Ciphertext.Length > options.MaximumPublicationCiphertextBytes)
+                    || PublicationBytes() + request.Ciphertext.Length
+                        + request.CanonicalRouteClosure.Length > options.MaximumPublicationCiphertextBytes)
                 {
                     return ContactResolverMutationResult.Empty(ContactResolverMutationDisposition.QuotaExceeded);
                 }
@@ -432,7 +442,8 @@ internal sealed class ContactResolverOpaqueStore : IDisposable
                     SaveState();
                     return ContactResolverMutationResult.Empty(ContactResolverMutationDisposition.Conflict);
                 }
-                if (PublicationBytes() + request.Ciphertext.Length > options.MaximumPublicationCiphertextBytes)
+                if (PublicationBytes() + request.Ciphertext.Length
+                    + request.CanonicalRouteClosure.Length > options.MaximumPublicationCiphertextBytes)
                 {
                     return ContactResolverMutationResult.Empty(ContactResolverMutationDisposition.QuotaExceeded);
                 }
@@ -474,6 +485,7 @@ internal sealed class ContactResolverOpaqueStore : IDisposable
                     current.Generation,
                     current.ObjectCiphertextHash.ToArray(),
                     current.Ciphertext.ToArray(),
+                    current.RouteClosure.ToArray(),
                     current.UsageLimit,
                     current.EffectiveExpiresAtUnixSeconds));
         }
@@ -534,6 +546,11 @@ internal sealed class ContactResolverOpaqueStore : IDisposable
 
             if (request.CanonicalRouteClosure.IsEmpty
                 || request.ResponseUnixSeconds == 0)
+            {
+                return ResolveResult(ContactResolverResolveDisposition.Conflict);
+            }
+            if (current.RouteClosure.Length != 0
+                && !current.RouteClosure.AsSpan().SequenceEqual(request.CanonicalRouteClosure))
             {
                 return ResolveResult(ContactResolverResolveDisposition.Conflict);
             }
@@ -1002,8 +1019,12 @@ internal sealed class ContactResolverOpaqueStore : IDisposable
                 Validate32(record.ObjectCiphertextHash);
                 ValidateGenerationPredecessor(record.Generation, record.PredecessorObjectHash);
                 if (record.Ciphertext is null
+                    || record.RouteClosure is null
                     || record.Ciphertext.Length is < ContactResolverOpaqueStoreOptions.DcrCiphertextMinimumBytes
                         or > ContactResolverOpaqueStoreOptions.DcrCiphertextMaximumBytes
+                    || (record.RouteClosure.Length != 0
+                        && record.RouteClosure.Length is < OpaqueDcrResolveRequest.MinimumRouteClosureBytes
+                            or > OpaqueDcrResolveRequest.MaximumRouteClosureBytes)
                     || record.UsageLimit is not (0 or 1)
                     || record.AcceptedAtUnixSeconds >= record.EffectiveExpiresAtUnixSeconds
                     || record.EffectiveExpiresAtUnixSeconds - record.AcceptedAtUnixSeconds
@@ -1055,6 +1076,7 @@ internal sealed class ContactResolverOpaqueStore : IDisposable
                 }
                 publicationBytes = checked(publicationBytes
                     + record.Ciphertext.Length
+                    + record.RouteClosure.Length
                     + record.RedemptionRouteClosure.Length);
                 previous = record;
             }
@@ -1235,7 +1257,8 @@ internal sealed class ContactResolverOpaqueStore : IDisposable
 
     private long PublicationBytes() =>
         state.Publications.SelectMany(static item => item.Records).Sum(static item =>
-            (long)item.Ciphertext.Length + item.RedemptionRouteClosure.Length);
+            (long)item.Ciphertext.Length + item.RouteClosure.Length
+                + item.RedemptionRouteClosure.Length);
 
     private long XurBytes() =>
         state.XurStreams.SelectMany(static item => item.Events).Sum(static item => (long)item.Ciphertext.Length);
@@ -1275,6 +1298,7 @@ internal sealed class ContactResolverOpaqueStore : IDisposable
         PredecessorObjectHash = request.PredecessorObjectHash.ToArray(),
         ObjectCiphertextHash = request.ObjectCiphertextHash.ToArray(),
         Ciphertext = request.Ciphertext.ToArray(),
+        RouteClosure = request.CanonicalRouteClosure.ToArray(),
         UsageLimit = request.UsageLimit,
         AcceptedAtUnixSeconds = now,
         EffectiveExpiresAtUnixSeconds = request.EffectiveExpiresAtUnixSeconds
@@ -1306,6 +1330,7 @@ internal sealed class ContactResolverOpaqueStore : IDisposable
         item.Generation,
         item.ObjectCiphertextHash.ToArray(),
         item.Ciphertext.ToArray(),
+        item.RouteClosure.ToArray(),
         item.UsageLimit,
         item.EffectiveExpiresAtUnixSeconds);
 
@@ -1326,7 +1351,8 @@ internal sealed class ContactResolverOpaqueStore : IDisposable
         && OpaqueValue.FixedEquals(item.RequestHash, request.RequestHash)
         && OpaqueValue.FixedEquals(item.PredecessorObjectHash, request.PredecessorObjectHash)
         && OpaqueValue.FixedEquals(item.ObjectCiphertextHash, request.ObjectCiphertextHash)
-        && item.Ciphertext.AsSpan().SequenceEqual(request.Ciphertext);
+        && item.Ciphertext.AsSpan().SequenceEqual(request.Ciphertext)
+        && item.RouteClosure.AsSpan().SequenceEqual(request.CanonicalRouteClosure);
 
     private static bool Matches(XurEventState item, OpaqueXurWriteRequest request) =>
         item.Generation == request.EventGeneration
@@ -1411,6 +1437,7 @@ internal sealed class ContactResolverOpaqueStore : IDisposable
         public byte[] PredecessorObjectHash { get; set; } = [];
         public byte[] ObjectCiphertextHash { get; set; } = [];
         public byte[] Ciphertext { get; set; } = [];
+        public byte[] RouteClosure { get; set; } = [];
         public uint UsageLimit { get; set; }
         public ulong AcceptedAtUnixSeconds { get; set; }
         public ulong EffectiveExpiresAtUnixSeconds { get; set; }

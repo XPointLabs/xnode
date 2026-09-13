@@ -35,7 +35,7 @@ internal static class ContactReplicaPayloadCodec
 
     internal static byte[] EncodeAuthorizedPublish(ReadOnlySpan<byte> exactXpu1)
     {
-        if (exactXpu1.Length is < 1 or > 69_649)
+        if (exactXpu1.Length is < 1 or > 92_992)
         {
             throw new ArgumentOutOfRangeException(nameof(exactXpu1));
         }
@@ -48,7 +48,7 @@ internal static class ContactReplicaPayloadCodec
     internal static Xpu1Request DecodeAuthorizedPublish(ReadOnlySpan<byte> payload)
     {
         var reader = new PayloadReader(payload);
-        var exact = reader.Lp32(69_649).ToArray();
+        var exact = reader.Lp32(92_992).ToArray();
         reader.End();
         return Xpu1Codec.Decode(exact);
     }
@@ -490,6 +490,7 @@ internal static class ContactReplicaPayloadCodec
         writer.U32(value.UsageLimit);
         writer.U64(value.EffectiveExpiresAtUnixSeconds);
         writer.Lp32(value.Ciphertext);
+        writer.Lp32(value.CanonicalRouteClosure);
     }
 
     private static OpaqueDcrPublication? ReadPublication(ref PayloadReader reader)
@@ -508,7 +509,9 @@ internal static class ContactReplicaPayloadCodec
         var usage = reader.U32();
         var expiry = reader.U64();
         var ciphertext = reader.Lp32(1_048_576).ToArray();
-        return new OpaqueDcrPublication(generation, hash, ciphertext, usage, expiry);
+        var routeClosure = reader.Lp32(OpaqueDcrResolveRequest.MaximumRouteClosureBytes).ToArray();
+        return new OpaqueDcrPublication(
+            generation, hash, ciphertext, routeClosure, usage, expiry);
     }
 
     private sealed class PayloadWriter

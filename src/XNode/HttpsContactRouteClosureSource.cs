@@ -1287,10 +1287,37 @@ internal static class ProductionContactRouteClosureHostComposition
                 UseCookies = false,
                 AutomaticDecompression = DecompressionMethods.None
             });
+        services.AddProductionContactRecipientEvidence(
+            ProductionContactRecipientEvidenceCacheConfiguration.FromRouteClosure(configuration));
+        services.TryAddSingleton<IContactRouteVerifiedAuthoritySnapshotSource,
+            ProductionContactRouteVerifiedAuthoritySnapshotSource>();
+        services.TryAddSingleton<IContactRouteClosureProtocolVerifier,
+            ContactRouteClosureProtocolVerifier>();
+        services.TryAddSingleton<IContactRouteClosureLineageStore>(provider =>
+            new FileContactRouteClosureLineageStore(
+                provider.GetRequiredService<ProductionContactRouteClosureConfiguration>(),
+                provider.GetRequiredService<IDataProtectionProvider>(),
+                provider.GetRequiredService<IMailboxStorageSecurity>(),
+                provider.GetRequiredService<IMailboxDurabilityBarrier>()));
+        services.AddHostedService<ContactRouteClosureLineageHostedService>();
+        services.AddSingleton<IVerifiedContactRouteClosureSource>(provider =>
+            new HttpsVerifiedContactRouteClosureSource(
+                provider.GetRequiredService<IContactRouteClosureArtifactSource>(),
+                provider.GetRequiredService<IContactRouteVerifiedAuthoritySnapshotSource>(),
+                provider.GetRequiredService<IContactRouteClosureProtocolVerifier>(),
+                provider.GetRequiredService<IContactRouteClosureLineageStore>()));
+        return services;
+    }
+
+    internal static IServiceCollection AddProductionContactRecipientEvidence(
+        this IServiceCollection services,
+        ProductionContactRecipientEvidenceCacheConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configuration);
+        services.TryAddSingleton(configuration);
         services.TryAddSingleton<IContactRouteClosureArtifactCodec,
             ContactRouteClosureArtifactCodec>();
-        services.TryAddSingleton(
-            ProductionContactRecipientEvidenceCacheConfiguration.FromRouteClosure(configuration));
         services.TryAddSingleton<IContactRecipientResolveEvidenceVerifier,
             ProtocolContactRecipientResolveEvidenceVerifier>();
         services.TryAddSingleton(provider => new FileContactRecipientResolveEvidenceCache(
@@ -1316,23 +1343,6 @@ internal static class ProductionContactRouteClosureHostComposition
             ProtocolContactRouteNetworkAuthorityVerifier>();
         services.TryAddSingleton<IContactPreKeyRecipientAuthoritySource,
             ProtocolContactPreKeyRecipientAuthoritySource>();
-        services.TryAddSingleton<IContactRouteVerifiedAuthoritySnapshotSource,
-            ProductionContactRouteVerifiedAuthoritySnapshotSource>();
-        services.TryAddSingleton<IContactRouteClosureProtocolVerifier,
-            ContactRouteClosureProtocolVerifier>();
-        services.TryAddSingleton<IContactRouteClosureLineageStore>(provider =>
-            new FileContactRouteClosureLineageStore(
-                provider.GetRequiredService<ProductionContactRouteClosureConfiguration>(),
-                provider.GetRequiredService<IDataProtectionProvider>(),
-                provider.GetRequiredService<IMailboxStorageSecurity>(),
-                provider.GetRequiredService<IMailboxDurabilityBarrier>()));
-        services.AddHostedService<ContactRouteClosureLineageHostedService>();
-        services.AddSingleton<IVerifiedContactRouteClosureSource>(provider =>
-            new HttpsVerifiedContactRouteClosureSource(
-                provider.GetRequiredService<IContactRouteClosureArtifactSource>(),
-                provider.GetRequiredService<IContactRouteVerifiedAuthoritySnapshotSource>(),
-                provider.GetRequiredService<IContactRouteClosureProtocolVerifier>(),
-                provider.GetRequiredService<IContactRouteClosureLineageStore>()));
         return services;
     }
 }

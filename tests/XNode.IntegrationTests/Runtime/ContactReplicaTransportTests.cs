@@ -449,6 +449,81 @@ public sealed class ContactReplicaTransportTests : IDisposable
     }
 
     [Fact]
+    public async Task RemoteResolveReadReceiptBindsExactRequestAndPublishedRoute()
+    {
+        var sender = Identity(0x18);
+        var recipient = Identity(0x29, root);
+        var now = DateTimeOffset.Parse("2026-09-07T10:00:00Z");
+        var locator = Bytes(0x4b, 32);
+        var placement = Placement(
+            ContactServiceRequestKind.ResolveInvite,
+            locator,
+            sender.Id,
+            recipient.Id,
+            now.AddHours(1));
+        var exactXiq1 = Xiq1Codec.Encode(
+            placement.NetworkId.Span,
+            Bytes(0x61, 32),
+            placement.ViewHash.Span,
+            placement.PlacementHash.Span,
+            checked((ulong)now.AddSeconds(-1).ToUnixTimeSeconds()),
+            checked((ulong)now.AddMinutes(5).ToUnixTimeSeconds()),
+            locator,
+            0,
+            Xiq1AntiSpamTokenType.None,
+            [],
+            ContactServicePaddingClass.Bytes16384);
+        var decodedXiq1 = Xiq1Codec.Decode(exactXiq1);
+        var ciphertext = Bytes(0x62, 64);
+        var routeClosure = Bytes(
+            0x63,
+            OpaqueDcrResolveRequest.MinimumRouteClosureBytes);
+
+        using var local = Local(recipient, now);
+        var published = await local.Binding.ResolverReplica.PublishDcrAsync(
+            new OpaqueDcrPublishRequest(
+                locator,
+                Bytes(0x64, 32),
+                Bytes(0x65, 32),
+                0,
+                new byte[32],
+                SHA256.HashData(ciphertext),
+                ciphertext,
+                routeClosure,
+                0,
+                checked((ulong)now.AddDays(1).ToUnixTimeSeconds())),
+            default);
+        Assert.Equal(ContactResolverMutationDisposition.Committed, published.Disposition);
+
+        var remote = new AuthenticatedRemoteContactServiceReplica(
+            placement,
+            sender.Id.ToBytes(),
+            new ReceiverPeerClient(Receiver(recipient, placement, local, now), sender.Id),
+            exactXiq1);
+        var read = await remote.ResolveCurrentDcrAsync(locator, default);
+        Assert.Equal(ContactResolverReadDisposition.Current, read.Disposition);
+        var publication = Assert.IsType<OpaqueDcrPublication>(read.Publication);
+        var tuple = Concat(
+            decodedXiq1.RequestHash.ToArray(),
+            locator,
+            U64(publication.Generation),
+            U64(publication.EffectiveExpiresAtUnixSeconds),
+            publication.ObjectCiphertextHash,
+            SHA256.HashData(publication.CanonicalRouteClosure));
+        var request = new ContactServiceReplicaReceiptRequest(
+            ContactServiceReceiptKind.ResolveRead,
+            tuple);
+
+        var receipt = await remote.IssueAsync(request, default);
+
+        Assert.Equal(recipient.Id.ToBytes(), receipt.ReplicaId.ToArray());
+        Assert.True(ContactServiceReceiptTranscript.Verify(
+            receipt.ReplicaId.Span,
+            ContactServiceReceiptTranscript.SigningInput(request),
+            receipt.Signature.Span));
+    }
+
+    [Fact]
     public void HostCompositionRequiresAuthorityObjectsAndKeepsDefaultDispatcherClosed()
     {
         var options = Options();

@@ -286,7 +286,8 @@ internal sealed class AuthenticatedRemoteContactServiceReplica :
         var exactXpu1 = Deep.Protocol.ContactV1.Xpu1Codec.Decode(exactServiceRequest);
         if (!Fixed(exactXpu1.RequestHash.Span, request.RequestHash)
             || !Fixed(exactXpu1.LocatorHash.Span, request.LocatorHash)
-            || !Fixed(exactXpu1.ObjectCiphertextHash.Span, request.ObjectCiphertextHash))
+            || !Fixed(exactXpu1.ObjectCiphertextHash.Span, request.ObjectCiphertextHash)
+            || !Fixed(exactXpu1.ExactRouteClosure.Span, request.CanonicalRouteClosure))
         {
             throw new InvalidDataException(
                 "The exact XPU1 request does not bind the resolver mutation.");
@@ -301,6 +302,19 @@ internal sealed class AuthenticatedRemoteContactServiceReplica :
         ReadOnlyMemory<byte> locatorHash32,
         CancellationToken cancellationToken)
     {
+        if (exactServiceRequest.Length != 0)
+        {
+            var request = Xiq1Codec.Decode(exactServiceRequest);
+            if (!Fixed(request.LocatorHash.Span, locatorHash32.Span))
+            {
+                throw new InvalidDataException(
+                    "The exact XIQ1 request does not bind the resolver read.");
+            }
+            Remember(
+                ContactServiceReceiptKind.ResolveRead,
+                ContactReplicaRpcOperation.ReadCurrentDcr,
+                exactServiceRequest);
+        }
         var response = await SendAsync(
             ContactReplicaRpcOperation.ReadCurrentDcr,
             ContactReplicaPayloadCodec.EncodeFixed32(locatorHash32.Span),
@@ -448,7 +462,7 @@ internal sealed class AuthenticatedRemoteContactServiceReplica :
 
 internal static class ContactReplicaWireCodec
 {
-    internal const int MaximumRequestBytes = 70_400;
+    internal const int MaximumRequestBytes = 100_000;
     internal const int MaximumResponseBytes = 2_200_000;
     private const byte Version = 1;
     private static ReadOnlySpan<byte> RequestMagic => "CRQ1"u8;

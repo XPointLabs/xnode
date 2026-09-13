@@ -36,9 +36,11 @@ internal sealed class Xpa1AuthorizationTestFixture : IContactPublicationAuthoriz
         var locator = Bytes(32, 5);
         var xir = Bytes(32, 6);
         var ciphertext = Bytes(40, ciphertextMarker);
+        var routeClosure = CreateRouteClosure(network);
         var bodyHash = Xpu1Codec.ComputeAuthorizedBodyHash(
             network, operation, view, placement, 195, 240,
-            locator, xir, 0, new byte[32], ciphertext, usageLimit, 250);
+            locator, xir, 0, new byte[32], ciphertext, usageLimit, 250,
+            routeClosure);
         var witnessReceipts = new byte[192];
         Bytes(32, 1).CopyTo(witnessReceipts, 0);
         Bytes(64, 3).CopyTo(witnessReceipts, 32);
@@ -57,8 +59,186 @@ internal sealed class Xpa1AuthorizationTestFixture : IContactPublicationAuthoriz
         ]);
         return Xpu1Codec.Encode(
             network, operation, view, placement, 195, 240,
-            locator, xir, 0, new byte[32], ciphertext, usageLimit, 250, xpa);
+            locator, xir, 0, new byte[32], ciphertext, usageLimit, 250,
+            routeClosure, xpa);
     }
+
+    private static byte[] CreateRouteClosure(byte[] network)
+    {
+        var pmt = Author("PMT2",
+        [
+            network, U64(0), new byte[32], Reference("PMA2", 2), Reference("XNV1", 3),
+            U64(1), new byte[] { 2 }, U16(2), Rows(136, 2, 4), U64(1), U64(1),
+            U64(2), new byte[32], Reference("ADH1", 5), new byte[] { 2 }, Rows(96, 2, 6)
+        ]);
+        var xra = Author("XRA1",
+        [
+            network, Bytes(32, 2), U64(0), new byte[32],
+            ContactCodec.ArtifactReference("PMT2", pmt).CanonicalBytes, Bytes(32, 3),
+            U16(1), U32(1), Bytes(32, 4), Bytes(32, 5), Bytes(32, 6), U64(1),
+            U64(2), Bytes(32, 7), Reference("DPD1", 8), Bytes(64, 9)
+        ]);
+        var ranked = RankedNodes(network, pmt, xra.Field(6));
+        ReadOnlyMemory<byte>[] pmsFields =
+        [
+            network, ContactCodec.ArtifactReference("PMT2", pmt).CanonicalBytes,
+            xra.Field(6), pmt.Field(6), new byte[] { 2 }, ranked.AsMemory(0, 64),
+            new byte[32], U64(1), U64(2), new byte[] { 2 }, Rows(96, 2, 10)
+        ];
+        var provisional = Write("PMS2", pmsFields);
+        pmsFields[6] = HashDomain("Deep/XPoint/V1/PMS2/selection", Project(provisional, 6));
+        var pms = Author("PMS2", pmsFields);
+        var replicas = ReplicaEntries(pms);
+        var xrc = Author("XRC1",
+        [
+            network, Bytes(32, 10), U64(0), new byte[32],
+            ContactCodec.ArtifactReference("XRA1", xra).CanonicalBytes,
+            ContactCodec.ArtifactReference("PMT2", pmt).CanonicalBytes,
+            pms.ArtifactHash, pmt.Field(5), Reference("XNH1", 12), Bytes(32, 13),
+            xra.Field(10), xra.Field(11), U64(1), new byte[] { 2 }, replicas,
+            U64(1), U64(1), U64(2), pmt.Field(14), new byte[] { 2 }, Rows(96, 2, 18)
+        ]);
+        var xss = Author("XSS1",
+        [
+            network, xrc.Field(2), U64(1), xrc.CoreHash,
+            ContactCodec.ArtifactReference("XRC1", xrc).CanonicalBytes,
+            ContactCodec.ArtifactReference("XRC1", xrc).CanonicalBytes,
+            ContactCodec.ArtifactReference("PMT2", pmt).CanonicalBytes,
+            xrc.Field(8), pms.ArtifactHash, U64(1), U64(2), Reference("ADH1", 23),
+            new byte[] { 2 }, Rows(96, 2, 24)
+        ]);
+        var xrr = Author("XRR1",
+        [
+            network, Bytes(32, 25), U64(0), new byte[32],
+            ContactCodec.ArtifactReference("XRA1", xra).CanonicalBytes,
+            ContactCodec.ArtifactReference("XRC1", xrc).CanonicalBytes,
+            ContactCodec.ArtifactReference("XSS1", xss).CanonicalBytes,
+            ContactCodec.ArtifactReference("PMT2", pmt).CanonicalBytes,
+            pms.ArtifactHash, Bytes(32, 26), Bytes(32, 27), new byte[] { 1 },
+            U32(1), U16(1), U64(1), U64(1), U64(2), xra.Field(15),
+            Bytes(64, 29), new byte[2]
+        ]);
+        var records = new[] { xrr, xra, xrc, xss, pmt, pms };
+        var output = new byte[1 + records.Sum(record => 4 + record.CanonicalBytes.Length)];
+        output[0] = 6;
+        var offset = 1;
+        foreach (var record in records)
+        {
+            BinaryPrimitives.WriteUInt32BigEndian(
+                output.AsSpan(offset), checked((uint)record.CanonicalBytes.Length));
+            offset += 4;
+            record.CanonicalBytes.Span.CopyTo(output.AsSpan(offset));
+            offset += record.CanonicalBytes.Length;
+        }
+        _ = ContactRouteClosureCodec.Decode(output);
+        return output;
+    }
+
+    private static ContactRecord Author(
+        string magic,
+        IReadOnlyList<ReadOnlyMemory<byte>> fields) =>
+        ContactCodec.Decode(magic, Write(magic, fields));
+
+    private static byte[] Write(string magic, IReadOnlyList<ReadOnlyMemory<byte>> fields)
+    {
+        var output = new byte[12 + fields.Sum(field => 8 + field.Length)];
+        Encoding.ASCII.GetBytes(magic).CopyTo(output, 0);
+        BinaryPrimitives.WriteUInt16BigEndian(output.AsSpan(4), 1);
+        BinaryPrimitives.WriteUInt16BigEndian(output.AsSpan(6), 0x0201);
+        BinaryPrimitives.WriteUInt16BigEndian(output.AsSpan(8), checked((ushort)fields.Count));
+        var offset = 12;
+        for (var index = 0; index < fields.Count; index++)
+        {
+            BinaryPrimitives.WriteUInt16BigEndian(
+                output.AsSpan(offset), checked((ushort)(index + 1)));
+            BinaryPrimitives.WriteUInt32BigEndian(
+                output.AsSpan(offset + 4), checked((uint)fields[index].Length));
+            fields[index].Span.CopyTo(output.AsSpan(offset + 8));
+            offset += 8 + fields[index].Length;
+        }
+        return output;
+    }
+
+    private static byte[] Project(byte[] record, int fieldCount) =>
+        Write(Encoding.ASCII.GetString(record, 0, 4), ReadFields(record).Take(fieldCount).ToArray());
+
+    private static IEnumerable<ReadOnlyMemory<byte>> ReadFields(byte[] record)
+    {
+        var count = BinaryPrimitives.ReadUInt16BigEndian(record.AsSpan(8));
+        var offset = 12;
+        for (var index = 0; index < count; index++)
+        {
+            var length = checked((int)BinaryPrimitives.ReadUInt32BigEndian(
+                record.AsSpan(offset + 4)));
+            yield return record.AsMemory(offset + 8, length);
+            offset += 8 + length;
+        }
+    }
+
+    private static byte[] RankedNodes(
+        byte[] network,
+        ContactRecord pmt,
+        ReadOnlyMemory<byte> placement)
+    {
+        var reference = ContactCodec.ArtifactReference("PMT2", pmt).CanonicalBytes.ToArray();
+        return pmt.Field(9).ToArray().Chunk(136).Select(row => row[..32]).Select(node => new
+            {
+                Node = node,
+                Score = SHA256.HashData(Join(
+                    Encoding.ASCII.GetBytes("Deep/XPoint/V1/PMS2/rendezvous-sha256/v2"),
+                    [0], network, reference, pmt.Field(6).ToArray(), placement.ToArray(), node))
+            })
+            .OrderBy(value => value.Score, ByteArrayComparer.Instance)
+            .ThenBy(value => value.Node, ByteArrayComparer.Instance)
+            .SelectMany(value => value.Node).ToArray();
+    }
+
+    private static byte[] ReplicaEntries(ContactRecord pms)
+    {
+        var ranked = pms.Field(6).ToArray();
+        var output = new byte[ranked.Length * 2];
+        for (var index = 0; index < ranked.Length / 32; index++)
+        {
+            ranked.AsSpan(index * 32, 32).CopyTo(output.AsSpan(index * 64));
+            Bytes(32, checked((byte)(0x80 + index))).CopyTo(output, index * 64 + 32);
+        }
+        return output;
+    }
+
+    private static byte[] Rows(int width, int count, byte seed)
+    {
+        var output = new byte[width * count];
+        for (var index = 0; index < count; index++)
+        {
+            Bytes(32, checked((byte)(seed + index))).CopyTo(output, index * width);
+            Bytes(width - 32, checked((byte)(seed + 32 + index)))
+                .CopyTo(output, index * width + 32);
+        }
+        return output;
+    }
+
+    private static byte[] Reference(string magic, byte seed)
+    {
+        var output = new byte[38];
+        Encoding.ASCII.GetBytes(magic).CopyTo(output, 0);
+        BinaryPrimitives.WriteUInt16BigEndian(output.AsSpan(4), 1);
+        Bytes(32, seed).CopyTo(output, 6);
+        return output;
+    }
+
+    private static byte[] HashDomain(string domain, ReadOnlySpan<byte> payload)
+    {
+        var label = Encoding.ASCII.GetBytes(domain);
+        var input = new byte[label.Length + 5 + payload.Length];
+        label.CopyTo(input, 0);
+        BinaryPrimitives.WriteUInt32BigEndian(
+            input.AsSpan(label.Length + 1), checked((uint)payload.Length));
+        payload.CopyTo(input.AsSpan(label.Length + 5));
+        return SHA256.HashData(input);
+    }
+
+    private static byte[] Join(params byte[][] values) =>
+        values.SelectMany(static value => value).ToArray();
 
     internal static VerifiedXpa1PublicationAuthorization CreateCapability(Xpu1Request request)
     {
@@ -130,8 +310,16 @@ internal sealed class Xpa1AuthorizationTestFixture : IContactPublicationAuthoriz
 
     private static byte[] Bytes(int length, byte value) =>
         Enumerable.Repeat(value, length).ToArray();
+    private static byte[] U16(ushort value) { var output = new byte[2]; BinaryPrimitives.WriteUInt16BigEndian(output, value); return output; }
     private static byte[] U32(uint value) { var output = new byte[4]; BinaryPrimitives.WriteUInt32BigEndian(output, value); return output; }
     private static byte[] U64(ulong value) { var output = new byte[8]; BinaryPrimitives.WriteUInt64BigEndian(output, value); return output; }
+
+    private sealed class ByteArrayComparer : IComparer<byte[]>
+    {
+        internal static readonly ByteArrayComparer Instance = new();
+        public int Compare(byte[]? left, byte[]? right) =>
+            left.AsSpan().SequenceCompareTo(right);
+    }
 
     [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_exactXpa1")]
     private static extern ref byte[] ExactXpa1(VerifiedXpa1PublicationAuthorization value);

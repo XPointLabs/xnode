@@ -46,6 +46,7 @@ internal sealed class ContactAuthorizedPublicationReplica
                 request.PredecessorObjectHash.Span,
                 request.ObjectCiphertextHash.Span,
                 request.ObjectCiphertext.Span,
+                request.ExactRouteClosure.Span,
                 request.UsageLimit,
                 request.EffectiveExpiresAtUnixSeconds),
             cancellationToken).ConfigureAwait(false);

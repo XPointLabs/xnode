@@ -101,7 +101,7 @@ public sealed class ContactServiceOpaqueFacadeTests
     }
 
     [Fact]
-    public async Task ResolveWithoutVerifiedRouteClosureIsCanonicalUnavailableNotStoredCiphertext()
+    public async Task ResolveUsesPublishedRouteClosureWithoutExternalLocatorLookup()
     {
         using var fixture = new Fixture();
         var publish = Xpu();
@@ -114,12 +114,15 @@ public sealed class ContactServiceOpaqueFacadeTests
             ContactServiceFacadeOperation.ResolveDcr, resolve);
         var decoded = Xis1Codec.Decode(response.Span, resolve);
 
-        Assert.Equal(Xis1Status.TemporarilyUnavailable, decoded.Status);
+        Assert.Equal(Xis1Status.Success, decoded.Status);
         Assert.Equal(ContactServiceMutationOutcome.None, decoded.MutationOutcome);
+        Assert.Equal(
+            Xpu1Codec.Decode(publish).ExactRouteClosure.ToArray(),
+            decoded.Field(21).ToArray());
     }
 
     [Fact]
-    public async Task MissingClosureDoesNotConsumeOneTimeInviteAndSuccessExactReplays()
+    public async Task PublishedClosureCommitsOneTimeInviteAndSuccessExactReplays()
     {
         using var fixture = new Fixture();
         var publish = Xpu(usageLimit: 1);
@@ -128,13 +131,6 @@ public sealed class ContactServiceOpaqueFacadeTests
         Assert.Equal(Xpo1Status.Committed, Xpo1Codec.Decode(publication.Span, publish).Status);
         var resolve = Xiq(operationByte: 31);
 
-        var unavailable = await fixture.Facade.DispatchAsync(
-            ContactServiceFacadeOperation.ResolveDcr, resolve);
-        Assert.Equal(Xis1Status.TemporarilyUnavailable,
-            Xis1Codec.Decode(unavailable.Span, resolve).Status);
-
-        fixture.Closures.Value = Convert.FromBase64String(
-            CanonicalRouteClosureBase64);
         var first = await fixture.Facade.DispatchAsync(
             ContactServiceFacadeOperation.ResolveDcr, resolve);
         var decoded = Xis1Codec.Decode(first.Span, resolve);
@@ -144,7 +140,6 @@ public sealed class ContactServiceOpaqueFacadeTests
         AssertResolveClaimReceipts(decoded, Xiq1Codec.Decode(resolve));
 
         fixture.Clock.UtcNow = fixture.Clock.UtcNow.AddSeconds(1);
-        fixture.Closures.Value = null;
         var replay = await fixture.Facade.DispatchAsync(
             ContactServiceFacadeOperation.ResolveDcr, resolve);
         Assert.Equal(first.ToArray(), replay.ToArray());
@@ -507,7 +502,6 @@ public sealed class ContactServiceOpaqueFacadeTests
             Path.Combine(directory, "prekey-a.state"),
             Path.Combine(directory, "prekey-b.state"),
             [new(B(32, 21)), new(B(32, 22))],
-            new MutableRouteClosureSource(),
             new StaticFixtureContextVerifier(),
             PublicationAuthorizations,
             new FixedClock(DateTimeOffset.FromUnixTimeSeconds(200)),
@@ -539,7 +533,6 @@ public sealed class ContactServiceOpaqueFacadeTests
         {
             return new ContactServiceOpaqueFacade(
                 bindings,
-                new MutableRouteClosureSource(),
                 new StaticFixtureContextVerifier(),
                 PublicationAuthorizations,
                 saga,
@@ -706,7 +699,6 @@ public sealed class ContactServiceOpaqueFacadeTests
                     new ContactPreKeyStoreReplica(firstId.Span, firstPreKeyStore),
                     FirstAuthority)
             ],
-            new MutableRouteClosureSource(),
             new StaticFixtureContextVerifier(),
             PublicationAuthorizations,
             authorizationSaga,
@@ -781,7 +773,6 @@ public sealed class ContactServiceOpaqueFacadeTests
                     new ContactPreKeyStoreReplica(secondId.Span, secondPreKeyStore),
                     SecondAuthority)
             ],
-            new MutableRouteClosureSource(),
             new StaticFixtureContextVerifier(),
             PublicationAuthorizations,
             authorizationSaga,
@@ -905,7 +896,6 @@ public sealed class ContactServiceOpaqueFacadeTests
         internal Fixture()
         {
             Context = new StaticFixtureContextVerifier();
-            Closures = new MutableRouteClosureSource();
             Clock = new FixedClock(DateTimeOffset.FromUnixTimeSeconds(200));
             var security = new TestStorageSecurity();
             Facade = new ContactServiceOpaqueFacade(
@@ -914,7 +904,6 @@ public sealed class ContactServiceOpaqueFacadeTests
                 Path.Combine(directory, "prekey-a.state"),
                 Path.Combine(directory, "prekey-b.state"),
                 [new(B(32, 21)), new(B(32, 22))],
-                Closures,
                 Context,
                 PublicationAuthorizations,
                 Clock,
@@ -924,7 +913,6 @@ public sealed class ContactServiceOpaqueFacadeTests
 
         internal ContactServiceOpaqueFacade Facade { get; }
         internal StaticFixtureContextVerifier Context { get; }
-        internal MutableRouteClosureSource Closures { get; }
         internal FixedClock Clock { get; }
 
         public void Dispose()
@@ -948,17 +936,6 @@ public sealed class ContactServiceOpaqueFacadeTests
             ReadOnlyMemory<byte> placementHash,
             CancellationToken cancellationToken) => ValueTask.FromResult(
                 new ContactRequestContextResult(Status, B(32, 3)));
-    }
-
-    private sealed class MutableRouteClosureSource : IContactRouteClosureSource
-    {
-        internal byte[]? Value { get; set; }
-
-        public ValueTask<ReadOnlyMemory<byte>?> ReadAsync(
-            ReadOnlyMemory<byte> networkId,
-            ReadOnlyMemory<byte> locatorHash,
-            CancellationToken cancellationToken) => ValueTask.FromResult<ReadOnlyMemory<byte>?>(
-                Value is null ? null : Value.ToArray());
     }
 
     private sealed class TestStorageSecurity : IMailboxStorageSecurity

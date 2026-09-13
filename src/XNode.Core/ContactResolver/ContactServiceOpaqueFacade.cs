@@ -17,17 +17,6 @@ internal enum ContactServiceFacadeOperation
     FetchContactUpdates = 5
 }
 
-internal interface IContactRouteClosureSource
-{
-    // Production implementations must return only the canonical bytes exported
-    // from a current Protocol-minted VerifiedContactRouteClosure. The facade's
-    // final XIS1 encoding independently rechecks the complete route graph.
-    ValueTask<ReadOnlyMemory<byte>?> ReadAsync(
-        ReadOnlyMemory<byte> networkId,
-        ReadOnlyMemory<byte> locatorHash,
-        CancellationToken cancellationToken);
-}
-
 internal enum ContactRequestContextStatus
 {
     Accepted = 1,
@@ -89,7 +78,6 @@ internal sealed class ContactServiceOpaqueFacade : IDisposable
     private readonly ContactPreKeyApplicationService preKeys;
     private readonly ReceiptAuthorityBinding[] receiptAuthorities;
     private readonly IDisposable[] ownedFixtureResources;
-    private readonly IContactRouteClosureSource routeClosures;
     private readonly IContactRequestContextVerifier requestContexts;
     private readonly IContactPublicationAuthorizationVerifier publicationAuthorizations;
     private readonly ContactPublicationAuthorizationSaga publicationAuthorizationSaga;
@@ -103,7 +91,6 @@ internal sealed class ContactServiceOpaqueFacade : IDisposable
         string firstPreKeyStatePath,
         string secondPreKeyStatePath,
         IReadOnlyList<LocalContactServiceReplicaReceiptAuthority> localReceiptAuthorities,
-        IContactRouteClosureSource routeClosures,
         IContactRequestContextVerifier requestContexts,
         IContactPublicationAuthorizationVerifier publicationAuthorizations,
         IClock? clock = null,
@@ -113,7 +100,6 @@ internal sealed class ContactServiceOpaqueFacade : IDisposable
         IContactPublicationAuthorizationSagaFaults? authorizationSagaFaults = null)
     {
         ArgumentNullException.ThrowIfNull(localReceiptAuthorities);
-        ArgumentNullException.ThrowIfNull(routeClosures);
         ArgumentNullException.ThrowIfNull(requestContexts);
         ArgumentNullException.ThrowIfNull(publicationAuthorizations);
         if (localReceiptAuthorities.Count != 2
@@ -135,7 +121,6 @@ internal sealed class ContactServiceOpaqueFacade : IDisposable
                 "The two local contact receipt authorities must be distinct.",
                 nameof(localReceiptAuthorities));
         }
-        this.routeClosures = routeClosures;
         this.requestContexts = requestContexts;
         this.publicationAuthorizations = publicationAuthorizations;
         this.clock = clock ?? new SystemClock();
@@ -196,13 +181,11 @@ internal sealed class ContactServiceOpaqueFacade : IDisposable
 
     internal ContactServiceOpaqueFacade(
         IReadOnlyList<ContactServiceReplicaBinding> replicaBindings,
-        IContactRouteClosureSource routeClosures,
         IContactRequestContextVerifier requestContexts,
         IContactPublicationAuthorizationVerifier publicationAuthorizations,
         ContactPublicationAuthorizationSaga publicationAuthorizationSaga,
         IClock? clock = null)
     {
-        ArgumentNullException.ThrowIfNull(routeClosures);
         ArgumentNullException.ThrowIfNull(requestContexts);
         ArgumentNullException.ThrowIfNull(publicationAuthorizations);
         var bindings = PrepareBindings(replicaBindings);
@@ -212,7 +195,6 @@ internal sealed class ContactServiceOpaqueFacade : IDisposable
                 binding.ReplicaId,
                 binding.Binding.ReceiptAuthority))
             .ToArray();
-        this.routeClosures = routeClosures;
         this.requestContexts = requestContexts;
         this.publicationAuthorizations = publicationAuthorizations;
         this.publicationAuthorizationSaga = publicationAuthorizationSaga
@@ -367,6 +349,7 @@ internal sealed class ContactServiceOpaqueFacade : IDisposable
                 request.PredecessorObjectHash.Span,
                 request.ObjectCiphertextHash.Span,
                 request.ObjectCiphertext.Span,
+                request.ExactRouteClosure.Span,
                 request.UsageLimit,
                 request.EffectiveExpiresAtUnixSeconds)), cancellationToken).ConfigureAwait(false);
 
@@ -505,22 +488,28 @@ internal sealed class ContactServiceOpaqueFacade : IDisposable
                 ContactResolverApplicationMutationOutcome.None);
         }
 
-        var closure = await routeClosures.ReadAsync(
-            request.NetworkId, request.LocatorHash, cancellationToken).ConfigureAwait(false);
-        if (closure is null || closure.Value.IsEmpty)
+        if (publication.CanonicalRouteClosure.Length == 0)
         {
             return ResolveFailure(exact.Span, request,
                 Xis1Status.TemporarilyUnavailable,
                 ContactResolverApplicationMutationOutcome.None);
         }
 
-        var canonicalClosure = closure.Value.ToArray();
+        var canonicalClosure = publication.CanonicalRouteClosure.ToArray();
         var preflightPayload = ResolvePayload(publication, canonicalClosure);
 
         if (publication.UsageLimit == 0)
         {
+            var responseTime = Now();
+            var payload = preflightPayload.Concat<ReadOnlyMemory<byte>>(
+            [
+                await ReceiptsAsync(
+                    ContactServiceReceiptKind.ResolveRead,
+                    ResolveReadTuple(request, publication, canonicalClosure),
+                    cancellationToken).ConfigureAwait(false)
+            ]).ToArray();
             return EncodeXis(exact.Span, Xis1Status.Success,
-                ContactServiceMutationOutcome.None, 0, preflightPayload);
+                ContactServiceMutationOutcome.None, 0, payload, responseTime);
         }
 
         var claim = await resolver.ResolveCurrentDcrAsync(
@@ -1058,6 +1047,18 @@ internal sealed class ContactServiceOpaqueFacade : IDisposable
             U64(result.ClaimCommitGeneration),
             U64(result.ResponseUnixSeconds));
     }
+
+    private static byte[] ResolveReadTuple(
+        Xiq1Request request,
+        OpaqueDcrPublication publication,
+        ReadOnlySpan<byte> canonicalClosure) =>
+        Concat(
+            request.RequestHash.ToArray(),
+            request.LocatorHash.ToArray(),
+            U64(publication.Generation),
+            U64(publication.EffectiveExpiresAtUnixSeconds),
+            publication.ObjectCiphertextHash,
+            SHA256.HashData(canonicalClosure));
 
     private static IReadOnlyList<ReadOnlyMemory<byte>> ResolvePayload(
         OpaqueDcrPublication publication,

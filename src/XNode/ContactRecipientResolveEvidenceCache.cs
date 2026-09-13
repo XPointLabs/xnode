@@ -7,6 +7,7 @@ using Deep.Protocol.DeepExtension.PrivacyRouting;
 using Deep.Protocol.DeepNative;
 using Deep.Protocol.XPointNetworkV1;
 using Microsoft.AspNetCore.DataProtection;
+using XNode.Core;
 using XNode.Core.Mailbox;
 
 namespace XNode;
@@ -347,6 +348,22 @@ internal sealed record ProductionContactRecipientEvidenceCacheConfiguration(
             Path.Combine(directory, "recipient-resolve-evidence-v1.bin"),
             route.MaximumProtectedStateBytes,
             Math.Min(4_096, Math.Max(16, route.MaximumProtectedStateBytes / 4_096)));
+    }
+
+    internal static ProductionContactRecipientEvidenceCacheConfiguration FromContactService(
+        RouterNodeOptions node,
+        ContactServicePersistenceOptions contact)
+    {
+        ArgumentNullException.ThrowIfNull(node);
+        ArgumentNullException.ThrowIfNull(contact);
+        var statePath = Path.Combine(
+            Path.GetFullPath(node.DataDirectory),
+            "contact-authority-v1",
+            "recipient-resolve-evidence-v1.bin");
+        return new(
+            statePath,
+            contact.RecipientEvidenceMaximumProtectedStateBytes,
+            contact.RecipientEvidenceMaximumEntries);
     }
 }
 

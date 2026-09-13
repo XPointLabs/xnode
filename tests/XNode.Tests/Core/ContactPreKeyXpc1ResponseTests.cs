@@ -394,7 +394,6 @@ public sealed class ContactPreKeyXpc1ResponseTests
                             new ContactPreKeyStoreReplica(secondAuthority.ReplicaId.Span, secondStore),
                             secondReceipt)
                     ],
-                    new EmptyRouteSource(),
                     new AcceptedContext(),
                     new RejectAllContactPublicationAuthorizationVerifier(),
                     saga,
@@ -442,14 +441,6 @@ public sealed class ContactPreKeyXpc1ResponseTests
                 new ContactRequestContextResult(
                     ContactRequestContextStatus.Accepted,
                     ReadOnlyMemory<byte>.Empty));
-    }
-
-    private sealed class EmptyRouteSource : IContactRouteClosureSource
-    {
-        public ValueTask<ReadOnlyMemory<byte>?> ReadAsync(
-            ReadOnlyMemory<byte> networkId,
-            ReadOnlyMemory<byte> locatorHash,
-            CancellationToken cancellationToken) => ValueTask.FromResult<ReadOnlyMemory<byte>?>(null);
     }
 
     internal sealed class MutableClock(DateTimeOffset now) : IClock
