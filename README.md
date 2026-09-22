@@ -3,6 +3,10 @@
 Production images are published to `ghcr.io/xpointlabs/xnode` only through the
 manual **Publish production image** GitHub Actions workflow. A push to `main`
 never publishes or changes a release tag.
+The image build consumes the matching `deep-protocol` source branch as a
+named build context and uses the same source-cutover flags as XNode CI.
+For a local build from sibling checkouts, pass
+`--build-context deep_protocol=../deep-protocol` to `docker buildx build`.
 
 .NET implementation of the Deep XNode runtime, with VLESS/Xray available as
 the client-to-node masked ingress transport.
