@@ -555,6 +555,7 @@ internal static class ContactAuthorityDirectoryCodec
         var xnv = reader.Chain(MaximumChainArtifacts, "XNV1");
         var xnh = reader.Chain(MaximumChainArtifacts, "XNH1");
         var xnd = reader.Chain(MaximumChainArtifacts, "XND1");
+        var pma = reader.Artifact("PMA2");
         var pmt = reader.Chain(MaximumChainArtifacts, "PMT2");
         ContactAuthorityForwardCheckpointPackage? forward = null;
         if ((flags & ForwardFlag) != 0)
@@ -574,7 +575,7 @@ internal static class ContactAuthorityDirectoryCodec
         try
         {
             return new ContactAuthorityArtifactPackage(
-                xna, dts, adh, dtt, adp, xvp, xnv, xnh, xnd, pmt, forward);
+                xna, dts, adh, dtt, adp, xvp, xnv, xnh, xnd, pma, pmt, forward);
         }
         catch (ArgumentException exception)
         {
@@ -725,6 +726,18 @@ internal static class ProductionContactAuthorityHostComposition
         ArgumentNullException.ThrowIfNull(configuration);
 
         services.AddSingleton(configuration.Source);
+        services.AddHttpClient<IMailboxGrantAuthorityClient,
+                HttpsMailboxGrantAuthorityClient>(client =>
+            {
+                client.Timeout = configuration.Source.RequestTimeout;
+                client.DefaultRequestHeaders.ExpectContinue = false;
+            })
+            .ConfigurePrimaryHttpMessageHandler(static () => new SocketsHttpHandler
+            {
+                AllowAutoRedirect = false,
+                UseCookies = false,
+                AutomaticDecompression = DecompressionMethods.None
+            });
         services.AddHttpClient<IContactAuthorityArtifactPackageSource,
                 HttpsContactAuthorityArtifactPackageSource>(client =>
             {

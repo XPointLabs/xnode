@@ -40,6 +40,12 @@ internal enum ContactResolverResolveDisposition
     QuotaExceeded = 8
 }
 
+internal enum ContactMailboxGrantRole
+{
+    Deposit = 1,
+    Retrieve = 2,
+}
+
 internal sealed class ContactResolverOpaqueStoreOptions
 {
     internal const int DcrCiphertextMinimumBytes = 40;
@@ -75,7 +81,8 @@ internal sealed class ContactResolverOpaqueStoreOptions
 internal sealed class OpaqueDcrPublishRequest
 {
     private readonly byte[] locatorHash, operationId, requestHash, predecessorObjectHash,
-        objectCiphertextHash, ciphertext, routeClosure;
+        objectCiphertextHash, ciphertext, routeClosure, depositCapabilityDigest,
+        retrieveCapabilityDigest;
 
     internal OpaqueDcrPublishRequest(
         ReadOnlySpan<byte> locatorHash32,
@@ -87,7 +94,9 @@ internal sealed class OpaqueDcrPublishRequest
         ReadOnlySpan<byte> ciphertext,
         ReadOnlySpan<byte> canonicalRouteClosure,
         uint usageLimit,
-        ulong effectiveExpiresAtUnixSeconds)
+        ulong effectiveExpiresAtUnixSeconds,
+        ReadOnlySpan<byte> depositCapabilityDigest32,
+        ReadOnlySpan<byte> retrieveCapabilityDigest32)
     {
         locatorHash = OpaqueValue.CopyNonZero32(locatorHash32, nameof(locatorHash32));
         operationId = OpaqueValue.CopyNonZero32(operationId32, nameof(operationId32));
@@ -118,6 +127,13 @@ internal sealed class OpaqueDcrPublishRequest
         }
         this.ciphertext = ciphertext.ToArray();
         routeClosure = canonicalRouteClosure.ToArray();
+        depositCapabilityDigest = OpaqueValue.CopyNonZero32(
+            depositCapabilityDigest32, nameof(depositCapabilityDigest32));
+        retrieveCapabilityDigest = OpaqueValue.CopyNonZero32(
+            retrieveCapabilityDigest32, nameof(retrieveCapabilityDigest32));
+        if (CryptographicOperations.FixedTimeEquals(
+                depositCapabilityDigest, retrieveCapabilityDigest))
+            throw new ArgumentException("Mailbox grant capability digests must be distinct.");
         Generation = generation;
         UsageLimit = usageLimit;
         EffectiveExpiresAtUnixSeconds = effectiveExpiresAtUnixSeconds;
@@ -133,6 +149,8 @@ internal sealed class OpaqueDcrPublishRequest
     internal ReadOnlySpan<byte> CanonicalRouteClosure => routeClosure;
     internal uint UsageLimit { get; }
     internal ulong EffectiveExpiresAtUnixSeconds { get; }
+    internal ReadOnlySpan<byte> DepositCapabilityDigest => depositCapabilityDigest;
+    internal ReadOnlySpan<byte> RetrieveCapabilityDigest => retrieveCapabilityDigest;
 }
 
 internal sealed class OpaqueDcrResolveRequest
@@ -276,6 +294,11 @@ internal sealed record ContactResolverDcrResolveResult(
     byte[] CanonicalRouteClosure,
     ulong ResponseUnixSeconds);
 
+internal sealed record ContactMailboxGrantRouteResult(
+    ContactResolverReadDisposition Disposition,
+    byte[] CanonicalRouteClosure,
+    ulong EffectiveExpiresAtUnixSeconds);
+
 internal sealed record OpaqueXurEvent(
     ulong Generation,
     byte[] PredecessorEventHash,
@@ -305,7 +328,7 @@ internal sealed class ContactResolverStoreCorruptException : IOException
 /// </summary>
 internal sealed class ContactResolverOpaqueStore : IDisposable
 {
-    private const int StateVersion = 3;
+    private const int StateVersion = 4;
     private const int EnvelopeOverhead = 8 + sizeof(uint) + 32;
     private static readonly byte[] EnvelopeMagic = "XCRSTR01"u8.ToArray();
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -397,6 +420,12 @@ internal sealed class ContactResolverOpaqueStore : IDisposable
                     ContactResolverMutationDisposition.Conflict);
             }
 
+            if (MailboxGrantCapabilityCollides(request))
+            {
+                return ContactResolverMutationResult.Empty(
+                    ContactResolverMutationDisposition.Conflict);
+            }
+
             var locator = FindPublication(request.LocatorHash);
             if (locator is null)
             {
@@ -457,6 +486,60 @@ internal sealed class ContactResolverOpaqueStore : IDisposable
                 request.Generation,
                 request.ObjectCiphertextHash);
         }
+    }
+
+    internal ContactMailboxGrantRouteResult ResolveMailboxGrantRoute(
+        ReadOnlySpan<byte> locatorHash32,
+        ReadOnlySpan<byte> capability32,
+        ContactMailboxGrantRole role)
+    {
+        var locator = OpaqueValue.CopyNonZero32(locatorHash32, nameof(locatorHash32));
+        var digest = MailboxGrantCapabilityDigest.Compute(capability32, role);
+        lock (gate)
+        {
+            ThrowIfDisposed();
+            var publication = FindPublication(locator);
+            if (publication is null || publication.Records.Count == 0)
+                return new(ContactResolverReadDisposition.NotFound, [], 0);
+            if (publication.ForkLatched)
+                return new(ContactResolverReadDisposition.Conflict, [], 0);
+            var match = publication.Records[^1];
+            var expected = role == ContactMailboxGrantRole.Deposit
+                ? match.DepositCapabilityDigest
+                : match.RetrieveCapabilityDigest;
+            if (!OpaqueValue.FixedEquals(expected, digest))
+                return new(ContactResolverReadDisposition.NotFound, [], 0);
+            if (match.EffectiveExpiresAtUnixSeconds <= CurrentUnixSeconds())
+                return new(ContactResolverReadDisposition.Expired, [], match.EffectiveExpiresAtUnixSeconds);
+            return new(
+                ContactResolverReadDisposition.Current,
+                match.RouteClosure.ToArray(),
+                match.EffectiveExpiresAtUnixSeconds);
+        }
+    }
+
+    private bool MailboxGrantCapabilityCollides(OpaqueDcrPublishRequest request)
+    {
+        foreach (var publication in state.Publications)
+        {
+            if (publication.Records.Count == 0 ||
+                OpaqueValue.FixedEquals(publication.LocatorHash, request.LocatorHash))
+            {
+                continue;
+            }
+
+            var current = publication.Records[^1];
+            if (OpaqueValue.FixedEquals(
+                    current.DepositCapabilityDigest,
+                    request.DepositCapabilityDigest) ||
+                OpaqueValue.FixedEquals(
+                    current.RetrieveCapabilityDigest,
+                    request.RetrieveCapabilityDigest))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     internal ContactResolverDcrReadResult ResolveCurrentDcr(ReadOnlySpan<byte> locatorHash32)
@@ -1017,6 +1100,12 @@ internal sealed class ContactResolverOpaqueStore : IDisposable
                 Validate32(record.OperationId);
                 Validate32(record.RequestHash);
                 Validate32(record.ObjectCiphertextHash);
+                Validate32(record.DepositCapabilityDigest);
+                Validate32(record.RetrieveCapabilityDigest);
+                if (OpaqueValue.FixedEquals(
+                        record.DepositCapabilityDigest,
+                        record.RetrieveCapabilityDigest))
+                    throw new InvalidDataException("Mailbox grant capability digests are not domain-separated.");
                 ValidateGenerationPredecessor(record.Generation, record.PredecessorObjectHash);
                 if (record.Ciphertext is null
                     || record.RouteClosure is null
@@ -1299,6 +1388,8 @@ internal sealed class ContactResolverOpaqueStore : IDisposable
         ObjectCiphertextHash = request.ObjectCiphertextHash.ToArray(),
         Ciphertext = request.Ciphertext.ToArray(),
         RouteClosure = request.CanonicalRouteClosure.ToArray(),
+        DepositCapabilityDigest = request.DepositCapabilityDigest.ToArray(),
+        RetrieveCapabilityDigest = request.RetrieveCapabilityDigest.ToArray(),
         UsageLimit = request.UsageLimit,
         AcceptedAtUnixSeconds = now,
         EffectiveExpiresAtUnixSeconds = request.EffectiveExpiresAtUnixSeconds
@@ -1351,6 +1442,8 @@ internal sealed class ContactResolverOpaqueStore : IDisposable
         && OpaqueValue.FixedEquals(item.RequestHash, request.RequestHash)
         && OpaqueValue.FixedEquals(item.PredecessorObjectHash, request.PredecessorObjectHash)
         && OpaqueValue.FixedEquals(item.ObjectCiphertextHash, request.ObjectCiphertextHash)
+        && OpaqueValue.FixedEquals(item.DepositCapabilityDigest, request.DepositCapabilityDigest)
+        && OpaqueValue.FixedEquals(item.RetrieveCapabilityDigest, request.RetrieveCapabilityDigest)
         && item.Ciphertext.AsSpan().SequenceEqual(request.Ciphertext)
         && item.RouteClosure.AsSpan().SequenceEqual(request.CanonicalRouteClosure);
 
@@ -1438,6 +1531,8 @@ internal sealed class ContactResolverOpaqueStore : IDisposable
         public byte[] ObjectCiphertextHash { get; set; } = [];
         public byte[] Ciphertext { get; set; } = [];
         public byte[] RouteClosure { get; set; } = [];
+        public byte[] DepositCapabilityDigest { get; set; } = [];
+        public byte[] RetrieveCapabilityDigest { get; set; } = [];
         public uint UsageLimit { get; set; }
         public ulong AcceptedAtUnixSeconds { get; set; }
         public ulong EffectiveExpiresAtUnixSeconds { get; set; }
@@ -1471,6 +1566,26 @@ internal sealed class ContactResolverOpaqueStore : IDisposable
         public byte[] Ciphertext { get; set; } = [];
         public ulong AcceptedAtUnixSeconds { get; set; }
         public ulong EffectiveExpiresAtUnixSeconds { get; set; }
+    }
+}
+
+internal static class MailboxGrantCapabilityDigest
+{
+    internal static byte[] Compute(
+        ReadOnlySpan<byte> capability32,
+        ContactMailboxGrantRole role)
+    {
+        var domain = role switch
+        {
+            ContactMailboxGrantRole.Deposit =>
+                Deep.Protocol.DeepExtension.MailboxCapabilities.MailboxCapabilityDomain.Deposit,
+            ContactMailboxGrantRole.Retrieve =>
+                Deep.Protocol.DeepExtension.MailboxCapabilities.MailboxCapabilityDomain.Retrieve,
+            _ => throw new ArgumentOutOfRangeException(nameof(role)),
+        };
+        return Deep.Protocol.ContactV1.MailboxGrantCapabilityDigest.Compute(
+            capability32,
+            domain);
     }
 }
 

@@ -14,7 +14,8 @@ internal enum ContactServiceReceiptKind
     UpdateCommit = 2,
     PreKeyClaimCommit = 3,
     InviteClaimCommit = 4,
-    ResolveRead = 5
+    ResolveRead = 5,
+    MailboxGrantRoute = 6,
 }
 
 internal sealed class ContactServiceReplicaReceiptRequest
@@ -156,6 +157,8 @@ internal static class ContactServiceReceiptTranscript
         ContactServiceReceiptKind.PreKeyClaimCommit => 138,
         ContactServiceReceiptKind.InviteClaimCommit => 160,
         ContactServiceReceiptKind.ResolveRead => 144,
+        ContactServiceReceiptKind.MailboxGrantRoute =>
+            MailboxGrantRouteEvidenceAuthentication.TupleLength,
         _ => throw new ArgumentOutOfRangeException(nameof(kind))
     };
 
@@ -174,6 +177,8 @@ internal static class ContactServiceReceiptTranscript
                 "Deep/ContactResolver/V1/invite-claim-commit",
             ContactServiceReceiptKind.ResolveRead =>
                 "Deep/ContactResolver/V1/resolve-read",
+            ContactServiceReceiptKind.MailboxGrantRoute =>
+                "Deep/ContactResolver/V1/mailbox-grant-route",
             _ => throw new ArgumentOutOfRangeException(nameof(request))
         };
         var label = Encoding.ASCII.GetBytes(domain);

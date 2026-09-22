@@ -42,6 +42,76 @@ public sealed class ContactResolverOpaqueStoreTests
     }
 
     [Fact]
+    public void MailboxGrantCapabilitiesAreRoleScopedDurableAndNeverPersistedRaw()
+    {
+        using var fixture = new StoreFixture();
+        var clock = new FixedClock(Start);
+        var locator = Hash("locator/grants");
+        var deposit = Hash("grant/deposit");
+        var retrieve = Hash("grant/retrieve");
+        var request = DcrRequest(
+            locator,
+            "grants/0",
+            0,
+            Zero32(),
+            Ciphertext("grants/0", 64),
+            clock,
+            depositCapability: deposit,
+            retrieveCapability: retrieve);
+
+        using (var store = fixture.Open(clock))
+        {
+            Assert.Equal(ContactResolverMutationDisposition.Committed, store.PublishDcr(request).Disposition);
+            Assert.Equal(ContactResolverReadDisposition.Current,
+                store.ResolveMailboxGrantRoute(locator, deposit, ContactMailboxGrantRole.Deposit).Disposition);
+            Assert.Equal(ContactResolverReadDisposition.Current,
+                store.ResolveMailboxGrantRoute(locator, retrieve, ContactMailboxGrantRole.Retrieve).Disposition);
+            Assert.Equal(ContactResolverReadDisposition.NotFound,
+                store.ResolveMailboxGrantRoute(locator, deposit, ContactMailboxGrantRole.Retrieve).Disposition);
+            Assert.Equal(ContactResolverReadDisposition.NotFound,
+                store.ResolveMailboxGrantRoute(locator, retrieve, ContactMailboxGrantRole.Deposit).Disposition);
+        }
+
+        var persisted = File.ReadAllBytes(fixture.StatePath);
+        Assert.Equal(-1, persisted.AsSpan().IndexOf(deposit));
+        Assert.Equal(-1, persisted.AsSpan().IndexOf(retrieve));
+
+        using (var store = fixture.Open(clock))
+        {
+            var resolved = store.ResolveMailboxGrantRoute(
+                locator,
+                retrieve,
+                ContactMailboxGrantRole.Retrieve);
+            Assert.Equal(ContactResolverReadDisposition.Current, resolved.Disposition);
+            Assert.Equal(request.CanonicalRouteClosure.ToArray(), resolved.CanonicalRouteClosure);
+        }
+    }
+
+    [Fact]
+    public void MailboxGrantCapabilityCollisionAcrossPublicationsIsRejected()
+    {
+        using var fixture = new StoreFixture();
+        var clock = new FixedClock(Start);
+        using var store = fixture.Open(clock);
+        var sharedDeposit = Hash("grant/collision/deposit");
+        var first = DcrRequest(
+            Hash("locator/collision/first"), "collision/first", 0, Zero32(),
+            Ciphertext("collision/first", 64), clock,
+            depositCapability: sharedDeposit,
+            retrieveCapability: Hash("grant/collision/retrieve/first"));
+        var second = DcrRequest(
+            Hash("locator/collision/second"), "collision/second", 0, Zero32(),
+            Ciphertext("collision/second", 64), clock,
+            depositCapability: sharedDeposit,
+            retrieveCapability: Hash("grant/collision/retrieve/second"));
+
+        Assert.Equal(ContactResolverMutationDisposition.Committed, store.PublishDcr(first).Disposition);
+        Assert.Equal(ContactResolverMutationDisposition.Conflict, store.PublishDcr(second).Disposition);
+        Assert.Equal(ContactResolverReadDisposition.NotFound,
+            store.ResolveCurrentDcr(second.LocatorHash).Disposition);
+    }
+
+    [Fact]
     public async Task ConcurrentExactDcrReplayCommitsExactlyOnce()
     {
         using var fixture = new StoreFixture();
@@ -261,11 +331,18 @@ public sealed class ContactResolverOpaqueStoreTests
     }
 
     private static OpaqueDcrPublishRequest DcrRequest(byte[] locator, string operation, ulong generation,
-        ReadOnlySpan<byte> predecessor, byte[] ciphertext, FixedClock clock, uint usageLimit = 0, ulong? expiresAt = null) =>
+        ReadOnlySpan<byte> predecessor, byte[] ciphertext, FixedClock clock, uint usageLimit = 0,
+        ulong? expiresAt = null, byte[]? depositCapability = null, byte[]? retrieveCapability = null) =>
         new(locator, Hash("operation/" + operation), Hash("request/" + operation + Convert.ToHexString(SHA256.HashData(ciphertext))),
             generation, predecessor, SHA256.HashData(ciphertext), ciphertext,
             Enumerable.Repeat((byte)0x41, OpaqueDcrResolveRequest.MinimumRouteClosureBytes).ToArray(), usageLimit,
-            expiresAt ?? checked((ulong)clock.UtcNow.AddDays(1).ToUnixTimeSeconds()));
+            expiresAt ?? checked((ulong)clock.UtcNow.AddDays(1).ToUnixTimeSeconds()),
+            MailboxGrantCapabilityDigest.Compute(
+                depositCapability ?? Hash("deposit-capability/" + operation),
+                ContactMailboxGrantRole.Deposit),
+            MailboxGrantCapabilityDigest.Compute(
+                retrieveCapability ?? Hash("retrieve-capability/" + operation),
+                ContactMailboxGrantRole.Retrieve));
 
     private static OpaqueXurWriteRequest XurRequest(byte[] capability, string operation, ulong generation,
         ReadOnlySpan<byte> predecessor, FixedClock clock, ulong? expiresAt = null)

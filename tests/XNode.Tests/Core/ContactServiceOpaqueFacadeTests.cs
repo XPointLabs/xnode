@@ -820,6 +820,13 @@ public sealed class ContactServiceOpaqueFacadeTests
             CancellationToken cancellationToken) =>
             inner.ResolveCurrentDcrAsync(locatorHash32, cancellationToken);
 
+        public ValueTask<ContactMailboxGrantRouteResult> ResolveMailboxGrantRouteAsync(
+            ReadOnlyMemory<byte> locatorHash32,
+            ReadOnlyMemory<byte> capability32,
+            ContactMailboxGrantRole role,
+            CancellationToken cancellationToken) => inner.ResolveMailboxGrantRouteAsync(
+                locatorHash32, capability32, role, cancellationToken);
+
         public ValueTask<ContactResolverDcrResolveResult> ResolveDcrAsync(
             OpaqueDcrResolveRequest request,
             CancellationToken cancellationToken) => inner.ResolveDcrAsync(request, cancellationToken);
@@ -852,6 +859,12 @@ public sealed class ContactServiceOpaqueFacadeTests
 
         public ValueTask<ContactResolverDcrReadResult> ResolveCurrentDcrAsync(
             ReadOnlyMemory<byte> locatorHash32,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public ValueTask<ContactMailboxGrantRouteResult> ResolveMailboxGrantRouteAsync(
+            ReadOnlyMemory<byte> locatorHash32,
+            ReadOnlyMemory<byte> capability32,
+            ContactMailboxGrantRole role,
             CancellationToken cancellationToken) => throw new NotSupportedException();
 
         public ValueTask<ContactResolverDcrResolveResult> ResolveDcrAsync(

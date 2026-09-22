@@ -19,7 +19,8 @@ internal enum ContactReplicaRpcOperation : byte
     ClaimPreKey = 7,
     LatchPreKeyFork = 8,
     IssueReceipt = 9,
-    ApplyPreKeyPublication = 10
+    ApplyPreKeyPublication = 10,
+    ReadMailboxGrantRoute = 11
 }
 
 internal sealed class ContactServicePlacementCapability
@@ -202,6 +203,7 @@ internal static class ContactReplicaRequestBinding
             ContactServiceOperation.WriteContactUpdate => ContactServiceRequestKind.PublishContactUpdate,
             ContactServiceOperation.FetchContactUpdates => ContactServiceRequestKind.QueryContactUpdate,
             ContactServiceOperation.PublishPreKeyInventory => ContactServiceRequestKind.PublishPreKeyInventory,
+            ContactServiceOperation.AcquireMailboxGrant => ContactServiceRequestKind.ResolveInvite,
             _ => throw new ArgumentOutOfRangeException(nameof(operation))
         };
 
@@ -320,6 +322,43 @@ internal sealed class AuthenticatedRemoteContactServiceReplica :
             ContactReplicaPayloadCodec.EncodeFixed32(locatorHash32.Span),
             cancellationToken);
         return ContactReplicaPayloadCodec.DecodeDcrRead(response.Payload.Span);
+    }
+
+    public async ValueTask<ContactMailboxGrantRouteResult> ResolveMailboxGrantRouteAsync(
+        ReadOnlyMemory<byte> locatorHash32,
+        ReadOnlyMemory<byte> capability32,
+        ContactMailboxGrantRole role,
+        CancellationToken cancellationToken)
+    {
+        if (exactServiceRequest.Length == 0)
+            throw new InvalidOperationException(
+                "Remote mailbox grant lookup requires the exact canonical XMG1 request.");
+        var exact = ContactCodec.Decode(ProtocolMagic.XMG1, exactServiceRequest);
+        var expectedRole = exact.Field(6).Span[0] switch
+        {
+            1 => ContactMailboxGrantRole.Deposit,
+            2 => ContactMailboxGrantRole.Retrieve,
+            _ => throw new InvalidDataException("The exact XMG1 role is invalid.")
+        };
+        if (!Fixed(exact.Field(3).Span, locatorHash32.Span) ||
+            !Fixed(exact.Field(4).Span, capability32.Span) ||
+            role != expectedRole)
+            throw new InvalidDataException(
+                "The exact XMG1 request does not bind the mailbox grant route lookup.");
+        var payload = ContactReplicaPayloadCodec.EncodeMailboxGrantRouteRequest(
+            SHA256.HashData(exactServiceRequest),
+            locatorHash32.Span,
+            capability32.Span,
+            role);
+        Remember(
+            ContactServiceReceiptKind.MailboxGrantRoute,
+            ContactReplicaRpcOperation.ReadMailboxGrantRoute,
+            payload);
+        var response = await SendAsync(
+            ContactReplicaRpcOperation.ReadMailboxGrantRoute,
+            payload,
+            cancellationToken).ConfigureAwait(false);
+        return ContactReplicaPayloadCodec.DecodeMailboxGrantRouteResult(response.Payload.Span);
     }
 
     public async ValueTask<ContactResolverDcrResolveResult> ResolveDcrAsync(

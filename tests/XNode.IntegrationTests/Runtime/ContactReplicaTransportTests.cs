@@ -491,7 +491,9 @@ public sealed class ContactReplicaTransportTests : IDisposable
                 ciphertext,
                 routeClosure,
                 0,
-                checked((ulong)now.AddDays(1).ToUnixTimeSeconds())),
+                checked((ulong)now.AddDays(1).ToUnixTimeSeconds()),
+                Bytes(0x66, 32),
+                Bytes(0x67, 32)),
             default);
         Assert.Equal(ContactResolverMutationDisposition.Committed, published.Disposition);
 

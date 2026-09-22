@@ -127,6 +127,7 @@ public sealed class ContactAuthorityArtifactPackage
     private readonly byte[][] exactOrderedXnv1Chain;
     private readonly byte[][] exactOrderedXnh1Chain;
     private readonly byte[][] exactActiveXnd1;
+    private readonly byte[] exactPma2;
     private readonly byte[][] exactOrderedPmt2Chain;
     private readonly byte[] exactAdh1;
     private readonly byte[] exactDtt1;
@@ -142,6 +143,7 @@ public sealed class ContactAuthorityArtifactPackage
         IReadOnlyList<ReadOnlyMemory<byte>> exactOrderedXnv1Chain,
         IReadOnlyList<ReadOnlyMemory<byte>> exactOrderedXnh1Chain,
         IReadOnlyList<ReadOnlyMemory<byte>> exactActiveXnd1,
+        ReadOnlyMemory<byte> exactPma2,
         IReadOnlyList<ReadOnlyMemory<byte>> exactOrderedPmt2Chain,
         ContactAuthorityForwardCheckpointPackage? forwardCheckpoint = null)
     {
@@ -154,6 +156,9 @@ public sealed class ContactAuthorityArtifactPackage
         this.exactOrderedXnv1Chain = Own(exactOrderedXnv1Chain, nameof(exactOrderedXnv1Chain));
         this.exactOrderedXnh1Chain = Own(exactOrderedXnh1Chain, nameof(exactOrderedXnh1Chain));
         this.exactActiveXnd1 = Own(exactActiveXnd1, nameof(exactActiveXnd1));
+        this.exactPma2 = exactPma2.IsEmpty
+            ? throw new ArgumentException("PMA2 must be present.", nameof(exactPma2))
+            : exactPma2.ToArray();
         this.exactOrderedPmt2Chain = Own(exactOrderedPmt2Chain, nameof(exactOrderedPmt2Chain));
         ForwardCheckpoint = forwardCheckpoint;
     }
@@ -167,6 +172,7 @@ public sealed class ContactAuthorityArtifactPackage
     public IReadOnlyList<ReadOnlyMemory<byte>> ExactOrderedXnv1Chain => Copy(exactOrderedXnv1Chain);
     public IReadOnlyList<ReadOnlyMemory<byte>> ExactOrderedXnh1Chain => Copy(exactOrderedXnh1Chain);
     public IReadOnlyList<ReadOnlyMemory<byte>> ExactActiveXnd1 => Copy(exactActiveXnd1);
+    public ReadOnlyMemory<byte> ExactPma2 => exactPma2.ToArray();
     public IReadOnlyList<ReadOnlyMemory<byte>> ExactOrderedPmt2Chain => Copy(exactOrderedPmt2Chain);
     public ContactAuthorityForwardCheckpointPackage? ForwardCheckpoint { get; }
 
@@ -319,6 +325,14 @@ internal sealed class ProtocolContactAuthorityPackageVerifier(IOnionMonotonicClo
         }
 
         network.EnsureCurrent();
+        var mailboxAuthority = MailboxAuthorityV2Verifier.Verify(
+            authority,
+            package.ExactPma2.Span,
+            freshness.TrustedLowerUnixSeconds,
+            freshness.TrustedUpperUnixSeconds);
+        if (!mailboxAuthority.BindsProjection(package.ExactOrderedPmt2Chain[^1].Span))
+            throw new CryptographicException(
+                "The current PMT2 does not bind the exact root-authorized PMA2.");
         var networkLkg = network.ProtectedLkg
             ?? throw new InvalidOperationException("The verified Contact network omitted its protected LKG.");
         if (package.ForwardCheckpoint is null && previous?.LastForwardCheckpointGeneration is not null)

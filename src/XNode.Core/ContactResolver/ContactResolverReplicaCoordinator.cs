@@ -14,6 +14,12 @@ internal interface IContactResolverReplica
         ReadOnlyMemory<byte> locatorHash32,
         CancellationToken cancellationToken);
 
+    ValueTask<ContactMailboxGrantRouteResult> ResolveMailboxGrantRouteAsync(
+        ReadOnlyMemory<byte> locatorHash32,
+        ReadOnlyMemory<byte> capability32,
+        ContactMailboxGrantRole role,
+        CancellationToken cancellationToken);
+
     ValueTask<ContactResolverDcrResolveResult> ResolveDcrAsync(
         OpaqueDcrResolveRequest request,
         CancellationToken cancellationToken);
@@ -63,6 +69,19 @@ internal sealed class ContactResolverStoreReplica : IContactResolverReplica
     {
         cancellationToken.ThrowIfCancellationRequested();
         return ValueTask.FromResult(store.ResolveCurrentDcr(locatorHash32.Span));
+    }
+
+    public ValueTask<ContactMailboxGrantRouteResult> ResolveMailboxGrantRouteAsync(
+        ReadOnlyMemory<byte> locatorHash32,
+        ReadOnlyMemory<byte> capability32,
+        ContactMailboxGrantRole role,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return ValueTask.FromResult(store.ResolveMailboxGrantRoute(
+            locatorHash32.Span,
+            capability32.Span,
+            role));
     }
 
     public ValueTask<ContactResolverDcrResolveResult> ResolveDcrAsync(
@@ -194,6 +213,44 @@ internal sealed class ContactResolverTwoReplicaCoordinator : IDisposable
             return await InvokePairAsync(
                 (replica, token) => replica.ResolveCurrentDcrAsync(locatorHash32, token),
                 cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    internal async Task<ContactMailboxGrantRouteResult> ReadMailboxGrantRouteAsync(
+        ReadOnlyMemory<byte> locatorHash32,
+        ReadOnlyMemory<byte> capability32,
+        ContactMailboxGrantRole role,
+        CancellationToken cancellationToken = default)
+    {
+        var gate = SelectGate(locatorHash32.Span);
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var pair = await InvokePairAsync(
+                (replica, token) => replica.ResolveMailboxGrantRouteAsync(
+                    locatorHash32,
+                    capability32,
+                    role,
+                    token),
+                cancellationToken).ConfigureAwait(false);
+            if (!pair.First.Succeeded || !pair.Second.Succeeded)
+                return new(ContactResolverReadDisposition.Conflict, [], 0);
+            var left = pair.First.Value!;
+            var right = pair.Second.Value!;
+            if (left.Disposition != right.Disposition ||
+                left.EffectiveExpiresAtUnixSeconds != right.EffectiveExpiresAtUnixSeconds ||
+                !CryptographicOperations.FixedTimeEquals(
+                    left.CanonicalRouteClosure,
+                    right.CanonicalRouteClosure))
+                return new(ContactResolverReadDisposition.Conflict, [], 0);
+            return new(
+                left.Disposition,
+                left.CanonicalRouteClosure.ToArray(),
+                left.EffectiveExpiresAtUnixSeconds);
         }
         finally
         {

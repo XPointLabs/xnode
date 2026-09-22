@@ -53,7 +53,8 @@ public sealed class HttpsContactAuthorityArtifactPackageSourceTests
         Assert.Equal(BootId, observed.AsSpan(60, 16).ToArray());
         Assert.Equal((ulong)123, BinaryPrimitives.ReadUInt64BigEndian(observed.AsSpan(76, 8)));
         Assert.Equal(new byte[] { 0xa1 }, package.ExactXna1AuthorityChain[0].ToArray());
-        Assert.Equal(new byte[] { 0xaa }, package.ExactOrderedPmt2Chain[0].ToArray());
+        Assert.Equal(new byte[] { 0xaa }, package.ExactPma2.ToArray());
+        Assert.Equal(new byte[] { 0xab }, package.ExactOrderedPmt2Chain[0].ToArray());
     }
 
     [Fact]
@@ -374,7 +375,8 @@ public sealed class HttpsContactAuthorityArtifactPackageSourceTests
         Chain(stream, 0xa7);
         Chain(stream, 0xa8);
         Chain(stream, 0xa9);
-        Chain(stream, 0xaa);
+        Artifact(stream, 0xaa);
+        Chain(stream, 0xab);
         var encoded = stream.ToArray();
         BinaryPrimitives.WriteUInt32BigEndian(encoded.AsSpan(8, 4), checked((uint)encoded.Length));
         return encoded;

@@ -57,6 +57,9 @@ internal sealed class ContactReplicaRequestReceiver
                 await local.Binding.ResolverReplica.ResolveCurrentDcrAsync(
                     RequireFixed32(command.Payload.Span),
                     cancellationToken).ConfigureAwait(false)),
+            ContactReplicaRpcOperation.ReadMailboxGrantRoute => await ReadMailboxGrantRouteAsync(
+                command.Payload,
+                cancellationToken).ConfigureAwait(false),
             ContactReplicaRpcOperation.ResolveDcr => ContactReplicaPayloadCodec.Encode(
                 await local.Binding.ResolverReplica.ResolveDcrAsync(
                     ContactReplicaPayloadCodec.DecodeDcrResolveRequest(command.Payload.Span),
@@ -147,6 +150,19 @@ internal sealed class ContactReplicaRequestReceiver
             request.XurHash,
             request.After,
             request.Maximum,
+            cancellationToken).ConfigureAwait(false);
+        return ContactReplicaPayloadCodec.Encode(result);
+    }
+
+    private async ValueTask<byte[]> ReadMailboxGrantRouteAsync(
+        ReadOnlyMemory<byte> payload,
+        CancellationToken cancellationToken)
+    {
+        var request = ContactReplicaPayloadCodec.DecodeMailboxGrantRouteRequest(payload.Span);
+        var result = await local.Binding.ResolverReplica.ResolveMailboxGrantRouteAsync(
+            request.LocatorHash,
+            request.Capability,
+            request.Role,
             cancellationToken).ConfigureAwait(false);
         return ContactReplicaPayloadCodec.Encode(result);
     }
@@ -345,6 +361,34 @@ internal sealed class ContactReplicaRequestReceiver
                     SHA256.HashData(result.Publication.CanonicalRouteClosure));
                 break;
             }
+            case ContactServiceReceiptKind.MailboxGrantRoute
+                when requestKind == Deep.Protocol.XPointNetworkV1.ContactServiceRequestKind.ResolveInvite
+                    && operation == ContactReplicaRpcOperation.ReadMailboxGrantRoute:
+            {
+                var request = ContactReplicaPayloadCodec.DecodeMailboxGrantRouteRequest(payload.Span);
+                var result = await local.Binding.ResolverReplica.ResolveMailboxGrantRouteAsync(
+                    request.LocatorHash,
+                    request.Capability,
+                    request.Role,
+                    cancellationToken).ConfigureAwait(false);
+                var routeHash = result.Disposition == ContactResolverReadDisposition.Current
+                    ? SHA256.HashData(result.CanonicalRouteClosure)
+                    : new byte[32];
+                var expiry = result.Disposition == ContactResolverReadDisposition.Current
+                    ? result.EffectiveExpiresAtUnixSeconds
+                    : 0;
+                expected = MailboxGrantRouteEvidenceAuthentication.CreateTuple(
+                    request.ExactXmg1Hash,
+                    request.LocatorHash,
+                    XNode.Core.ContactResolver.MailboxGrantCapabilityDigest.Compute(
+                        request.Capability,
+                        request.Role),
+                    checked((byte)request.Role),
+                    checked((ushort)result.Disposition),
+                    routeHash,
+                    expiry);
+                break;
+            }
             default:
                 throw new ContactServiceReceiptAuthorityException(
                     "The receipt kind is not authorized by the exact operation placement.");
@@ -368,6 +412,7 @@ internal sealed class ContactReplicaRequestReceiver
                 operation is ContactReplicaRpcOperation.ReadCurrentDcr
                     or ContactReplicaRpcOperation.ResolveDcr
                     or ContactReplicaRpcOperation.ReadDcrClaim
+                    or ContactReplicaRpcOperation.ReadMailboxGrantRoute
                     or ContactReplicaRpcOperation.IssueReceipt,
             Deep.Protocol.XPointNetworkV1.ContactServiceRequestKind.ClaimPreKey =>
                 operation is ContactReplicaRpcOperation.ClaimPreKey

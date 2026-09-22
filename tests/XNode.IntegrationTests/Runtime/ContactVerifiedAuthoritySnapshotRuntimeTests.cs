@@ -253,6 +253,7 @@ public sealed class ContactVerifiedAuthoritySnapshotRuntimeTests
         [],
         [],
         [],
+        Bytes(4, 0x65),
         []);
 
     private static ContactAuthorityArtifactPackage Package(ContactAuthorityDurableState state) => new(
@@ -265,6 +266,7 @@ public sealed class ContactVerifiedAuthoritySnapshotRuntimeTests
         Memories(state.Xnv1Chain),
         Memories(state.Xnh1Chain),
         [Bytes(4, 0x64)],
+        Bytes(4, 0x65),
         Memories(state.Pmt2Chain));
 
     private static ContactAuthorityDurableState State(

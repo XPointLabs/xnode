@@ -37,6 +37,14 @@ internal sealed class ContactAuthorizedPublicationReplica
             throw new InvalidDataException("The XPA authorization is conflict-latched.");
         }
 
+        var route = ContactRouteClosureCodec.Decode(request.ExactRouteClosure.Span);
+        var depositCapabilityDigest = MailboxGrantCapabilityDigest.Compute(
+            route.Reachability.Field(10).Span,
+            ContactMailboxGrantRole.Deposit);
+        var retrieveCapabilityDigest = MailboxGrantCapabilityDigest.Compute(
+            request.OwnerRetrieveCapability.Span,
+            ContactMailboxGrantRole.Retrieve);
+
         var result = await replica.PublishDcrAsync(
             new OpaqueDcrPublishRequest(
                 request.LocatorHash.Span,
@@ -48,7 +56,9 @@ internal sealed class ContactAuthorizedPublicationReplica
                 request.ObjectCiphertext.Span,
                 request.ExactRouteClosure.Span,
                 request.UsageLimit,
-                request.EffectiveExpiresAtUnixSeconds),
+                request.EffectiveExpiresAtUnixSeconds,
+                depositCapabilityDigest,
+                retrieveCapabilityDigest),
             cancellationToken).ConfigureAwait(false);
         if (result.Disposition is ContactResolverMutationDisposition.Committed
             or ContactResolverMutationDisposition.ExactReplay)

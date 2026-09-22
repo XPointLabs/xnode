@@ -35,7 +35,7 @@ internal static class ContactReplicaPayloadCodec
 
     internal static byte[] EncodeAuthorizedPublish(ReadOnlySpan<byte> exactXpu1)
     {
-        if (exactXpu1.Length is < 1 or > 92_992)
+        if (exactXpu1.Length is < 1 or > 93_032)
         {
             throw new ArgumentOutOfRangeException(nameof(exactXpu1));
         }
@@ -48,7 +48,7 @@ internal static class ContactReplicaPayloadCodec
     internal static Xpu1Request DecodeAuthorizedPublish(ReadOnlySpan<byte> payload)
     {
         var reader = new PayloadReader(payload);
-        var exact = reader.Lp32(92_992).ToArray();
+        var exact = reader.Lp32(93_032).ToArray();
         reader.End();
         return Xpu1Codec.Decode(exact);
     }
@@ -166,6 +166,62 @@ internal static class ContactReplicaPayloadCodec
             throw new ArgumentException("An exact 32-byte value is required.", nameof(value));
         }
         return value.ToArray();
+    }
+
+    internal static byte[] EncodeMailboxGrantRouteRequest(
+        ReadOnlySpan<byte> exactXmg1Hash32,
+        ReadOnlySpan<byte> locatorHash32,
+        ReadOnlySpan<byte> capability32,
+        ContactMailboxGrantRole role)
+    {
+        if (exactXmg1Hash32.Length != 32 || locatorHash32.Length != 32
+            || capability32.Length != 32 || !Enum.IsDefined(role))
+            throw new ArgumentException("The mailbox grant route lookup is invalid.");
+        var writer = new PayloadWriter();
+        writer.Bytes(exactXmg1Hash32);
+        writer.Bytes(locatorHash32);
+        writer.Bytes(capability32);
+        writer.U16((ushort)role);
+        return writer.ToArray();
+    }
+
+    internal static (byte[] ExactXmg1Hash, byte[] LocatorHash, byte[] Capability,
+        ContactMailboxGrantRole Role)
+        DecodeMailboxGrantRouteRequest(ReadOnlySpan<byte> payload)
+    {
+        var reader = new PayloadReader(payload);
+        var result = (
+            reader.Bytes(32).ToArray(),
+            reader.Bytes(32).ToArray(),
+            reader.Bytes(32).ToArray(),
+            (ContactMailboxGrantRole)reader.U16());
+        reader.End();
+        if (!Enum.IsDefined(result.Item4))
+            throw new InvalidDataException("The mailbox grant role is invalid.");
+        return result;
+    }
+
+    internal static byte[] Encode(ContactMailboxGrantRouteResult result)
+    {
+        var writer = new PayloadWriter();
+        writer.U16((ushort)result.Disposition);
+        writer.U64(result.EffectiveExpiresAtUnixSeconds);
+        writer.Lp32(result.CanonicalRouteClosure);
+        return writer.ToArray();
+    }
+
+    internal static ContactMailboxGrantRouteResult DecodeMailboxGrantRouteResult(
+        ReadOnlySpan<byte> payload)
+    {
+        var reader = new PayloadReader(payload);
+        var disposition = (ContactResolverReadDisposition)reader.U16();
+        var expiry = reader.U64();
+        var closure = reader.Lp32(OpaqueDcrResolveRequest.MaximumRouteClosureBytes).ToArray();
+        reader.End();
+        if (!Enum.IsDefined(disposition) ||
+            (disposition == ContactResolverReadDisposition.Current) != (closure.Length != 0))
+            throw new InvalidDataException("The mailbox grant route result is invalid.");
+        return new(disposition, closure, expiry);
     }
 
     internal static byte[] EncodeReadXur(

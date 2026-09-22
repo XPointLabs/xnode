@@ -19,7 +19,8 @@ public enum ContactServiceOperation
     ClaimPreKey = 3,
     WriteContactUpdate = 4,
     FetchContactUpdates = 5,
-    PublishPreKeyInventory = 6
+    PublishPreKeyInventory = 6,
+    AcquireMailboxGrant = 7
 }
 
 public interface IContactServiceOpaqueDispatcher
@@ -358,6 +359,7 @@ internal sealed class ProductionContactServiceOpaqueDispatcher :
     private readonly ContactServiceAuthoritySources authorities;
     private readonly ContactServiceLocalReplicaRuntime local;
     private readonly IContactReplicaPeerClient peerClient;
+    private readonly IMailboxGrantAuthorityClient mailboxGrantAuthority;
     private readonly IClock clock;
     private readonly SemaphoreSlim[] executionGates = Enumerable.Range(0, 64)
         .Select(static _ => new SemaphoreSlim(1, 1))
@@ -369,12 +371,15 @@ internal sealed class ProductionContactServiceOpaqueDispatcher :
         ContactServiceAuthoritySources authorities,
         ContactServiceLocalReplicaRuntime local,
         IContactReplicaPeerClient peerClient,
+        IMailboxGrantAuthorityClient mailboxGrantAuthority,
         IClock clock)
     {
         this.node = node ?? throw new ArgumentNullException(nameof(node));
         this.authorities = authorities ?? throw new ArgumentNullException(nameof(authorities));
         this.local = local ?? throw new ArgumentNullException(nameof(local));
         this.peerClient = peerClient ?? throw new ArgumentNullException(nameof(peerClient));
+        this.mailboxGrantAuthority = mailboxGrantAuthority
+            ?? throw new ArgumentNullException(nameof(mailboxGrantAuthority));
         this.clock = clock ?? throw new ArgumentNullException(nameof(clock));
     }
 
@@ -387,6 +392,12 @@ internal sealed class ProductionContactServiceOpaqueDispatcher :
         if (operation == ContactServiceOperation.PublishPreKeyInventory)
         {
             return await DispatchPreKeyPublicationAsync(
+                canonicalRequest,
+                cancellationToken).ConfigureAwait(false);
+        }
+        if (operation == ContactServiceOperation.AcquireMailboxGrant)
+        {
+            return await DispatchMailboxGrantAsync(
                 canonicalRequest,
                 cancellationToken).ConfigureAwait(false);
         }
@@ -500,6 +511,162 @@ internal sealed class ProductionContactServiceOpaqueDispatcher :
         }
     }
 
+    private async ValueTask<ReadOnlyMemory<byte>> DispatchMailboxGrantAsync(
+        ReadOnlyMemory<byte> canonicalRequest,
+        CancellationToken cancellationToken)
+    {
+        var request = ContactCodec.Decode(ProtocolMagic.XMG1, canonicalRequest.Span);
+        ContactCodec.VerifyMailboxGrantHolderSignature(request);
+        var locatorHash = request.Field(3);
+        var capability = request.Field(4);
+        var role = request.Field(6).Span[0] switch
+        {
+            (byte)Deep.Protocol.DeepExtension.MailboxCapabilities.MailboxCapabilityDomain.Deposit =>
+                ContactMailboxGrantRole.Deposit,
+            (byte)Deep.Protocol.DeepExtension.MailboxCapabilities.MailboxCapabilityDomain.Retrieve =>
+                ContactMailboxGrantRole.Retrieve,
+            _ => throw new InvalidDataException("The XMG1 mailbox grant role is invalid.")
+        };
+        var gate = executionGates[BinaryPrimitives.ReadUInt16BigEndian(
+            SHA256.HashData(locatorHash.Span)) % executionGates.Length];
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var placement = await authorities.Placements.MintAsync(
+                    ContactServiceRequestKind.ResolveInvite,
+                    locatorHash,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            var now = checked((ulong)clock.UtcNow.ToUnixTimeSeconds());
+            placement.EnsureUsable(now);
+            if (!Fixed(request.Field(1).Span, placement.NetworkId.Span) ||
+                !Fixed(locatorHash.Span, placement.ShardKey.Span) ||
+                !placement.ContainsReplica(node.GetRouterId().ToBytes()))
+                throw new InvalidOperationException(
+                    "The XMG1 request is outside the exact resolver placement.");
+
+            var remote = new AuthenticatedRemoteContactServiceReplica(
+                placement,
+                node.GetRouterId().ToBytes(),
+                peerClient,
+                canonicalRequest);
+            using var coordinator = new ContactResolverTwoReplicaCoordinator(
+                local.Binding.ResolverReplica,
+                remote);
+            var route = await coordinator.ReadMailboxGrantRouteAsync(
+                    locatorHash,
+                    capability,
+                    role,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            var resultCode = route.Disposition switch
+            {
+                ContactResolverReadDisposition.Current => MailboxGrantAcquisitionResultCode.Success,
+                ContactResolverReadDisposition.NotFound or ContactResolverReadDisposition.Expired =>
+                    MailboxGrantAcquisitionResultCode.UnknownOrExpired,
+                ContactResolverReadDisposition.Conflict => MailboxGrantAcquisitionResultCode.Conflict,
+                _ => MailboxGrantAcquisitionResultCode.Unavailable
+            };
+
+            ParsedContactRouteClosure? exactRoute = null;
+            if (resultCode == MailboxGrantAcquisitionResultCode.Success)
+            {
+                exactRoute = ContactRouteClosureCodec.Decode(route.CanonicalRouteClosure);
+                if (role == ContactMailboxGrantRole.Deposit)
+                    MailboxGrantRequestVerifier.VerifyDeposit(canonicalRequest.Span, exactRoute, now);
+                else
+                    MailboxGrantRequestVerifier.VerifyRetrieve(
+                        canonicalRequest.Span,
+                        exactRoute,
+                        capability.Span,
+                        now);
+            }
+
+            var responseExpiry = Math.Min(
+                checked(now + 300),
+                route.EffectiveExpiresAtUnixSeconds == 0
+                    ? checked(now + 300)
+                    : route.EffectiveExpiresAtUnixSeconds);
+            var routeHash = route.Disposition == ContactResolverReadDisposition.Current
+                ? SHA256.HashData(route.CanonicalRouteClosure)
+                : new byte[32];
+            var evidenceExpiry = route.Disposition == ContactResolverReadDisposition.Current
+                ? route.EffectiveExpiresAtUnixSeconds
+                : 0;
+            var evidenceTuple = MailboxGrantRouteEvidenceAuthentication.CreateTuple(
+                SHA256.HashData(canonicalRequest.Span),
+                locatorHash.Span,
+                XNode.Core.ContactResolver.MailboxGrantCapabilityDigest.Compute(
+                    capability.Span, role),
+                checked((byte)role),
+                checked((ushort)route.Disposition),
+                routeHash,
+                evidenceExpiry);
+            var evidenceRequest = new ContactServiceReplicaReceiptRequest(
+                ContactServiceReceiptKind.MailboxGrantRoute,
+                evidenceTuple);
+            var localEvidenceTask = local.Binding.ReceiptAuthority
+                .IssueAsync(evidenceRequest, cancellationToken).AsTask();
+            var remoteEvidenceTask = remote
+                .IssueAsync(evidenceRequest, cancellationToken).AsTask();
+            await Task.WhenAll(localEvidenceTask, remoteEvidenceTask).ConfigureAwait(false);
+            var replicaEvidence = new[]
+            {
+                ValidateMailboxGrantEvidence(
+                    await localEvidenceTask.ConfigureAwait(false),
+                    evidenceTuple,
+                    node.GetRouterId().ToBytes()),
+                ValidateMailboxGrantEvidence(
+                    await remoteEvidenceTask.ConfigureAwait(false),
+                    evidenceTuple,
+                    remote.ReplicaId.Span),
+            };
+            var exactResponse = await mailboxGrantAuthority.AuthorizeAsync(
+                    new MailboxGrantAuthorityRequest(
+                        canonicalRequest.ToArray(),
+                        resultCode,
+                        resultCode == MailboxGrantAcquisitionResultCode.Success
+                            ? route.CanonicalRouteClosure
+                            : ReadOnlyMemory<byte>.Empty,
+                        checked((ushort)route.Disposition),
+                        evidenceExpiry,
+                        responseExpiry,
+                        replicaEvidence),
+                    cancellationToken)
+                .ConfigureAwait(false);
+            var response = ContactCodec.Decode(ProtocolMagic.XMC1, exactResponse.Span);
+            ContactCodec.ValidateMailboxGrantResultBinding(request, response);
+            if (resultCode == MailboxGrantAcquisitionResultCode.Success)
+                ContactCodec.ValidateMailboxGrantResultRouteBinding(response, exactRoute!);
+            else if (BinaryPrimitives.ReadUInt16BigEndian(response.Field(3).Span) != (ushort)resultCode)
+                throw new InvalidDataException("The mailbox authority changed the requested failure result.");
+            return response.CanonicalBytes.ToArray();
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    private static MailboxGrantReplicaEvidence ValidateMailboxGrantEvidence(
+        ContactServiceReplicaReceipt evidence,
+        ReadOnlySpan<byte> tuple,
+        ReadOnlySpan<byte> expectedReplicaId)
+    {
+        if (evidence.ReplicaId.Length != 32
+            || evidence.Signature.Length != 64
+            || !Fixed(evidence.ReplicaId.Span, expectedReplicaId)
+            || !ContactServiceReceiptTranscript.Verify(
+                evidence.ReplicaId.Span,
+                MailboxGrantRouteEvidenceAuthentication.GetSigningBytes(tuple),
+                evidence.Signature.Span))
+            throw new ContactServiceReceiptAuthorityException(
+                "A resolver replica returned invalid mailbox grant route evidence.");
+        return new MailboxGrantReplicaEvidence(
+            evidence.ReplicaId.ToArray(),
+            evidence.Signature.ToArray());
+    }
+
     public void Dispose()
     {
         if (disposed)
@@ -524,6 +691,8 @@ internal sealed class ProductionContactServiceOpaqueDispatcher :
             ContactServiceOperation.FetchContactUpdates => Xuq1Codec.Decode(exact),
             ContactServiceOperation.PublishPreKeyInventory =>
                 throw new InvalidOperationException("Bounded XPP1 uses its sealed publication dispatcher."),
+            ContactServiceOperation.AcquireMailboxGrant =>
+                throw new InvalidOperationException("XMG1 uses its sealed grant dispatcher."),
             _ => throw new ArgumentOutOfRangeException(nameof(operation))
         };
 
@@ -545,6 +714,8 @@ internal static class ContactServiceHostComposition
         services.TryAddSingleton(plan);
         services.TryAddSingleton<ContactReplicaReplayGuard>();
         services.TryAddSingleton<IContactReplicaPeerClient, HttpContactReplicaPeerClient>();
+        services.TryAddSingleton<IMailboxGrantAuthorityClient,
+            UnavailableMailboxGrantAuthorityClient>();
         if (!plan.RuntimeActivation)
         {
             services.TryAddSingleton<IContactServiceOpaqueDispatcher,
@@ -610,6 +781,8 @@ internal static class ContactServiceHostComposition
         services.TryAddSingleton(plan);
         services.TryAddSingleton<ContactReplicaReplayGuard>();
         services.TryAddSingleton<IContactReplicaPeerClient, HttpContactReplicaPeerClient>();
+        services.TryAddSingleton<IMailboxGrantAuthorityClient,
+            UnavailableMailboxGrantAuthorityClient>();
         services.TryAddSingleton<ContactServiceLocalReplicaRuntime>();
         services.TryAddSingleton<ProductionContactServiceOpaqueDispatcher>();
         services.TryAddSingleton<IContactServiceOpaqueDispatcher>(provider =>
@@ -776,6 +949,7 @@ public sealed class PrivacyTerminalExitDispatcher : INativeMailboxExitDispatcher
             var magic when magic.SequenceEqual("XUW1"u8) => ContactServiceOperation.WriteContactUpdate,
             var magic when magic.SequenceEqual("XUQ1"u8) => ContactServiceOperation.FetchContactUpdates,
             var magic when magic.SequenceEqual("XPP1"u8) => ContactServiceOperation.PublishPreKeyInventory,
+            var magic when magic.SequenceEqual("XMG1"u8) => ContactServiceOperation.AcquireMailboxGrant,
             _ => default
         };
         return operation != default;

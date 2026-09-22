@@ -37,10 +37,11 @@ internal sealed class Xpa1AuthorizationTestFixture : IContactPublicationAuthoriz
         var xir = Bytes(32, 6);
         var ciphertext = Bytes(40, ciphertextMarker);
         var routeClosure = CreateRouteClosure(network);
+        var ownerRetrieveCapability = Bytes(32, 14);
         var bodyHash = Xpu1Codec.ComputeAuthorizedBodyHash(
             network, operation, view, placement, 195, 240,
             locator, xir, 0, new byte[32], ciphertext, usageLimit, 250,
-            routeClosure);
+            routeClosure, ownerRetrieveCapability);
         var witnessReceipts = new byte[192];
         Bytes(32, 1).CopyTo(witnessReceipts, 0);
         Bytes(64, 3).CopyTo(witnessReceipts, 32);
@@ -60,7 +61,7 @@ internal sealed class Xpa1AuthorizationTestFixture : IContactPublicationAuthoriz
         return Xpu1Codec.Encode(
             network, operation, view, placement, 195, 240,
             locator, xir, 0, new byte[32], ciphertext, usageLimit, 250,
-            routeClosure, xpa);
+            routeClosure, xpa, ownerRetrieveCapability);
     }
 
     private static byte[] CreateRouteClosure(byte[] network)

@@ -369,7 +369,9 @@ public sealed class ContactResolverApplicationServiceTests
             ciphertext,
             Enumerable.Repeat((byte)0x41, OpaqueDcrResolveRequest.MinimumRouteClosureBytes).ToArray(),
             usageLimit,
-            checked((ulong)clock.UtcNow.AddDays(1).ToUnixTimeSeconds()));
+            checked((ulong)clock.UtcNow.AddDays(1).ToUnixTimeSeconds()),
+            Hash("deposit-capability/" + operation),
+            Hash("retrieve-capability/" + operation));
 
     private static OpaqueXurWriteRequest XurRequest(
         byte[] capability,
@@ -438,6 +440,14 @@ public sealed class ContactResolverApplicationServiceTests
             ReadOnlyMemory<byte> locatorHash32,
             CancellationToken cancellationToken) =>
             inner.ResolveCurrentDcrAsync(locatorHash32, cancellationToken);
+
+        public ValueTask<ContactMailboxGrantRouteResult> ResolveMailboxGrantRouteAsync(
+            ReadOnlyMemory<byte> locatorHash32,
+            ReadOnlyMemory<byte> capability32,
+            ContactMailboxGrantRole role,
+            CancellationToken cancellationToken) =>
+            inner.ResolveMailboxGrantRouteAsync(
+                locatorHash32, capability32, role, cancellationToken);
 
         public ValueTask<ContactResolverDcrResolveResult> ResolveDcrAsync(
             OpaqueDcrResolveRequest request,

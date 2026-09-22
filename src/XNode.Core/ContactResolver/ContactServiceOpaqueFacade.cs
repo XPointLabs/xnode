@@ -340,6 +340,13 @@ internal sealed class ContactServiceOpaqueFacade : IDisposable
         VerifiedXpa1PublicationAuthorization authorization,
         CancellationToken cancellationToken)
     {
+        var route = ContactRouteClosureCodec.Decode(request.ExactRouteClosure.Span);
+        var depositCapabilityDigest = MailboxGrantCapabilityDigest.Compute(
+            route.Reachability.Field(10).Span,
+            ContactMailboxGrantRole.Deposit);
+        var retrieveCapabilityDigest = MailboxGrantCapabilityDigest.Compute(
+            request.OwnerRetrieveCapability.Span,
+            ContactMailboxGrantRole.Retrieve);
         var result = await resolver.PublishDcrAsync(new ContactResolverPublishRequest(
             new OpaqueDcrPublishRequest(
                 request.LocatorHash.Span,
@@ -351,7 +358,9 @@ internal sealed class ContactServiceOpaqueFacade : IDisposable
                 request.ObjectCiphertext.Span,
                 request.ExactRouteClosure.Span,
                 request.UsageLimit,
-                request.EffectiveExpiresAtUnixSeconds)), cancellationToken).ConfigureAwait(false);
+                request.EffectiveExpiresAtUnixSeconds,
+                depositCapabilityDigest,
+                retrieveCapabilityDigest)), cancellationToken).ConfigureAwait(false);
 
         var status = result.Status switch
         {
