@@ -20,10 +20,12 @@ successor heads beneath `Node:DataDirectory`. It refuses to start in Production
 or alongside the V1 `ContactAuthority` boundary. It does **not** yet activate
 DID2 contact publication, pre-key claims, messages, or groups. Do not advertise
 it as an E2E-capable XNode release.
-The internal candidate gate can combine a durably complete XPP1 V2 journal,
+The internal candidate gate combines a durably complete XPP1 V2 journal,
 recipient-specific current directory proof and public DCA1/XPS1/inventory
-verification. It has no public dispatch or receipt issuance path yet; replica
-placement, two durable commits and final XIC1 verification remain mandatory.
+verification. The UAT authenticated peer endpoint can request a final XIC1
+receipt only after rechecking that authority and locally minted NETCODEC
+placement. This is not client publication or claim activation: two selected
+replicas' durable receipts and client-side final verification remain mandatory.
 The independent `DeepIdV2NetworkPlacement` UAT section may be enabled only
 alongside this proof boundary. It takes complete ordered absolute paths for
 `ExactPolicyPaths` (XVP1), `ExactViewPaths` (XNV1), matching `ExactHeadPaths`
@@ -39,14 +41,22 @@ in UAT/Development. Each request re-mints current placement from signed DID2
 proof/closure, checks the authenticated selected peer, and durably stages exact
 XPP1 V2 fragments beneath `Node:DataDirectory/did2-prekey-stage`. The
 one-byte result reports staging only; `CandidateReady` is **not** publication,
-an XIC1 receipt, or permission to claim pre-keys. Keep the switch disabled in
-Production and do not expose the peer route at public ingress. This source is
-not yet a production LKG/renewal owner. Protected network successor state,
-two-replica final commit, and client claim/receive remain release gates.
+an XIC1 receipt, or permission to claim pre-keys. A separate peer-only final
+commit operation requires exact replay of the staged Commit fragment, then
+rechecks current DID2/device authority and placement before advancing the
+service-capability-keyed inventory state beneath
+`Node:DataDirectory/did2-prekey-commits` and returning one signed XIC1.
+Corrupt/lost active state or conflicting operation/epoch latches the service
+fail-closed. Back up that state with node keys; restoring keys alone is not
+enough. Keep the switch disabled in Production and do not expose the peer route
+at public ingress. This source is not yet a production LKG/renewal owner.
+Two-replica dispatch/final verification and client claim/receive remain release
+gates.
 The separate candidate authority gate reads signed DCA1/XPS1 from the exact
 bounded manifest; it never receives plaintext DCR1. It verifies this support
 against its own fresh DID2 checkpoint; a caller cannot supply a
-pre-verified DCA1. The peer staging response still does not invoke that gate.
+pre-verified DCA1. The staging response does not invoke that gate; only the
+final commit does.
 
 Set `DeepIdV2DirectoryProof:Enabled=true` only with an exact HTTPS
 `RegistryOrigin`, paired ordered absolute `ExactAuthorityPaths` and

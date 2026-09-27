@@ -1,8 +1,10 @@
 using System.Buffers.Binary;
+using System.Security.Cryptography;
 using System.Text;
 using Deep.Protocol.ApplicationCore;
 using Deep.Protocol.ContactV2;
 using Deep.Protocol.MessagingWire;
+using Sodium;
 using XNode.Core.ContactPreKey;
 
 namespace XNode.Tests.Core;
@@ -12,6 +14,121 @@ public sealed class DeepIdV2PublicationJournalTests
     private static readonly byte[] Network = Bytes(16, 0x11);
     private static readonly byte[] Operation = Bytes(32, 0x12);
     private static readonly byte[] View = Bytes(32, 0x13);
+
+    [Fact]
+    public void InventoryCommit_ExactReplayAcrossRestartReturnsSignedBytesWithoutResigning()
+    {
+        using var fixture = new Fixture();
+        var signer = PublicKeyAuth.GenerateKeyPair(Bytes(32, 0xa8));
+        var candidate = DeepIdV2PreKeyPublicationCodec.Decode(Aggregate());
+        byte[] receipt;
+        using (var store = fixture.OpenInventoryStore(signer.PublicKey))
+        {
+            receipt = store.CommitAuthorized(candidate, 200,
+                input => PublicKeyAuth.SignDetached(input, signer.PrivateKey))
+                .CanonicalBytes.ToArray();
+            Assert.Equal(candidate.Manifest.CanonicalBytes.ToArray(),
+                store.ReadCurrentManifest()!.CanonicalBytes.ToArray());
+        }
+        using (var store = fixture.OpenInventoryStore(signer.PublicKey))
+        {
+            var replay = store.CommitAuthorized(candidate, 300,
+                _ => throw new InvalidOperationException("Exact replay must not sign."));
+            Assert.Equal(receipt, replay.CanonicalBytes.ToArray());
+        }
+    }
+
+    [Fact]
+    public void InventoryCommit_RejectsWrongSignerBeforeMutationAndForkLatchesSameEpoch()
+    {
+        using var fixture = new Fixture();
+        var signer = PublicKeyAuth.GenerateKeyPair(Bytes(32, 0xa9));
+        var other = PublicKeyAuth.GenerateKeyPair(Bytes(32, 0xaa));
+        var candidate = DeepIdV2PreKeyPublicationCodec.Decode(Aggregate());
+        using (var store = fixture.OpenInventoryStore(signer.PublicKey))
+        {
+            Assert.Throws<CryptographicException>(() => store.CommitAuthorized(
+                candidate, 200, input => PublicKeyAuth.SignDetached(input,
+                    other.PrivateKey)));
+            Assert.Null(store.ReadCurrentManifest());
+            _ = store.CommitAuthorized(candidate, 200,
+                input => PublicKeyAuth.SignDetached(input, signer.PrivateKey));
+            Assert.Throws<InvalidDataException>(() => store.CommitAuthorized(
+                DeepIdV2PreKeyPublicationCodec.Decode(Aggregate(
+                    operation: Bytes(32, 0x72))), 201,
+                input => PublicKeyAuth.SignDetached(input, signer.PrivateKey)));
+        }
+        Assert.Throws<InvalidDataException>(() =>
+            fixture.OpenInventoryStore(signer.PublicKey));
+    }
+
+    [Fact]
+    public void InventoryCommit_OnlyExactSequentialSuccessorAndOneOverlapRemain()
+    {
+        using var fixture = new Fixture();
+        var signer = PublicKeyAuth.GenerateKeyPair(Bytes(32, 0xab));
+        var first = DeepIdV2PreKeyPublicationCodec.Decode(Aggregate());
+        var second = DeepIdV2PreKeyPublicationCodec.Decode(Aggregate(
+            operation: Bytes(32, 0x73), epoch: 2,
+            predecessor: first.Manifest.ExactHash.ToArray()));
+        var third = DeepIdV2PreKeyPublicationCodec.Decode(Aggregate(
+            operation: Bytes(32, 0x74), epoch: 3,
+            predecessor: second.Manifest.ExactHash.ToArray()));
+        using (var store = fixture.OpenInventoryStore(signer.PublicKey))
+        {
+            var receipt = store.CommitAuthorized(first, 200,
+                input => PublicKeyAuth.SignDetached(input, signer.PrivateKey));
+            _ = store.CommitAuthorized(second, 201,
+                input => PublicKeyAuth.SignDetached(input, signer.PrivateKey));
+            Assert.Equal(receipt.CanonicalBytes.ToArray(),
+                store.CommitAuthorized(first, 202,
+                    _ => throw new InvalidOperationException("Replay must not sign."))
+                    .CanonicalBytes.ToArray());
+            _ = store.CommitAuthorized(third, 203,
+                input => PublicKeyAuth.SignDetached(input, signer.PrivateKey));
+            Assert.Throws<ApplicationCoreFormatException>(() =>
+                store.CommitAuthorized(first, 204,
+                    input => PublicKeyAuth.SignDetached(input,
+                        signer.PrivateKey)));
+        }
+        using var reopened = fixture.OpenInventoryStore(signer.PublicKey);
+        Assert.Equal(third.Manifest.CanonicalBytes.ToArray(),
+            reopened.ReadCurrentManifest()!.CanonicalBytes.ToArray());
+    }
+
+    [Fact]
+    public void InventoryCommit_LostOrCorruptSnapshotCannotResetToEpochOne()
+    {
+        using var fixture = new Fixture();
+        var signer = PublicKeyAuth.GenerateKeyPair(Bytes(32, 0xac));
+        using (var store = fixture.OpenInventoryStore(signer.PublicKey))
+            _ = store.CommitAuthorized(
+                DeepIdV2PreKeyPublicationCodec.Decode(Aggregate()), 200,
+                input => PublicKeyAuth.SignDetached(input, signer.PrivateKey));
+        var serviceRoot = fixture.InventoryServicePath();
+        var active = Path.Combine(serviceRoot, "active.state");
+        var damaged = File.ReadAllBytes(active);
+        damaged[^1] ^= 1;
+        File.WriteAllBytes(active, damaged);
+        Assert.Throws<InvalidDataException>(() =>
+            fixture.OpenInventoryStore(signer.PublicKey));
+        Assert.True(File.Exists(Path.Combine(serviceRoot, "fault.marker")));
+        Assert.Contains(Directory.EnumerateFiles(serviceRoot), path =>
+            Path.GetFileName(path).StartsWith("active.state.quarantine.",
+                StringComparison.Ordinal));
+        Assert.Throws<InvalidDataException>(() =>
+            fixture.OpenInventoryStore(signer.PublicKey));
+
+        using var lostFixture = new Fixture();
+        using (var store = lostFixture.OpenInventoryStore(signer.PublicKey))
+            _ = store.CommitAuthorized(
+                DeepIdV2PreKeyPublicationCodec.Decode(Aggregate()), 200,
+                input => PublicKeyAuth.SignDetached(input, signer.PrivateKey));
+        File.Delete(Path.Combine(lostFixture.InventoryServicePath(),
+            "active.state"));
+        Assert.Throws<InvalidDataException>(() =>
+            lostFixture.OpenInventoryStore(signer.PublicKey));
+    }
 
     [Fact]
     public void CompletePublication_SurvivesRestart_AndExactReplayDoesNotMutate()
@@ -282,18 +399,18 @@ public sealed class DeepIdV2PublicationJournalTests
         .CanonicalBytes.ToArray();
 
     private static byte[] Aggregate(byte placement = 0x14, byte[]? operation = null,
-        byte capability = 0x35)
+        byte capability = 0x35, ulong epoch = 1, byte[]? predecessor = null)
     {
         var oneTime = DeepIdV2Dpk2Codec.Decode(DeepIdV2Dpk2Codec.Encode(
-            Record(Dpk2PrekeyKind.OneTime)));
+            Record(Dpk2PrekeyKind.OneTime, epoch)));
         var lastResort = DeepIdV2Dpk2Codec.Decode(DeepIdV2Dpk2Codec.Encode(
-            Record(Dpk2PrekeyKind.LastResort)));
+            Record(Dpk2PrekeyKind.LastResort, epoch)));
         ReadOnlyMemory<byte>[] fields =
         [
             Network, Bytes(32, capability), Bytes(32, 0x21),
             Reference("DPD1", Bytes(32, 0x25)), Be64(1),
-            Reference("XPS1", Bytes(32, 0x45)), Be64(1),
-            new byte[32], Be16(32), Bytes(32, 0x65),
+            Reference("XPS1", Bytes(32, 0x45)), Be64(epoch),
+            predecessor ?? new byte[32], Be16(32), Bytes(32, 0x65),
             lastResort.ExactHash, Bytes(32, 0x20),
             Reference("DRS1", Bytes(32, 0x85)), Be64(100), Be64(100_000)
         ];
@@ -304,10 +421,10 @@ public sealed class DeepIdV2PublicationJournalTests
             Enumerable.Repeat(oneTime, 32).ToArray(), lastResort);
     }
 
-    private static Dpk2Record Record(Dpk2PrekeyKind kind) => new(
+    private static Dpk2Record Record(Dpk2PrekeyKind kind, ulong epoch) => new(
         Network, Bytes(32, 0x22), Bytes(32, 0x21), 1,
         Reference("DPD1", Bytes(32, 0x25)), 1, Bytes(32, 0x20),
-        1, 1, Bytes(32, 0x26), 1, 100, 100, 100_000,
+        1, epoch, Bytes(32, 0x26), 1, 100, 100, 100_000,
         Bytes(32, 0x27), Bytes(32, 0x28), Bytes(32, 0x29),
         Bytes(64, 0x30),
         kind == Dpk2PrekeyKind.OneTime ? Bytes(32, 0x31) : [],
@@ -350,6 +467,14 @@ public sealed class DeepIdV2PublicationJournalTests
         internal DeepIdV2PublicationJournal Open() =>
             new(DirectoryPath, Network, Operation, View,
                 Bytes(32, 0x14), Bytes(32, 0x35));
+
+        internal DeepIdV2InventoryCommitStore OpenInventoryStore(
+            byte[] replicaId) =>
+            new(DirectoryPath, Network, Bytes(32, 0x35), replicaId);
+
+        internal string InventoryServicePath() =>
+            Directory.GetDirectories(Path.Combine(DirectoryPath,
+                "did2-prekey-commits", Convert.ToHexString(Network))).Single();
 
         public void Dispose()
         {

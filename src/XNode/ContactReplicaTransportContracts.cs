@@ -21,7 +21,8 @@ internal enum ContactReplicaRpcOperation : byte
     IssueReceipt = 9,
     ApplyPreKeyPublication = 10,
     ReadMailboxGrantRoute = 11,
-    StageDid2PreKeyPublication = 12
+    StageDid2PreKeyPublication = 12,
+    CommitDid2PreKeyPublication = 13
 }
 
 internal sealed class ContactServicePlacementCapability

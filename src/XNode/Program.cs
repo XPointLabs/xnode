@@ -198,7 +198,10 @@ var did2ReplicaStageEnabled = did2ReplicaStageOptions.Validate(
     did2NetworkPlacement is not null, contactServicePlan.RuntimeActivation,
     builder.Environment.IsDevelopment() || builder.Environment.IsEnvironment("UAT"));
 if (did2ReplicaStageEnabled)
+{
+    builder.Services.AddSingleton<DeepIdV2PublicationFinalCommitter>();
     builder.Services.AddSingleton<DeepIdV2ReplicaStageReceiver>();
+}
 var replicaEndpointActive = contactServicePlan.MapReplicaEndpoint ||
     did2ReplicaStageEnabled;
 var groupControlServicePlan = productionGroupControlAuthority is null

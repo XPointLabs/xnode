@@ -79,7 +79,20 @@ public sealed class DeepIdV2ReplicaStageReceiverTests
                 Command(placement, publisher, fragments[^1]),
                 RouterId.FromHex(Convert.ToHexString(Remote)), default);
             Assert.Equal(new byte[] { 3 }, replay.Payload.ToArray());
-            Assert.Equal(fragments.Count + 1, source.Calls);
+            var finalCommand = Command(placement, publisher, fragments[^1])
+                with { Operation = ContactReplicaRpcOperation.CommitDid2PreKeyPublication };
+            await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await receiver.ReceiveAsync(finalCommand,
+                    RouterId.FromHex(Convert.ToHexString(Remote)), default));
+            await Assert.ThrowsAsync<InvalidDataException>(async () =>
+                await receiver.ReceiveAsync(finalCommand with
+                {
+                    Payload = DeepIdV2ReplicaStagePayloadCodec.Encode(
+                        publisher, fragments[0])
+                }, RouterId.FromHex(Convert.ToHexString(Remote)), default));
+            Assert.False(Directory.Exists(Path.Combine(root,
+                "did2-prekey-commits")));
+            Assert.Equal(fragments.Count + 2, source.Calls);
         }
         finally
         {

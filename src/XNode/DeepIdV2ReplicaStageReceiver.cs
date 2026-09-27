@@ -34,18 +34,21 @@ internal sealed class DeepIdV2ReplicaStageReceiver : IContactReplicaCommandRecei
     private readonly IDeepIdV2PreKeyPlacementSource placements;
     private readonly IMailboxStorageSecurity security;
     private readonly IMailboxDurabilityBarrier durability;
+    private readonly DeepIdV2PublicationFinalCommitter? finalCommitter;
     private readonly string root;
     private readonly SemaphoreSlim stageGate = new(1, 1);
 
     public DeepIdV2ReplicaStageReceiver(RouterNodeOptions node,
         IDeepIdV2PreKeyPlacementSource placements,
         IMailboxStorageSecurity security,
-        IMailboxDurabilityBarrier durability)
+        IMailboxDurabilityBarrier durability,
+        DeepIdV2PublicationFinalCommitter? finalCommitter = null)
     {
         this.node = node ?? throw new ArgumentNullException(nameof(node));
         this.placements = placements ?? throw new ArgumentNullException(nameof(placements));
         this.security = security ?? throw new ArgumentNullException(nameof(security));
         this.durability = durability ?? throw new ArgumentNullException(nameof(durability));
+        this.finalCommitter = finalCommitter;
         root = Path.Combine(Path.GetFullPath(node.DataDirectory),
             "did2-prekey-stage");
         RejectExistingLinks(root);
@@ -58,14 +61,20 @@ internal sealed class DeepIdV2ReplicaStageReceiver : IContactReplicaCommandRecei
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(command);
-        if (command.Operation !=
-                ContactReplicaRpcOperation.StageDid2PreKeyPublication ||
+        if (command.Operation is not
+                (ContactReplicaRpcOperation.StageDid2PreKeyPublication or
+                 ContactReplicaRpcOperation.CommitDid2PreKeyPublication) ||
             command.Placement.RequestKind !=
                 ContactServiceRequestKind.PublishPreKeyInventory)
             throw new InvalidDataException(
                 "DID2 stage receiver rejects all non-V2 replica operations.");
         var decoded = DeepIdV2ReplicaStagePayloadCodec.Decode(
             command.Payload.Span);
+        if (command.Operation ==
+                ContactReplicaRpcOperation.CommitDid2PreKeyPublication &&
+            decoded.Fragment.Phase != Xpp1V2FragmentPhase.Commit)
+            throw new InvalidDataException(
+                "DID2 final commit requires the exact staged commit fragment.");
         var localId = node.GetRouterId().ToBytes();
         // The caller-supplied projection can only reject, never authorize.
         // Avoid an authority fetch for an obviously unrelated authenticated peer.
@@ -97,8 +106,14 @@ internal sealed class DeepIdV2ReplicaStageReceiver : IContactReplicaCommandRecei
                 Convert.ToHexString(decoded.Fragment.PublicationOperationId.Span));
             if (decoded.Fragment.Phase != Xpp1V2FragmentPhase.Manifest &&
                 !Directory.Exists(operationPath))
+            {
+                if (command.Operation ==
+                    ContactReplicaRpcOperation.CommitDid2PreKeyPublication)
+                    throw new InvalidDataException(
+                        "DID2 final commit has no staged operation.");
                 return Response(command, localId,
                     PublicationStageDisposition.Incomplete);
+            }
 
             RejectExistingLinks(networkRoot);
             security.SecureDirectory(networkRoot);
@@ -124,6 +139,25 @@ internal sealed class DeepIdV2ReplicaStageReceiver : IContactReplicaCommandRecei
                 decoded.Fragment.PublicationOperationId.Span,
                 current.ViewHash.Span, current.PlacementHash.Span,
                 current.ShardKey.Span, security, durability);
+            if (command.Operation ==
+                ContactReplicaRpcOperation.CommitDid2PreKeyPublication)
+            {
+                if (journal.ReadCommitted()?.Candidate is null ||
+                    journal.Stage(decoded.Fragment.CanonicalBytes.Span,
+                        decoded.Publisher).Disposition !=
+                        PublicationStageDisposition.ExactReplay)
+                    throw new InvalidDataException(
+                        "DID2 final commit has no exact durable staged candidate.");
+                var committer = finalCommitter ??
+                    throw new InvalidOperationException(
+                        "DID2 final commit authority is not configured.");
+                var receipt = await committer.CommitAsync(journal,
+                    command.Placement, authenticatedSender,
+                    cancellationToken).ConfigureAwait(false);
+                return new ContactReplicaRpcResponse(command.Operation,
+                    command.CorrelationId.ToArray(), localId,
+                    receipt.CanonicalBytes.ToArray());
+            }
             var staged = journal.Stage(decoded.Fragment.CanonicalBytes.Span,
                 decoded.Publisher);
             if (staged.Disposition is PublicationStageDisposition.WrongScope

@@ -6,6 +6,10 @@ using XNode.Core.ContactPreKey;
 
 namespace XNode;
 
+internal sealed record DeepIdV2VerifiedPublicationCandidate(
+    ParsedXpp1V2 Publication, ParsedDid2 PublisherDid2,
+    DeepIdV2CurrentContactAuthorization CurrentAuthorization);
+
 /// <summary>
 /// Joins a durably reassembled XPP1 candidate to a recipient-specific,
 /// nonce-bound current DID2 proof and signed public DCA1/XPS1/XPI1 support.
@@ -21,7 +25,8 @@ internal sealed class DeepIdV2PublicationCandidateAuthority(
     private readonly IOnionMonotonicClock clock = clock ??
         throw new ArgumentNullException(nameof(clock));
 
-    internal async ValueTask<ParsedXpp1V2> VerifyCommittedCandidateAsync(
+    internal async ValueTask<DeepIdV2VerifiedPublicationCandidate>
+        VerifyCommittedCandidateAsync(
         DeepIdV2PublicationJournal journal,
         CancellationToken cancellationToken)
     {
@@ -60,6 +65,7 @@ internal sealed class DeepIdV2PublicationCandidateAuthority(
             staged.PublisherDid2, staged.PublisherXps1.Span,
             current, staged.Candidate,
             now.BootId.Span, now.SampleSeconds);
-        return staged.Candidate;
+        return new DeepIdV2VerifiedPublicationCandidate(staged.Candidate,
+            staged.PublisherDid2, current);
     }
 }
