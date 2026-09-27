@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Text;
+using Deep.Protocol.ApplicationCore;
 using Deep.Protocol.ContactV2;
 using Deep.Protocol.MessagingWire;
 using XNode.Core.ContactPreKey;
@@ -17,7 +18,7 @@ public sealed class DeepIdV2PublicationJournalTests
     {
         using var fixture = new Fixture();
         var aggregate = Aggregate();
-        var sequence = DeepIdV2BoundedPreKeyPublicationCodec.CreateSequence(aggregate, View);
+        var sequence = Sequence(aggregate, View);
         using (var journal = fixture.Open())
         {
             Assert.Equal(PublicationStageDisposition.Incomplete,
@@ -41,20 +42,25 @@ public sealed class DeepIdV2PublicationJournalTests
             var completed = journal.Stage(sequence[^1]);
             Assert.Equal(PublicationStageDisposition.CandidateReady, completed.Disposition);
             Assert.Equal(aggregate, completed.Candidate!.CanonicalBytes.ToArray());
+            Assert.Equal(Did2(), completed.PublisherDid2!.CanonicalBytes.ToArray());
             Assert.Equal(PublicationStageDisposition.ExactReplay,
                 journal.Stage(sequence[^1]).Disposition);
         }
         using (var journal = fixture.Open())
-            Assert.Equal(aggregate, journal.ReadCommitted()!.CanonicalBytes.ToArray());
+        {
+            var committed = journal.ReadCommitted()!;
+            Assert.Equal(aggregate, committed.Candidate!.CanonicalBytes.ToArray());
+            Assert.Equal(Did2(), committed.PublisherDid2!.CanonicalBytes.ToArray());
+        }
     }
 
     [Fact]
     public void DifferentManifestForSameOperation_LatchesForkAcrossRestart()
     {
         using var fixture = new Fixture();
-        var first = DeepIdV2BoundedPreKeyPublicationCodec.CreateSequence(
+        var first = Sequence(
             Aggregate(), View);
-        var second = DeepIdV2BoundedPreKeyPublicationCodec.CreateSequence(
+        var second = Sequence(
             Aggregate(placement: 0x51), View);
         using (var journal = fixture.Open())
         {
@@ -73,9 +79,9 @@ public sealed class DeepIdV2PublicationJournalTests
     {
         using var fixture = new Fixture();
         var aggregate = Aggregate();
-        var first = DeepIdV2BoundedPreKeyPublicationCodec.CreateSequence(
+        var first = Sequence(
             aggregate, View);
-        var changedView = DeepIdV2BoundedPreKeyPublicationCodec.CreateSequence(
+        var changedView = Sequence(
             aggregate, Bytes(32, 0x73));
         using var journal = fixture.Open();
         Assert.Equal(PublicationStageDisposition.Staged,
@@ -91,7 +97,7 @@ public sealed class DeepIdV2PublicationJournalTests
     public void CorruptDurableChunk_QuarantinesAndNeverResetsOperation()
     {
         using var fixture = new Fixture();
-        var sequence = DeepIdV2BoundedPreKeyPublicationCodec.CreateSequence(
+        var sequence = Sequence(
             Aggregate(), View);
         using (var journal = fixture.Open())
         {
@@ -115,7 +121,7 @@ public sealed class DeepIdV2PublicationJournalTests
     {
         using var fixture = new Fixture();
         var aggregate = Aggregate(operation: Bytes(32, 0x72));
-        var sequence = DeepIdV2BoundedPreKeyPublicationCodec.CreateSequence(
+        var sequence = Sequence(
             aggregate, View);
         using var journal = fixture.Open();
         Assert.Equal(PublicationStageDisposition.WrongScope,
@@ -128,9 +134,9 @@ public sealed class DeepIdV2PublicationJournalTests
     {
         using var fixture = new Fixture();
         var aggregate = Aggregate();
-        var wrongView = DeepIdV2BoundedPreKeyPublicationCodec.CreateSequence(
+        var wrongView = Sequence(
             aggregate, Bytes(32, 0x74));
-        var wrongCapability = DeepIdV2BoundedPreKeyPublicationCodec.CreateSequence(
+        var wrongCapability = Sequence(
             Aggregate(capability: 0x76), View);
         using var journal = fixture.Open();
         Assert.Equal(PublicationStageDisposition.WrongScope,
@@ -144,9 +150,9 @@ public sealed class DeepIdV2PublicationJournalTests
     public void PersistedManifestWithDifferentShard_IsQuarantinedOnRestart()
     {
         using var fixture = new Fixture();
-        var original = DeepIdV2BoundedPreKeyPublicationCodec.CreateSequence(
+        var original = Sequence(
             Aggregate(), View);
-        var substituted = DeepIdV2BoundedPreKeyPublicationCodec.CreateSequence(
+        var substituted = Sequence(
             Aggregate(capability: 0x76), View);
         using (var journal = fixture.Open())
             Assert.Equal(PublicationStageDisposition.Staged,
@@ -157,6 +163,31 @@ public sealed class DeepIdV2PublicationJournalTests
         Assert.True(File.Exists(Path.Combine(fixture.DirectoryPath,
             "fault.marker")));
     }
+
+    [Fact]
+    public void ChangedPublisherDid2_LatchesSameOperationBeforeCommit()
+    {
+        using var fixture = new Fixture();
+        var aggregate = Aggregate();
+        var original = Sequence(aggregate, View);
+        var changed = Sequence(aggregate, View, DeepIdV2Codec.AuthorDid2(
+            Bytes(32, 0xa4), Bytes(1952, 0xa2), Bytes(16, 0xa3))
+            .CanonicalBytes.ToArray());
+        using var journal = fixture.Open();
+        Assert.Equal(PublicationStageDisposition.Staged,
+            journal.Stage(original[0]).Disposition);
+        Assert.Equal(PublicationStageDisposition.ForkLatched,
+            journal.Stage(changed[0]).Disposition);
+    }
+
+    private static IReadOnlyList<byte[]> Sequence(byte[] aggregate, byte[] view,
+        byte[]? did2 = null) =>
+        DeepIdV2BoundedPreKeyPublicationCodec.CreateSequence(
+            aggregate, view, did2 ?? Did2());
+
+    private static byte[] Did2() => DeepIdV2Codec.AuthorDid2(
+        Bytes(32, 0xa1), Bytes(1952, 0xa2), Bytes(16, 0xa3))
+        .CanonicalBytes.ToArray();
 
     private static byte[] Aggregate(byte placement = 0x14, byte[]? operation = null,
         byte capability = 0x35)

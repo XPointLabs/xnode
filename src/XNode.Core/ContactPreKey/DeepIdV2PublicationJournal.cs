@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Security.Cryptography;
+using Deep.Protocol.ApplicationCore;
 using Deep.Protocol.ContactV2;
 using XNode.Core.Mailbox;
 
@@ -101,7 +102,7 @@ internal sealed class DeepIdV2PublicationJournal : IDisposable
         }
     }
 
-    internal ParsedXpp1V2? ReadCommitted()
+    internal PublicationStageResult? ReadCommitted()
     {
         ObjectDisposedException.ThrowIf(disposed, this);
         if (faulted || File.Exists(Path("fault.marker")) ||
@@ -116,7 +117,10 @@ internal sealed class DeepIdV2PublicationJournal : IDisposable
             if (manifest is null || commit is null)
                 return null;
             MatchHeader(manifest, commit);
-            return Reassemble(manifest);
+            return new PublicationStageResult(
+                PublicationStageDisposition.CandidateReady,
+                Reassemble(manifest),
+                DeepIdV2Codec.DecodeDid2(manifest.PublisherDid2.Span));
         }
         catch (Exception exception) when (exception is InvalidDataException or FormatException)
         {
@@ -170,7 +174,9 @@ internal sealed class DeepIdV2PublicationJournal : IDisposable
         var stored = Read("commit.xpp1", Xpp1V2FragmentPhase.Commit);
         if (stored is not null)
             return Fixed(stored.CanonicalBytes.Span, incoming.CanonicalBytes.Span)
-                ? new(PublicationStageDisposition.ExactReplay, Reassemble(manifest))
+                ? new(PublicationStageDisposition.ExactReplay,
+                    Reassemble(manifest),
+                    DeepIdV2Codec.DecodeDid2(manifest.PublisherDid2.Span))
                 : LatchFork();
         if (!HaveAllChunks(manifest))
             return new(PublicationStageDisposition.Incomplete);
@@ -182,7 +188,8 @@ internal sealed class DeepIdV2PublicationJournal : IDisposable
             return LatchFork();
         }
         Write("commit.xpp1", incoming.CanonicalBytes.Span);
-        return new(PublicationStageDisposition.CandidateReady, candidate);
+        return new(PublicationStageDisposition.CandidateReady, candidate,
+            DeepIdV2Codec.DecodeDid2(manifest.PublisherDid2.Span));
     }
 
     private bool HaveAllChunks(ParsedXpp1V2Fragment manifest)
@@ -216,7 +223,8 @@ internal sealed class DeepIdV2PublicationJournal : IDisposable
             !Fixed(candidate.PlacementHash.Span, manifest.PlacementHash.Span) ||
             !Fixed(candidate.Manifest.Field(2).Span, serviceCapability) ||
             !Fixed(candidate.Manifest.CanonicalBytes.Span,
-                manifest.Body.Span[..DeepIdV2PreKeyManifestCodec.CanonicalLength]))
+                manifest.Body.Span.Slice(DeepIdV2Codec.Did2Length,
+                    DeepIdV2PreKeyManifestCodec.CanonicalLength)))
             throw new InvalidDataException("DID2 publication aggregate scope differs.");
         return candidate;
     }
@@ -313,7 +321,8 @@ internal sealed class DeepIdV2PublicationJournal : IDisposable
 
     private bool ManifestBindsServiceCapability(ParsedXpp1V2Fragment manifest) =>
         Fixed(DeepIdV2PreKeyManifestCodec.Decode(
-            manifest.Body.Span[..DeepIdV2PreKeyManifestCodec.CanonicalLength])
+            manifest.Body.Span.Slice(DeepIdV2Codec.Did2Length,
+                DeepIdV2PreKeyManifestCodec.CanonicalLength))
             .Field(2).Span, serviceCapability);
 
     private static bool HeadersMatch(ParsedXpp1V2Fragment manifest,
@@ -336,7 +345,9 @@ internal sealed class DeepIdV2PublicationJournal : IDisposable
         ParsedXpp1V2Fragment chunk)
     {
         var row = manifest.Body.Span.Slice(
-            DeepIdV2PreKeyManifestCodec.CanonicalLength + chunk.ChunkIndex * 36, 36);
+            DeepIdV2Codec.Did2Length +
+            DeepIdV2PreKeyManifestCodec.CanonicalLength +
+            chunk.ChunkIndex * 36, 36);
         return BinaryPrimitives.ReadUInt32BigEndian(row) == chunk.Body.Length &&
             Fixed(row[4..], chunk.ChunkHash.Span);
     }
@@ -408,4 +419,4 @@ internal enum PublicationStageDisposition
 }
 
 internal sealed record PublicationStageResult(PublicationStageDisposition Disposition,
-    ParsedXpp1V2? Candidate = null);
+    ParsedXpp1V2? Candidate = null, ParsedDid2? PublisherDid2 = null);
