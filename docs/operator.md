@@ -10,6 +10,30 @@ runtime. It sends the opaque frame directly to the HTTPS entry origin. Do not
 claim censorship-resistant messenger delivery until a client-bound
 VLESS/Reality physical gate passes with direct HTTPS blocked.
 
+## DID2 directory-proof UAT boundary
+
+`DeepIdV2DirectoryProof` is an opt-in, fail-closed UAT/development proof reader.
+It independently verifies the exact signed XNA1/DTS1 authority lineage from
+`NetworkIdHex` and `GenesisAuthorityCoreHashHex`, restores an exact signed DID2
+genesis head from `GenesisHeadPath` and `GenesisHeadCoreHashHex`, then protects
+successor heads beneath `Node:DataDirectory`. It refuses to start in Production
+or alongside the V1 `ContactAuthority` boundary. It does **not** yet activate
+DID2 contact publication, pre-key claims, messages, or groups. Do not advertise
+it as an E2E-capable XNode release.
+
+Set `DeepIdV2DirectoryProof:Enabled=true` only with an exact HTTPS
+`RegistryOrigin`, paired ordered absolute `ExactAuthorityPaths` and
+`ExactTimePolicyPaths`, the two genesis pins, a nonzero `DeploymentProfileId`,
+and a bounded `RequestTimeoutSeconds` (1–30). Choose distinct relative
+`StateRelativeDirectory` and `DataProtectionKeysRelativeDirectory` paths under
+`Node:DataDirectory`; neither may overlap the reserved `did2-head-anchor`.
+Mount signed public artifacts read-only. Keep the Data Protection key ring and
+the node data directory recoverable as one custody unit; do not place private
+signer material in XNode configuration. A partially populated disabled section
+is rejected. Startup verifies the signed authority and restores the protected
+head before serving requests. The native ML-DSA verifier used here is still a
+hash-pinned candidate, not production release approval.
+
 The registry payload advertises the transport parameters clients need:
 
 - mask domain

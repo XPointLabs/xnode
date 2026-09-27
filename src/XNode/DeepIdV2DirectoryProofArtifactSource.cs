@@ -128,7 +128,7 @@ internal sealed class HttpsDeepIdV2DirectoryProofArtifactSource :
         }
     }
 
-    private static Uri CreateEndpoint(string exactOrigin)
+    internal static Uri CreateEndpoint(string exactOrigin)
     {
         if (string.IsNullOrEmpty(exactOrigin) ||
             exactOrigin != exactOrigin.Trim() ||
