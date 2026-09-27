@@ -235,6 +235,9 @@ internal sealed class DeepIdV2DirectoryProofRuntime :
         store.RestoreAsync(configuration.Authority.ReadCurrent(),
             cancellationToken);
 
+    internal VerifiedXPointNetworkAuthority ReadCurrentNetworkAuthority() =>
+        configuration.Authority.ReadCurrent();
+
     public void Dispose()
     {
         store.Dispose();

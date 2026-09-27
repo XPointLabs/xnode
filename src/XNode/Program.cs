@@ -45,6 +45,8 @@ var productionContactAuthorityOptions = builder.Configuration.GetSection("Contac
     .Get<ProductionContactAuthorityOptions>() ?? new ProductionContactAuthorityOptions();
 var did2DirectoryProofOptions = builder.Configuration.GetSection("DeepIdV2DirectoryProof")
     .Get<DeepIdV2DirectoryProofOptions>() ?? new DeepIdV2DirectoryProofOptions();
+var did2NetworkPlacementOptions = builder.Configuration.GetSection("DeepIdV2NetworkPlacement")
+    .Get<DeepIdV2NetworkPlacementOptions>() ?? new DeepIdV2NetworkPlacementOptions();
 var groupControlServiceOptions = builder.Configuration.GetSection("GroupControlService")
     .Get<GroupControlServiceOptions>() ?? new GroupControlServiceOptions();
 var productionGroupControlAuthorityOptions = builder.Configuration
@@ -78,6 +80,9 @@ var did2DirectoryProof = did2DirectoryProofOptions.ValidateAndLoad(
     nodeOptions,
     builder.Environment.IsDevelopment() || builder.Environment.IsEnvironment("UAT"),
     productionContactAuthority is not null);
+var did2NetworkPlacement = did2NetworkPlacementOptions.ValidateAndLoad(
+    did2DirectoryProof is not null,
+    builder.Environment.IsDevelopment() || builder.Environment.IsEnvironment("UAT"));
 var productionGroupControlAuthority = productionGroupControlAuthorityOptions.ValidateAndLoad(
     nodeOptions,
     groupControlServiceOptions,
@@ -179,6 +184,8 @@ builder.Services.AddSingleton<IMailboxStorageSecurity, MailboxStorageSecurity>()
 builder.Services.AddSingleton<IMailboxDurabilityBarrier, MailboxDurabilityBarrier>();
 if (did2DirectoryProof is not null)
     builder.Services.AddDeepIdV2DirectoryProof(did2DirectoryProof);
+if (did2NetworkPlacement is not null)
+    builder.Services.AddDeepIdV2NetworkPlacement(did2NetworkPlacement);
 var contactServicePlan = productionContactAuthority is null
     ? builder.Services.AddContactServiceBoundary(contactServiceOptions)
     : builder.Services.AddProductionContactAuthorityBoundary(

@@ -24,6 +24,17 @@ The internal candidate gate can combine a durably complete XPP1 V2 journal,
 recipient-specific current directory proof and exact DCA1/DCR1/inventory
 verification. It has no public dispatch or receipt issuance path yet; replica
 placement, two durable commits and final XIC1 verification remain mandatory.
+The independent `DeepIdV2NetworkPlacement` UAT section may be enabled only
+alongside this proof boundary. It takes complete ordered absolute paths for
+`ExactPolicyPaths` (XVP1), `ExactViewPaths` (XNV1), matching `ExactHeadPaths`
+(XNH1), `ExactActiveNodePaths` (XND1), and
+`ExactMailboxProjectionPaths` (PMT2). All files must be distinct and mounted
+read-only. Startup checks path presence and closed byte bounds; each placement
+request then re-verifies the entire signed network closure against a fresh
+recipient-specific DID2 directory proof before minting a NETCODEC capability.
+This source has no replica RPC consumer yet and is not a production LKG/renewal
+owner. Do not activate contact publication from it until protected network
+successor state and the two-replica transaction are composed.
 
 Set `DeepIdV2DirectoryProof:Enabled=true` only with an exact HTTPS
 `RegistryOrigin`, paired ordered absolute `ExactAuthorityPaths` and
