@@ -71,6 +71,8 @@ public sealed class DeepIdV2NetworkAuthorityFileSourceTests
             File.WriteAllBytes(xnaPath, tampered);
             Assert.Throws<XPointNetworkAuthorityVerificationException>(
                 source.ReadCurrent);
+            File.WriteAllBytes(xnaPath, new byte[65_536]);
+            Assert.Throws<InvalidDataException>(source.ReadCurrent);
             Assert.Throws<ArgumentException>(() =>
                 new DeepIdV2NetworkAuthorityFileSource(authored.GenesisPin,
                     [xnaPath], [xnaPath]));

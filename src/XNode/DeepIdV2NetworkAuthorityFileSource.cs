@@ -85,17 +85,26 @@ internal sealed class DeepIdV2NetworkAuthorityFileSource
                 throw new CryptographicException(
                     "DID2 authority artifact path contains a link.");
         }
-        var length = new FileInfo(path).Length;
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
+            FileShare.Read, bufferSize: 4096, FileOptions.SequentialScan);
+        var length = stream.Length;
         if (length is < 1 or > MaximumArtifactBytes)
             throw new InvalidDataException(
                 "DID2 authority artifact exceeds its closed bound.");
-        var bytes = File.ReadAllBytes(path);
-        if (bytes.Length != length)
+        var bytes = new byte[(int)length];
+        try
+        {
+            stream.ReadExactly(bytes);
+            if (stream.ReadByte() == -1 && stream.Length == length)
+                return bytes;
+        }
+        catch
         {
             CryptographicOperations.ZeroMemory(bytes);
-            throw new InvalidDataException(
-                "DID2 authority artifact changed while being read.");
+            throw;
         }
-        return bytes;
+        CryptographicOperations.ZeroMemory(bytes);
+        throw new InvalidDataException(
+            "DID2 authority artifact changed while being read.");
     }
 }
