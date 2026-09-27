@@ -52,7 +52,9 @@ internal sealed class DeepIdV2DirectoryCurrentProofReader(
     {
         ArgumentNullException.ThrowIfNull(requestedDid2);
         ArgumentNullException.ThrowIfNull(authority);
-        if (deploymentProfileId == 0 || supportedReader < 2)
+        if (deploymentProfileId == 0)
+            throw new ArgumentOutOfRangeException(nameof(deploymentProfileId));
+        if (supportedReader < 2)
             throw new ArgumentOutOfRangeException(nameof(supportedReader));
         await readGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try

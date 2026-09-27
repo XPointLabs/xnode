@@ -46,6 +46,26 @@ public sealed class DeepIdV2DirectoryCurrentProofReaderTests
         Assert.False(floor.Called);
     }
 
+    [Fact]
+    public async Task MissingDeploymentProfileRejectsBeforeProtectedStateAccess()
+    {
+        var floor = new MissingFloor();
+        var reader = new DeepIdV2DirectoryCurrentProofReader(
+            new RejectIfCalledArtifacts(), floor,
+            new RejectIfCalledClock(), new RejectIfCalledPq());
+        var did2 = DeepIdV2Codec.AuthorDid2(Bytes(32, 0x21),
+            Bytes(1952, 0x31), Bytes(16, 0x41));
+        var authority = (VerifiedXPointNetworkAuthority)
+            RuntimeHelpers.GetUninitializedObject(
+                typeof(VerifiedXPointNetworkAuthority));
+
+        var error = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            async () => await reader.ReadCurrentAsync(did2, authority,
+                0, 2, default));
+        Assert.Equal("deploymentProfileId", error.ParamName);
+        Assert.False(floor.Called);
+    }
+
     private static byte[] Bytes(int length, byte value)
     {
         var bytes = new byte[length];
