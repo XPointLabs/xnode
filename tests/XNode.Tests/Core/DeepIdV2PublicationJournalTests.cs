@@ -117,6 +117,46 @@ public sealed class DeepIdV2PublicationJournalTests
     }
 
     [Fact]
+    public void ExactCommitReplay_QuarantinesDamagedDurableChunkWithoutRestart()
+    {
+        using var fixture = new Fixture();
+        var sequence = Sequence(Aggregate(), View);
+        using var journal = fixture.Open();
+        foreach (var fragment in sequence)
+            journal.Stage(fragment);
+
+        var chunkPath = Path.Combine(fixture.DirectoryPath, "chunk-000.xpp1");
+        var damaged = File.ReadAllBytes(chunkPath);
+        damaged[^1] ^= 1;
+        File.WriteAllBytes(chunkPath, damaged);
+
+        Assert.Throws<InvalidDataException>(() => journal.Stage(sequence[^1]));
+        Assert.True(File.Exists(Path.Combine(fixture.DirectoryPath,
+            "fault.marker")));
+        Assert.Throws<InvalidDataException>(() => journal.ReadCommitted());
+    }
+
+    [Fact]
+    public void LostManifestWithStagedChunk_QuarantinesBeforeOperationCanRestart()
+    {
+        using var fixture = new Fixture();
+        var sequence = Sequence(Aggregate(), View);
+        using var journal = fixture.Open();
+        Assert.Equal(PublicationStageDisposition.Staged,
+            journal.Stage(sequence[0]).Disposition);
+        Assert.Equal(PublicationStageDisposition.Staged,
+            journal.Stage(sequence[1]).Disposition);
+        File.Delete(Path.Combine(fixture.DirectoryPath, "manifest.xpp1"));
+
+        Assert.Throws<InvalidDataException>(() => journal.Stage(sequence[0]));
+        Assert.True(File.Exists(Path.Combine(fixture.DirectoryPath,
+            "fault.marker")));
+        Assert.False(File.Exists(Path.Combine(fixture.DirectoryPath,
+            "manifest.xpp1")));
+        Assert.Throws<InvalidDataException>(() => journal.Stage(sequence[0]));
+    }
+
+    [Fact]
     public void WrongOperation_DoesNotCreatePublicationState()
     {
         using var fixture = new Fixture();

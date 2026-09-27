@@ -110,7 +110,7 @@ internal sealed class DeepIdV2PublicationJournal : IDisposable
             throw new InvalidDataException("The DID2 publication journal is unavailable.");
         try
         {
-            var manifest = Read("manifest.xpp1", Xpp1V2FragmentPhase.Manifest);
+            var manifest = ReadManifestOrDetectOrphans();
             var commit = Read("commit.xpp1", Xpp1V2FragmentPhase.Commit);
             if (manifest is null && commit is not null)
                 throw new InvalidDataException("A DID2 commit has no staged manifest.");
@@ -133,7 +133,7 @@ internal sealed class DeepIdV2PublicationJournal : IDisposable
 
     private PublicationStageResult StageManifest(ParsedXpp1V2Fragment incoming)
     {
-        var stored = Read("manifest.xpp1", Xpp1V2FragmentPhase.Manifest);
+        var stored = ReadManifestOrDetectOrphans();
         if (stored is not null)
             return Fixed(stored.CanonicalBytes.Span, incoming.CanonicalBytes.Span)
                 ? new(PublicationStageDisposition.ExactReplay)
@@ -146,7 +146,7 @@ internal sealed class DeepIdV2PublicationJournal : IDisposable
 
     private PublicationStageResult StageChunk(ParsedXpp1V2Fragment incoming)
     {
-        var manifest = Read("manifest.xpp1", Xpp1V2FragmentPhase.Manifest);
+        var manifest = ReadManifestOrDetectOrphans();
         if (manifest is null)
             return new(PublicationStageDisposition.Incomplete);
         if (!HeadersMatch(manifest, incoming) ||
@@ -166,18 +166,22 @@ internal sealed class DeepIdV2PublicationJournal : IDisposable
 
     private PublicationStageResult StageCommit(ParsedXpp1V2Fragment incoming)
     {
-        var manifest = Read("manifest.xpp1", Xpp1V2FragmentPhase.Manifest);
+        var manifest = ReadManifestOrDetectOrphans();
         if (manifest is null)
             return new(PublicationStageDisposition.Incomplete);
         if (!HeadersMatch(manifest, incoming))
             return LatchFork();
         var stored = Read("commit.xpp1", Xpp1V2FragmentPhase.Commit);
         if (stored is not null)
-            return Fixed(stored.CanonicalBytes.Span, incoming.CanonicalBytes.Span)
-                ? new(PublicationStageDisposition.ExactReplay,
-                    Reassemble(manifest),
-                    DeepIdV2Codec.DecodeDid2(manifest.PublisherDid2.Span))
-                : LatchFork();
+        {
+            if (!Fixed(stored.CanonicalBytes.Span, incoming.CanonicalBytes.Span))
+                return LatchFork();
+            // Re-read through the committed-state gate so a damaged durable
+            // chunk is quarantined even when the process has not restarted.
+            var committed = ReadCommitted() ?? throw new InvalidDataException(
+                "The exact DID2 commit lost its durable candidate.");
+            return committed with { Disposition = PublicationStageDisposition.ExactReplay };
+        }
         if (!HaveAllChunks(manifest))
             return new(PublicationStageDisposition.Incomplete);
         ParsedXpp1V2 candidate;
@@ -198,6 +202,19 @@ internal sealed class DeepIdV2PublicationJournal : IDisposable
             if (!File.Exists(Path(ChunkName(index))))
                 return false;
         return true;
+    }
+
+    private ParsedXpp1V2Fragment? ReadManifestOrDetectOrphans()
+    {
+        var manifest = Read("manifest.xpp1", Xpp1V2FragmentPhase.Manifest);
+        if (manifest is null && Directory.EnumerateFiles(directory, "*.xpp1").Any())
+        {
+            faulted = true;
+            FaultAndQuarantine();
+            throw new InvalidDataException(
+                "DID2 publication records lost their durable manifest.");
+        }
+        return manifest;
     }
 
     private ParsedXpp1V2 Reassemble(ParsedXpp1V2Fragment manifest)
