@@ -20,6 +20,10 @@ successor heads beneath `Node:DataDirectory`. It refuses to start in Production
 or alongside the V1 `ContactAuthority` boundary. It does **not** yet activate
 DID2 contact publication, pre-key claims, messages, or groups. Do not advertise
 it as an E2E-capable XNode release.
+The internal candidate gate can combine a durably complete XPP1 V2 journal,
+recipient-specific current directory proof and exact DCA1/DCR1/inventory
+verification. It has no public dispatch or receipt issuance path yet; replica
+placement, two durable commits and final XIC1 verification remain mandatory.
 
 Set `DeepIdV2DirectoryProof:Enabled=true` only with an exact HTTPS
 `RegistryOrigin`, paired ordered absolute `ExactAuthorityPaths` and

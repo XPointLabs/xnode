@@ -155,7 +155,14 @@ internal sealed record DeepIdV2DirectoryProofConfiguration(
     string RegistryOrigin, ushort DeploymentProfileId,
     TimeSpan RequestTimeout);
 
-internal sealed class DeepIdV2DirectoryProofRuntime : IDisposable
+internal interface IDeepIdV2CurrentDirectoryProofSource
+{
+    ValueTask<VerifiedDeepIdV2DirectoryFreshness> ReadCurrentAsync(
+        ParsedDid2 did2, CancellationToken cancellationToken);
+}
+
+internal sealed class DeepIdV2DirectoryProofRuntime :
+    IDeepIdV2CurrentDirectoryProofSource, IDisposable
 {
     private readonly DeepIdV2DirectoryProofConfiguration configuration;
     private readonly DeepIdV2DirectoryCurrentProofReader reader;
@@ -214,7 +221,7 @@ internal sealed class DeepIdV2DirectoryProofRuntime : IDisposable
         finally { CryptographicOperations.ZeroMemory(genesis); }
     }
 
-    internal ValueTask<VerifiedDeepIdV2DirectoryFreshness> ReadCurrentAsync(
+    public ValueTask<VerifiedDeepIdV2DirectoryFreshness> ReadCurrentAsync(
         ParsedDid2 did2, CancellationToken cancellationToken)
     {
         var authority = configuration.Authority.ReadCurrent();
@@ -270,6 +277,9 @@ internal static class DeepIdV2DirectoryProofHostComposition
             provider.GetRequiredService<IOnionMonotonicClock>(),
             provider.GetRequiredService<IMailboxStorageSecurity>(),
             provider.GetRequiredService<IMailboxDurabilityBarrier>()));
+        services.AddSingleton<IDeepIdV2CurrentDirectoryProofSource>(provider =>
+            provider.GetRequiredService<DeepIdV2DirectoryProofRuntime>());
+        services.AddSingleton<DeepIdV2PublicationCandidateAuthority>();
         services.AddHostedService<DeepIdV2DirectoryProofHostedService>();
         return services;
     }
