@@ -43,6 +43,9 @@ an XIC1 receipt, or permission to claim pre-keys. Keep the switch disabled in
 Production and do not expose the peer route at public ingress. This source is
 not yet a production LKG/renewal owner. Protected network successor state,
 two-replica final commit, and client claim/receive remain release gates.
+The separate candidate authority gate derives DCA1 from exact DCR1 and
+verifies it against its own fresh DID2 checkpoint; a caller cannot supply a
+pre-verified DCA1. The peer staging response still does not invoke that gate.
 
 Set `DeepIdV2DirectoryProof:Enabled=true` only with an exact HTTPS
 `RegistryOrigin`, paired ordered absolute `ExactAuthorityPaths` and

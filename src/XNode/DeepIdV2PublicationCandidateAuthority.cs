@@ -22,11 +22,10 @@ internal sealed class DeepIdV2PublicationCandidateAuthority(
 
     internal async ValueTask<ParsedXpp1V2> VerifyCommittedCandidateAsync(
         DeepIdV2PublicationJournal journal, ParsedDcr1V2 closure,
-        VerifiedDca1V2 authorization, CancellationToken cancellationToken)
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(journal);
         ArgumentNullException.ThrowIfNull(closure);
-        ArgumentNullException.ThrowIfNull(authorization);
         var staged = journal.ReadCommitted();
         if (staged is not
             { Disposition: PublicationStageDisposition.CandidateReady,
@@ -38,6 +37,13 @@ internal sealed class DeepIdV2PublicationCandidateAuthority(
             cancellationToken).ConfigureAwait(false) ??
             throw new CryptographicException(
                 "The current DID2 directory proof is absent.");
+        var checkpoint = freshness.CurrentCheckpoint ??
+            throw new CryptographicException(
+                "DID2 publication needs the exact current account checkpoint.");
+        var dca = DeepIdV2ContactAuthorizationCodec.Decode(
+            closure.Bundle.Field(6).Span);
+        var authorization = DeepIdV2ContactAuthorizationCodec.Verify(
+            dca, checkpoint.Binding, checkpoint.Directory);
         var now = await clock.ReadAsync(cancellationToken)
             .ConfigureAwait(false) ??
             throw new CryptographicException(

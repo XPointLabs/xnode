@@ -24,12 +24,8 @@ public sealed class DeepIdV2PublicationCandidateAuthorityTests
             var gate = new DeepIdV2PublicationCandidateAuthority(proofs, clock);
             var closure = (ParsedDcr1V2)RuntimeHelpers.GetUninitializedObject(
                 typeof(ParsedDcr1V2));
-            var authorization = (VerifiedDca1V2)
-                RuntimeHelpers.GetUninitializedObject(typeof(VerifiedDca1V2));
-
             await Assert.ThrowsAsync<InvalidOperationException>(async () =>
-                await gate.VerifyCommittedCandidateAsync(journal, closure,
-                    authorization, default));
+                await gate.VerifyCommittedCandidateAsync(journal, closure, default));
             Assert.False(proofs.Called);
             Assert.False(clock.Called);
         }
