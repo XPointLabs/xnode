@@ -21,7 +21,7 @@ or alongside the V1 `ContactAuthority` boundary. It does **not** yet activate
 DID2 contact publication, pre-key claims, messages, or groups. Do not advertise
 it as an E2E-capable XNode release.
 The internal candidate gate can combine a durably complete XPP1 V2 journal,
-recipient-specific current directory proof and exact DCA1/DCR1/inventory
+recipient-specific current directory proof and public DCA1/XPS1/inventory
 verification. It has no public dispatch or receipt issuance path yet; replica
 placement, two durable commits and final XIC1 verification remain mandatory.
 The independent `DeepIdV2NetworkPlacement` UAT section may be enabled only
@@ -43,8 +43,9 @@ an XIC1 receipt, or permission to claim pre-keys. Keep the switch disabled in
 Production and do not expose the peer route at public ingress. This source is
 not yet a production LKG/renewal owner. Protected network successor state,
 two-replica final commit, and client claim/receive remain release gates.
-The separate candidate authority gate derives DCA1 from exact DCR1 and
-verifies it against its own fresh DID2 checkpoint; a caller cannot supply a
+The separate candidate authority gate reads signed DCA1/XPS1 from the exact
+bounded manifest; it never receives plaintext DCR1. It verifies this support
+against its own fresh DID2 checkpoint; a caller cannot supply a
 pre-verified DCA1. The peer staging response still does not invoke that gate.
 
 Set `DeepIdV2DirectoryProof:Enabled=true` only with an exact HTTPS

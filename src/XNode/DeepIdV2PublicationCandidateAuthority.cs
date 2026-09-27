@@ -8,7 +8,8 @@ namespace XNode;
 
 /// <summary>
 /// Joins a durably reassembled XPP1 candidate to a recipient-specific,
-/// nonce-bound current DID2 proof and the complete DCA1/DCR1/XPI1 inventory.
+/// nonce-bound current DID2 proof and signed public DCA1/XPS1/XPI1 support.
+/// The selected replica never opens the encrypted DCR1 contact object.
 /// This is not replica placement, publication receipt or claim authority.
 /// </summary>
 internal sealed class DeepIdV2PublicationCandidateAuthority(
@@ -21,17 +22,24 @@ internal sealed class DeepIdV2PublicationCandidateAuthority(
         throw new ArgumentNullException(nameof(clock));
 
     internal async ValueTask<ParsedXpp1V2> VerifyCommittedCandidateAsync(
-        DeepIdV2PublicationJournal journal, ParsedDcr1V2 closure,
+        DeepIdV2PublicationJournal journal,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(journal);
-        ArgumentNullException.ThrowIfNull(closure);
         var staged = journal.ReadCommitted();
         if (staged is not
             { Disposition: PublicationStageDisposition.CandidateReady,
-              Candidate: not null, PublisherDid2: not null })
+              Candidate: not null, PublisherDid2: not null } ||
+            staged.PublisherDca1.Length !=
+                DeepIdV2ContactAuthorizationCodec.CanonicalLength ||
+            staged.PublisherXps1.Length !=
+                DeepIdV2BoundedPreKeyPublicationCodec.Xps1Length)
             throw new InvalidOperationException(
                 "DID2 publication candidate is not durably complete.");
+
+        // Reject malformed public support before a network proof request.
+        var dca = DeepIdV2ContactAuthorizationCodec.Decode(
+            staged.PublisherDca1.Span);
 
         var freshness = await proofs.ReadCurrentAsync(staged.PublisherDid2,
             cancellationToken).ConfigureAwait(false) ??
@@ -40,8 +48,6 @@ internal sealed class DeepIdV2PublicationCandidateAuthority(
         var checkpoint = freshness.CurrentCheckpoint ??
             throw new CryptographicException(
                 "DID2 publication needs the exact current account checkpoint.");
-        var dca = DeepIdV2ContactAuthorizationCodec.Decode(
-            closure.Bundle.Field(6).Span);
         var authorization = DeepIdV2ContactAuthorizationCodec.Verify(
             dca, checkpoint.Binding, checkpoint.Directory);
         var now = await clock.ReadAsync(cancellationToken)
@@ -50,8 +56,9 @@ internal sealed class DeepIdV2PublicationCandidateAuthority(
                 "The DID2 monotonic clock is unavailable.");
         var current = DeepIdV2CurrentContactAuthorizationVerifier.Verify(
             freshness, authorization, now.BootId.Span, now.SampleSeconds);
-        DeepIdV2PreKeyPublicationAuthorizationVerifier.Verify(
-            staged.PublisherDid2, closure, current, staged.Candidate,
+        DeepIdV2ReplicaPreKeyInventoryVerifier.VerifyComplete(
+            staged.PublisherDid2, staged.PublisherXps1.Span,
+            current, staged.Candidate,
             now.BootId.Span, now.SampleSeconds);
         return staged.Candidate;
     }

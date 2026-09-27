@@ -1,4 +1,3 @@
-using System.Runtime.CompilerServices;
 using Deep.Protocol.AccountDirectoryV1;
 using Deep.Protocol.ApplicationCore;
 using Deep.Protocol.ContactV2;
@@ -22,10 +21,8 @@ public sealed class DeepIdV2PublicationCandidateAuthorityTests
                 Bytes(16, 0x11), Bytes(32, 0x12), Bytes(32, 0x13),
                 Bytes(32, 0x14), Bytes(32, 0x15));
             var gate = new DeepIdV2PublicationCandidateAuthority(proofs, clock);
-            var closure = (ParsedDcr1V2)RuntimeHelpers.GetUninitializedObject(
-                typeof(ParsedDcr1V2));
             await Assert.ThrowsAsync<InvalidOperationException>(async () =>
-                await gate.VerifyCommittedCandidateAsync(journal, closure, default));
+                await gate.VerifyCommittedCandidateAsync(journal, default));
             Assert.False(proofs.Called);
             Assert.False(clock.Called);
         }

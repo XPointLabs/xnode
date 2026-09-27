@@ -41,7 +41,9 @@ public sealed class DeepIdV2ReplicaStageReceiverTests
             var aggregate = Aggregate();
             var publisher = DeepIdV2Codec.DecodeDid2(Did2());
             var fragments = DeepIdV2BoundedPreKeyPublicationCodec.CreateSequence(
-                aggregate, View, publisher.CanonicalBytes.Span);
+                aggregate, View, publisher.CanonicalBytes.Span,
+                Bytes(DeepIdV2ContactAuthorizationCodec.CanonicalLength, 0xd1),
+                Bytes(DeepIdV2BoundedPreKeyPublicationCodec.Xps1Length, 0xe1));
             var first = Command(placement, publisher, fragments[0]);
             await Assert.ThrowsAsync<UnauthorizedAccessException>(async () =>
                 await receiver.ReceiveAsync(first,
@@ -119,7 +121,9 @@ public sealed class DeepIdV2ReplicaStageReceiverTests
                 new MailboxDurabilityBarrier());
             var publisher = DeepIdV2Codec.DecodeDid2(Did2());
             var manifest = DeepIdV2BoundedPreKeyPublicationCodec.CreateSequence(
-                Aggregate(), View, publisher.CanonicalBytes.Span)[0];
+                Aggregate(), View, publisher.CanonicalBytes.Span,
+                Bytes(DeepIdV2ContactAuthorizationCodec.CanonicalLength, 0xd1),
+                Bytes(DeepIdV2BoundedPreKeyPublicationCodec.Xps1Length, 0xe1))[0];
             var stale = ContactServicePlacementCapability.FromUntrustedProjection(
                 ContactServiceRequestKind.PublishPreKeyInventory,
                 Network, View, Bytes(32, 0x88), Capability, 7, 100_000,

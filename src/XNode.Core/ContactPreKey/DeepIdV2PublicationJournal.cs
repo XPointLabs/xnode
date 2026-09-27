@@ -150,7 +150,8 @@ internal sealed class DeepIdV2PublicationJournal : IDisposable
             return new PublicationStageResult(
                 PublicationStageDisposition.CandidateReady,
                 Reassemble(manifest),
-                DeepIdV2Codec.DecodeDid2(manifest.PublisherDid2.Span));
+                DeepIdV2Codec.DecodeDid2(manifest.PublisherDid2.Span),
+                manifest.PublisherDca1, manifest.PublisherXps1);
         }
         catch (Exception exception) when (exception is InvalidDataException or FormatException)
         {
@@ -223,7 +224,8 @@ internal sealed class DeepIdV2PublicationJournal : IDisposable
         }
         Write("commit.xpp1", incoming.CanonicalBytes.Span);
         return new(PublicationStageDisposition.CandidateReady, candidate,
-            DeepIdV2Codec.DecodeDid2(manifest.PublisherDid2.Span));
+            DeepIdV2Codec.DecodeDid2(manifest.PublisherDid2.Span),
+            manifest.PublisherDca1, manifest.PublisherXps1);
     }
 
     private bool HaveAllChunks(ParsedXpp1V2Fragment manifest)
@@ -270,7 +272,8 @@ internal sealed class DeepIdV2PublicationJournal : IDisposable
             !Fixed(candidate.PlacementHash.Span, manifest.PlacementHash.Span) ||
             !Fixed(candidate.Manifest.Field(2).Span, serviceCapability) ||
             !Fixed(candidate.Manifest.CanonicalBytes.Span,
-                manifest.Body.Span.Slice(DeepIdV2Codec.Did2Length,
+                manifest.Body.Span.Slice(
+                    DeepIdV2BoundedPreKeyPublicationCodec.ManifestSupportLength,
                     DeepIdV2PreKeyManifestCodec.CanonicalLength)))
             throw new InvalidDataException("DID2 publication aggregate scope differs.");
         return candidate;
@@ -368,7 +371,8 @@ internal sealed class DeepIdV2PublicationJournal : IDisposable
 
     private bool ManifestBindsServiceCapability(ParsedXpp1V2Fragment manifest) =>
         Fixed(DeepIdV2PreKeyManifestCodec.Decode(
-            manifest.Body.Span.Slice(DeepIdV2Codec.Did2Length,
+            manifest.Body.Span.Slice(
+                DeepIdV2BoundedPreKeyPublicationCodec.ManifestSupportLength,
                 DeepIdV2PreKeyManifestCodec.CanonicalLength))
             .Field(2).Span, serviceCapability);
 
@@ -392,7 +396,7 @@ internal sealed class DeepIdV2PublicationJournal : IDisposable
         ParsedXpp1V2Fragment chunk)
     {
         var row = manifest.Body.Span.Slice(
-            DeepIdV2Codec.Did2Length +
+            DeepIdV2BoundedPreKeyPublicationCodec.ManifestSupportLength +
             DeepIdV2PreKeyManifestCodec.CanonicalLength +
             chunk.ChunkIndex * 36, 36);
         return BinaryPrimitives.ReadUInt32BigEndian(row) == chunk.Body.Length &&
@@ -466,4 +470,6 @@ internal enum PublicationStageDisposition
 }
 
 internal sealed record PublicationStageResult(PublicationStageDisposition Disposition,
-    ParsedXpp1V2? Candidate = null, ParsedDid2? PublisherDid2 = null);
+    ParsedXpp1V2? Candidate = null, ParsedDid2? PublisherDid2 = null,
+    ReadOnlyMemory<byte> PublisherDca1 = default,
+    ReadOnlyMemory<byte> PublisherXps1 = default);

@@ -43,6 +43,10 @@ public sealed class DeepIdV2PublicationJournalTests
             Assert.Equal(PublicationStageDisposition.CandidateReady, completed.Disposition);
             Assert.Equal(aggregate, completed.Candidate!.CanonicalBytes.ToArray());
             Assert.Equal(Did2(), completed.PublisherDid2!.CanonicalBytes.ToArray());
+            Assert.Equal(Bytes(DeepIdV2ContactAuthorizationCodec.CanonicalLength,
+                0xd1), completed.PublisherDca1.ToArray());
+            Assert.Equal(Bytes(DeepIdV2BoundedPreKeyPublicationCodec.Xps1Length,
+                0xe1), completed.PublisherXps1.ToArray());
             Assert.Equal(PublicationStageDisposition.ExactReplay,
                 journal.Stage(sequence[^1]).Disposition);
         }
@@ -51,6 +55,10 @@ public sealed class DeepIdV2PublicationJournalTests
             var committed = journal.ReadCommitted()!;
             Assert.Equal(aggregate, committed.Candidate!.CanonicalBytes.ToArray());
             Assert.Equal(Did2(), committed.PublisherDid2!.CanonicalBytes.ToArray());
+            Assert.Equal(Bytes(DeepIdV2ContactAuthorizationCodec.CanonicalLength,
+                0xd1), committed.PublisherDca1.ToArray());
+            Assert.Equal(Bytes(DeepIdV2BoundedPreKeyPublicationCodec.Xps1Length,
+                0xe1), committed.PublisherXps1.ToArray());
         }
     }
 
@@ -265,7 +273,9 @@ public sealed class DeepIdV2PublicationJournalTests
     private static IReadOnlyList<byte[]> Sequence(byte[] aggregate, byte[] view,
         byte[]? did2 = null) =>
         DeepIdV2BoundedPreKeyPublicationCodec.CreateSequence(
-            aggregate, view, did2 ?? Did2());
+            aggregate, view, did2 ?? Did2(),
+            Bytes(DeepIdV2ContactAuthorizationCodec.CanonicalLength, 0xd1),
+            Bytes(DeepIdV2BoundedPreKeyPublicationCodec.Xps1Length, 0xe1));
 
     private static byte[] Did2() => DeepIdV2Codec.AuthorDid2(
         Bytes(32, 0xa1), Bytes(1952, 0xa2), Bytes(16, 0xa3))
