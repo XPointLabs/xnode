@@ -15,6 +15,9 @@ internal sealed class DeepIdV2PublicationJournal : IDisposable
     private readonly string directory;
     private readonly byte[] networkId;
     private readonly byte[] operationId;
+    private readonly byte[] viewHash;
+    private readonly byte[] placementHash;
+    private readonly byte[] serviceCapability;
     private readonly IMailboxStorageSecurity security;
     private readonly IMailboxDurabilityBarrier durability;
     private readonly FileStream lease;
@@ -22,16 +25,24 @@ internal sealed class DeepIdV2PublicationJournal : IDisposable
     private bool faulted;
 
     internal DeepIdV2PublicationJournal(string directory, ReadOnlySpan<byte> networkId,
-        ReadOnlySpan<byte> operationId, IMailboxStorageSecurity? security = null,
+        ReadOnlySpan<byte> operationId, ReadOnlySpan<byte> viewHash,
+        ReadOnlySpan<byte> placementHash, ReadOnlySpan<byte> serviceCapability,
+        IMailboxStorageSecurity? security = null,
         IMailboxDurabilityBarrier? durability = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(directory);
         if (networkId.Length != 16 || operationId.Length != 32 ||
-            IsZero(networkId) || IsZero(operationId))
+            viewHash.Length != 32 || placementHash.Length != 32 ||
+            serviceCapability.Length != 32 || IsZero(networkId) ||
+            IsZero(operationId) || IsZero(viewHash) || IsZero(placementHash) ||
+            IsZero(serviceCapability))
             throw new ArgumentException("The DID2 publication scope is invalid.");
         this.directory = System.IO.Path.GetFullPath(directory);
         this.networkId = networkId.ToArray();
         this.operationId = operationId.ToArray();
+        this.viewHash = viewHash.ToArray();
+        this.placementHash = placementHash.ToArray();
+        this.serviceCapability = serviceCapability.ToArray();
         this.security = security ?? new MailboxStorageSecurity();
         this.durability = durability ?? new MailboxDurabilityBarrier();
         this.security.SecureDirectory(this.directory);
@@ -65,6 +76,11 @@ internal sealed class DeepIdV2PublicationJournal : IDisposable
         if (!Fixed(incoming.NetworkId.Span, networkId) ||
             !Fixed(incoming.PublicationOperationId.Span, operationId))
             return new(PublicationStageDisposition.WrongScope);
+        if (!Fixed(incoming.ViewHash.Span, viewHash) ||
+            !Fixed(incoming.PlacementHash.Span, placementHash))
+            return File.Exists(Path("manifest.xpp1"))
+                ? LatchFork()
+                : new(PublicationStageDisposition.WrongScope);
         if (File.Exists(Path("fork.marker")))
             return new(PublicationStageDisposition.ForkLatched);
 
@@ -95,6 +111,8 @@ internal sealed class DeepIdV2PublicationJournal : IDisposable
         {
             var manifest = Read("manifest.xpp1", Xpp1V2FragmentPhase.Manifest);
             var commit = Read("commit.xpp1", Xpp1V2FragmentPhase.Commit);
+            if (manifest is null && commit is not null)
+                throw new InvalidDataException("A DID2 commit has no staged manifest.");
             if (manifest is null || commit is null)
                 return null;
             MatchHeader(manifest, commit);
@@ -116,6 +134,8 @@ internal sealed class DeepIdV2PublicationJournal : IDisposable
             return Fixed(stored.CanonicalBytes.Span, incoming.CanonicalBytes.Span)
                 ? new(PublicationStageDisposition.ExactReplay)
                 : LatchFork();
+        if (!ManifestBindsServiceCapability(incoming))
+            return new(PublicationStageDisposition.WrongScope);
         Write("manifest.xpp1", incoming.CanonicalBytes.Span);
         return new(PublicationStageDisposition.Staged);
     }
@@ -194,6 +214,7 @@ internal sealed class DeepIdV2PublicationJournal : IDisposable
         if (!Fixed(candidate.NetworkId.Span, networkId) ||
             !Fixed(candidate.PublicationOperationId.Span, operationId) ||
             !Fixed(candidate.PlacementHash.Span, manifest.PlacementHash.Span) ||
+            !Fixed(candidate.Manifest.Field(2).Span, serviceCapability) ||
             !Fixed(candidate.Manifest.CanonicalBytes.Span,
                 manifest.Body.Span[..DeepIdV2PreKeyManifestCodec.CanonicalLength]))
             throw new InvalidDataException("DID2 publication aggregate scope differs.");
@@ -223,6 +244,8 @@ internal sealed class DeepIdV2PublicationJournal : IDisposable
                     throw new InvalidDataException("DID2 journal contains orphan records.");
                 return;
             }
+            if (!ManifestBindsServiceCapability(manifest))
+                throw new InvalidDataException("DID2 journal manifest has a wrong shard capability.");
             foreach (var file in Directory.EnumerateFiles(directory, "chunk-*.xpp1"))
             {
                 var name = System.IO.Path.GetFileName(file);
@@ -264,7 +287,11 @@ internal sealed class DeepIdV2PublicationJournal : IDisposable
                 throw new InvalidDataException("DID2 journal record exceeds its bound or is a link.");
             var result = DeepIdV2BoundedPreKeyPublicationCodec.Decode(File.ReadAllBytes(path));
             if (result.Phase != phase || !Fixed(result.NetworkId.Span, networkId) ||
-                !Fixed(result.PublicationOperationId.Span, operationId))
+                !Fixed(result.PublicationOperationId.Span, operationId) ||
+                !Fixed(result.ViewHash.Span, viewHash) ||
+                !Fixed(result.PlacementHash.Span, placementHash) ||
+                (phase == Xpp1V2FragmentPhase.Manifest &&
+                 !ManifestBindsServiceCapability(result)))
                 throw new InvalidDataException("DID2 journal record scope or phase differs.");
             return result;
         }
@@ -283,6 +310,11 @@ internal sealed class DeepIdV2PublicationJournal : IDisposable
         if (!HeadersMatch(manifest, fragment))
             throw new InvalidDataException("DID2 publication fragment header differs.");
     }
+
+    private bool ManifestBindsServiceCapability(ParsedXpp1V2Fragment manifest) =>
+        Fixed(DeepIdV2PreKeyManifestCodec.Decode(
+            manifest.Body.Span[..DeepIdV2PreKeyManifestCodec.CanonicalLength])
+            .Field(2).Span, serviceCapability);
 
     private static bool HeadersMatch(ParsedXpp1V2Fragment manifest,
         ParsedXpp1V2Fragment fragment)

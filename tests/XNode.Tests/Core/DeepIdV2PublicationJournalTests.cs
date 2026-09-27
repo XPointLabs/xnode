@@ -123,7 +123,43 @@ public sealed class DeepIdV2PublicationJournalTests
         Assert.False(File.Exists(Path.Combine(fixture.DirectoryPath, "manifest.xpp1")));
     }
 
-    private static byte[] Aggregate(byte placement = 0x14, byte[]? operation = null)
+    [Fact]
+    public void WrongViewOrServiceCapability_CannotBeginOperation()
+    {
+        using var fixture = new Fixture();
+        var aggregate = Aggregate();
+        var wrongView = DeepIdV2BoundedPreKeyPublicationCodec.CreateSequence(
+            aggregate, Bytes(32, 0x74));
+        var wrongCapability = DeepIdV2BoundedPreKeyPublicationCodec.CreateSequence(
+            Aggregate(capability: 0x76), View);
+        using var journal = fixture.Open();
+        Assert.Equal(PublicationStageDisposition.WrongScope,
+            journal.Stage(wrongView[0]).Disposition);
+        Assert.Equal(PublicationStageDisposition.WrongScope,
+            journal.Stage(wrongCapability[0]).Disposition);
+        Assert.False(File.Exists(Path.Combine(fixture.DirectoryPath, "manifest.xpp1")));
+    }
+
+    [Fact]
+    public void PersistedManifestWithDifferentShard_IsQuarantinedOnRestart()
+    {
+        using var fixture = new Fixture();
+        var original = DeepIdV2BoundedPreKeyPublicationCodec.CreateSequence(
+            Aggregate(), View);
+        var substituted = DeepIdV2BoundedPreKeyPublicationCodec.CreateSequence(
+            Aggregate(capability: 0x76), View);
+        using (var journal = fixture.Open())
+            Assert.Equal(PublicationStageDisposition.Staged,
+                journal.Stage(original[0]).Disposition);
+        File.WriteAllBytes(Path.Combine(fixture.DirectoryPath, "manifest.xpp1"),
+            substituted[0]);
+        Assert.Throws<InvalidDataException>(() => fixture.Open());
+        Assert.True(File.Exists(Path.Combine(fixture.DirectoryPath,
+            "fault.marker")));
+    }
+
+    private static byte[] Aggregate(byte placement = 0x14, byte[]? operation = null,
+        byte capability = 0x35)
     {
         var oneTime = DeepIdV2Dpk2Codec.Decode(DeepIdV2Dpk2Codec.Encode(
             Record(Dpk2PrekeyKind.OneTime)));
@@ -131,7 +167,7 @@ public sealed class DeepIdV2PublicationJournalTests
             Record(Dpk2PrekeyKind.LastResort)));
         ReadOnlyMemory<byte>[] fields =
         [
-            Network, Bytes(32, 0x35), Bytes(32, 0x21),
+            Network, Bytes(32, capability), Bytes(32, 0x21),
             Reference("DPD1", Bytes(32, 0x25)), Be64(1),
             Reference("XPS1", Bytes(32, 0x45)), Be64(1),
             new byte[32], Be16(32), Bytes(32, 0x65),
@@ -189,7 +225,8 @@ public sealed class DeepIdV2PublicationJournalTests
             System.IO.Path.GetTempPath(), "xnode-did2-journal-" + Guid.NewGuid().ToString("N"));
 
         internal DeepIdV2PublicationJournal Open() =>
-            new(DirectoryPath, Network, Operation);
+            new(DirectoryPath, Network, Operation, View,
+                Bytes(32, 0x14), Bytes(32, 0x35));
 
         public void Dispose()
         {
