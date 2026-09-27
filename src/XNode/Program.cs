@@ -47,6 +47,8 @@ var did2DirectoryProofOptions = builder.Configuration.GetSection("DeepIdV2Direct
     .Get<DeepIdV2DirectoryProofOptions>() ?? new DeepIdV2DirectoryProofOptions();
 var did2NetworkPlacementOptions = builder.Configuration.GetSection("DeepIdV2NetworkPlacement")
     .Get<DeepIdV2NetworkPlacementOptions>() ?? new DeepIdV2NetworkPlacementOptions();
+var did2ReplicaStageOptions = builder.Configuration.GetSection("DeepIdV2ReplicaStage")
+    .Get<DeepIdV2ReplicaStageOptions>() ?? new DeepIdV2ReplicaStageOptions();
 var groupControlServiceOptions = builder.Configuration.GetSection("GroupControlService")
     .Get<GroupControlServiceOptions>() ?? new GroupControlServiceOptions();
 var productionGroupControlAuthorityOptions = builder.Configuration
@@ -192,6 +194,13 @@ var contactServicePlan = productionContactAuthority is null
         nodeOptions,
         contactServiceOptions,
         productionContactAuthority);
+var did2ReplicaStageEnabled = did2ReplicaStageOptions.Validate(
+    did2NetworkPlacement is not null, contactServicePlan.RuntimeActivation,
+    builder.Environment.IsDevelopment() || builder.Environment.IsEnvironment("UAT"));
+if (did2ReplicaStageEnabled)
+    builder.Services.AddSingleton<DeepIdV2ReplicaStageReceiver>();
+var replicaEndpointActive = contactServicePlan.MapReplicaEndpoint ||
+    did2ReplicaStageEnabled;
 var groupControlServicePlan = productionGroupControlAuthority is null
     ? builder.Services.AddGroupControlServiceBoundary(groupControlServiceOptions)
     : builder.Services.AddProductionGroupControlAuthorityBoundary(
@@ -374,7 +383,7 @@ app.Use(async (context, next) =>
         && !MailboxAuthorityForwardingHttpContract.TryOperation(
             context.Request.Path,
             out _)
-        && !(contactServicePlan.MapReplicaEndpoint
+        && !(replicaEndpointActive
             && context.Request.Path.Equals(ContactReplicaHttpContract.Route))
         && !(groupControlServicePlan.MapReplicaEndpoint
             && context.Request.Path.Equals(GroupControlReplicaHttpContract.Route))
@@ -390,7 +399,7 @@ app.Use(async (context, next) =>
                 out _)
             || context.Request.Path.Equals(MailboxWireHttpContract.PeerStoreRoute)
             || context.Request.Path.Equals(MailboxWireHttpContract.PeerTombstoneRoute)
-            || contactServicePlan.MapReplicaEndpoint
+            || replicaEndpointActive
                 && context.Request.Path.Equals(ContactReplicaHttpContract.Route)
             || groupControlServicePlan.MapReplicaEndpoint
                 && context.Request.Path.Equals(GroupControlReplicaHttpContract.Route))
@@ -410,7 +419,7 @@ app.Use(async (context, next) =>
     var allowed = (privacyPeerListenUri is null
             && path.Equals(PrivacyRoutingOptions.PeerFramePath))
         || MailboxAuthorityForwardingHttpContract.TryOperation(path, out _)
-        || contactServicePlan.MapReplicaEndpoint
+        || replicaEndpointActive
             && path.Equals(ContactReplicaHttpContract.Route)
         || groupControlServicePlan.MapReplicaEndpoint
             && path.Equals(GroupControlReplicaHttpContract.Route)
@@ -437,7 +446,7 @@ app.Use(async (context, next) =>
     if (path.Equals(ManagedIngressH2Contract.FramePath)
         || path.Equals(PrivacyRoutingOptions.PeerFramePath)
         || MailboxAuthorityForwardingHttpContract.TryOperation(path, out _)
-        || contactServicePlan.MapReplicaEndpoint
+        || replicaEndpointActive
             && path.Equals(ContactReplicaHttpContract.Route)
         || groupControlServicePlan.MapReplicaEndpoint
             && path.Equals(GroupControlReplicaHttpContract.Route)
@@ -453,7 +462,7 @@ app.Use(async (context, next) =>
                     out var authorityOperation)
                     ? MailboxAuthorityForwardingHttpContract.Contract(
                         authorityOperation).MaximumRequestBytes
-                : contactServicePlan.MapReplicaEndpoint
+                : replicaEndpointActive
                     && path.Equals(ContactReplicaHttpContract.Route)
                     ? ContactReplicaWireCodec.MaximumRequestBytes
                 : groupControlServicePlan.MapReplicaEndpoint
@@ -815,6 +824,8 @@ app.MapPost(MailboxWireHttpContract.PeerTombstoneRoute, (
         cancellationToken));
 
 app.MapContactReplicaEndpoint(contactServicePlan, listenerPlan.PrivacyPeerPort);
+app.MapDeepIdV2ReplicaStageEndpoint(did2ReplicaStageEnabled,
+    listenerPlan.PrivacyPeerPort);
 app.MapGroupControlReplicaEndpoint(
     groupControlServicePlan,
     listenerPlan.PrivacyPeerPort);

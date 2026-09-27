@@ -32,9 +32,17 @@ alongside this proof boundary. It takes complete ordered absolute paths for
 read-only. Startup checks path presence and closed byte bounds; each placement
 request then re-verifies the entire signed network closure against a fresh
 recipient-specific DID2 directory proof before minting a NETCODEC capability.
-This source has no replica RPC consumer yet and is not a production LKG/renewal
-owner. Do not activate contact publication from it until protected network
-successor state and the two-replica transaction are composed.
+`DeepIdV2ReplicaStage:Enabled=true` adds a peer-only staging receiver on the
+existing authenticated HTTP/2 replica port. It requires this independent DID2
+placement source, refuses V1 ContactAuthority activation, and is accepted only
+in UAT/Development. Each request re-mints current placement from signed DID2
+proof/closure, checks the authenticated selected peer, and durably stages exact
+XPP1 V2 fragments beneath `Node:DataDirectory/did2-prekey-stage`. The
+one-byte result reports staging only; `CandidateReady` is **not** publication,
+an XIC1 receipt, or permission to claim pre-keys. Keep the switch disabled in
+Production and do not expose the peer route at public ingress. This source is
+not yet a production LKG/renewal owner. Protected network successor state,
+two-replica final commit, and client claim/receive remain release gates.
 
 Set `DeepIdV2DirectoryProof:Enabled=true` only with an exact HTTPS
 `RegistryOrigin`, paired ordered absolute `ExactAuthorityPaths` and

@@ -145,12 +145,19 @@ internal sealed class DeepIdV2NetworkClosureArtifacts(byte[][][] groups) :
     }
 }
 
+internal interface IDeepIdV2PreKeyPlacementSource
+{
+    ValueTask<ContactServicePlacementCapability> MintPreKeyPublicationAsync(
+        ParsedDid2 publisher, ReadOnlyMemory<byte> serviceCapability,
+        CancellationToken cancellationToken);
+}
+
 internal sealed class DeepIdV2NetworkPlacementRuntime(
     DeepIdV2DirectoryProofRuntime proofs,
     DeepIdV2NetworkClosureFileSource artifacts,
-    IOnionMonotonicClock clock)
+    IOnionMonotonicClock clock) : IDeepIdV2PreKeyPlacementSource
 {
-    internal async ValueTask<ContactServicePlacementCapability>
+    public async ValueTask<ContactServicePlacementCapability>
         MintPreKeyPublicationAsync(ParsedDid2 publisher,
             ReadOnlyMemory<byte> serviceCapability,
             CancellationToken cancellationToken)
@@ -191,6 +198,8 @@ internal static class DeepIdV2NetworkPlacementHostComposition
     {
         services.AddSingleton(artifacts);
         services.AddSingleton<DeepIdV2NetworkPlacementRuntime>();
+        services.AddSingleton<IDeepIdV2PreKeyPlacementSource>(provider =>
+            provider.GetRequiredService<DeepIdV2NetworkPlacementRuntime>());
         services.AddHostedService<DeepIdV2NetworkPlacementHostedService>();
         return services;
     }

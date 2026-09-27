@@ -68,7 +68,18 @@ internal sealed class DeepIdV2PublicationJournal : IDisposable
         }
     }
 
-    internal PublicationStageResult Stage(ReadOnlySpan<byte> canonical)
+    internal PublicationStageResult Stage(ReadOnlySpan<byte> canonical) =>
+        StageCore(canonical, publisherHint: null);
+
+    internal PublicationStageResult Stage(ReadOnlySpan<byte> canonical,
+        ParsedDid2 publisherHint)
+    {
+        ArgumentNullException.ThrowIfNull(publisherHint);
+        return StageCore(canonical, publisherHint);
+    }
+
+    private PublicationStageResult StageCore(ReadOnlySpan<byte> canonical,
+        ParsedDid2? publisherHint)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
         if (faulted || File.Exists(Path("fault.marker")))
@@ -84,6 +95,25 @@ internal sealed class DeepIdV2PublicationJournal : IDisposable
                 : new(PublicationStageDisposition.WrongScope);
         if (File.Exists(Path("fork.marker")))
             return new(PublicationStageDisposition.ForkLatched);
+
+        if (publisherHint is not null)
+        {
+            if (incoming.Phase == Xpp1V2FragmentPhase.Manifest)
+            {
+                if (!Fixed(incoming.PublisherDid2.Span,
+                        publisherHint.CanonicalBytes.Span))
+                    return new(PublicationStageDisposition.WrongScope);
+            }
+            else
+            {
+                var manifest = ReadManifestOrDetectOrphans();
+                if (manifest is null)
+                    return new(PublicationStageDisposition.Incomplete);
+                if (!Fixed(manifest.PublisherDid2.Span,
+                        publisherHint.CanonicalBytes.Span))
+                    return LatchFork();
+            }
+        }
 
         try
         {

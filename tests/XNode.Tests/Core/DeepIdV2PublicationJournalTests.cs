@@ -220,6 +220,48 @@ public sealed class DeepIdV2PublicationJournalTests
             journal.Stage(changed[0]).Disposition);
     }
 
+    [Fact]
+    public void ReplicaPublisherHint_MustMatchDurableManifestBeforeAnyChunkMutation()
+    {
+        using var fixture = new Fixture();
+        var sequence = Sequence(Aggregate(), View);
+        var publisher = DeepIdV2Codec.DecodeDid2(Did2());
+        var changed = DeepIdV2Codec.AuthorDid2(
+            Bytes(32, 0xa4), Bytes(1952, 0xa2), Bytes(16, 0xa3));
+        using var journal = fixture.Open();
+
+        Assert.Equal(PublicationStageDisposition.WrongScope,
+            journal.Stage(sequence[0], changed).Disposition);
+        Assert.False(File.Exists(Path.Combine(fixture.DirectoryPath,
+            "manifest.xpp1")));
+        Assert.Equal(PublicationStageDisposition.Staged,
+            journal.Stage(sequence[0], publisher).Disposition);
+        Assert.Equal(PublicationStageDisposition.ForkLatched,
+            journal.Stage(sequence[1], changed).Disposition);
+        Assert.False(File.Exists(Path.Combine(fixture.DirectoryPath,
+            "chunk-000.xpp1")));
+        Assert.Equal(PublicationStageDisposition.ForkLatched,
+            journal.Stage(sequence[1], publisher).Disposition);
+    }
+
+    [Fact]
+    public void ReplicaPublisherHint_AllowsCompleteExactReplayOnlyForSameDid2()
+    {
+        using var fixture = new Fixture();
+        var sequence = Sequence(Aggregate(), View);
+        var publisher = DeepIdV2Codec.DecodeDid2(Did2());
+        using var journal = fixture.Open();
+        foreach (var fragment in sequence)
+            _ = journal.Stage(fragment, publisher);
+        var committed = journal.ReadCommitted();
+        Assert.NotNull(committed);
+        Assert.Equal(PublicationStageDisposition.CandidateReady,
+            committed.Disposition);
+        Assert.Equal(Did2(), committed.PublisherDid2!.CanonicalBytes.ToArray());
+        Assert.Equal(PublicationStageDisposition.ExactReplay,
+            journal.Stage(sequence[^1], publisher).Disposition);
+    }
+
     private static IReadOnlyList<byte[]> Sequence(byte[] aggregate, byte[] view,
         byte[]? did2 = null) =>
         DeepIdV2BoundedPreKeyPublicationCodec.CreateSequence(

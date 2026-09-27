@@ -20,7 +20,8 @@ internal enum ContactReplicaRpcOperation : byte
     LatchPreKeyFork = 8,
     IssueReceipt = 9,
     ApplyPreKeyPublication = 10,
-    ReadMailboxGrantRoute = 11
+    ReadMailboxGrantRoute = 11,
+    StageDid2PreKeyPublication = 12
 }
 
 internal sealed class ContactServicePlacementCapability
@@ -242,6 +243,13 @@ internal sealed record ContactReplicaRpcResponse(
     ReadOnlyMemory<byte> CorrelationId,
     ReadOnlyMemory<byte> ReplicaId,
     ReadOnlyMemory<byte> Payload);
+
+internal interface IContactReplicaCommandReceiver
+{
+    ValueTask<ContactReplicaRpcResponse> ReceiveAsync(
+        ContactReplicaRpcCommand command, RouterId authenticatedSender,
+        CancellationToken cancellationToken);
+}
 
 internal interface IContactReplicaPeerClient
 {

@@ -16,9 +16,23 @@ internal static class ContactReplicaHttpEndpoint
         RouterNodeOptions node,
         IClock clock,
         int peerListenerPort,
+        CancellationToken cancellationToken) => await HandleCoreAsync(
+            context, plan.MapReplicaEndpoint, options, replayGuard,
+            receiver, node, clock, peerListenerPort, cancellationToken)
+            .ConfigureAwait(false);
+
+    internal static async Task<IResult> HandleCoreAsync(
+        HttpContext context,
+        bool enabled,
+        ContactServicePersistenceOptions options,
+        ContactReplicaReplayGuard replayGuard,
+        IContactReplicaCommandReceiver receiver,
+        RouterNodeOptions node,
+        IClock clock,
+        int peerListenerPort,
         CancellationToken cancellationToken)
     {
-        if (!plan.MapReplicaEndpoint
+        if (!enabled
             || context.Connection.LocalPort != peerListenerPort
             || !context.Request.IsHttps
             || !HttpMethods.IsPost(context.Request.Method)
@@ -120,6 +134,29 @@ internal static class ContactReplicaHttpEndpoint
         response.Headers[ContactReplicaPeerAuthenticator.NonceHeader] = headers.Nonce;
         response.Headers[ContactReplicaPeerAuthenticator.CorrelationHeader] = headers.Correlation;
         response.Headers[ContactReplicaPeerAuthenticator.SignatureHeader] = headers.Signature;
+    }
+}
+
+internal static class DeepIdV2ReplicaStageEndpointMapping
+{
+    internal static IEndpointRouteBuilder MapDeepIdV2ReplicaStageEndpoint(
+        this IEndpointRouteBuilder endpoints, bool enabled,
+        int peerListenerPort)
+    {
+        ArgumentNullException.ThrowIfNull(endpoints);
+        if (!enabled) return endpoints;
+        endpoints.MapPost(ContactReplicaHttpContract.Route, (
+            HttpContext context,
+            ContactServicePersistenceOptions options,
+            ContactReplicaReplayGuard replay,
+            DeepIdV2ReplicaStageReceiver receiver,
+            RouterNodeOptions node,
+            IClock clock,
+            CancellationToken cancellationToken) =>
+            ContactReplicaHttpEndpoint.HandleCoreAsync(context, enabled,
+                options, replay, receiver, node, clock, peerListenerPort,
+                cancellationToken));
+        return endpoints;
     }
 }
 

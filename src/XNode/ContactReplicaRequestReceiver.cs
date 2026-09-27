@@ -7,7 +7,7 @@ using XNode.Core.ContactResolver;
 
 namespace XNode;
 
-internal sealed class ContactReplicaRequestReceiver
+internal sealed class ContactReplicaRequestReceiver : IContactReplicaCommandReceiver
 {
     private readonly RouterNodeOptions node;
     private readonly ContactServiceAuthoritySources authorities;
@@ -26,7 +26,7 @@ internal sealed class ContactReplicaRequestReceiver
         this.clock = clock ?? throw new ArgumentNullException(nameof(clock));
     }
 
-    internal async ValueTask<ContactReplicaRpcResponse> ReceiveAsync(
+    public async ValueTask<ContactReplicaRpcResponse> ReceiveAsync(
         ContactReplicaRpcCommand command,
         RouterId authenticatedSender,
         CancellationToken cancellationToken)
@@ -428,7 +428,7 @@ internal sealed class ContactReplicaRequestReceiver
             _ => false
         };
 
-    private static void EnsureExactPlacement(
+    internal static void EnsureExactPlacement(
         ContactServicePlacementCapability received,
         ContactServicePlacementCapability current)
     {
