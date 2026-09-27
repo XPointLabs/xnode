@@ -1,4 +1,5 @@
 using Deep.Protocol.ContactV1;
+using Deep.Protocol.ApplicationCore;
 using Deep.Protocol.DeepExtension.PrivacyRouting;
 using Deep.Protocol.XPointNetworkV1;
 using Microsoft.AspNetCore.DataProtection;
@@ -910,6 +911,7 @@ public sealed class PrivacyTerminalExitDispatcher : INativeMailboxExitDispatcher
             throw;
         }
         catch (Exception exception) when (exception is ContactFormatException
+            or ApplicationCoreFormatException
             or ArgumentException
             or InvalidDataException
             or OverflowException)
@@ -926,6 +928,7 @@ public sealed class PrivacyTerminalExitDispatcher : INativeMailboxExitDispatcher
         }
         catch (Exception exception) when (exception is IOException
             or InvalidOperationException
+            or CryptographicException
             or UnauthorizedAccessException)
         {
             return NativeMailboxDispatchResult.OutcomeUnknownAfterForward();

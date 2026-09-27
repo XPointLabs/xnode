@@ -118,6 +118,66 @@ public sealed class DeepIdV2ReplicaStageReceiverTests
     }
 
     [Fact]
+    public void OnionStageStatus_MapsDurableCandidateToStagedAck()
+    {
+        Assert.Equal([1], DeepIdV2ReplicaStagePayloadCodec
+            .EncodeTerminalStageStatus(PublicationStageDisposition.Staged));
+        Assert.Equal([1], DeepIdV2ReplicaStagePayloadCodec
+            .EncodeTerminalStageStatus(PublicationStageDisposition.CandidateReady));
+        Assert.Equal([3], DeepIdV2ReplicaStagePayloadCodec
+            .EncodeTerminalStageStatus(PublicationStageDisposition.ExactReplay));
+        Assert.Throws<InvalidDataException>(() =>
+            DeepIdV2ReplicaStagePayloadCodec.EncodeTerminalStageStatus(
+                PublicationStageDisposition.Incomplete));
+    }
+
+    [Fact]
+    public async Task OnionTerminal_RequiresLocallyVerifiedPlacementBeforeStaging()
+    {
+        var root = Path.Combine(Path.GetTempPath(),
+            "xnode-did2-terminal-" + Guid.NewGuid().ToString("N"));
+        var source = new FixedPlacement(Placement());
+        try
+        {
+            var receiver = new DeepIdV2ReplicaStageReceiver(new()
+            {
+                DataDirectory = root,
+                RouterId = Convert.ToHexString(Local)
+            }, source, new MailboxStorageSecurity(),
+                new MailboxDurabilityBarrier());
+            var dispatcher = new DeepIdV2PreKeyOnionDispatcher(receiver);
+            var publisher = DeepIdV2Codec.DecodeDid2(Did2());
+            var fragments = DeepIdV2BoundedPreKeyPublicationCodec.CreateSequence(
+                Aggregate(), View, publisher.CanonicalBytes.Span,
+                Bytes(DeepIdV2ContactAuthorizationCodec.CanonicalLength,
+                    0xd1),
+                Bytes(DeepIdV2BoundedPreKeyPublicationCodec.Xps1Length,
+                    0xe1));
+            await Assert.ThrowsAsync<ContactServiceUnavailableException>(
+                async () => await dispatcher.DispatchAsync(
+                    ContactServiceOperation.ResolveDcr, fragments[0],
+                    default));
+            await Assert.ThrowsAsync<InvalidDataException>(async () =>
+                await dispatcher.DispatchAsync(
+                    ContactServiceOperation.PublishPreKeyInventory,
+                    fragments[1], default));
+            Assert.Equal(0, source.Calls);
+            await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await dispatcher.DispatchAsync(
+                    ContactServiceOperation.PublishPreKeyInventory,
+                    fragments[0], default));
+            Assert.Equal(1, source.Calls);
+            Assert.False(Directory.Exists(Path.Combine(root,
+                "did2-prekey-stage", Convert.ToHexString(Network),
+                Convert.ToHexString(Operation))));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task StaleProjectionAndV1Operation_CannotStageOrCreateOperation()
     {
         var root = Path.Combine(Path.GetTempPath(),

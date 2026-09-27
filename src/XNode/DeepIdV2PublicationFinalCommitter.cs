@@ -40,7 +40,7 @@ internal sealed class DeepIdV2PublicationFinalCommitter(
     internal async ValueTask<ParsedXic1V2> CommitAsync(
         DeepIdV2PublicationJournal journal,
         ContactServicePlacementCapability claimedPlacement,
-        RouterId authenticatedSender,
+        RouterId? authenticatedSender,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(journal);
@@ -68,8 +68,9 @@ internal sealed class DeepIdV2PublicationFinalCommitter(
             !Fixed(current.PlacementHash.Span,
                 publication.PlacementHash.Span) ||
             !Fixed(current.ShardKey.Span, serviceCapability.Span) ||
-            !Fixed(current.OtherReplica(localId),
-                authenticatedSender.ToBytes()))
+            !current.ContainsReplica(localId) ||
+            (authenticatedSender is { } peer &&
+             !Fixed(current.OtherReplica(localId), peer.ToBytes())))
             throw new UnauthorizedAccessException(
                 "DID2 final commit differs from current selected placement.");
 

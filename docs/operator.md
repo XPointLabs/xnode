@@ -34,17 +34,20 @@ alongside this proof boundary. It takes complete ordered absolute paths for
 read-only. Startup checks path presence and closed byte bounds; each placement
 request then re-verifies the entire signed network closure against a fresh
 recipient-specific DID2 directory proof before minting a NETCODEC capability.
-`DeepIdV2ReplicaStage:Enabled=true` adds a peer-only staging receiver on the
-existing authenticated HTTP/2 replica port. It requires this independent DID2
-placement source, refuses V1 ContactAuthority activation, and is accepted only
-in UAT/Development. Each request re-mints current placement from signed DID2
-proof/closure, checks the authenticated selected peer, and durably stages exact
-XPP1 V2 fragments beneath `Node:DataDirectory/did2-prekey-stage`. The
-one-byte result reports staging only; `CandidateReady` is **not** publication,
-an XIC1 receipt, or permission to claim pre-keys. A separate peer-only final
-commit operation requires exact replay of the staged Commit fragment, then
-rechecks current DID2/device authority and placement before advancing the
-service-capability-keyed inventory state beneath
+`DeepIdV2ReplicaStage:Enabled=true` adds authenticated peer staging on the
+existing HTTP/2 replica port and a DID2-only ONION ContactResolve terminal on
+a selected local replica. It requires this independent DID2 placement source,
+refuses V1 ContactAuthority activation, and is accepted only in
+UAT/Development. Peer requests re-mint current placement and check the
+authenticated selected peer; ONION terminal requests use only a newly minted
+verified placement and reject an unselected local exit. Both durably stage
+exact XPP1 V2 fragments beneath `Node:DataDirectory/did2-prekey-stage`.
+Manifest/Chunk terminal responses are one-byte staging acknowledgements,
+never XIC1 or permission to claim pre-keys. The terminal Commit can return one
+XIC1 after a complete durable candidate; the separate authenticated peer
+final-commit operation requires exact replay of the staged Commit fragment.
+Both paths then recheck current DID2/device authority and placement before
+advancing the service-capability-keyed inventory state beneath
 `Node:DataDirectory/did2-prekey-commits` and returning one signed XIC1.
 Corrupt/lost active state or conflicting operation/epoch latches the service
 fail-closed. Back up that state with node keys; restoring keys alone is not

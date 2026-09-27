@@ -6,6 +6,7 @@ using Deep.Protocol.DeepExtension.MembershipRoutes;
 using Deep.Protocol.DeepExtension.PrivacyRouting;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using XNode;
 using XNode.Core;
 using XNode.Core.Mailbox;
@@ -201,6 +202,9 @@ if (did2ReplicaStageEnabled)
 {
     builder.Services.AddSingleton<DeepIdV2PublicationFinalCommitter>();
     builder.Services.AddSingleton<DeepIdV2ReplicaStageReceiver>();
+    builder.Services.RemoveAll<IContactServiceOpaqueDispatcher>();
+    builder.Services.AddSingleton<IContactServiceOpaqueDispatcher,
+        DeepIdV2PreKeyOnionDispatcher>();
 }
 var replicaEndpointActive = contactServicePlan.MapReplicaEndpoint ||
     did2ReplicaStageEnabled;

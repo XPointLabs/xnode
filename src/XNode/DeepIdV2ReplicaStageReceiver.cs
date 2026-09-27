@@ -24,8 +24,9 @@ public sealed class DeepIdV2ReplicaStageOptions
 }
 
 /// <summary>
-/// Authenticated peer-only DID2 fragment staging. CandidateReady means only
-/// that exact XPP1 bytes survived durable reassembly; no XIC1 is issued here.
+/// DID2 fragment staging shared by the authenticated peer RPC and the
+/// selected ONION terminal. CandidateReady means only that exact XPP1 bytes
+/// survived durable reassembly; final commit has a separate authority gate.
 /// </summary>
 internal sealed class DeepIdV2ReplicaStageReceiver : IContactReplicaCommandReceiver
 {
@@ -97,21 +98,91 @@ internal sealed class DeepIdV2ReplicaStageReceiver : IContactReplicaCommandRecei
             throw new UnauthorizedAccessException(
                 "DID2 fragment is outside the authenticated current placement.");
 
+        var result = await StageVerifiedAsync(decoded.Fragment,
+            decoded.Publisher, current, command.Placement,
+            finalCommit: command.Operation ==
+                ContactReplicaRpcOperation.CommitDid2PreKeyPublication,
+            requireExactCommitReplay: true, authenticatedSender,
+            cancellationToken).ConfigureAwait(false);
+        return new ContactReplicaRpcResponse(command.Operation,
+            command.CorrelationId.ToArray(), localId, result);
+    }
+
+    internal async ValueTask<ReadOnlyMemory<byte>> ReceiveTerminalAsync(
+        ReadOnlyMemory<byte> exactFragment,
+        CancellationToken cancellationToken)
+    {
+        var fragment = DeepIdV2BoundedPreKeyPublicationCodec.Decode(
+            exactFragment.Span);
+        var stagedManifest = fragment.Phase == Xpp1V2FragmentPhase.Manifest
+            ? fragment
+            : ReadStagedManifest(fragment);
+        var publisher = DeepIdV2Codec.DecodeDid2(
+            stagedManifest.PublisherDid2.Span);
+        var exactXpi1 = stagedManifest.Body.Span.Slice(
+            DeepIdV2BoundedPreKeyPublicationCodec.ManifestSupportLength,
+            DeepIdV2PreKeyManifestCodec.CanonicalLength);
+        var serviceCapability = DeepIdV2PreKeyManifestCodec.Decode(exactXpi1)
+            .Field(2);
+        var current = await placements.MintPreKeyPublicationAsync(
+            publisher, serviceCapability, cancellationToken)
+            .ConfigureAwait(false);
+        // Unlike an authenticated peer request, this anonymous ONION exit has
+        // no caller-provided placement. Only the locally minted proof selects
+        // its terminal node and authorizes staging.
+        current.VerifiedPlacement.Network.EnsureCurrent();
+        var localId = node.GetRouterId().ToBytes();
+        if (current.RequestKind !=
+                ContactServiceRequestKind.PublishPreKeyInventory ||
+            !current.VerifiedPlacement.Binds(
+                ContactServiceRequestKind.PublishPreKeyInventory,
+                serviceCapability) ||
+            !current.ContainsReplica(localId) ||
+            !Fixed(fragment.NetworkId.Span, current.NetworkId.Span) ||
+            !Fixed(fragment.ViewHash.Span, current.ViewHash.Span) ||
+            !Fixed(fragment.PlacementHash.Span, current.PlacementHash.Span) ||
+            !Fixed(fragment.NetworkId.Span,
+                stagedManifest.NetworkId.Span) ||
+            !Fixed(fragment.PublicationOperationId.Span,
+                stagedManifest.PublicationOperationId.Span) ||
+            !Fixed(fragment.ExactAggregateHash.Span,
+                stagedManifest.ExactAggregateHash.Span) ||
+            !Fixed(fragment.PublisherDescriptorCommitment.Span,
+                stagedManifest.PublisherDescriptorCommitment.Span))
+            throw new UnauthorizedAccessException(
+                "DID2 ONION fragment is outside the selected current placement.");
+        return await StageVerifiedAsync(fragment, publisher, current, current,
+            finalCommit: fragment.Phase ==
+                Xpp1V2FragmentPhase.Commit,
+            requireExactCommitReplay: false, authenticatedSender: null,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask<byte[]> StageVerifiedAsync(
+        ParsedXpp1V2Fragment fragment, ParsedDid2 publisher,
+        ContactServicePlacementCapability current,
+        ContactServicePlacementCapability claimedPlacement,
+        bool finalCommit, bool requireExactCommitReplay,
+        RouterId? authenticatedSender, CancellationToken cancellationToken)
+    {
+
         await stageGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             var networkRoot = Path.Combine(root,
                 Convert.ToHexString(current.NetworkId.Span));
             var operationPath = Path.Combine(networkRoot,
-                Convert.ToHexString(decoded.Fragment.PublicationOperationId.Span));
-            if (decoded.Fragment.Phase != Xpp1V2FragmentPhase.Manifest &&
+                Convert.ToHexString(fragment.PublicationOperationId.Span));
+            if (fragment.Phase != Xpp1V2FragmentPhase.Manifest &&
                 !Directory.Exists(operationPath))
             {
-                if (command.Operation ==
-                    ContactReplicaRpcOperation.CommitDid2PreKeyPublication)
+                if (finalCommit)
                     throw new InvalidDataException(
                         "DID2 final commit has no staged operation.");
-                return Response(command, localId,
+                if (authenticatedSender is null)
+                    throw new InvalidDataException(
+                        "DID2 ONION fragment lost its staged manifest.");
+                return DeepIdV2ReplicaStagePayloadCodec.EncodeStatus(
                     PublicationStageDisposition.Incomplete);
             }
 
@@ -136,34 +207,45 @@ internal sealed class DeepIdV2ReplicaStageReceiver : IContactReplicaCommandRecei
             RejectExistingLinks(operationPath);
             using var journal = new DeepIdV2PublicationJournal(operationPath,
                 current.NetworkId.Span,
-                decoded.Fragment.PublicationOperationId.Span,
+                fragment.PublicationOperationId.Span,
                 current.ViewHash.Span, current.PlacementHash.Span,
                 current.ShardKey.Span, security, durability);
-            if (command.Operation ==
-                ContactReplicaRpcOperation.CommitDid2PreKeyPublication)
+            if (finalCommit)
             {
-                if (journal.ReadCommitted()?.Candidate is null ||
-                    journal.Stage(decoded.Fragment.CanonicalBytes.Span,
-                        decoded.Publisher).Disposition !=
-                        PublicationStageDisposition.ExactReplay)
+                if (requireExactCommitReplay &&
+                    journal.ReadCommitted()?.Candidate is null)
+                    throw new InvalidDataException(
+                        "DID2 final commit has no exact durable staged candidate.");
+                var finalStage = journal.Stage(fragment.CanonicalBytes.Span,
+                    publisher);
+                if (finalStage.Disposition is not
+                    (PublicationStageDisposition.CandidateReady or
+                     PublicationStageDisposition.ExactReplay) ||
+                    (requireExactCommitReplay && finalStage.Disposition !=
+                        PublicationStageDisposition.ExactReplay) ||
+                    journal.ReadCommitted()?.Candidate is null)
                     throw new InvalidDataException(
                         "DID2 final commit has no exact durable staged candidate.");
                 var committer = finalCommitter ??
                     throw new InvalidOperationException(
                         "DID2 final commit authority is not configured.");
                 var receipt = await committer.CommitAsync(journal,
-                    command.Placement, authenticatedSender,
+                    claimedPlacement, authenticatedSender,
                     cancellationToken).ConfigureAwait(false);
-                return new ContactReplicaRpcResponse(command.Operation,
-                    command.CorrelationId.ToArray(), localId,
-                    receipt.CanonicalBytes.ToArray());
+                return receipt.CanonicalBytes.ToArray();
             }
-            var staged = journal.Stage(decoded.Fragment.CanonicalBytes.Span,
-                decoded.Publisher);
+            var staged = journal.Stage(fragment.CanonicalBytes.Span,
+                publisher);
             if (staged.Disposition is PublicationStageDisposition.WrongScope
                 or PublicationStageDisposition.ForkLatched)
                 throw new InvalidDataException(
                     "DID2 publication fragment conflicts with durable scope.");
+            if (authenticatedSender is null && staged.Disposition is not
+                (PublicationStageDisposition.Staged or
+                 PublicationStageDisposition.CandidateReady or
+                 PublicationStageDisposition.ExactReplay))
+                throw new InvalidDataException(
+                    "DID2 ONION staging has no successful durable result.");
             if (staged.Disposition == PublicationStageDisposition.CandidateReady)
             {
                 var committed = journal.ReadCommitted();
@@ -173,16 +255,39 @@ internal sealed class DeepIdV2ReplicaStageReceiver : IContactReplicaCommandRecei
                     throw new InvalidDataException(
                         "DID2 publication candidate is not durably complete.");
             }
-            return Response(command, localId, staged.Disposition);
+            return authenticatedSender is null
+                ? DeepIdV2ReplicaStagePayloadCodec.EncodeTerminalStageStatus(
+                    staged.Disposition)
+                : DeepIdV2ReplicaStagePayloadCodec.EncodeStatus(
+                    staged.Disposition);
         }
         finally { stageGate.Release(); }
     }
 
-    private static ContactReplicaRpcResponse Response(
-        ContactReplicaRpcCommand command, byte[] localId,
-        PublicationStageDisposition disposition) => new(
-            command.Operation, command.CorrelationId.ToArray(), localId,
-            DeepIdV2ReplicaStagePayloadCodec.EncodeStatus(disposition));
+    private ParsedXpp1V2Fragment ReadStagedManifest(
+        ParsedXpp1V2Fragment fragment)
+    {
+        var manifestPath = Path.Combine(root,
+            Convert.ToHexString(fragment.NetworkId.Span),
+            Convert.ToHexString(fragment.PublicationOperationId.Span),
+            "manifest.xpp1");
+        RejectExistingLinks(manifestPath);
+        if (!File.Exists(manifestPath))
+            throw new InvalidDataException(
+                "DID2 ONION fragment has no staged manifest.");
+        security.ValidateSecureFile(manifestPath);
+        var length = new FileInfo(manifestPath).Length;
+        if (length is < 325 or >
+            DeepIdV2BoundedPreKeyPublicationCodec.MaximumCanonicalBytes)
+            throw new InvalidDataException(
+                "DID2 staged manifest exceeds its closed bound.");
+        var manifest = DeepIdV2BoundedPreKeyPublicationCodec.Decode(
+            File.ReadAllBytes(manifestPath));
+        if (manifest.Phase != Xpp1V2FragmentPhase.Manifest)
+            throw new InvalidDataException(
+                "DID2 staged publication has no exact manifest.");
+        return manifest;
+    }
 
     private static bool Fixed(ReadOnlySpan<byte> left,
         ReadOnlySpan<byte> right) => left.Length == right.Length &&
@@ -262,4 +367,36 @@ internal static class DeepIdV2ReplicaStagePayloadCodec
             _ => throw new InvalidDataException(
                 "DID2 replica stage has no admissible result.")
         };
+
+    internal static byte[] EncodeTerminalStageStatus(
+        PublicationStageDisposition disposition) =>
+        disposition switch
+        {
+            PublicationStageDisposition.Staged or
+                PublicationStageDisposition.CandidateReady => [1],
+            PublicationStageDisposition.ExactReplay => [3],
+            _ => throw new InvalidDataException(
+                "DID2 ONION stage has no admissible result.")
+        };
+}
+
+/// <summary>
+/// DID2-only ONION terminal adapter. The anonymous exit may stage public
+/// bounded bytes only on a freshly selected local replica; every other
+/// ContactResolve operation remains unavailable in this UAT composition.
+/// </summary>
+internal sealed class DeepIdV2PreKeyOnionDispatcher(
+    DeepIdV2ReplicaStageReceiver receiver) : IContactServiceOpaqueDispatcher
+{
+    public ValueTask<ReadOnlyMemory<byte>> DispatchAsync(
+        ContactServiceOperation operation,
+        ReadOnlyMemory<byte> canonicalRequest,
+        CancellationToken cancellationToken)
+    {
+        if (operation != ContactServiceOperation.PublishPreKeyInventory)
+            throw new ContactServiceUnavailableException(
+                "Only DID2 V2 pre-key publication is enabled at this ONION exit.");
+        return receiver.ReceiveTerminalAsync(canonicalRequest,
+            cancellationToken);
+    }
 }
