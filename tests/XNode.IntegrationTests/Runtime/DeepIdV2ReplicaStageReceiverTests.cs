@@ -43,7 +43,7 @@ public sealed class DeepIdV2ReplicaStageReceiverTests
             var fragments = DeepIdV2BoundedPreKeyPublicationCodec.CreateSequence(
                 aggregate, View, publisher.CanonicalBytes.Span,
                 Bytes(DeepIdV2ContactAuthorizationCodec.CanonicalLength, 0xd1),
-                Bytes(DeepIdV2BoundedPreKeyPublicationCodec.Xps1Length, 0xe1));
+                Xps1());
             var first = Command(placement, publisher, fragments[0]);
             await Assert.ThrowsAsync<UnauthorizedAccessException>(async () =>
                 await receiver.ReceiveAsync(first,
@@ -151,8 +151,7 @@ public sealed class DeepIdV2ReplicaStageReceiverTests
                 Aggregate(), View, publisher.CanonicalBytes.Span,
                 Bytes(DeepIdV2ContactAuthorizationCodec.CanonicalLength,
                     0xd1),
-                Bytes(DeepIdV2BoundedPreKeyPublicationCodec.Xps1Length,
-                    0xe1));
+                Xps1());
             await Assert.ThrowsAsync<ContactServiceUnavailableException>(
                 async () => await dispatcher.DispatchAsync(
                     ContactServiceOperation.ResolveDcr, fragments[0],
@@ -196,7 +195,7 @@ public sealed class DeepIdV2ReplicaStageReceiverTests
             var manifest = DeepIdV2BoundedPreKeyPublicationCodec.CreateSequence(
                 Aggregate(), View, publisher.CanonicalBytes.Span,
                 Bytes(DeepIdV2ContactAuthorizationCodec.CanonicalLength, 0xd1),
-                Bytes(DeepIdV2BoundedPreKeyPublicationCodec.Xps1Length, 0xe1))[0];
+                Xps1())[0];
             var stale = ContactServicePlacementCapability.FromUntrustedProjection(
                 ContactServiceRequestKind.PublishPreKeyInventory,
                 Network, View, Bytes(32, 0x88), Capability, 7, 100_000,
@@ -358,6 +357,18 @@ public sealed class DeepIdV2ReplicaStageReceiverTests
         Bytes(32, 0xa1), Bytes(1952, 0xa2), Bytes(16, 0xa3))
         .CanonicalBytes.ToArray();
 
+    private static byte[] Xps1()
+    {
+        ReadOnlyMemory<byte>[] fields =
+        [
+            Network, Capability, Bytes(32, 0x21),
+            Reference("DPD1", Bytes(32, 0x25)), Be64(1), new byte[32],
+            Be16(DeepIdV2Codec.Suite), Be16(32), Be16(1), Be64(100),
+            Be64(100_000)
+        ];
+        return DeepIdV2PreKeyServiceCodec.Encode(fields, Bytes(64, 0xe1));
+    }
+
     private static byte[] Aggregate()
     {
         var oneTime = DeepIdV2Dpk2Codec.Decode(DeepIdV2Dpk2Codec.Encode(
@@ -413,7 +424,8 @@ public sealed class DeepIdV2ReplicaStageReceiverTests
     {
         var output = new byte[38];
         Encoding.ASCII.GetBytes(magic).CopyTo(output, 0);
-        BinaryPrimitives.WriteUInt16BigEndian(output.AsSpan(4), 1);
+        BinaryPrimitives.WriteUInt16BigEndian(output.AsSpan(4),
+            magic == "XPS1" ? (ushort)2 : (ushort)1);
         hash.CopyTo(output, 6);
         return output;
     }

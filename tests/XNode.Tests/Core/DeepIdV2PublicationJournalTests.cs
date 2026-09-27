@@ -162,8 +162,7 @@ public sealed class DeepIdV2PublicationJournalTests
             Assert.Equal(Did2(), completed.PublisherDid2!.CanonicalBytes.ToArray());
             Assert.Equal(Bytes(DeepIdV2ContactAuthorizationCodec.CanonicalLength,
                 0xd1), completed.PublisherDca1.ToArray());
-            Assert.Equal(Bytes(DeepIdV2BoundedPreKeyPublicationCodec.Xps1Length,
-                0xe1), completed.PublisherXps1.ToArray());
+            Assert.Equal(Xps1(), completed.PublisherXps1.ToArray());
             Assert.Equal(PublicationStageDisposition.ExactReplay,
                 journal.Stage(sequence[^1]).Disposition);
         }
@@ -174,8 +173,7 @@ public sealed class DeepIdV2PublicationJournalTests
             Assert.Equal(Did2(), committed.PublisherDid2!.CanonicalBytes.ToArray());
             Assert.Equal(Bytes(DeepIdV2ContactAuthorizationCodec.CanonicalLength,
                 0xd1), committed.PublisherDca1.ToArray());
-            Assert.Equal(Bytes(DeepIdV2BoundedPreKeyPublicationCodec.Xps1Length,
-                0xe1), committed.PublisherXps1.ToArray());
+            Assert.Equal(Xps1(), committed.PublisherXps1.ToArray());
         }
     }
 
@@ -392,11 +390,23 @@ public sealed class DeepIdV2PublicationJournalTests
         DeepIdV2BoundedPreKeyPublicationCodec.CreateSequence(
             aggregate, view, did2 ?? Did2(),
             Bytes(DeepIdV2ContactAuthorizationCodec.CanonicalLength, 0xd1),
-            Bytes(DeepIdV2BoundedPreKeyPublicationCodec.Xps1Length, 0xe1));
+            Xps1());
 
     private static byte[] Did2() => DeepIdV2Codec.AuthorDid2(
         Bytes(32, 0xa1), Bytes(1952, 0xa2), Bytes(16, 0xa3))
         .CanonicalBytes.ToArray();
+
+    private static byte[] Xps1()
+    {
+        ReadOnlyMemory<byte>[] fields =
+        [
+            Network, Bytes(32, 0x35), Bytes(32, 0x21),
+            Reference("DPD1", Bytes(32, 0x25)), Be64(1), new byte[32],
+            Be16(DeepIdV2Codec.Suite), Be16(32), Be16(1), Be64(100),
+            Be64(100_000)
+        ];
+        return DeepIdV2PreKeyServiceCodec.Encode(fields, Bytes(64, 0xe1));
+    }
 
     private static byte[] Aggregate(byte placement = 0x14, byte[]? operation = null,
         byte capability = 0x35, ulong epoch = 1, byte[]? predecessor = null)
@@ -454,7 +464,8 @@ public sealed class DeepIdV2PublicationJournalTests
     {
         var bytes = new byte[38];
         Encoding.ASCII.GetBytes(magic).CopyTo(bytes, 0);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(4), 1);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(4),
+            magic == "XPS1" ? (ushort)2 : (ushort)1);
         hash.CopyTo(bytes, 6);
         return bytes;
     }
