@@ -4,6 +4,13 @@
 
 XNode runs the Deep-native privacy relay and mailbox exit runtime in .NET and supervises Xray only for VLESS ingress. Xray forwards accepted public traffic to the bounded managed-ingress HTTP/2 surface.
 
+The DID2 ONION receive capability refreshes through its existing verified
+source on a bounded background timer, including while the node has no traffic.
+Health reads remain side-effect-free. A failed refresh clears readiness; a
+later refresh can recover only with fully verified fresh authority. Stop cancels
+the worker and prevents an in-flight result from reactivating readiness. This
+does not renew offline-root checkpoints or extend signed artifact lifetimes.
+
 Current product status (2026-08-30): this server path is implemented, but the
 MAUI authenticated-mailbox transport does not yet dial it through its Reality
 runtime. It sends the opaque frame directly to the HTTPS entry origin. Do not

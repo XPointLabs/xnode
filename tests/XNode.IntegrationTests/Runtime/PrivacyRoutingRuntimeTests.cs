@@ -147,6 +147,78 @@ public sealed class PrivacyRoutingRuntimeTests
         Assert.True(capability.IsVerified);
         await Task.Delay(TimeSpan.FromMilliseconds(1_100));
         Assert.False(capability.IsVerified);
+        await capability.StopAsync(default);
+    }
+
+    [Fact]
+    public async Task IdleAuthorityRefreshFailsClosedAndRecoversWithoutTrafficOrHealthSideEffects()
+    {
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var configuration = EnabledTestConfiguration();
+        var source = new RefreshBindingSource(Binding(configuration, fixture.NetworkContext));
+        await using var capability = new PrivacyRoutingProductionCapability(configuration, source,
+            TimeSpan.FromMilliseconds(20));
+        await capability.StartAsync(default);
+        Assert.True(capability.IsVerified);
+        var calls = source.Calls;
+        for (var index = 0; index < 100; index++) Assert.True(capability.IsVerified);
+        Assert.Equal(calls, source.Calls); // Health reads perform no proof/network I/O.
+        await WaitUntilAsync(() => source.Calls >= 2);
+        source.Fail = true;
+        await WaitUntilAsync(() => !capability.IsVerified);
+        source.Fail = false;
+        await WaitUntilAsync(() => capability.IsVerified);
+        await capability.StopAsync(default);
+        calls = source.Calls;
+        await Task.Delay(60);
+        Assert.Equal(calls, source.Calls);
+        Assert.False(capability.IsVerified);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            await capability.GetCurrentAsync(default));
+    }
+
+    [Fact]
+    public async Task StopCancelsRefreshAndNeverPublishesItsLateBinding()
+    {
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var configuration = EnabledTestConfiguration();
+        var source = new RefreshBindingSource(Binding(configuration, fixture.NetworkContext)) { BlockRefresh = true };
+        await using var capability = new PrivacyRoutingProductionCapability(configuration, source,
+            TimeSpan.FromMilliseconds(20));
+        await capability.StartAsync(default);
+        await source.RefreshEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await capability.StopAsync(default).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(source.RefreshCancelled);
+        Assert.False(capability.IsVerified);
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> predicate)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        while (!predicate()) await Task.Delay(10, timeout.Token);
+    }
+
+    private sealed class RefreshBindingSource(OnionHostReceiveBinding binding) : IOnionHostReceiveBindingSource
+    {
+        private int calls;
+        internal int Calls => Volatile.Read(ref calls);
+        internal volatile bool Fail;
+        internal bool BlockRefresh { get; init; }
+        internal bool RefreshCancelled { get; private set; }
+        internal TaskCompletionSource RefreshEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public async ValueTask<OnionHostReceiveBinding> GetCurrentAsync(CancellationToken cancellationToken)
+        {
+            var call = Interlocked.Increment(ref calls);
+            if (call > 1 && BlockRefresh)
+            {
+                RefreshEntered.TrySetResult();
+                try { await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken); }
+                catch (OperationCanceledException) { RefreshCancelled = true; throw; }
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            if (Fail) throw new HttpRequestException("Closed test refresh failure.");
+            return binding;
+        }
     }
 
     [Fact]

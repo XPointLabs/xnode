@@ -63,22 +63,39 @@ internal sealed class VerifiedOnionHostReceiveBindingSource(
         && CryptographicOperations.FixedTimeEquals(left, right);
 }
 
-internal sealed class PrivacyRoutingProductionCapability(
-    PrivacyRoutingConfiguration configuration,
-    IOnionHostReceiveBindingSource receiveBindings) : IHostedService
+internal sealed class PrivacyRoutingProductionCapability : IHostedService, IAsyncDisposable
 {
-    private readonly PrivacyRoutingConfiguration configuration = configuration
-        ?? throw new ArgumentNullException(nameof(configuration));
-    private readonly IOnionHostReceiveBindingSource receiveBindings = receiveBindings
-        ?? throw new ArgumentNullException(nameof(receiveBindings));
+    private readonly PrivacyRoutingConfiguration configuration;
+    private readonly IOnionHostReceiveBindingSource receiveBindings;
+    private readonly TimeSpan refreshInterval;
+    private readonly CancellationTokenSource lifetime = new();
+    private readonly SemaphoreSlim refreshGate = new(1, 1);
+    private Task? refreshTask;
     private VerifiedOnionNetworkContext? verifiedNetwork;
+    private int stopped;
+    private int started;
+    private int disposed;
+
+    public PrivacyRoutingProductionCapability(PrivacyRoutingConfiguration configuration,
+        IOnionHostReceiveBindingSource receiveBindings)
+        : this(configuration, receiveBindings, TimeSpan.FromSeconds(5)) { }
+
+    internal PrivacyRoutingProductionCapability(PrivacyRoutingConfiguration configuration,
+        IOnionHostReceiveBindingSource receiveBindings, TimeSpan refreshInterval)
+    {
+        this.configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
+        this.receiveBindings = receiveBindings ?? throw new ArgumentNullException(nameof(receiveBindings));
+        if (refreshInterval <= TimeSpan.Zero || refreshInterval > TimeSpan.FromSeconds(5))
+            throw new ArgumentOutOfRangeException(nameof(refreshInterval));
+        this.refreshInterval = refreshInterval;
+    }
 
     internal bool IsVerified
     {
         get
         {
             var network = Volatile.Read(ref verifiedNetwork);
-            if (!configuration.Enabled || network is null) return false;
+            if (Volatile.Read(ref stopped) != 0 || !configuration.Enabled || network is null) return false;
             try { network.EnsureCurrent(); return true; }
             catch (OnionBoundaryException) { return false; }
         }
@@ -86,25 +103,36 @@ internal sealed class PrivacyRoutingProductionCapability(
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
+        if (Interlocked.Exchange(ref started, 1) != 0 || Volatile.Read(ref stopped) != 0)
+            throw new InvalidOperationException("The ONION capability cannot be restarted in-place.");
         if (!configuration.Enabled)
         {
             return;
         }
         _ = await GetCurrentAsync(cancellationToken).ConfigureAwait(false);
+        refreshTask = RefreshUntilStoppedAsync();
     }
 
-    public Task StopAsync(CancellationToken cancellationToken)
+    public async Task StopAsync(CancellationToken cancellationToken)
     {
+        Interlocked.Exchange(ref stopped, 1);
+        await lifetime.CancelAsync().ConfigureAwait(false);
         Volatile.Write(ref verifiedNetwork, null);
-        return Task.CompletedTask;
+        if (refreshTask is not null)
+            await refreshTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await refreshGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try { Volatile.Write(ref verifiedNetwork, null); }
+        finally { refreshGate.Release(); }
     }
 
     internal async ValueTask<OnionHostReceiveBinding> GetCurrentAsync(
         CancellationToken cancellationToken)
     {
+        using var request = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
+        await refreshGate.WaitAsync(request.Token).ConfigureAwait(false);
         try
         {
-            var binding = await receiveBindings.GetCurrentAsync(cancellationToken)
+            var binding = await receiveBindings.GetCurrentAsync(request.Token)
                 .ConfigureAwait(false)
                 ?? throw new InvalidOperationException(
                     "The ONION receive binding source returned no capability.");
@@ -114,6 +142,9 @@ internal sealed class PrivacyRoutingProductionCapability(
                 throw new InvalidOperationException(
                     "The current ONION binding does not match the configured opaque key handle.");
             }
+            request.Token.ThrowIfCancellationRequested();
+            if (Volatile.Read(ref stopped) != 0)
+                throw new OperationCanceledException(lifetime.Token);
             Volatile.Write(ref verifiedNetwork, binding.Network);
             return binding;
         }
@@ -122,6 +153,37 @@ internal sealed class PrivacyRoutingProductionCapability(
             Volatile.Write(ref verifiedNetwork, null);
             throw;
         }
+        finally { refreshGate.Release(); }
+    }
+
+    private async Task RefreshUntilStoppedAsync()
+    {
+        using var timer = new PeriodicTimer(refreshInterval);
+        try
+        {
+            while (await timer.WaitForNextTickAsync(lifetime.Token).ConfigureAwait(false))
+            {
+                try { _ = await GetCurrentAsync(lifetime.Token).ConfigureAwait(false); }
+                catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { break; }
+                catch (Exception exception) when (exception is IOException or InvalidOperationException or
+                    HttpRequestException or UnauthorizedAccessException or CryptographicException or
+                    FormatException or OnionBoundaryException or OperationCanceledException)
+                {
+                    // Never retain stale authority after a failed refresh. The
+                    // next bounded tick may recover only through fresh proof.
+                    Volatile.Write(ref verifiedNetwork, null);
+                }
+            }
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
+        finally { Volatile.Write(ref verifiedNetwork, null); }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref disposed, 1) != 0) return;
+        await StopAsync(CancellationToken.None).ConfigureAwait(false);
+        lifetime.Dispose();
     }
 
     private static bool Fixed(ReadOnlySpan<byte> left, ReadOnlySpan<byte> right) =>
