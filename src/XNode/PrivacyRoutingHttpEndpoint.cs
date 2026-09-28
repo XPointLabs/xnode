@@ -313,7 +313,9 @@ public static class PrivacyRoutingHttpEndpoint
             request.ContentType ?? "",
             request.Headers.Accept.ToString(),
             request.Headers.ContentEncoding.SingleOrDefault(),
-            request.ContentLength ?? -1,
+            request.ContentLength ?? (request.Method == "GET"
+                && request.HttpContext.Features.Get<IHttpRequestBodyDetectionFeature>()?.CanHaveBody == false
+                    ? 0 : -1),
             string.Equals(request.Headers["Early-Data"].ToString(), "1", StringComparison.Ordinal),
             supplemental,
             request.Scheme,

@@ -1,6 +1,9 @@
 using Deep.Protocol.DeepExtension.ManagedIngress;
 using Deep.Protocol.DeepExtension.PrivacyRouting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.DependencyInjection;
 using XNode.Core;
 
@@ -289,6 +292,59 @@ public sealed class PrivacyRoutingRuntimeTests
         Assert.Equal(0, effects.ContactCalls);
         Assert.Equal(0, effects.MailboxCalls);
         Assert.Equal(0, effects.AuthorityForwardingCalls);
+    }
+
+    [Theory]
+    [InlineData(false, 200)]
+    [InlineData(true, 400)]
+    public async Task CapabilityGet_UsesActualH2BodyDetectionWithoutAssumingMissingLengthMeansEmpty(
+        bool sendBody, int expectedStatus)
+    {
+        var effects = new Effects();
+        var configuration = PrivacyRoutingConfiguration.Disabled;
+        var runtime = Runtime(configuration, effects);
+        var builder = WebApplication.CreateSlimBuilder();
+        builder.WebHost.ConfigureKestrel(options => options.Listen(System.Net.IPAddress.Loopback, 0,
+            listen => listen.Protocols = HttpProtocols.Http2));
+        await using var app = builder.Build();
+        app.Use((context, next) => ManagedIngressProxyTrustBoundary.InvokeAsync(context, next,
+            NodeListenerConfiguration.Create(new RouterNodeOptions
+            {
+                ManagedIngressH2ListenUrl = $"http://127.0.0.1:{context.Connection.LocalPort}/",
+                ManagedIngressTrustedProxyAddresses = ["127.0.0.1"]
+            })));
+        app.MapGet(ManagedIngressH2Contract.CapabilitiesPath, (HttpContext context) =>
+            PrivacyRoutingHttpEndpoint.HandleCapabilities(context, configuration, runtime,
+                context.Connection.LocalPort));
+        await app.StartAsync();
+        try
+        {
+            using var client = new HttpClient(new SocketsHttpHandler());
+            using var request = new HttpRequestMessage(HttpMethod.Get,
+                app.Urls.Single() + ManagedIngressH2Contract.CapabilitiesPath)
+            {
+                Version = System.Net.HttpVersion.Version20,
+                VersionPolicy = HttpVersionPolicy.RequestVersionExact
+            };
+            request.Headers.Host = "node.example";
+            request.Headers.TryAddWithoutValidation("Accept", ManagedIngressH2Contract.CapabilitiesMediaType);
+            request.Headers.TryAddWithoutValidation("X-Forwarded-Proto", "https");
+            if (sendBody) request.Content = new StreamContent(new NonSeekableBody());
+            using var response = await client.SendAsync(request);
+            Assert.Equal(expectedStatus, (int)response.StatusCode);
+            Assert.Equal(System.Net.HttpVersion.Version20, response.Version);
+            Assert.Equal(sendBody ? ManagedIngressH2Contract.ErrorMediaType : ManagedIngressH2Contract.CapabilitiesMediaType,
+                response.Content.Headers.ContentType?.MediaType);
+            Assert.Equal(0, effects.PeerCalls);
+            Assert.Equal(0, effects.ContactCalls);
+            Assert.Equal(0, effects.MailboxCalls);
+        }
+        finally { await app.StopAsync(); }
+    }
+
+    private sealed class NonSeekableBody() : MemoryStream(new byte[] { 1 })
+    {
+        public override bool CanSeek => false;
     }
 
     private static PrivacyRoutingRuntime Runtime(
