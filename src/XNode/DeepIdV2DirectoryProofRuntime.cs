@@ -78,14 +78,17 @@ public sealed class DeepIdV2DirectoryProofOptions
             var root = Path.GetFullPath(node.DataDirectory);
             var state = ResolveDirectory(root, StateRelativeDirectory);
             var keys = ResolveDirectory(root, DataProtectionKeysRelativeDirectory);
-            var anchor = Path.Combine(root, "did2-head-anchor");
             if (state == keys || IsWithin(state, keys) || IsWithin(keys, state))
                 throw new InvalidOperationException(
                     "DID2 protected head journal and key ring must be separate.");
-            if (IsWithin(state, anchor) || IsWithin(anchor, state) ||
-                IsWithin(keys, anchor) || IsWithin(anchor, keys))
-                throw new InvalidOperationException(
-                    "DID2 proof custody must not overlap its rollback anchor.");
+            foreach (var reserved in new[] { "did2-head-anchor", "did2-network-state", "did2-network-anchor" })
+            {
+                var anchor = Path.Combine(root, reserved);
+                if (IsWithin(state, anchor) || IsWithin(anchor, state) ||
+                    IsWithin(keys, anchor) || IsWithin(anchor, keys))
+                    throw new InvalidOperationException(
+                        "DID2 proof custody must not overlap a reserved protected floor.");
+            }
             var genesis = Path.GetFullPath(GenesisHeadPath);
             if (IsWithin(genesis, state) || IsWithin(genesis, keys))
                 throw new InvalidOperationException(
@@ -169,6 +172,7 @@ internal sealed class DeepIdV2DirectoryProofRuntime :
     private readonly FileDeepIdV2DirectoryProtectedHeadStore store;
     private readonly IDeepMlDsa65VerifierLease verifier;
     private readonly IDisposable? protection;
+    private readonly IDataProtectionProvider networkProtection;
 
     internal DeepIdV2DirectoryProofRuntime(
         DeepIdV2DirectoryProofConfiguration configuration,
@@ -210,6 +214,7 @@ internal sealed class DeepIdV2DirectoryProofRuntime :
             store = opened;
             verifier = lease;
             protection = provider as IDisposable;
+            networkProtection = provider;
         }
         catch
         {
@@ -237,6 +242,13 @@ internal sealed class DeepIdV2DirectoryProofRuntime :
 
     internal VerifiedXPointNetworkAuthority ReadCurrentNetworkAuthority() =>
         configuration.Authority.ReadCurrent();
+
+    internal FileDeepIdV2NetworkFloorStore OpenNetworkFloor(RouterNodeOptions node,
+        IMailboxStorageSecurity security, IMailboxDurabilityBarrier durability) =>
+        new(configuration.NodeDataDirectory,
+            networkProtection.CreateProtector("Deep.XNode.DID2.NetworkFloor.v2",
+                Convert.ToHexString(configuration.PinnedGenesisCoreHash),
+                Convert.ToHexString(node.GetRouterId().ToBytes())), security, durability);
 
     public void Dispose()
     {
@@ -266,6 +278,7 @@ internal static class DeepIdV2DirectoryProofHostComposition
         DeepIdV2DirectoryProofConfiguration configuration)
     {
         services.AddSingleton(configuration);
+        services.AddSingleton(configuration.Authority);
         services.AddHttpClient("did2-directory-proof")
             .ConfigurePrimaryHttpMessageHandler(static () => new SocketsHttpHandler
             {

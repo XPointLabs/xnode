@@ -1,8 +1,5 @@
-using System.Reflection;
-using System.Runtime.CompilerServices;
 using Deep.Protocol.DeepExtension.ManagedIngress;
 using Deep.Protocol.DeepExtension.PrivacyRouting;
-using Deep.Protocol.XPointNetworkV1;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using XNode.Core;
@@ -52,7 +49,7 @@ public sealed class PrivacyRoutingRuntimeTests
                     IsRelay = true
                 }));
 
-        Assert.Contains(nameof(IContactVerifiedAuthoritySnapshotSource), failure.Message,
+        Assert.Contains(nameof(IDeepIdV2ReceiveNetworkSource), failure.Message,
             StringComparison.Ordinal);
         Assert.DoesNotContain(
             services,
@@ -60,13 +57,11 @@ public sealed class PrivacyRoutingRuntimeTests
     }
 
     [Fact]
-    public void ProductionCompositionConnectsAuthenticatedContactResolveClientWhenOwnerExists()
+    public void ProductionCompositionUsesDid2AuthorityWithoutActivatingV1ResolveClient()
     {
         var services = new ServiceCollection();
         using var configuration = EnabledTestConfiguration();
-        services.AddSingleton<IContactVerifiedAuthoritySnapshotSource>(static _ => null!);
-        services.AddSingleton<IPrivacyRoutedContactRecipientResolveEvidenceIngestion>(
-            static _ => null!);
+        services.AddSingleton<IDeepIdV2ReceiveNetworkSource>(static _ => null!);
 
         services.AddProductionPrivacyRoutingBoundary(
             configuration,
@@ -76,20 +71,20 @@ public sealed class PrivacyRoutingRuntimeTests
                 IsRelay = true
             });
 
-        Assert.Contains(services, descriptor =>
-            descriptor.ServiceType == typeof(IPrivacyRoutedContactRecipientResolveClient)
-            && descriptor.ImplementationType
-                == typeof(PrivacyRoutedContactRecipientResolveClient));
+        Assert.DoesNotContain(services, descriptor =>
+            descriptor.ServiceType == typeof(IPrivacyRoutedContactRecipientResolveClient));
+        Assert.Contains(services, descriptor => descriptor.ServiceType == typeof(IOnionHostReceiveBindingSource));
     }
 
     [Fact]
     public async Task CompleteCurrentBindingActivatesOnlyTheFullyComposedRuntime()
     {
         var effects = new Effects();
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
         using var configuration = EnabledTestConfiguration();
         var capability = new PrivacyRoutingProductionCapability(
             configuration,
-            new FixedBindingSource(Binding(configuration)));
+            new FixedBindingSource(Binding(configuration, fixture.NetworkContext)));
         var keyAgreement = new OnionKeyAgreementAuthority(new NoOpVault());
         var replay = new OnionReplayAuthority(new NoOpReplayStore());
         var codec = new PrivacyRoutingCodec(
@@ -116,15 +111,16 @@ public sealed class PrivacyRoutingRuntimeTests
     [InlineData(false)]
     public async Task StaleOrMismatchedBindingNeverActivates(bool stale)
     {
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
         using var configuration = EnabledTestConfiguration();
-        var binding = stale
-            ? new OnionHostReceiveBinding(
-                (VerifiedOnionNetworkContext)RuntimeHelpers.GetUninitializedObject(
-                    typeof(VerifiedOnionNetworkContext)),
-                configuration.ReceivePosition,
-                Bytes(0x51),
-                configuration.KeyHandleId.Span)
-            : Binding(configuration, OnionReceivePosition.Core);
+        var network = fixture.NetworkContext;
+        if (stale)
+        {
+            fixture.Sample = fixture.Freshness.FreshnessDeadlineMonotonicSeconds - 1;
+            network = await fixture.VerifyHistoryAsync(OnionNetworkProtectedHistoryCodec.Encode(network));
+        }
+        var binding = Binding(configuration, network, stale ? null : Bytes(0x55));
+        if (stale) await Task.Delay(TimeSpan.FromMilliseconds(1_100));
         var capability = new PrivacyRoutingProductionCapability(
             configuration,
             new FixedBindingSource(binding));
@@ -132,6 +128,21 @@ public sealed class PrivacyRoutingRuntimeTests
         await Assert.ThrowsAnyAsync<Exception>(async () =>
             await capability.StartAsync(default));
 
+        Assert.False(capability.IsVerified);
+    }
+
+    [Fact]
+    public async Task ReadinessExpiresWithoutWaitingForAnotherTrafficRequest()
+    {
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var configuration = EnabledTestConfiguration();
+        fixture.Sample = fixture.Freshness.FreshnessDeadlineMonotonicSeconds - 1;
+        var current = await fixture.VerifyHistoryAsync(OnionNetworkProtectedHistoryCodec.Encode(fixture.NetworkContext));
+        var capability = new PrivacyRoutingProductionCapability(configuration,
+            new FixedBindingSource(Binding(configuration, current)));
+        await capability.StartAsync(default);
+        Assert.True(capability.IsVerified);
+        await Task.Delay(TimeSpan.FromMilliseconds(1_100));
         Assert.False(capability.IsVerified);
     }
 
@@ -267,60 +278,14 @@ public sealed class PrivacyRoutingRuntimeTests
         stateProtectionKeyPath: Path.Combine(Path.GetTempPath(), "xnode-privacy-test", "state.key"),
         replayStatePath: Path.Combine(Path.GetTempPath(), "xnode-privacy-test", "replay.bin"),
         entropyStatePath: Path.Combine(Path.GetTempPath(), "xnode-privacy-test", "entropy.bin"),
-        keyVaultDirectory: Path.Combine(Path.GetTempPath(), "xnode-privacy-test", "vault"),
-        receivePosition: OnionReceivePosition.Ingress);
+        keyVaultDirectory: Path.Combine(Path.GetTempPath(), "xnode-privacy-test", "vault"));
 
     private static OnionHostReceiveBinding Binding(
         PrivacyRoutingConfiguration configuration,
-        OnionReceivePosition? position = null) => new(
-            CompleteNetwork(),
-            position ?? configuration.ReceivePosition,
-            Bytes(0x41),
-            configuration.KeyHandleId.Span);
-
-    private static VerifiedOnionNetworkContext CompleteNetwork()
-    {
-        var protocol = typeof(VerifiedOnionNetworkContext).Assembly;
-        var lease = (OnionTrustedTimeLease)RuntimeHelpers.GetUninitializedObject(
-            typeof(OnionTrustedTimeLease));
-        SetField(lease, "_timeProvider", TimeProvider.System);
-        SetField(lease, "_createdTimestamp", TimeProvider.System.GetTimestamp());
-        SetField(lease, "_lifetime", TimeSpan.FromMinutes(1));
-        SetField(lease, "_bootId", Bytes(0x31));
-        var closureType = protocol.GetType(
-            "Deep.Protocol.XPointNetworkV1.VerifiedOnionNetworkClosure",
-            throwOnError: true)!;
-        var closure = RuntimeHelpers.GetUninitializedObject(closureType);
-        var lkg = new XPointNetworkProtectedLkg(
-            Enumerable.Repeat((byte)0x11, 16).ToArray(),
-            Reference("XNH1", 0x21),
-            1,
-            Bytes(0x22),
-            Reference("XNV1", 0x23),
-            0,
-            Reference("XNA1", 0x24));
-        var network = (VerifiedOnionNetworkContext)RuntimeHelpers.GetUninitializedObject(
-            typeof(VerifiedOnionNetworkContext));
-        SetField(network, "_networkId", Enumerable.Repeat((byte)0x11, 16).ToArray());
-        SetField(network, "<TrustedTime>k__BackingField", lease);
-        SetField(network, "<Closure>k__BackingField", closure);
-        SetField(network, "<ProtectedLkg>k__BackingField", lkg);
-        return network;
-    }
-
-    private static void SetField(object target, string name, object value) =>
-        target.GetType().GetField(
-            name,
-            BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(target, value);
-
-    private static byte[] Reference(string magic, byte marker)
-    {
-        var value = new byte[38];
-        System.Text.Encoding.ASCII.GetBytes(magic, value);
-        System.Buffers.Binary.BinaryPrimitives.WriteUInt16BigEndian(value.AsSpan(4, 2), 1);
-        value.AsSpan(6).Fill(marker);
-        return value;
-    }
+        VerifiedOnionNetworkContext network,
+        byte[]? keyHandle = null) => new(network,
+            OnionPathCandidateSnapshotFactory.Create(network).Candidates[0].NodeId.Span,
+            keyHandle ?? configuration.KeyHandleId.ToArray());
 
     private static byte[] Bytes(byte value) => Enumerable.Repeat(value, 32).ToArray();
 

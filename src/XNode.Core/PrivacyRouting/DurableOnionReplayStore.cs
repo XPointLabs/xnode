@@ -27,9 +27,9 @@ public sealed class DurableOnionReplayStoreOptions
 public sealed class DurableOnionReplayStore : IOnionDurableReplayStore, IDisposable
 {
     private const int HeaderBytes = sizeof(uint) + sizeof(ulong) + sizeof(uint);
-    private static readonly byte[] ScopeDomain = Encoding.UTF8.GetBytes("Deep/XPoint/V1/xnode-replay-scope\0");
-    private static readonly byte[] EntryDomain = Encoding.UTF8.GetBytes("Deep/XPoint/V1/xnode-replay-entry\0");
-    private static ReadOnlySpan<byte> Magic => "XONRPL01"u8;
+    private static readonly byte[] ScopeDomain = Encoding.UTF8.GetBytes("Deep/XPoint/V2/xnode-replay-scope\0");
+    private static readonly byte[] EntryDomain = Encoding.UTF8.GetBytes("Deep/XPoint/V2/xnode-replay-entry\0");
+    private static ReadOnlySpan<byte> Magic => "XONRPL02"u8;
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly int maximumEntries;
     private readonly OnionDurableFile file;
@@ -215,7 +215,8 @@ public sealed class DurableOnionReplayStore : IOnionDurableReplayStore, IDisposa
         OnionReceivePosition position,
         ReadOnlySpan<byte> frameHash)
     {
-        _ = new OnionHash32(network);
+        if (network.Length != 16 || network.IndexOfAnyExcept((byte)0) < 0)
+            throw new ArgumentException("The replay scope requires the exact nonzero NETCODEC network ID.", nameof(network));
         _ = new OnionHash32(owner);
         _ = new OnionHash32(key);
         _ = new OnionHash32(keyHandle);

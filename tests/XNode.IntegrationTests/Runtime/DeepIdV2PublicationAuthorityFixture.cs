@@ -28,19 +28,37 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
     internal static readonly byte[] Network = Bytes(16, 0x11);
     internal static readonly byte[] Boot = Bytes(16, 0xf3);
     internal static readonly byte[] Service = Bytes(32, 0x35);
+    private readonly byte[] service;
+    private DeepIdV2PublicationAuthorityFixture(byte serviceMarker) => service = Bytes(32, serviceMarker);
     private readonly TestSigner[] nodes = [new(0x70), new(0x71), new(0x72)];
     internal ParsedDid2 Publisher { get; private set; } = null!;
     internal VerifiedDeepIdV2DirectoryFreshness Freshness { get; private set; } = null!;
+    internal VerifiedOnionNetworkContext NetworkContext { get; private set; } = null!;
+    internal VerifiedXPointNetworkAuthority Authority { get; private set; } = null!;
+    internal XPointNetworkGenesisPin GenesisPin { get; private set; } = null!;
+    internal ReadOnlyMemory<byte> ExactAuthority { get; private set; }
+    internal ReadOnlyMemory<byte> ExactTimePolicy { get; private set; }
+    internal ReadOnlyMemory<byte> Policy { get; private set; }
+    internal ReadOnlyMemory<byte> View { get; private set; }
+    internal ReadOnlyMemory<byte> Head { get; private set; }
+    internal IReadOnlyList<ReadOnlyMemory<byte>> Descriptors { get; private set; } = [];
+    internal ReadOnlyMemory<byte> Projection { get; private set; }
     internal ContactServicePlacementCapability Placement { get; private set; } = null!;
     internal ParsedXpp1V2 Publication { get; private set; } = null!;
     internal byte[] Dca { get; private set; } = [];
     internal byte[] Xps { get; private set; } = [];
     internal ulong Sample { get; set; } = 100;
     internal bool RejectProof { get; set; }
+    internal int ProofReads { get; private set; }
 
-    internal static async Task<DeepIdV2PublicationAuthorityFixture> CreateAsync()
+    internal ValueTask<VerifiedOnionNetworkContext> VerifyHistoryAsync(ReadOnlyMemory<byte> history,
+        CancellationToken cancellationToken = default) =>
+        OnionNetworkContextVerifier.VerifyFromProtectedHistoryAsync(Authority, Freshness,
+            [Policy], [View], [Head], Descriptors, [Projection], history, new(this), cancellationToken);
+
+    internal static async Task<DeepIdV2PublicationAuthorityFixture> CreateAsync(byte serviceMarker = 0x35)
     {
-        var fixture = new DeepIdV2PublicationAuthorityFixture();
+        var fixture = new DeepIdV2PublicationAuthorityFixture(serviceMarker);
         try { await fixture.AuthorAsync(); return fixture; }
         catch { fixture.Dispose(); throw; }
     }
@@ -125,10 +143,20 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
             Freshness, [operational.ExactXvp1], [operational.ExactXnv1],
             [operational.ExactXnh1], operational.ExactXnd1, [operational.ExactPmt2],
             null, new(this), default);
+        NetworkContext = network;
+        Authority = bootstrap.Authority;
+        GenesisPin = bootstrap.GenesisPin;
+        ExactAuthority = bootstrap.ExactXna1;
+        ExactTimePolicy = bootstrap.ExactDts1;
+        Policy = operational.ExactXvp1;
+        View = operational.ExactXnv1;
+        Head = operational.ExactXnh1;
+        Descriptors = operational.ExactXnd1;
+        Projection = operational.ExactPmt2;
         var placement = ContactServicePlacementFactory.Create(network,
-            ContactServiceRequestKind.PublishPreKeyInventory, Service);
+            ContactServiceRequestKind.PublishPreKeyInventory, service);
         Placement = ContactServicePlacementCapability.FromNetcodec(placement,
-            ContactServiceRequestKind.PublishPreKeyInventory, Service,
+            ContactServiceRequestKind.PublishPreKeyInventory, service,
             Freshness.TrustedUpperUnixSeconds);
 
         var seed = new byte[32];
@@ -141,7 +169,7 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
         try
         {
             var dpd = Reference("DPD1", 1, device.Certificate.CanonicalHash.Span);
-            ReadOnlyMemory<byte>[] xpsFields = [Network, Service, id, dpd,
+            ReadOnlyMemory<byte>[] xpsFields = [Network, service, id, dpd,
                 U64(1), new byte[32], U16(DeepIdV2Codec.Suite), U16(32), U16(1),
                 U64(1_000), U64(1_400)];
             Xps = DeepIdV2PreKeyServiceCodec.Encode(xpsFields,
@@ -174,7 +202,7 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
             var members = Enumerable.Range(0, 32)
                 .Select(i => Member((byte)(0x10 + i), Dpk2PrekeyKind.OneTime)).ToArray();
             var last = Member(0x90, Dpk2PrekeyKind.LastResort);
-            ReadOnlyMemory<byte>[] xpiFields = [Network, Service, id, dpd, U64(1),
+            ReadOnlyMemory<byte>[] xpiFields = [Network, service, id, dpd, U64(1),
                 Reference("XPS1", 2, SHA256.HashData(Xps)), U64(1), new byte[32], U16(32),
                 InventoryRoot(members), last.ExactHash, directory.Head.Record.RecordHash,
                 Reference("DRS1", 1, identity.Revocations.Snapshot.CanonicalHash.Span),
@@ -199,10 +227,18 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
         throw new CryptographicException("Unknown test node.");
     }
 
+    internal byte[] TestOnionScalar(ReadOnlySpan<byte> id)
+    {
+        for (var i = 0; i < nodes.Length; i++)
+            if (nodes[i].Ed25519PublicKey.Span.SequenceEqual(id)) return Bytes(32, (byte)(0xe0 + i));
+        throw new CryptographicException("Unknown test onion node.");
+    }
+
     public ValueTask<VerifiedDeepIdV2DirectoryFreshness> ReadCurrentAsync(
         ParsedDid2 did2, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        ProofReads++;
         if (RejectProof || !did2.CanonicalBytes.Span.SequenceEqual(Publisher.CanonicalBytes.Span))
             throw new CryptographicException("Current test DID2 proof unavailable.");
         return ValueTask.FromResult(Freshness);
@@ -213,7 +249,7 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (!publisher.CanonicalBytes.Span.SequenceEqual(Publisher.CanonicalBytes.Span) ||
-            !serviceCapability.Span.SequenceEqual(Service))
+            !serviceCapability.Span.SequenceEqual(service))
             throw new CryptographicException("Unrelated test publication placement.");
         return ValueTask.FromResult(Placement);
     }

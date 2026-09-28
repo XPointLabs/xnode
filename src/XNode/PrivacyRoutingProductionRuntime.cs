@@ -8,13 +8,13 @@ using XNode.Core.PrivacyRouting;
 namespace XNode;
 
 internal sealed class VerifiedOnionHostReceiveBindingSource(
-    IContactVerifiedAuthoritySnapshotSource snapshots,
+    IDeepIdV2ReceiveNetworkSource networks,
     RouterNodeOptions node,
     PrivacyRoutingConfiguration configuration)
     : IOnionHostReceiveBindingSource
 {
-    private readonly IContactVerifiedAuthoritySnapshotSource snapshots = snapshots
-        ?? throw new ArgumentNullException(nameof(snapshots));
+    private readonly IDeepIdV2ReceiveNetworkSource networks = networks
+        ?? throw new ArgumentNullException(nameof(networks));
     private readonly byte[] localOwnerId = (node
         ?? throw new ArgumentNullException(nameof(node))).GetRouterId().ToBytes();
     private readonly PrivacyRoutingConfiguration configuration = configuration
@@ -30,12 +30,12 @@ internal sealed class VerifiedOnionHostReceiveBindingSource(
                 "The verified ONION receive binding is dormant while privacy routing is disabled.");
         }
 
-        var snapshot = await snapshots.ReadCurrentAsync(cancellationToken)
+        var network = await networks.ReadCurrentAsync(localOwnerId, configuration.PublicKey, cancellationToken)
             .ConfigureAwait(false)
             ?? throw new InvalidOperationException(
                 "The ONION authority source returned no current verified snapshot.");
-        snapshot.EnsureConsistent();
-        var candidates = OnionPathCandidateSnapshotFactory.Create(snapshot.Network)
+        network.EnsureCurrent();
+        var candidates = OnionPathCandidateSnapshotFactory.Create(network)
             .Candidates
             .Where(candidate => Fixed(candidate.RouterOwnerId.Span, localOwnerId))
             .ToArray();
@@ -46,23 +46,14 @@ internal sealed class VerifiedOnionHostReceiveBindingSource(
         }
 
         var local = candidates[0];
-        var requiredRoleBit = configuration.ReceivePosition switch
-        {
-            OnionReceivePosition.Ingress => 0,
-            OnionReceivePosition.Core => 1,
-            OnionReceivePosition.Exit => 2,
-            _ => throw new InvalidOperationException(
-                "The configured ONION receive position is invalid.")
-        };
-        if ((local.VerifiedRoleMask & (1 << requiredRoleBit)) == 0)
+        if ((local.VerifiedRoleMask & 0x0007) == 0)
         {
             throw new InvalidOperationException(
-                "The local node lacks the configured role in the current verified XND1 view.");
+                "The local node lacks a receive role in the current verified XND1 view.");
         }
 
         return new OnionHostReceiveBinding(
-            snapshot.Network,
-            configuration.ReceivePosition,
+            network,
             local.NodeId.Span,
             configuration.KeyHandleId.Span);
     }
@@ -80,9 +71,18 @@ internal sealed class PrivacyRoutingProductionCapability(
         ?? throw new ArgumentNullException(nameof(configuration));
     private readonly IOnionHostReceiveBindingSource receiveBindings = receiveBindings
         ?? throw new ArgumentNullException(nameof(receiveBindings));
-    private int verified;
+    private VerifiedOnionNetworkContext? verifiedNetwork;
 
-    internal bool IsVerified => configuration.Enabled && Volatile.Read(ref verified) == 1;
+    internal bool IsVerified
+    {
+        get
+        {
+            var network = Volatile.Read(ref verifiedNetwork);
+            if (!configuration.Enabled || network is null) return false;
+            try { network.EnsureCurrent(); return true; }
+            catch (OnionBoundaryException) { return false; }
+        }
+    }
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
@@ -95,7 +95,7 @@ internal sealed class PrivacyRoutingProductionCapability(
 
     public Task StopAsync(CancellationToken cancellationToken)
     {
-        Volatile.Write(ref verified, 0);
+        Volatile.Write(ref verifiedNetwork, null);
         return Task.CompletedTask;
     }
 
@@ -109,18 +109,17 @@ internal sealed class PrivacyRoutingProductionCapability(
                 ?? throw new InvalidOperationException(
                     "The ONION receive binding source returned no capability.");
             binding.Network.EnsureCurrent();
-            if (binding.Position != configuration.ReceivePosition
-                || !Fixed(binding.KeyHandleId.Span, configuration.KeyHandleId.Span))
+            if (!Fixed(binding.KeyHandleId.Span, configuration.KeyHandleId.Span))
             {
                 throw new InvalidOperationException(
-                    "The current ONION binding does not match the configured role or opaque key handle.");
+                    "The current ONION binding does not match the configured opaque key handle.");
             }
-            Volatile.Write(ref verified, 1);
+            Volatile.Write(ref verifiedNetwork, binding.Network);
             return binding;
         }
         catch
         {
-            Volatile.Write(ref verified, 0);
+            Volatile.Write(ref verifiedNetwork, null);
             throw;
         }
     }
@@ -146,7 +145,7 @@ internal static class PrivacyRoutingProductionComposition
             services.TryAddSingleton<PrivacyRoutingRuntime>();
             return;
         }
-        RequireRegistered<IContactVerifiedAuthoritySnapshotSource>(services);
+        RequireRegistered<IDeepIdV2ReceiveNetworkSource>(services);
         RequirePath(configuration.StateProtectionKeyPath, "state protection key");
         RequirePath(configuration.ReplayStatePath, "replay state");
         RequirePath(configuration.EntropyStatePath, "entropy state");
@@ -154,7 +153,7 @@ internal static class PrivacyRoutingProductionComposition
 
         services.TryAddSingleton<IOnionHostReceiveBindingSource>(provider =>
             new VerifiedOnionHostReceiveBindingSource(
-                provider.GetRequiredService<IContactVerifiedAuthoritySnapshotSource>(),
+                provider.GetRequiredService<IDeepIdV2ReceiveNetworkSource>(),
                 node,
                 configuration));
         services.TryAddSingleton(provider => new DurableOnionReplayStore(
@@ -192,12 +191,6 @@ internal static class PrivacyRoutingProductionComposition
         services.TryAddSingleton(provider => new PrivacyRoutingCodec(
             provider.GetRequiredService<OnionEntropyAuthority>(),
             provider.GetRequiredService<OnionKeyAgreementAuthority>()));
-        if (services.Any(static descriptor => descriptor.ServiceType
-            == typeof(IPrivacyRoutedContactRecipientResolveEvidenceIngestion)))
-        {
-            services.TryAddSingleton<IPrivacyRoutedContactRecipientResolveClient,
-                PrivacyRoutedContactRecipientResolveClient>();
-        }
         services.TryAddSingleton<PrivacyRoutingProductionCapability>();
         services.AddHostedService(provider =>
             provider.GetRequiredService<PrivacyRoutingProductionCapability>());

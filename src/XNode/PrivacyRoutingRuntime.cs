@@ -29,7 +29,6 @@ internal sealed class OnionHostReceiveBinding
 
     internal OnionHostReceiveBinding(
         VerifiedOnionNetworkContext network,
-        OnionReceivePosition position,
         ReadOnlySpan<byte> localNodeId,
         ReadOnlySpan<byte> keyHandleId)
     {
@@ -48,18 +47,19 @@ internal sealed class OnionHostReceiveBinding
                 nameof(keyHandleId));
         }
 
-        if (position is < OnionReceivePosition.Ingress or > OnionReceivePosition.Exit)
-        {
-            throw new ArgumentOutOfRangeException(nameof(position));
-        }
-
-        Position = position;
         this.localNodeId = localNodeId.ToArray();
+        var candidate = OnionPathCandidateSnapshotFactory.Create(network).Candidates
+            .Single(node => node.NodeId.Span.SequenceEqual(this.localNodeId));
+        positions = Enumerable.Range(0, 3)
+            .Where(bit => (candidate.VerifiedRoleMask & (1 << bit)) != 0)
+            .Select(bit => (OnionReceivePosition)(bit + 1)).ToArray();
+        if (positions.Length == 0) throw new InvalidOperationException("No signed local receive role is available.");
         this.keyHandleId = keyHandleId.ToArray();
     }
 
     internal VerifiedOnionNetworkContext Network { get; }
-    internal OnionReceivePosition Position { get; }
+    private readonly OnionReceivePosition[] positions;
+    internal IReadOnlyList<OnionReceivePosition> Positions => Array.AsReadOnly(positions);
     internal ReadOnlyMemory<byte> LocalNodeId => localNodeId.ToArray();
     internal ReadOnlyMemory<byte> KeyHandleId => keyHandleId.ToArray();
 }
@@ -153,6 +153,10 @@ public sealed class PrivacyRoutingRuntime
                 PrivacyRuntimeOutcome.UnavailableBeforeForward);
         }
 
+        if (frame.Length is < 176 or > 1_572_864)
+            return PrivacyRuntimeResult.Of(PrivacyRuntimeOutcome.MalformedBeforeForward);
+        var exactFrame = frame.ToArray();
+        var effectStarted = false;
         try
         {
             var binding = await productionCapability.GetCurrentAsync(cancellationToken)
@@ -164,26 +168,20 @@ public sealed class PrivacyRoutingRuntime
             }
 
             var keyHandle = keyAgreement.BindKeyHandle(binding.KeyHandleId);
-            var localNodeKey = OnionLocalNodeKeyFactory.Bind(
-                binding.Network,
-                binding.Position,
-                binding.LocalNodeId,
-                keyHandle);
-            var receive = OnionReceiveContextSelector.Select(frame, localNodeKey);
-            await using var replayLease = await replay.BeginOpenAsync(
-                    receive,
-                    frame,
-                    cancellationToken)
-                .ConfigureAwait(false);
-            using var opened = await codec.OpenAsync(
-                    frame,
-                    receive,
-                    replayLease,
-                    cancellationToken)
-                .ConfigureAwait(false);
+            var receives = new List<VerifiedOnionReceiveContext>();
+            foreach (var position in binding.Positions)
+            {
+                var localNodeKey = OnionLocalNodeKeyFactory.Bind(binding.Network, position, binding.LocalNodeId, keyHandle);
+                try { receives.Add(OnionReceiveContextSelector.Select(exactFrame, localNodeKey)); }
+                catch (OnionBoundaryException exception) when (exception.Code == "receive-frame-invalid") { }
+            }
+            if (receives.Count == 0)
+                return PrivacyRuntimeResult.Of(PrivacyRuntimeOutcome.MalformedBeforeForward);
+            using var opened = await OpenSignedAsync(exactFrame, receives, cancellationToken).ConfigureAwait(false);
 
             if (opened is OpenedOnionRelay relay)
             {
+                effectStarted = true;
                 return await ForwardAsync(relay, cancellationToken)
                     .ConfigureAwait(false);
             }
@@ -194,12 +192,14 @@ public sealed class PrivacyRoutingRuntime
                     PrivacyRuntimeOutcome.MalformedBeforeForward);
             }
 
+            effectStarted = true;
             return await DispatchAndSealAsync(exit, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (OnionBoundaryException exception)
         {
-            return PrivacyRuntimeResult.Of(MapBoundaryFailure(exception.Code));
+            return PrivacyRuntimeResult.Of(effectStarted
+                ? PrivacyRuntimeOutcome.OutcomeUnknownAfterForward : MapBoundaryFailure(exception.Code));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -213,9 +213,28 @@ public sealed class PrivacyRoutingRuntime
                 or UnauthorizedAccessException
                 or CryptographicException)
         {
-            return PrivacyRuntimeResult.Of(
-                PrivacyRuntimeOutcome.UnavailableBeforeForward);
+            return PrivacyRuntimeResult.Of(effectStarted
+                ? PrivacyRuntimeOutcome.OutcomeUnknownAfterForward : PrivacyRuntimeOutcome.UnavailableBeforeForward);
         }
+        finally { CryptographicOperations.ZeroMemory(exactFrame); }
+    }
+
+    private async ValueTask<OpenedOnionLayer> OpenSignedAsync(ReadOnlyMemory<byte> exactFrame,
+        IReadOnlyList<VerifiedOnionReceiveContext> receives, CancellationToken cancellationToken)
+    {
+        if (receives.Count > 2 || (receives.Count == 2 &&
+            (receives[0].Position != OnionReceivePosition.Ingress || receives[1].Position != OnionReceivePosition.Core)))
+            throw new InvalidDataException("The signed receive contexts are ambiguous.");
+        for (var index = 0; index < receives.Count; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var receive = receives[index];
+            await using var lease = await replay!.BeginOpenAsync(receive, exactFrame, cancellationToken).ConfigureAwait(false);
+            try { return await codec!.OpenAsync(exactFrame, receive, lease, cancellationToken).ConfigureAwait(false); }
+            catch (OnionBoundaryException exception) when (
+                exception.Code == "receive-position-mismatch" && receives.Count == 2 && index == 0) { }
+        }
+        throw new InvalidDataException("No signed receive position accepts the authenticated frame.");
     }
 
     private async Task<PrivacyRuntimeResult> ForwardAsync(

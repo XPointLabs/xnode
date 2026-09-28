@@ -298,7 +298,6 @@ Each relay decrypts only its own layer. A relay layer contains a replay ID, a ne
     "replayStateRelativePath": "privacy-routing-v1/replay.state",
     "entropyStateRelativePath": "privacy-routing-v1/entropy.state",
     "keyVaultDirectoryRelativePath": "privacy-routing-v1/key-vault",
-    "receivePosition": "Ingress",
     "maximumConcurrentRequests": 64,
     "requestsPerMinute": 600,
     "requestTimeoutSeconds": 30,
@@ -321,14 +320,31 @@ Each relay decrypts only its own layer. A relay layer contains a replay ID, a ne
 Activation is atomic and fail closed. `StateProtectionKeyPath` is a separate raw
 32-byte secret (not hexadecimal text) and must not reuse the node Ed25519 or
 ONION X25519 secret. The three state paths must be distinct clean relative paths
-inside `Node:DataDirectory`. `ReceivePosition` must match the local node role in
-the current Protocol-verified XND1 view. Startup also requires the production
-Contact authority source because it owns the current XNA1/XVP1/XNV1/XNH1/XND1,
-PMT2 and DTT1 verification closure. Missing, stale, cross-network, duplicate-owner
+inside `Node:DataDirectory`. A fixed receive-position configuration is retired:
+the host derives all permitted positions from its current signed XND1 role mask.
+Startup requires the independent DID2 proof/network source, not the retired
+V1 Contact authority snapshot. `DeepIdV2NetworkPlacement:PublicObservationDid2Path`
+names an operator-configured public DID2 credential used for fresh proof acquisition;
+an incoming request cannot choose it. The exact policy/view/head/node/PMT chains
+are configured with the other `DeepIdV2NetworkPlacement` paths. Current composition
+is UAT-only and does not authorize a Production environment activation.
+Missing, stale, cross-network, duplicate-owner, wrong-key
 or wrong-role authority leaves the capability unavailable and fails enabled-node
 startup before ingress can accept traffic. The X25519 scalar is imported into an
 authenticated opaque-handle slot; a pre-existing slot with different key material
 is rejected rather than overwritten.
+
+The network rollback floor and its independent anchor live in `did2-network-state`
+and `did2-network-anchor` beneath the node data directory. Back up these directories
+and the DID2 Data Protection key ring together with the existing proof floor/anchor.
+Never delete one half to repair an error. A missing, corrupt, split or rolled-back
+half fails closed; restoring both halves to an older matching snapshot is not
+detectable by this local store. Protocol semantics and the explicit authority-rollover
+restriction belong to [DR-0012](../../docs/survival-program/decisions/DR-0012-protected-network-history.md).
+The local replay generation is also incompatible with the retired adapter:
+an old replay file fails closed, without migration or overwrite. Before initial
+UAT activation, replace only explicitly disposable replay state through the
+operator deployment/reset procedure; preserve identity keys and all rollback floors.
 
 The X25519 private key is independently generated and stored as exactly 32 bytes of lowercase hex in an absolute secret file. It must never be derived from or converted from the router Ed25519 key. Startup fails closed for a missing, zero, uppercase/non-canonical or invalid key; duplicate/self peers; non-origin URLs; repeated TLS pins; invalid bounds; or an empty peer inventory.
 

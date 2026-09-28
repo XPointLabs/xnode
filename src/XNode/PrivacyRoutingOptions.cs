@@ -24,8 +24,6 @@ public sealed class PrivacyRoutingOptions
 
     public string KeyVaultDirectoryRelativePath { get; set; } = "";
 
-    public OnionReceivePosition ReceivePosition { get; set; }
-
     public int MaximumConcurrentRequests { get; set; } = 64;
 
     public int RequestsPerMinute { get; set; } = 600;
@@ -64,7 +62,6 @@ public sealed class PrivacyRoutingOptions
                 || !string.IsNullOrWhiteSpace(ReplayStateRelativePath)
                 || !string.IsNullOrWhiteSpace(EntropyStateRelativePath)
                 || !string.IsNullOrWhiteSpace(KeyVaultDirectoryRelativePath)
-                || ReceivePosition != 0
                 || Peers.Count != 0)
             {
                 throw new InvalidOperationException(
@@ -112,12 +109,6 @@ public sealed class PrivacyRoutingOptions
             throw new InvalidOperationException(
                 "PrivacyRouting:StateProtectionKeyPath must name an existing absolute 32-byte secret file.");
         }
-        if (ReceivePosition is < OnionReceivePosition.Ingress or > OnionReceivePosition.Exit)
-        {
-            throw new InvalidOperationException(
-                "PrivacyRouting:ReceivePosition must be Ingress, Core, or Exit.");
-        }
-
         var replayStatePath = ResolveStatePath(
             node.DataDirectory,
             ReplayStateRelativePath,
@@ -242,8 +233,7 @@ public sealed class PrivacyRoutingOptions
                 Path.GetFullPath(StateProtectionKeyPath),
                 replayStatePath,
                 entropyStatePath,
-                keyVaultDirectory,
-                ReceivePosition);
+                keyVaultDirectory);
         }
         catch
         {
@@ -400,8 +390,7 @@ public sealed class PrivacyRoutingConfiguration : IDisposable
         string stateProtectionKeyPath = "",
         string replayStatePath = "",
         string entropyStatePath = "",
-        string keyVaultDirectory = "",
-        OnionReceivePosition receivePosition = 0)
+        string keyVaultDirectory = "")
     {
         Enabled = enabled;
         PrivateKey = privateKey;
@@ -422,7 +411,6 @@ public sealed class PrivacyRoutingConfiguration : IDisposable
         ReplayStatePath = replayStatePath;
         EntropyStatePath = entropyStatePath;
         KeyVaultDirectory = keyVaultDirectory;
-        ReceivePosition = receivePosition;
     }
 
     public bool Enabled { get; }
@@ -441,7 +429,6 @@ public sealed class PrivacyRoutingConfiguration : IDisposable
     internal string ReplayStatePath { get; }
     internal string EntropyStatePath { get; }
     internal string KeyVaultDirectory { get; }
-    internal OnionReceivePosition ReceivePosition { get; }
 
     public void Dispose()
     {

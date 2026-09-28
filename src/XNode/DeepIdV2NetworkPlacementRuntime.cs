@@ -17,19 +17,20 @@ public sealed class DeepIdV2NetworkPlacementOptions
     public List<string> ExactHeadPaths { get; set; } = [];
     public List<string> ExactActiveNodePaths { get; set; } = [];
     public List<string> ExactMailboxProjectionPaths { get; set; } = [];
+    public string PublicObservationDid2Path { get; set; } = string.Empty;
 
     internal DeepIdV2NetworkClosureFileSource? ValidateAndLoad(
         bool did2ProofEnabled, bool developmentOrUat)
     {
         if (ExactPolicyPaths is null || ExactViewPaths is null ||
             ExactHeadPaths is null || ExactActiveNodePaths is null ||
-            ExactMailboxProjectionPaths is null)
+            ExactMailboxProjectionPaths is null || PublicObservationDid2Path is null)
             throw new InvalidOperationException(
                 "DID2 network placement configuration has null paths.");
         var any = Enabled || ExactPolicyPaths.Count != 0 ||
             ExactViewPaths.Count != 0 || ExactHeadPaths.Count != 0 ||
             ExactActiveNodePaths.Count != 0 ||
-            ExactMailboxProjectionPaths.Count != 0;
+            ExactMailboxProjectionPaths.Count != 0 || PublicObservationDid2Path.Length != 0;
         if (!Enabled)
         {
             if (any) throw new InvalidOperationException(
@@ -41,7 +42,7 @@ public sealed class DeepIdV2NetworkPlacementOptions
                 "DID2 UAT placement requires the independent DID2 proof boundary.");
         return new DeepIdV2NetworkClosureFileSource(ExactPolicyPaths,
             ExactViewPaths, ExactHeadPaths, ExactActiveNodePaths,
-            ExactMailboxProjectionPaths);
+            ExactMailboxProjectionPaths, PublicObservationDid2Path);
     }
 }
 
@@ -50,11 +51,12 @@ internal sealed class DeepIdV2NetworkClosureFileSource
     private const int MaximumChainCount = 4_096;
     private const long MaximumClosureBytes = 64L * 1024 * 1024;
     private readonly string[][] paths;
+    internal ParsedDid2? Observer { get; }
 
     internal DeepIdV2NetworkClosureFileSource(
         IReadOnlyList<string> policies, IReadOnlyList<string> views,
         IReadOnlyList<string> heads, IReadOnlyList<string> nodes,
-        IReadOnlyList<string> projections)
+        IReadOnlyList<string> projections, string publicObservationDid2Path = "")
     {
         ArgumentNullException.ThrowIfNull(policies);
         ArgumentNullException.ThrowIfNull(views);
@@ -76,6 +78,15 @@ internal sealed class DeepIdV2NetworkClosureFileSource
             paths.Sum(static group => group.Length))
             throw new ArgumentException(
                 "DID2 network closure paths must be distinct.");
+        if (publicObservationDid2Path.Length != 0)
+        {
+            var observerPath = Copy([publicObservationDid2Path])[0];
+            if (paths.SelectMany(static group => group).Contains(observerPath, comparer))
+                throw new ArgumentException("The public DID2 observer must be distinct from network records.");
+            var bytes = DeepIdV2NetworkAuthorityFileSource.ReadExact(observerPath);
+            try { Observer = DeepIdV2Codec.DecodeDid2(bytes); }
+            finally { CryptographicOperations.ZeroMemory(bytes); }
+        }
     }
 
     internal DeepIdV2NetworkClosureArtifacts ReadCurrent()
@@ -152,11 +163,22 @@ internal interface IDeepIdV2PreKeyPlacementSource
         CancellationToken cancellationToken);
 }
 
-internal sealed class DeepIdV2NetworkPlacementRuntime(
-    DeepIdV2DirectoryProofRuntime proofs,
-    DeepIdV2NetworkClosureFileSource artifacts,
-    IOnionMonotonicClock clock) : IDeepIdV2PreKeyPlacementSource
+internal interface IDeepIdV2ReceiveNetworkSource
 {
+    ValueTask<VerifiedOnionNetworkContext> ReadCurrentAsync(
+        ReadOnlyMemory<byte> localOwnerId, ReadOnlyMemory<byte> localOnionPublicKey,
+        CancellationToken cancellationToken);
+}
+
+internal sealed class DeepIdV2NetworkPlacementRuntime(
+    IDeepIdV2CurrentDirectoryProofSource proofs,
+    DeepIdV2NetworkAuthorityFileSource authoritySource,
+    DeepIdV2NetworkClosureFileSource artifacts,
+    FileDeepIdV2NetworkFloorStore floor,
+    IOnionMonotonicClock clock) : IDeepIdV2PreKeyPlacementSource, IDeepIdV2ReceiveNetworkSource
+{
+    private readonly SemaphoreSlim gate = new(1, 1);
+
     public async ValueTask<ContactServicePlacementCapability>
         MintPreKeyPublicationAsync(ParsedDid2 publisher,
             ReadOnlyMemory<byte> serviceCapability,
@@ -168,25 +190,68 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
             throw new ArgumentException(
                 "DID2 pre-key publication needs a nonzero service capability.",
                 nameof(serviceCapability));
-        var freshness = await proofs.ReadCurrentAsync(publisher,
+        var (network, freshness) = await ReadNetworkAsync(publisher, default, default,
             cancellationToken).ConfigureAwait(false);
-        if (freshness.CurrentCheckpoint is null)
-            throw new CryptographicException(
-                "DID2 publication placement requires a current account checkpoint.");
-        var authority = proofs.ReadCurrentNetworkAuthority();
-        using var exact = artifacts.ReadCurrent();
-        var network = await OnionNetworkContextVerifier.VerifyAsync(
-            authority, freshness, exact.Policies, exact.Views, exact.Heads,
-            exact.Nodes, exact.Projections, protectedPrevious: null,
-            new OnionTrustedTimeAuthority(clock), cancellationToken)
-            .ConfigureAwait(false);
-        network.EnsureCurrent();
         var placement = ContactServicePlacementFactory.Create(network,
             ContactServiceRequestKind.PublishPreKeyInventory,
             serviceCapability);
         return ContactServicePlacementCapability.FromNetcodec(placement,
             ContactServiceRequestKind.PublishPreKeyInventory,
             serviceCapability, freshness.TrustedUpperUnixSeconds);
+    }
+
+    public async ValueTask<VerifiedOnionNetworkContext> ReadCurrentAsync(
+        ReadOnlyMemory<byte> localOwnerId, ReadOnlyMemory<byte> localOnionPublicKey,
+        CancellationToken cancellationToken)
+    {
+        if (localOwnerId.Length != 32 || localOnionPublicKey.Length != 32 ||
+            localOwnerId.Span.IndexOfAnyExcept((byte)0) < 0 || localOnionPublicKey.Span.IndexOfAnyExcept((byte)0) < 0)
+            throw new ArgumentException("The receive host needs its exact independent local node/key binding.");
+        var observer = artifacts.Observer ?? throw new InvalidOperationException(
+            "DID2 receive authority requires an operator-configured public observation credential.");
+        var result = await ReadNetworkAsync(observer, localOwnerId, localOnionPublicKey,
+            cancellationToken).ConfigureAwait(false);
+        return result.Network;
+    }
+
+    private async ValueTask<(VerifiedOnionNetworkContext Network,
+        Deep.Protocol.AccountDirectoryV1.VerifiedDeepIdV2DirectoryFreshness Freshness)> ReadNetworkAsync(
+        ParsedDid2 did2, ReadOnlyMemory<byte> localOwnerId, ReadOnlyMemory<byte> localKey,
+        CancellationToken cancellationToken)
+    {
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var previous = await floor.ReadAsync(cancellationToken).ConfigureAwait(false);
+            var freshness = await proofs.ReadCurrentAsync(did2, cancellationToken).ConfigureAwait(false);
+            if (freshness.CurrentCheckpoint is null)
+                throw new CryptographicException("DID2 network authority requires a current account checkpoint.");
+            var authority = authoritySource.ReadCurrent();
+            using var exact = artifacts.ReadCurrent();
+            var time = new OnionTrustedTimeAuthority(clock);
+            var network = previous is null
+                ? await OnionNetworkContextVerifier.VerifyAsync(authority, freshness, exact.Policies,
+                    exact.Views, exact.Heads, exact.Nodes, exact.Projections, null, time, cancellationToken).ConfigureAwait(false)
+                : await OnionNetworkContextVerifier.VerifyFromProtectedHistoryAsync(authority, freshness,
+                    exact.Policies, exact.Views, exact.Heads, exact.Nodes, exact.Projections,
+                    previous.History, time, cancellationToken).ConfigureAwait(false);
+            network.EnsureCurrent();
+            if (!localOwnerId.IsEmpty)
+            {
+                var local = OnionPathCandidateSnapshotFactory.Create(network).Candidates
+                    .Where(node => node.RouterOwnerId.Span.SequenceEqual(localOwnerId.Span)).ToArray();
+                if (local.Length != 1)
+                    throw new CryptographicException("The signed view does not contain one exact local node.");
+                OnionLocalNodeKeyFactory.EnsureInstalledPublicKey(network, local[0].NodeId, localKey);
+            }
+            var committed = await floor.CommitVerifiedAsync(previous, network, cancellationToken).ConfigureAwait(false);
+            var retained = await floor.ReadAsync(cancellationToken).ConfigureAwait(false);
+            if (!FileDeepIdV2NetworkFloorStore.Same(committed, retained))
+                throw new IOException("The DID2 network floor changed before capability release.");
+            network.EnsureCurrent();
+            return (network, freshness);
+        }
+        finally { gate.Release(); }
     }
 }
 
@@ -197,8 +262,14 @@ internal static class DeepIdV2NetworkPlacementHostComposition
         DeepIdV2NetworkClosureFileSource artifacts)
     {
         services.AddSingleton(artifacts);
+        services.AddSingleton(provider => provider.GetRequiredService<DeepIdV2DirectoryProofRuntime>()
+            .OpenNetworkFloor(provider.GetRequiredService<XNode.Core.RouterNodeOptions>(),
+                provider.GetRequiredService<XNode.Core.Mailbox.IMailboxStorageSecurity>(),
+                provider.GetRequiredService<XNode.Core.Mailbox.IMailboxDurabilityBarrier>()));
         services.AddSingleton<DeepIdV2NetworkPlacementRuntime>();
         services.AddSingleton<IDeepIdV2PreKeyPlacementSource>(provider =>
+            provider.GetRequiredService<DeepIdV2NetworkPlacementRuntime>());
+        services.AddSingleton<IDeepIdV2ReceiveNetworkSource>(provider =>
             provider.GetRequiredService<DeepIdV2NetworkPlacementRuntime>());
         services.AddHostedService<DeepIdV2NetworkPlacementHostedService>();
         return services;

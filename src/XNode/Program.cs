@@ -39,7 +39,7 @@ var productionMailboxAuthorityOptions = builder.Configuration
     .GetSection("MailboxClientProductionAuthority")
     .Get<ProductionMailboxAuthorityOptions>() ?? new ProductionMailboxAuthorityOptions();
 var privacyRoutingOptions = builder.Configuration.GetSection("PrivacyRouting")
-    .Get<PrivacyRoutingOptions>() ?? new PrivacyRoutingOptions();
+    .Get<PrivacyRoutingOptions>(options => options.ErrorOnUnknownConfiguration = true) ?? new PrivacyRoutingOptions();
 var contactServiceOptions = builder.Configuration.GetSection("ContactService")
     .Get<ContactServicePersistenceOptions>() ?? new ContactServicePersistenceOptions();
 var productionContactAuthorityOptions = builder.Configuration.GetSection("ContactAuthority")

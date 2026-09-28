@@ -161,12 +161,12 @@ public sealed class OnionDurableAdaptersTests
         using var fixture = new Fixture();
         using var store = fixture.ReplayStore();
         var baseline = new ScopeParts(
-            Bytes(0x61), Bytes(0x62), Bytes(0x63), Bytes(0x64), Bytes(0x67), 7,
+            Enumerable.Repeat((byte)0x61, 16).ToArray(), Bytes(0x62), Bytes(0x63), Bytes(0x64), Bytes(0x67), 7,
             OnionReceivePosition.Core, Bytes(0x65));
         var scopes = new[]
         {
             baseline,
-            baseline with { Network = Bytes(0x71) },
+            baseline with { Network = Enumerable.Repeat((byte)0x71, 16).ToArray() },
             baseline with { Owner = Bytes(0x72) },
             baseline with { Key = Bytes(0x73) },
             baseline with { KeyHandle = Bytes(0x74) },
@@ -191,6 +191,32 @@ public sealed class OnionDurableAdaptersTests
             await using var transaction = await store.BeginDigestForTestsAsync(digest);
             Assert.Equal(OnionReplayCommitOutcome.Committed, await transaction.CommitAsync(replay, default));
         }
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(15)]
+    [InlineData(17)]
+    [InlineData(32)]
+    public void ReplayStore_RejectsNonNetcodecNetworkWidth(int bytes) =>
+        Assert.Throws<ArgumentException>(() => DurableOnionReplayStore.ComputeScopeDigestForTests(
+            Enumerable.Repeat((byte)0x11, bytes).ToArray(), Bytes(0x62), Bytes(0x63), Bytes(0x64),
+            Bytes(0x67), 7, OnionReceivePosition.Ingress, Bytes(0x65)));
+
+    [Fact]
+    public async Task ReplayStore_RejectsRetiredLocalGenerationWithoutRewrite()
+    {
+        using var fixture = new Fixture();
+        using (var store = fixture.ReplayStore())
+        {
+            await using var transaction = await store.BeginDigestForTestsAsync(Bytes(0x51));
+            Assert.Equal(OnionReplayCommitOutcome.Committed, await transaction.CommitAsync(Bytes(0x52), default));
+        }
+        var bytes = File.ReadAllBytes(fixture.ReplayPath);
+        "XONRPL01"u8.CopyTo(bytes);
+        File.WriteAllBytes(fixture.ReplayPath, bytes);
+        Assert.Throws<InvalidDataException>(() => fixture.ReplayStore());
+        Assert.Equal(bytes, File.ReadAllBytes(fixture.ReplayPath));
     }
 
     [Fact]
