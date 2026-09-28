@@ -178,6 +178,45 @@ public sealed class PrivacyRoutingRuntimeTests
     }
 
     [Fact]
+    public async Task TrafficReusesOnlyTheCurrentBoundedBindingWithoutAdditionalProofRequests()
+    {
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var configuration = EnabledTestConfiguration();
+        var source = new RefreshBindingSource(Binding(configuration, fixture.NetworkContext));
+        await using var capability = new PrivacyRoutingProductionCapability(configuration, source,
+            TimeSpan.FromSeconds(10));
+        await capability.StartAsync(default);
+        for (var index = 0; index < 100; index++)
+        {
+            var binding = await capability.GetCurrentAsync(default);
+            binding.Network.EnsureCurrent();
+            Assert.Equal(configuration.KeyHandleId.ToArray(), binding.KeyHandleId.ToArray());
+        }
+        Assert.Equal(1, source.Calls);
+        await capability.StopAsync(default);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            await capability.GetCurrentAsync(default));
+    }
+
+    [Fact]
+    public async Task ExpiredRetainedBindingRequiresFreshProofEvenInsideTheReuseWindow()
+    {
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var configuration = EnabledTestConfiguration();
+        fixture.Sample = fixture.Freshness.FreshnessDeadlineMonotonicSeconds - 1;
+        var current = await fixture.VerifyHistoryAsync(OnionNetworkProtectedHistoryCodec.Encode(fixture.NetworkContext));
+        var source = new RefreshBindingSource(Binding(configuration, current));
+        await using var capability = new PrivacyRoutingProductionCapability(configuration, source,
+            TimeSpan.FromSeconds(10));
+        await capability.StartAsync(default);
+        await Task.Delay(1_100);
+        await Assert.ThrowsAsync<OnionBoundaryException>(async () =>
+            await capability.GetCurrentAsync(default));
+        Assert.Equal(2, source.Calls);
+        Assert.False(capability.IsVerified);
+    }
+
+    [Fact]
     public async Task StopCancelsRefreshAndNeverPublishesItsLateBinding()
     {
         using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync();

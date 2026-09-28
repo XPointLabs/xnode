@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Diagnostics;
 using System.Text;
 using Deep.Protocol.DeepExtension.PrivacyRouting;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -71,21 +72,22 @@ internal sealed class PrivacyRoutingProductionCapability : IHostedService, IAsyn
     private readonly CancellationTokenSource lifetime = new();
     private readonly SemaphoreSlim refreshGate = new(1, 1);
     private Task? refreshTask;
-    private VerifiedOnionNetworkContext? verifiedNetwork;
+    private OnionHostReceiveBinding? verifiedBinding;
+    private long bindingCreatedTimestamp;
     private int stopped;
     private int started;
     private int disposed;
 
     public PrivacyRoutingProductionCapability(PrivacyRoutingConfiguration configuration,
         IOnionHostReceiveBindingSource receiveBindings)
-        : this(configuration, receiveBindings, TimeSpan.FromSeconds(5)) { }
+        : this(configuration, receiveBindings, TimeSpan.FromSeconds(10)) { }
 
     internal PrivacyRoutingProductionCapability(PrivacyRoutingConfiguration configuration,
         IOnionHostReceiveBindingSource receiveBindings, TimeSpan refreshInterval)
     {
         this.configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         this.receiveBindings = receiveBindings ?? throw new ArgumentNullException(nameof(receiveBindings));
-        if (refreshInterval <= TimeSpan.Zero || refreshInterval > TimeSpan.FromSeconds(5))
+        if (refreshInterval <= TimeSpan.Zero || refreshInterval > TimeSpan.FromSeconds(10))
             throw new ArgumentOutOfRangeException(nameof(refreshInterval));
         this.refreshInterval = refreshInterval;
     }
@@ -94,7 +96,7 @@ internal sealed class PrivacyRoutingProductionCapability : IHostedService, IAsyn
     {
         get
         {
-            var network = Volatile.Read(ref verifiedNetwork);
+            var network = Volatile.Read(ref verifiedBinding)?.Network;
             if (Volatile.Read(ref stopped) != 0 || !configuration.Enabled || network is null) return false;
             try { network.EnsureCurrent(); return true; }
             catch (OnionBoundaryException) { return false; }
@@ -109,7 +111,7 @@ internal sealed class PrivacyRoutingProductionCapability : IHostedService, IAsyn
         {
             return;
         }
-        _ = await GetCurrentAsync(cancellationToken).ConfigureAwait(false);
+        _ = await ReadCurrentAsync(forceRefresh: true, cancellationToken).ConfigureAwait(false);
         refreshTask = RefreshUntilStoppedAsync();
     }
 
@@ -117,21 +119,38 @@ internal sealed class PrivacyRoutingProductionCapability : IHostedService, IAsyn
     {
         Interlocked.Exchange(ref stopped, 1);
         await lifetime.CancelAsync().ConfigureAwait(false);
-        Volatile.Write(ref verifiedNetwork, null);
+        Volatile.Write(ref verifiedBinding, null);
         if (refreshTask is not null)
             await refreshTask.WaitAsync(cancellationToken).ConfigureAwait(false);
         await refreshGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try { Volatile.Write(ref verifiedNetwork, null); }
+        try { Volatile.Write(ref verifiedBinding, null); }
         finally { refreshGate.Release(); }
     }
 
-    internal async ValueTask<OnionHostReceiveBinding> GetCurrentAsync(
-        CancellationToken cancellationToken)
+    internal ValueTask<OnionHostReceiveBinding> GetCurrentAsync(
+        CancellationToken cancellationToken) => ReadCurrentAsync(false, cancellationToken);
+
+    private async ValueTask<OnionHostReceiveBinding> ReadCurrentAsync(
+        bool forceRefresh, CancellationToken cancellationToken)
     {
         using var request = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
         await refreshGate.WaitAsync(request.Token).ConfigureAwait(false);
         try
         {
+            var retained = Volatile.Read(ref verifiedBinding);
+            if (!forceRefresh && retained is not null &&
+                Stopwatch.GetElapsedTime(bindingCreatedTimestamp) < refreshInterval)
+            {
+                try { retained.Network.EnsureCurrent(); }
+                catch (OnionBoundaryException) { retained = null; Volatile.Write(ref verifiedBinding, null); }
+                if (retained is not null)
+                {
+                    request.Token.ThrowIfCancellationRequested();
+                    if (Volatile.Read(ref stopped) != 0)
+                        throw new OperationCanceledException(lifetime.Token);
+                    return retained;
+                }
+            }
             var binding = await receiveBindings.GetCurrentAsync(request.Token)
                 .ConfigureAwait(false)
                 ?? throw new InvalidOperationException(
@@ -145,12 +164,13 @@ internal sealed class PrivacyRoutingProductionCapability : IHostedService, IAsyn
             request.Token.ThrowIfCancellationRequested();
             if (Volatile.Read(ref stopped) != 0)
                 throw new OperationCanceledException(lifetime.Token);
-            Volatile.Write(ref verifiedNetwork, binding.Network);
+            bindingCreatedTimestamp = Stopwatch.GetTimestamp();
+            Volatile.Write(ref verifiedBinding, binding);
             return binding;
         }
         catch
         {
-            Volatile.Write(ref verifiedNetwork, null);
+            Volatile.Write(ref verifiedBinding, null);
             throw;
         }
         finally { refreshGate.Release(); }
@@ -163,7 +183,7 @@ internal sealed class PrivacyRoutingProductionCapability : IHostedService, IAsyn
         {
             while (await timer.WaitForNextTickAsync(lifetime.Token).ConfigureAwait(false))
             {
-                try { _ = await GetCurrentAsync(lifetime.Token).ConfigureAwait(false); }
+                try { _ = await ReadCurrentAsync(forceRefresh: true, lifetime.Token).ConfigureAwait(false); }
                 catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { break; }
                 catch (Exception exception) when (exception is IOException or InvalidOperationException or
                     HttpRequestException or UnauthorizedAccessException or CryptographicException or
@@ -171,12 +191,12 @@ internal sealed class PrivacyRoutingProductionCapability : IHostedService, IAsyn
                 {
                     // Never retain stale authority after a failed refresh. The
                     // next bounded tick may recover only through fresh proof.
-                    Volatile.Write(ref verifiedNetwork, null);
+                    Volatile.Write(ref verifiedBinding, null);
                 }
             }
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
-        finally { Volatile.Write(ref verifiedNetwork, null); }
+        finally { Volatile.Write(ref verifiedBinding, null); }
     }
 
     public async ValueTask DisposeAsync()

@@ -5,7 +5,13 @@
 XNode runs the Deep-native privacy relay and mailbox exit runtime in .NET and supervises Xray only for VLESS ingress. Xray forwards accepted public traffic to the bounded managed-ingress HTTP/2 surface.
 
 The DID2 ONION receive capability refreshes through its existing verified
-source on a bounded background timer, including while the node has no traffic.
+source on a ten-second background timer, including while the node has no traffic.
+Traffic may reuse the exact verified local binding within that interval only
+after `EnsureCurrent`; expired signed authority is never extended. The worker
+forces a fresh proof independently of traffic. This leaves budget for client
+proofs instead of consuming the complete six-per-ten-second Registry issuance
+budget with three idle nodes; transport traffic does not force redundant
+observation proofs for every hop. A proof failure still clears the binding.
 Health reads remain side-effect-free. A failed refresh clears readiness; a
 later refresh can recover only with fully verified fresh authority. Stop cancels
 the worker and prevents an in-flight result from reactivating readiness. This
