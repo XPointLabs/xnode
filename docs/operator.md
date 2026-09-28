@@ -12,7 +12,11 @@ VLESS/Reality physical gate passes with direct HTTPS blocked.
 
 ## DID2 directory-proof UAT boundary
 
-`DeepIdV2DirectoryProof` is an opt-in, fail-closed UAT/development proof reader.
+`DeepIdV2DirectoryProof` is an opt-in, fail-closed diagnostic proof reader.
+The authorized seed fleet is production infrastructure; `UAT` names its
+pre-release software profile, not a separate remote environment. Mr. X permits
+testing there until he explicitly reports users exist. This permission does not
+turn partial host readiness into release approval.
 It independently verifies the exact signed XNA1/DTS1 authority lineage from
 `NetworkIdHex` and `GenesisAuthorityCoreHashHex`, restores an exact signed DID2
 genesis head from `GenesisHeadPath` and `GenesisHeadCoreHashHex`, then protects
@@ -61,8 +65,11 @@ verification and both selected replicas' receipts are still required. A signed
 local snapshot alone does not detect restoration of an older valid backup.
 Corrupt/lost active state or conflicting operation/epoch latches the service
 fail-closed. Back up that state with node keys; restoring keys alone is not
-enough. Keep the switch disabled in Production and do not expose the peer route
-at public ingress. This source is not yet a production LKG/renewal owner.
+enough. The supported installer selects the explicit `UAT` candidate profile;
+the `Production` activation guard remains closed. Only the bounded authenticated
+replica route is allowlisted through signed-origin HTTPS to its dedicated H2
+listener. It is not an unauthenticated direct publication API. This source is
+not yet a production LKG/renewal owner.
 Two-replica dispatch/final verification and client claim/receive remain release
 gates.
 The separate candidate authority gate reads signed DCA1/XPS1 from the exact
@@ -238,13 +245,18 @@ not bypass an explicitly required terminal.
 
 The public client surface is HTTP/2 only:
 
-- `POST /api/ingress/v1/frame` — one bounded opaque `DRF1` request frame;
+- `POST /api/ingress/v1/frame` — one bounded opaque `XRF1` request frame;
 - `GET /api/ingress/v1/capabilities` — managed-ingress capability document;
 - `POST /api/peer/privacy/v1/frame` — authenticated peer-only relay ingress on the peer listener.
 
 Direct `/api/client/mailbox/v2/store`, `/retrieve`, and `/acknowledge` HTTP routes are not mapped. The exit node opens the final privacy layer. An authoritative exit invokes the MAU2 verifier, durable outcome journal and two-replica PRQ2/MQR3 runtime in process. A forwarding-only exit sends the unchanged canonical MAU2 body to the explicitly pinned authoritative router over the authenticated privacy-peer transport; it never owns a client adapter, operation ledger, cursor authority, or MQR3 signing authority.
 
-The public request contract requires exact HTTP/2, HTTPS scheme, `Content-Length`, `Content-Type` and `Accept` equal to `application/vnd.xpoint.deep.ingress-opaque-v1`, no query, content coding, early data, stable identity headers, cookies, tracing or redirects. Frames are admitted incrementally within `64..1572864` bytes before allocation/forwarding. Errors are canonical 64-byte `DIE1` frames and preserve before-forward versus outcome-unknown-after-forward certainty. Successful terminal replies are end-to-end sealed `DRS1` frames containing canonical `DPR1` success/evidence or stable failure codes.
+The public request contract requires exact HTTP/2, HTTPS scheme, canonical
+length/media headers and the closed ingress request contract. TLS termination
+must preserve that scheme through the scoped proxy boundary below. ONION bytes
+and response/error semantics belong to the
+[frozen privacy-routing specification](../../deep-protocol/docs/deep-extension-privacy-routing-v1.md);
+retired privacy frame/response magics are not accepted as compatibility paths.
 
 Kestrel keeps the existing API and peer listeners when the dedicated managed-ingress listener is
 disabled (the default). An internal HTTP/2-only listener can be enabled for an h2c reverse-proxy
@@ -257,7 +269,8 @@ backend without changing those listeners:
     "peerRpcListenUrl": "http://0.0.0.0:8081",
     "managedIngressH2ListenUrl": "http://0.0.0.0:8082/",
     "privacyPeerH2ListenUrl": "http://0.0.0.0:8083/",
-    "managedIngressTrustedProxyAddresses": [ "172.30.82.7", "172.30.82.8" ]
+    "managedIngressTrustedProxyAddresses": [ "172.30.82.7", "172.30.82.8" ],
+    "privacyPeerTrustedProxyAddresses": [ "172.30.82.7", "172.30.82.8" ]
   }
 }
 ```
@@ -276,13 +289,19 @@ uses the configured Kestrel default certificate; internal h2c uses `http://`. Ev
 request must originate from the exact proxy allowlist and carry exactly one
 `X-Forwarded-Proto: https`. XNode then consumes that header and sets the request scheme to HTTPS
 before managed-ingress contract validation. Unknown proxies receive 404; missing, duplicate or
-non-exact forwarded-proto values receive 400. The API and peer listeners never trust or consume
+non-exact forwarded-proto values receive 400. The API and mixed peer-RPC listeners never trust or consume
 this header.
 
-The optional privacy-peer listener is exact HTTP/2 and serves the privacy frame route plus any
-explicitly enabled authoritative-mailbox bridge routes. These paths are not exposed on the mixed
-peer-RPC listener. The Survival Development topology uses h2c `8083` for authenticated internal
-hops.
+The optional privacy-peer listener is exact HTTP/2 and serves the privacy frame,
+enabled authenticated replica and authoritative-mailbox routes. These paths are
+not exposed on the mixed peer-RPC listener. An h2c privacy-peer listener requires
+its own `PrivacyPeerTrustedProxyAddresses`, with the same literal/duplicate
+validation. It does not inherit managed-ingress trust. Before dispatch, only
+that exact local port/proxy pair may promote one exact HTTPS header; unknown
+proxies return 404 and invalid headers return 400. Direct HTTPS privacy-peer
+listeners use real Kestrel TLS and do not trust forwarded scheme headers.
+The production compose forwards the HTTPS frontend to h2c `8082`/`8083` using
+HAProxy `proto h2`, without publishing those backend ports.
 
 Each relay decrypts only its own layer. A relay layer contains a replay ID, a next router ID and an opaque inner frame. The endpoint never comes from the frame: the router ID must resolve in `PrivacyRouting:Peers`, and the configured origin, DNS result, HTTP version and TLS SPKI pins are revalidated for every outbound peer request. Peer requests additionally carry an Ed25519 signature bound to sender, recipient, timestamp, nonce and SHA-256 of the opaque frame. Both transport nonces and hop replay IDs use bounded TTL windows.
 

@@ -24,6 +24,8 @@ public sealed class RouterNodeOptions
 
     public string[] ManagedIngressTrustedProxyAddresses { get; set; } = [];
 
+    public string[] PrivacyPeerTrustedProxyAddresses { get; set; } = [];
+
     public string PublicHost { get; set; } = "127.0.0.1";
 
     public int PublicPort { get; set; } = 443;

@@ -247,6 +247,50 @@ public sealed class PrivacyRoutingRuntimeTests
         Assert.Equal(0, effects.AuthorityForwardingCalls);
     }
 
+    [Theory]
+    [InlineData(false, StatusCodes.Status503ServiceUnavailable)]
+    [InlineData(true, StatusCodes.Status400BadRequest)]
+    public async Task ProxyBoundary_PreservesStrictPublicIngressHeaderContract(
+        bool forwardedHost, int expectedStatus)
+    {
+        using var configuration = EnabledTestConfiguration();
+        var effects = new Effects();
+        var plan = NodeListenerConfiguration.Create(new RouterNodeOptions
+        {
+            ManagedIngressH2ListenUrl = "http://127.0.0.1:8082/",
+            ManagedIngressTrustedProxyAddresses = ["127.0.0.1"]
+        });
+        var context = new DefaultHttpContext();
+        context.Connection.LocalPort = plan.ManagedIngressPort;
+        context.Connection.RemoteIpAddress = System.Net.IPAddress.Loopback;
+        context.Request.Scheme = "http";
+        context.Request.Protocol = "HTTP/2";
+        context.Request.Method = "POST";
+        context.Request.Path = ManagedIngressH2Contract.FramePath;
+        context.Request.Host = new HostString("node.example");
+        context.Request.ContentType = ManagedIngressH2Contract.OpaqueMediaType;
+        context.Request.Headers.Accept = ManagedIngressH2Contract.OpaqueMediaType;
+        context.Request.Headers["X-Forwarded-Proto"] = "https";
+        if (forwardedHost) context.Request.Headers["X-Forwarded-Host"] = "node.example";
+        context.Request.ContentLength = 4096;
+        context.Request.Body = new MemoryStream(new byte[4096]);
+        context.Response.Body = new MemoryStream();
+        await ManagedIngressProxyTrustBoundary.InvokeAsync(context, async c =>
+        {
+            var result = await PrivacyRoutingHttpEndpoint.HandlePublicAsync(c,
+                configuration, new PrivacyIngressLimiter(configuration),
+                Runtime(configuration, effects), new FixedClock(),
+                plan.ManagedIngressPort, default);
+            await result.ExecuteAsync(c);
+        }, plan);
+        Assert.Equal(expectedStatus, context.Response.StatusCode);
+        Assert.True(context.Request.IsHttps);
+        Assert.Equal(0, effects.PeerCalls);
+        Assert.Equal(0, effects.ContactCalls);
+        Assert.Equal(0, effects.MailboxCalls);
+        Assert.Equal(0, effects.AuthorityForwardingCalls);
+    }
+
     private static PrivacyRoutingRuntime Runtime(
         PrivacyRoutingConfiguration configuration,
         Effects effects)

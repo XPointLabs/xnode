@@ -21,9 +21,11 @@ public sealed class ManagedIngressH2ListenerTests
         Assert.Equal("", node.ManagedIngressH2ListenUrl);
         Assert.Equal("", node.PrivacyPeerH2ListenUrl);
         Assert.Empty(node.ManagedIngressTrustedProxyAddresses);
+        Assert.Empty(node.PrivacyPeerTrustedProxyAddresses);
         Assert.Null(plan.ManagedIngress);
         Assert.Null(plan.PrivacyPeer);
         Assert.Empty(plan.ManagedIngressTrustedProxyAddresses);
+        Assert.Empty(plan.PrivacyPeerTrustedProxyAddresses);
         Assert.Equal(HttpProtocols.Http1AndHttp2, plan.Api.Protocols);
         Assert.Equal(HttpProtocols.Http1AndHttp2, plan.Peer.Protocols);
         Assert.Equal(new Uri(node.ApiListenUrl).Port, plan.ManagedIngressPort);
@@ -43,7 +45,8 @@ public sealed class ManagedIngressH2ListenerTests
             PeerRpcListenUrl = $"http://127.0.0.1:{peerPort}",
             ManagedIngressH2ListenUrl = $"http://127.0.0.1:{managedIngressPort}",
             PrivacyPeerH2ListenUrl = $"http://127.0.0.1:{privacyPeerPort}",
-            ManagedIngressTrustedProxyAddresses = ["127.0.0.1"]
+            ManagedIngressTrustedProxyAddresses = ["127.0.0.1"],
+            PrivacyPeerTrustedProxyAddresses = ["127.0.0.1"]
         };
         var plan = NodeListenerConfiguration.Create(node);
 
@@ -100,11 +103,21 @@ public sealed class ManagedIngressH2ListenerTests
                 Version = HttpVersion.Version20,
                 VersionPolicy = HttpVersionPolicy.RequestVersionExact
             };
+            peerRequest.Headers.TryAddWithoutValidation("X-Forwarded-Proto", "https");
             using var peerResponse = await client.SendAsync(peerRequest);
 
             peerResponse.EnsureSuccessStatusCode();
             Assert.Equal(HttpVersion.Version20, peerResponse.Version);
-            Assert.Equal("HTTP/2|http|0", await peerResponse.Content.ReadAsStringAsync());
+            Assert.Equal("HTTP/2|https|0", await peerResponse.Content.ReadAsStringAsync());
+
+            using var untrustedPeerRequest = new HttpRequestMessage(
+                HttpMethod.Get, $"http://127.0.0.1:{privacyPeerPort}/protocol")
+            {
+                Version = HttpVersion.Version20,
+                VersionPolicy = HttpVersionPolicy.RequestVersionExact
+            };
+            using var rejected = await client.SendAsync(untrustedPeerRequest);
+            Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
         }
         finally
         {
@@ -395,11 +408,129 @@ public sealed class ManagedIngressH2ListenerTests
         Assert.Equal(expected, plan.ManagedIngress?.BindKind.ToString());
     }
 
+    [Fact]
+    public void PrivacyPeerH2cListener_RequiresItsOwnExactProxyList()
+    {
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            NodeListenerConfiguration.Create(new RouterNodeOptions
+            {
+                PrivacyPeerH2ListenUrl = "http://127.0.0.1:8083/",
+                ManagedIngressTrustedProxyAddresses = ["127.0.0.1"]
+            }));
+        Assert.Contains("Node:PrivacyPeerTrustedProxyAddresses", error.Message);
+    }
+
+    [Theory]
+    [InlineData(" ")]
+    [InlineData("haproxy")]
+    [InlineData("172.30.82.0/24")]
+    [InlineData("0.0.0.0")]
+    [InlineData("::")]
+    [InlineData("fe80::1%12")]
+    public void PrivacyPeerH2cListener_RejectsInvalidProxy(string value)
+    {
+        Assert.Throws<InvalidOperationException>(() =>
+            NodeListenerConfiguration.Create(new RouterNodeOptions
+            {
+                PrivacyPeerH2ListenUrl = "http://127.0.0.1:8083/",
+                PrivacyPeerTrustedProxyAddresses = [value]
+            }));
+    }
+
+    [Fact]
+    public void PrivacyPeerH2cListener_RejectsDuplicateProxy()
+    {
+        Assert.Throws<InvalidOperationException>(() =>
+            NodeListenerConfiguration.Create(new RouterNodeOptions
+            {
+                PrivacyPeerH2ListenUrl = "http://127.0.0.1:8083/",
+                PrivacyPeerTrustedProxyAddresses = ["127.0.0.1", "127.0.0.1"]
+            }));
+    }
+
+    [Theory]
+    [InlineData(8082, "172.30.82.10")]
+    [InlineData(8083, "172.30.82.7")]
+    public async Task TrustBoundary_DoesNotShareProxyTrustBetweenListeners(
+        int localPort, string remoteAddress)
+    {
+        var plan = CreateTrustBoundaryPlan();
+        var context = CreateContext(plan, remoteAddress, "https");
+        context.Connection.LocalPort = localPort;
+        var dispatched = false;
+        await ManagedIngressProxyTrustBoundary.InvokeAsync(context,
+            _ => { dispatched = true; return Task.CompletedTask; }, plan);
+        Assert.False(dispatched);
+        Assert.Equal(StatusCodes.Status404NotFound, context.Response.StatusCode);
+        Assert.Equal("http", context.Request.Scheme);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("http")]
+    [InlineData("HTTPS")]
+    [InlineData("https,http")]
+    [InlineData(" https")]
+    public async Task PrivacyPeerTrustBoundary_RejectsNonExactScheme(string? proto)
+    {
+        var plan = CreateTrustBoundaryPlan();
+        var context = CreateContext(plan, "172.30.82.10", proto);
+        context.Connection.LocalPort = plan.PrivacyPeerPort;
+        var dispatched = false;
+        await ManagedIngressProxyTrustBoundary.InvokeAsync(context,
+            _ => { dispatched = true; return Task.CompletedTask; }, plan);
+        Assert.False(dispatched);
+        Assert.Equal(StatusCodes.Status400BadRequest, context.Response.StatusCode);
+    }
+
+    [Fact]
+    public async Task PrivacyPeerTrustBoundary_ConsumesExactHttpsFromItsOwnProxy()
+    {
+        var plan = CreateTrustBoundaryPlan();
+        var context = CreateContext(plan, "172.30.82.11", "https");
+        context.Connection.LocalPort = plan.PrivacyPeerPort;
+        var dispatched = false;
+        await ManagedIngressProxyTrustBoundary.InvokeAsync(context,
+            c =>
+            {
+                dispatched = true;
+                Assert.True(c.Request.IsHttps);
+                Assert.False(c.Request.Headers.ContainsKey("X-Forwarded-Proto"));
+                return Task.CompletedTask;
+            }, plan);
+        Assert.True(dispatched);
+    }
+
+    [Fact]
+    public async Task PrivacyPeerTlsListener_DoesNotUseForwardedScheme()
+    {
+        var plan = NodeListenerConfiguration.Create(new RouterNodeOptions
+        {
+            PrivacyPeerH2ListenUrl = "https://127.0.0.1:8083/"
+        });
+        Assert.Empty(plan.PrivacyPeerTrustedProxyAddresses);
+        var context = CreateContext(plan, "203.0.113.10", "http");
+        context.Connection.LocalPort = plan.PrivacyPeerPort;
+        context.Request.Scheme = "https";
+        var dispatched = false;
+        await ManagedIngressProxyTrustBoundary.InvokeAsync(context,
+            c =>
+            {
+                dispatched = true;
+                Assert.True(c.Request.IsHttps);
+                Assert.Equal("http", c.Request.Headers["X-Forwarded-Proto"].ToString());
+                return Task.CompletedTask;
+            }, plan);
+        Assert.True(dispatched);
+    }
+
     private static NodeListenerPlan CreateTrustBoundaryPlan() =>
         NodeListenerConfiguration.Create(new RouterNodeOptions
         {
             ManagedIngressH2ListenUrl = "http://127.0.0.1:8082/",
-            ManagedIngressTrustedProxyAddresses = ["172.30.82.7", "172.30.82.8"]
+            ManagedIngressTrustedProxyAddresses = ["172.30.82.7", "172.30.82.8"],
+            PrivacyPeerH2ListenUrl = "http://127.0.0.1:8083/",
+            PrivacyPeerTrustedProxyAddresses = ["172.30.82.10", "172.30.82.11"]
         });
 
     private static DefaultHttpContext CreateContext(

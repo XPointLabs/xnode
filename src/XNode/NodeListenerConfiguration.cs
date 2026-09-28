@@ -23,7 +23,8 @@ internal sealed record NodeListenerPlan(
     NodeListenerBinding Peer,
     NodeListenerBinding? ManagedIngress,
     NodeListenerBinding? PrivacyPeer,
-    IReadOnlySet<IPAddress> ManagedIngressTrustedProxyAddresses)
+    IReadOnlySet<IPAddress> ManagedIngressTrustedProxyAddresses,
+    IReadOnlySet<IPAddress> PrivacyPeerTrustedProxyAddresses)
 {
     public int ManagedIngressPort => ManagedIngress?.Url.Port ?? Api.Url.Port;
     public int PrivacyPeerPort => PrivacyPeer?.Url.Port ?? Peer.Url.Port;
@@ -127,8 +128,14 @@ internal static class NodeListenerConfiguration
             privacyPeer,
             managedIngress is null
                 ? new HashSet<IPAddress>()
-                : ParseManagedIngressTrustedProxyAddresses(
-                    node.ManagedIngressTrustedProxyAddresses));
+                : ParseTrustedProxyAddresses(
+                    node.ManagedIngressTrustedProxyAddresses,
+                    "Node:ManagedIngressTrustedProxyAddresses"),
+            privacyPeer is null || privacyPeer.Url.Scheme == Uri.UriSchemeHttps
+                ? new HashSet<IPAddress>()
+                : ParseTrustedProxyAddresses(
+                    node.PrivacyPeerTrustedProxyAddresses,
+                    "Node:PrivacyPeerTrustedProxyAddresses"));
     }
 
     private static NodeListenerBinding ParseExistingListener(
@@ -157,13 +164,14 @@ internal static class NodeListenerConfiguration
         return CreateBinding(uri, HttpProtocols.Http2);
     }
 
-    private static IReadOnlySet<IPAddress> ParseManagedIngressTrustedProxyAddresses(
-        string[]? values)
+    private static IReadOnlySet<IPAddress> ParseTrustedProxyAddresses(
+        string[]? values,
+        string configurationName)
     {
         if (values is null || values.Length == 0)
         {
             throw new InvalidOperationException(
-                "Node:ManagedIngressTrustedProxyAddresses must contain at least one exact IP address when the dedicated managed-ingress listener is enabled.");
+                $"{configurationName} must contain at least one exact IP address when the dedicated proxy listener is enabled.");
         }
 
         var addresses = new HashSet<IPAddress>();
@@ -177,13 +185,13 @@ internal static class NodeListenerConfiguration
                 || address.Equals(IPAddress.IPv6Any))
             {
                 throw new InvalidOperationException(
-                    "Node:ManagedIngressTrustedProxyAddresses must contain only non-empty, unscoped IPv4 or IPv6 literals without surrounding whitespace.");
+                    $"{configurationName} must contain only non-empty, unscoped IPv4 or IPv6 literals without surrounding whitespace.");
             }
 
             if (!addresses.Add(address))
             {
                 throw new InvalidOperationException(
-                    "Node:ManagedIngressTrustedProxyAddresses must not contain duplicate IP addresses.");
+                    $"{configurationName} must not contain duplicate IP addresses.");
             }
         }
 

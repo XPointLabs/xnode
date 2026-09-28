@@ -26,8 +26,15 @@ internal static class ManagedIngressProxyTrustBoundary
         ArgumentNullException.ThrowIfNull(next);
         ArgumentNullException.ThrowIfNull(listeners);
 
-        if (listeners.ManagedIngress is null
-            || context.Connection.LocalPort != listeners.ManagedIngress.Url.Port)
+        var trustedAddresses = listeners.ManagedIngress is not null
+            && context.Connection.LocalPort == listeners.ManagedIngress.Url.Port
+                ? listeners.ManagedIngressTrustedProxyAddresses
+                : listeners.PrivacyPeer is not null
+                    && listeners.PrivacyPeer.Url.Scheme == Uri.UriSchemeHttp
+                    && context.Connection.LocalPort == listeners.PrivacyPeer.Url.Port
+                        ? listeners.PrivacyPeerTrustedProxyAddresses
+                        : null;
+        if (trustedAddresses is null)
         {
             await next(context);
             return;
@@ -35,7 +42,7 @@ internal static class ManagedIngressProxyTrustBoundary
 
         var remoteAddress = context.Connection.RemoteIpAddress;
         if (remoteAddress is null
-            || !listeners.ManagedIngressTrustedProxyAddresses.Contains(remoteAddress))
+            || !trustedAddresses.Contains(remoteAddress))
         {
             context.Response.StatusCode = StatusCodes.Status404NotFound;
             return;
