@@ -1,0 +1,404 @@
+using System.Buffers.Binary;
+using System.Net;
+using System.Security.Cryptography;
+using System.Text;
+using Deep.Protocol.AccountDirectoryV1;
+using Deep.Protocol.ApplicationCore;
+using Deep.Protocol.ContactV2;
+using Deep.Protocol.DeepExtension.PrivacyRouting;
+using Deep.Protocol.DeepNative;
+using Deep.Protocol.Identity;
+using Deep.Protocol.MessagingWire;
+using Deep.Protocol.XPointNetworkV1;
+using Sodium;
+
+namespace XNode.IntegrationTests.Runtime;
+
+/// <summary>
+/// Test-owned identity/network ceremony, not an operator fixture. DID2 root
+/// ML-DSA and all account, device, directory, network and inventory signatures
+/// are verified through public protocol authors/readers. Only the proof fetch
+/// and monotonic clock are in-memory. This does not exercise a KEM exchange,
+/// transport/TLS, claim consumption, client composition or physical devices.
+/// </summary>
+internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
+    IDeepIdV2CurrentDirectoryProofSource, IDeepIdV2PreKeyPlacementSource,
+    IOnionMonotonicClock
+{
+    internal static readonly byte[] Network = Bytes(16, 0x11);
+    internal static readonly byte[] Boot = Bytes(16, 0xf3);
+    internal static readonly byte[] Service = Bytes(32, 0x35);
+    private readonly TestSigner[] nodes = [new(0x70), new(0x71), new(0x72)];
+    internal ParsedDid2 Publisher { get; private set; } = null!;
+    internal VerifiedDeepIdV2DirectoryFreshness Freshness { get; private set; } = null!;
+    internal ContactServicePlacementCapability Placement { get; private set; } = null!;
+    internal ParsedXpp1V2 Publication { get; private set; } = null!;
+    internal byte[] Dca { get; private set; } = [];
+    internal byte[] Xps { get; private set; } = [];
+    internal ulong Sample { get; set; } = 100;
+    internal bool RejectProof { get; set; }
+
+    internal static async Task<DeepIdV2PublicationAuthorityFixture> CreateAsync()
+    {
+        var fixture = new DeepIdV2PublicationAuthorityFixture();
+        try { await fixture.AuthorAsync(); return fixture; }
+        catch { fixture.Dispose(); throw; }
+    }
+
+    private async Task AuthorAsync()
+    {
+        using var root = new TestSigner(0x20);
+        using var w1 = new TestSigner(0x30);
+        using var w2 = new TestSigner(0x31);
+        using var w3 = new TestSigner(0x32);
+        TestSigner[] witnesses = [w1, w2, w3];
+        var bootstrap = await XPointNetworkBootstrapAuthor.AuthorGenesisAsync(
+            new XPointNetworkGenesisAuthoringRequest(Bytes(32, 0x12), Network,
+                [new(root.RootKeyId.Span, 0, root.Ed25519PublicKey.Span,
+                    root.CustodyDomainHash.Span)], 1,
+                witnesses.Select(w => new XPointNetworkBootstrapWitnessKey(
+                    w.SignerId.Span, 0, w.Ed25519PublicKey.Span,
+                    w.FailureDomainHash.Span)).ToArray(), 2,
+                [new(Bytes(32, 0x60), Bytes(32, 0x61), 1, "time1.invalid",
+                    4460, Bytes(32, 0x62), 5),
+                 new(Bytes(32, 0x63), Bytes(32, 0x64), 1, "time2.invalid",
+                    4460, Bytes(32, 0x65), 5)],
+                5, 10, 900, 900, 10_000, 900, 9_000, 1, 1), [root]);
+        var descriptors = nodes.Select((signer, index) =>
+            new XPointNetworkOperationalNode(signer,
+                Bytes(32, (byte)(0x80 + index)), Bytes(32, (byte)(0x90 + index)),
+                Bytes(32, (byte)(0xa0 + index)), Bytes(32, (byte)(0xb0 + index)),
+                (uint)(64_500 + index), 840, Bytes(32, (byte)(0xc0 + index)),
+                IPAddress.Parse($"192.0.2.{index + 1}"), 443,
+                Bytes(32, (byte)(0xd0 + index)), Bytes(32, (byte)(0xd8 + index)),
+                ScalarMult.Base(Bytes(32, (byte)(0xe0 + index))),
+                ScalarMult.Base(Bytes(32, (byte)(0xe8 + index))),
+                Enumerable.Range(0, 5).Select(role => (ReadOnlyMemory<byte>)
+                    NodeRolePublicKey((byte)(0x10 + index * 5 + role))).ToArray()))
+            .ToArray();
+        var operational = await XPointNetworkOperationalGenesisAuthor.AuthorAsync(
+            new XPointNetworkOperationalGenesisRequest(Bytes(32, 0x12), bootstrap,
+                [root], witnesses, descriptors, Bytes(32, 0xf1), Hash("xcc"),
+                Hash("xcb"), Hash("pma"), NodeRolePublicKey(0x31),
+                NodeRolePublicKey(0x32), 990, 1_000, 1_500, Bytes(32, 0xf2),
+                Boot, 100, 100, 100, 1_100, 5));
+
+        using var phrase = DeepRecoveryV1.Generate();
+        using var recovery = DeepRecoveryV1.DeriveAccountCapabilities(phrase, Network, 1);
+        using var secrets = new OwnedGenesisDeviceSecrets();
+        var account = Dnp1IdentityAuthoringV1.AuthorGenesisAccount(recovery, 1_000, 1);
+        var issued = await Dnp1IdentityAuthoringV1.IssueGenesisDeviceAsync(
+            recovery, account, secrets, new IssuancePersistence(),
+            1_000, 5_000, 9_000);
+        var device = issued.IssuedDevice?.Verified ??
+            throw new CryptographicException("Test device issuance did not complete.");
+        var identity = ApplicationCoreVerifier.CreateIdentityClosure(device.Identity, [device]);
+        var binding = recovery.AuthorGenesisDab2(phrase, identity, 1);
+        var directory = recovery.AuthorGenesisDmd1(identity, 1_000);
+        var authorization = recovery.AuthorGenesisDca1V2(binding, directory, device, 1_000);
+        var checkpoint = recovery.AuthorGenesisAdc1V2(binding, directory, 1_000);
+        Publisher = binding.Head.DeepId;
+        Dca = authorization.Record.CanonicalBytes.ToArray();
+
+        var genesis = await DeepIdV2DirectoryHeadAuthor.AuthorGenesisAsync(
+            bootstrap.Authority, 990, 1_500, witnesses);
+        var head = await DeepIdV2DirectoryHeadAuthor.AdvanceAsync(bootstrap.Authority,
+            genesis.ProtectedHead, new([], [], [checkpoint], 990, 1_500, 2), witnesses);
+        var material = DeepIdV2DirectoryProofMaterialAuthor.Create(head.ProtectedHead,
+            head.ExactAllTransitions, [checkpoint], checkpoint.Checkpoint.DirectoryLeafKey.Span,
+            genesis.ProtectedHead);
+        var nonce = Bytes(32, 0xf2);
+        var request = new AccountDirectoryProofAuthoringRequest(Network, nonce, Boot, 100,
+            head.ExactAdh1.Span, operational.ExactXnv1.Span, 1_100, 5, 1_100, 1_130,
+            AccountDirectoryDtt1IssuanceEpoch.Derive(bootstrap.Authority, 1_100, 5), 2);
+        using var pq = DeepMlDsa65CandidateVerifierFactory.OpenForCurrentProcess();
+        var proof = await DeepIdV2DirectoryProofAuthor.IssueGenesisAsync(
+            bootstrap.Authority, request, material, witnesses, 1, pq);
+        var lookup = DeepIdV2AccountDirectoryLookupCodec.Author(Publisher, Network,
+            genesis.ProtectedHead.LogGeneration, genesis.CoreHash.Span, 1,
+            new byte[38], new byte[32]);
+        Freshness = DeepIdV2DirectoryCurrentProofVerifier.VerifyRequestedDid2(
+            bootstrap.Authority, proof.ExactAdh1, proof.ExactDtt1, proof.ExactAdp1V2,
+            nonce, VerifiedDeepIdV2DirectoryQuery.VerifyDid2(lookup, Publisher),
+            new(Boot, 100, 100, 100), genesis.ProtectedHead, 1, 2, pq);
+        var network = await OnionNetworkContextVerifier.VerifyAsync(bootstrap.Authority,
+            Freshness, [operational.ExactXvp1], [operational.ExactXnv1],
+            [operational.ExactXnh1], operational.ExactXnd1, [operational.ExactPmt2],
+            null, new(this), default);
+        var placement = ContactServicePlacementFactory.Create(network,
+            ContactServiceRequestKind.PublishPreKeyInventory, Service);
+        Placement = ContactServicePlacementCapability.FromNetcodec(placement,
+            ContactServiceRequestKind.PublishPreKeyInventory, Service,
+            Freshness.TrustedUpperUnixSeconds);
+
+        var seed = new byte[32];
+        var agreement = new byte[32];
+        var id = new byte[32];
+        var revocation = new byte[32];
+        using var owned = secrets.ExportOwnedPersistenceCopy();
+        owned.CopyTo(seed, agreement, id, revocation);
+        var key = PublicKeyAuth.GenerateKeyPair(seed);
+        try
+        {
+            var dpd = Reference("DPD1", 1, device.Certificate.CanonicalHash.Span);
+            ReadOnlyMemory<byte>[] xpsFields = [Network, Service, id, dpd,
+                U64(1), new byte[32], U16(DeepIdV2Codec.Suite), U16(32), U16(1),
+                U64(1_000), U64(1_400)];
+            Xps = DeepIdV2PreKeyServiceCodec.Encode(xpsFields,
+                PublicKeyAuth.SignDetached(
+                    DeepIdV2PreKeyServiceCodec.CreateSignatureInput(xpsFields), key.PrivateKey));
+            // This gate verifies the signatures/custody of public KEM descriptors.
+            // No decapsulation/exchange is claimed by these test-only descriptors.
+            ParsedDpk2V2 Member(byte marker, Dpk2PrekeyKind kind)
+            {
+                Dpk2Record Record(byte[] x, byte[] ml, byte[] bundle) => new(
+                    Network, authorization.Record.DeepAccountId.Span, id,
+                    device.Certificate.DeviceGeneration, dpd, directory.Head.Record.DirectoryGeneration,
+                    directory.Head.Record.RecordHash.Span, 1, 1, Bytes(32, 0x51),
+                    1, 1_000, 1_000, 1_400, device.Certificate.DeviceX25519PublicKey.Span,
+                    Bytes(32, 0x71), ScalarMult.Base(Bytes(32, 0x81)), x,
+                    kind == Dpk2PrekeyKind.OneTime ? Bytes(32, marker) : [],
+                    kind == Dpk2PrekeyKind.OneTime ? ScalarMult.Base(Bytes(32, marker)) : [],
+                    Bytes(32, marker), Bytes(1184, marker), kind,
+                    kind == Dpk2PrekeyKind.OneTime ? (ushort)0 : (ushort)1, ml, bundle);
+                var placeholder = Record(new byte[64], new byte[64], new byte[64]);
+                var x = PublicKeyAuth.SignDetached(
+                    DeepIdV2Dpk2Codec.GetX25519SignedPrekeySignatureInput(placeholder), key.PrivateKey);
+                var ml = PublicKeyAuth.SignDetached(
+                    DeepIdV2Dpk2Codec.GetMlKemPrekeySignatureInput(placeholder), key.PrivateKey);
+                var bundle = PublicKeyAuth.SignDetached(
+                    DeepIdV2Dpk2Codec.GetPrekeyBundleSignatureInput(Record(x, ml, new byte[64])),
+                    key.PrivateKey);
+                return DeepIdV2Dpk2Codec.Decode(DeepIdV2Dpk2Codec.Encode(Record(x, ml, bundle)));
+            }
+            var members = Enumerable.Range(0, 32)
+                .Select(i => Member((byte)(0x10 + i), Dpk2PrekeyKind.OneTime)).ToArray();
+            var last = Member(0x90, Dpk2PrekeyKind.LastResort);
+            ReadOnlyMemory<byte>[] xpiFields = [Network, Service, id, dpd, U64(1),
+                Reference("XPS1", 2, SHA256.HashData(Xps)), U64(1), new byte[32], U16(32),
+                InventoryRoot(members), last.ExactHash, directory.Head.Record.RecordHash,
+                Reference("DRS1", 1, identity.Revocations.Snapshot.CanonicalHash.Span),
+                U64(1_000), U64(1_400)];
+            var manifest = DeepIdV2PreKeyManifestCodec.Decode(DeepIdV2PreKeyManifestCodec.Encode(
+                xpiFields, PublicKeyAuth.SignDetached(
+                    DeepIdV2PreKeyManifestCodec.CreateSignatureInput(xpiFields), key.PrivateKey)));
+            Publication = DeepIdV2PreKeyPublicationCodec.Decode(DeepIdV2PreKeyPublicationCodec.Encode(
+                Network, Bytes(32, 0xd1), Placement.PlacementHash.Span, manifest, members, last));
+        }
+        finally
+        {
+            foreach (var value in new[] { seed, agreement, id, revocation, key.PrivateKey })
+                CryptographicOperations.ZeroMemory(value);
+        }
+    }
+
+    internal TestSigner Node(ReadOnlySpan<byte> id)
+    {
+        foreach (var node in nodes)
+            if (node.Ed25519PublicKey.Span.SequenceEqual(id)) return node;
+        throw new CryptographicException("Unknown test node.");
+    }
+
+    public ValueTask<VerifiedDeepIdV2DirectoryFreshness> ReadCurrentAsync(
+        ParsedDid2 did2, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (RejectProof || !did2.CanonicalBytes.Span.SequenceEqual(Publisher.CanonicalBytes.Span))
+            throw new CryptographicException("Current test DID2 proof unavailable.");
+        return ValueTask.FromResult(Freshness);
+    }
+
+    public ValueTask<ContactServicePlacementCapability> MintPreKeyPublicationAsync(
+        ParsedDid2 publisher, ReadOnlyMemory<byte> serviceCapability, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!publisher.CanonicalBytes.Span.SequenceEqual(Publisher.CanonicalBytes.Span) ||
+            !serviceCapability.Span.SequenceEqual(Service))
+            throw new CryptographicException("Unrelated test publication placement.");
+        return ValueTask.FromResult(Placement);
+    }
+
+    public ValueTask<OnionMonotonicReading> ReadAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return ValueTask.FromResult(new OnionMonotonicReading(Boot, Sample));
+    }
+
+    public void Dispose() { foreach (var node in nodes) node.Dispose(); }
+
+    internal static byte[] Bytes(int length, byte value) => Enumerable.Repeat(value, length).ToArray();
+    private static byte[] Hash(string value) => SHA256.HashData(Encoding.ASCII.GetBytes(value));
+    private static byte[] U16(ushort value)
+    { var bytes = new byte[2]; BinaryPrimitives.WriteUInt16BigEndian(bytes, value); return bytes; }
+    private static byte[] U64(ulong value)
+    { var bytes = new byte[8]; BinaryPrimitives.WriteUInt64BigEndian(bytes, value); return bytes; }
+    private static byte[] Reference(string magic, ushort version, ReadOnlySpan<byte> hash)
+    {
+        var bytes = new byte[38]; Encoding.ASCII.GetBytes(magic).CopyTo(bytes, 0);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(4), version);
+        hash.CopyTo(bytes.AsSpan(6)); return bytes;
+    }
+    private static byte[] NodeRolePublicKey(byte marker)
+    {
+        var seed = Bytes(32, marker); var key = PublicKeyAuth.GenerateKeyPair(seed);
+        try { return key.PublicKey.ToArray(); }
+        finally { CryptographicOperations.ZeroMemory(seed); CryptographicOperations.ZeroMemory(key.PrivateKey); }
+    }
+    private static byte[] DomainHash(string label, ReadOnlySpan<byte> value)
+    {
+        var domain = Encoding.ASCII.GetBytes(label);
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        hash.AppendData(U16(checked((ushort)domain.Length))); hash.AppendData(domain);
+        Span<byte> length = stackalloc byte[4];
+        BinaryPrimitives.WriteUInt32BigEndian(length, checked((uint)value.Length));
+        hash.AppendData(length); hash.AppendData(value); return hash.GetHashAndReset();
+    }
+    // Independent test commitment calculation for the exactly 32-member profile.
+    // The production verifier independently recomputes and checks this root.
+    private static byte[] InventoryHash(string label, byte[] value)
+    {
+        var domain = Encoding.ASCII.GetBytes(label);
+        var input = new byte[domain.Length + 1 + 4 + value.Length];
+        domain.CopyTo(input, 0);
+        BinaryPrimitives.WriteUInt32BigEndian(input.AsSpan(domain.Length + 1),
+            checked((uint)value.Length));
+        value.CopyTo(input, domain.Length + 5);
+        return SHA256.HashData(input);
+    }
+    private static byte[] InventoryRoot(ParsedDpk2V2[] members)
+    {
+        var level = members.Select((member, i) => InventoryHash(
+            "Deep/ContactResolver/V2/prekey-inventory-leaf",
+            U16((ushort)i).Concat(member.ExactHash.ToArray()).ToArray())).ToArray();
+        while (level.Length > 1)
+            level = Enumerable.Range(0, level.Length / 2).Select(i => InventoryHash(
+                "Deep/ContactResolver/V2/prekey-inventory-node",
+                level[i * 2].Concat(level[i * 2 + 1]).ToArray())).ToArray();
+        return level[0];
+    }
+
+    internal sealed class TestSigner : IDisposable,
+        IXPointNetworkBootstrapRootSigner, IXPointNetworkWitnessSigner,
+        IAccountDirectoryAdh1WitnessSigner
+    {
+        private readonly byte marker;
+        private readonly KeyPair key;
+        internal TestSigner(byte marker)
+        {
+            this.marker = marker;
+            Seed = Bytes(32, marker);
+            key = PublicKeyAuth.GenerateKeyPair(Seed);
+        }
+        internal byte[] Seed { get; }
+        public ReadOnlyMemory<byte> RootKeyId => Bytes(32, marker);
+        public ReadOnlyMemory<byte> SignerId => marker >= 0x70 ? key.PublicKey : Bytes(32, marker);
+        public ReadOnlyMemory<byte> WitnessId => SignerId;
+        public ulong KeyGeneration => 0;
+        public ReadOnlyMemory<byte> Ed25519PublicKey => key.PublicKey;
+        public ReadOnlyMemory<byte> CustodyDomainHash => Bytes(32, (byte)(marker + 0x40));
+        public ReadOnlyMemory<byte> FailureDomainHash => CustodyDomainHash;
+        public ValueTask<int> SignAsync(XPointNetworkRootSigningRequest request,
+            Memory<byte> signature64, CancellationToken cancellationToken) =>
+            Sign(request.SigningInput, signature64, cancellationToken);
+        public ValueTask<int> SignAsync(XPointNetworkOperationalSigningRequest request,
+            Memory<byte> signature64, CancellationToken cancellationToken) =>
+            Sign(request.SigningInput, signature64, cancellationToken);
+        private ValueTask<int> Sign(ReadOnlyMemory<byte> input, Memory<byte> destination,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            PublicKeyAuth.SignDetached(input.ToArray(), key.PrivateKey).CopyTo(destination);
+            return ValueTask.FromResult(64);
+        }
+        public ValueTask<ReadOnlyMemory<byte>> SignAdh1Async(ReadOnlyMemory<byte> input,
+            CancellationToken cancellationToken) => SignWitness(input, cancellationToken);
+        public ValueTask<ReadOnlyMemory<byte>> SignDtt1Async(ReadOnlyMemory<byte> input,
+            CancellationToken cancellationToken) => SignWitness(input, cancellationToken);
+        private ValueTask<ReadOnlyMemory<byte>> SignWitness(ReadOnlyMemory<byte> input,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult<ReadOnlyMemory<byte>>(
+                PublicKeyAuth.SignDetached(input.ToArray(), key.PrivateKey));
+        }
+        public void Dispose()
+        { CryptographicOperations.ZeroMemory(Seed); CryptographicOperations.ZeroMemory(key.PrivateKey); }
+    }
+
+    /// <summary>One-device, exact-CAS test custody for the shared identity primitive.</summary>
+    private sealed class IssuancePersistence : Dnp1IdentityIssuancePersistence
+    {
+        private static readonly byte[] Catalog = Bytes(32, 0x31);
+        private static readonly byte[] DxrKeyId = Bytes(32, 0x32);
+        private static readonly byte[] HmacKey = Bytes(32, 0x41);
+        private static readonly byte[] NonceKey = Bytes(32, 0x51);
+        private DxpReplayMaterial? material;
+        private byte[]? current;
+        private ulong revision;
+        private ulong subjectRevision;
+        protected override ValueTask<UntrustedDxpPersistenceProfileReadResult> ReadProfileCoreAsync(
+            DxpPersistenceProfileRequest request, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(new UntrustedDxpPersistenceProfileReadResult(
+                Catalog, DxrKeyId, NonceKeyId(1, Network, request.IssuanceScope.Span), 7));
+        }
+        protected override ValueTask<UntrustedDxpNonceLedgerReadResult> DeriveNonceLedgerCoreAsync(
+            DxpNonceLedgerRequest request, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            const string label = "Deep/ProtectedState/V2/DXP1-nonce-ledger-key";
+            var domain = Encoding.ASCII.GetBytes(label);
+            var input = U16((ushort)domain.Length).Concat(domain).Concat([request.SourceKind])
+                .Concat(request.Network.ToArray()).Concat(request.IssuanceScope.ToArray())
+                .Concat([request.Role]).Concat(request.Nonce.ToArray()).ToArray();
+            return ValueTask.FromResult(new UntrustedDxpNonceLedgerReadResult(
+                HMACSHA256.HashData(NonceKey, input),
+                NonceKeyId(request.SourceKind, request.Network.Span, request.IssuanceScope.Span)));
+        }
+        private static byte[] NonceKeyId(byte kind, ReadOnlySpan<byte> network, ReadOnlySpan<byte> scope) =>
+            DomainHash("Deep/ProtectedState/V2/DXP1-nonce-index-key-id",
+                new byte[] { kind }.Concat(network.ToArray()).Concat(scope.ToArray()).Concat(NonceKey).ToArray());
+        protected override ValueTask<ReadOnlyMemory<byte>> ComputeDxrTagCoreAsync(
+            DxpProtectedTagRequest request, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!request.ProtectedStateKeyId.Span.SequenceEqual(DxrKeyId))
+                throw new CryptographicException("Unexpected test custody key.");
+            var domain = Encoding.ASCII.GetBytes(request.Domain);
+            var length = new byte[4]; BinaryPrimitives.WriteUInt32BigEndian(length,
+                checked((uint)request.UnsignedCanonicalDxr1.Length));
+            var input = U16((ushort)domain.Length).Concat(domain).Concat(U16(request.Suite))
+                .Concat(length).Concat(request.UnsignedCanonicalDxr1.ToArray()).ToArray();
+            return ValueTask.FromResult<ReadOnlyMemory<byte>>(HMACSHA256.HashData(HmacKey, input));
+        }
+        private UntrustedDxpReplayReadResult Current() =>
+            new(current!, revision, material, subjectRevision);
+        protected override ValueTask<UntrustedDxpReplayReadResult?> ReadByDeviceSubjectCoreAsync(
+            DxpDeviceSubjectRequest request, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(current is null ? null : Current());
+        }
+        protected override ValueTask<UntrustedDxpReplayReadResult> ReservePendingCoreAsync(
+            DxpPendingWriteRequest request, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (current is null) { material = request.Material; current = request.CanonicalDxr1.ToArray(); revision = 1; }
+            return ValueTask.FromResult(Current());
+        }
+        protected override ValueTask<UntrustedDxpReplayReadResult> CompareExchangeVerifiedCoreAsync(
+            DxpVerifiedCasRequest request, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (current is null || revision != request.ExpectedSourceRevision ||
+                !current.AsSpan().SequenceEqual(request.CurrentDxr1.Span))
+                throw new CryptographicException("Test identity exact CAS failed.");
+            current = request.NextDxr1.ToArray(); material = request.Material;
+            revision++; subjectRevision = 1; return ValueTask.FromResult(Current());
+        }
+        protected override ValueTask<UntrustedDxpReplayReadResult> CompareExchangeAbortedCoreAsync(
+            DxpAbortedCasRequest request, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("Test genesis issuance must not abort.");
+    }
+}
