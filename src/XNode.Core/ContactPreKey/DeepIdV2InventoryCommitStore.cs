@@ -20,8 +20,11 @@ internal sealed class DeepIdV2InventoryCommitStore : IDisposable
     // Internal local-state discriminator, not a four-ASCII-byte wire magic.
     private static ReadOnlySpan<byte> StatePrefix => [0x00, 0xd2, 0x50, 0x4b];
     private const int HeaderLength = 87;
-    private const int SlotLength = 32 + DeepIdV2PreKeyManifestCodec.CanonicalLength +
+    private const int StateSignatureLength = 64;
+    private const int SlotOverhead = 32 + 4 +
         DeepIdV2PreKeyCommitReceiptCodec.CanonicalLength;
+    private const int MaximumStateBytes = HeaderLength + 2 *
+        (SlotOverhead + DeepIdV2PreKeyPublicationCodec.MaximumTotalBytes) + StateSignatureLength;
     private readonly string directory;
     private readonly byte[] networkId;
     private readonly byte[] serviceCapability;
@@ -93,12 +96,20 @@ internal sealed class DeepIdV2InventoryCommitStore : IDisposable
         return ReadState().LastOrDefault()?.Manifest;
     }
 
+    // Retained exact public inventory, not permission to claim. The claim owner
+    // must independently verify current authority and both replica receipts.
+    internal ParsedXpp1V2? ReadCurrentPublication()
+    {
+        EnsureAvailable();
+        return ReadState().LastOrDefault()?.Publication;
+    }
+
     internal ParsedXic1V2 CommitAuthorized(ParsedXpp1V2 verifiedPublication,
-        ulong committedAtUnixSeconds, Func<byte[], byte[]> signReceipt)
+        ulong committedAtUnixSeconds, Func<byte[], byte[]> signNodeData)
     {
         EnsureAvailable();
         ArgumentNullException.ThrowIfNull(verifiedPublication);
-        ArgumentNullException.ThrowIfNull(signReceipt);
+        ArgumentNullException.ThrowIfNull(signNodeData);
         var manifest = verifiedPublication.Manifest;
         if (!Fixed(verifiedPublication.NetworkId.Span, networkId) ||
             !Fixed(manifest.Field(1).Span, networkId) ||
@@ -145,7 +156,7 @@ internal sealed class DeepIdV2InventoryCommitStore : IDisposable
         ];
         var signatureInput = DeepIdV2PreKeyCommitReceiptCodec
             .CreateSignatureInput(fields);
-        var signature = signReceipt(signatureInput);
+        var signature = signNodeData(signatureInput);
         if (signature is null || signature.Length != 64 ||
             !PublicKeyAuth.VerifyDetached(signature, signatureInput,
                 localReplicaId))
@@ -154,9 +165,9 @@ internal sealed class DeepIdV2InventoryCommitStore : IDisposable
         var receipt = DeepIdV2PreKeyCommitReceiptCodec.Decode(
             DeepIdV2PreKeyCommitReceiptCodec.Encode(fields, signature));
         var next = state.Length == 0
-            ? new[] { new Slot(aggregateHash, manifest, receipt) }
-            : new[] { state[^1], new Slot(aggregateHash, manifest, receipt) };
-        WriteFile("active.state", EncodeState(next));
+            ? new[] { new Slot(aggregateHash, verifiedPublication, receipt) }
+            : new[] { state[^1], new Slot(aggregateHash, verifiedPublication, receipt) };
+        WriteFile("active.state", EncodeState(next, signNodeData));
         if (!File.Exists(PathFor("activated.marker")))
             WriteFile("activated.marker", [1]);
         return ReadState()[^1].Receipt;
@@ -176,37 +187,60 @@ internal sealed class DeepIdV2InventoryCommitStore : IDisposable
             security.ValidateSecureFile(path);
             var info = new FileInfo(path);
             if ((info.Attributes & FileAttributes.ReparsePoint) != 0 ||
-                info.Length is not (HeaderLength + SlotLength + 32) and not
-                    (HeaderLength + 2 * SlotLength + 32))
+                info.Length < HeaderLength + SlotOverhead +
+                    DeepIdV2PreKeyPublicationCodec.MinimumTotalBytes + StateSignatureLength ||
+                info.Length > MaximumStateBytes)
                 throw new InvalidDataException(
                     "DID2 inventory active snapshot has an invalid size or link.");
-            var bytes = File.ReadAllBytes(path);
-            if (!bytes.AsSpan(0, 4).SequenceEqual(StatePrefix) ||
-                BinaryPrimitives.ReadUInt16BigEndian(bytes.AsSpan(4, 2)) != 1 ||
-                !Fixed(bytes.AsSpan(6, 16), networkId) ||
-                !Fixed(bytes.AsSpan(22, 32), serviceCapability) ||
-                !Fixed(bytes.AsSpan(54, 32), localReplicaId) ||
-                bytes[86] is < 1 or > 2 ||
-                bytes.Length != HeaderLength + bytes[86] * SlotLength + 32 ||
-                !Fixed(HashDomain(StateHashDomain,
-                        bytes.AsSpan(0, bytes.Length - 32)), bytes.AsSpan(^32)))
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
+                FileShare.Read);
+            if (stream.Length != info.Length)
+                throw new InvalidDataException("DID2 inventory snapshot changed while opening.");
+            Span<byte> header = stackalloc byte[HeaderLength];
+            stream.ReadExactly(header);
+            if (!header[..4].SequenceEqual(StatePrefix) ||
+                BinaryPrimitives.ReadUInt16BigEndian(header.Slice(4, 2)) != 2 ||
+                !Fixed(header.Slice(6, 16), networkId) ||
+                !Fixed(header.Slice(22, 32), serviceCapability) ||
+                !Fixed(header.Slice(54, 32), localReplicaId) ||
+                header[86] is < 1 or > 2)
+                throw new InvalidDataException("DID2 inventory snapshot header is incompatible.");
+            var bytes = new byte[checked((int)stream.Length)];
+            header.CopyTo(bytes);
+            stream.ReadExactly(bytes.AsSpan(HeaderLength));
+            if (stream.ReadByte() != -1)
+                throw new InvalidDataException("DID2 inventory snapshot exceeds its bound.");
+            if (!PublicKeyAuth.VerifyDetached(bytes.AsSpan(^StateSignatureLength).ToArray(),
+                    HashDomain(StateHashDomain,
+                        bytes.AsSpan(0, bytes.Length - StateSignatureLength)), localReplicaId))
                 throw new InvalidDataException(
-                    "DID2 inventory active snapshot has a wrong scope or checksum.");
+                    "DID2 inventory active snapshot has an invalid local-node signature.");
             var state = new Slot[bytes[86]];
             var offset = HeaderLength;
             for (var index = 0; index < state.Length; index++)
             {
+                if (bytes.Length - StateSignatureLength - offset < SlotOverhead)
+                    throw new InvalidDataException("DID2 inventory slot is truncated.");
                 var aggregateHash = bytes.AsSpan(offset, 32).ToArray();
                 offset += 32;
-                var manifest = DeepIdV2PreKeyManifestCodec.Decode(bytes.AsSpan(
-                    offset, DeepIdV2PreKeyManifestCodec.CanonicalLength));
-                offset += DeepIdV2PreKeyManifestCodec.CanonicalLength;
+                var length = BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(offset, 4));
+                offset += 4;
+                if (length is < DeepIdV2PreKeyPublicationCodec.MinimumTotalBytes or
+                        > DeepIdV2PreKeyPublicationCodec.MaximumTotalBytes ||
+                    length > bytes.Length - StateSignatureLength - offset -
+                        DeepIdV2PreKeyCommitReceiptCodec.CanonicalLength)
+                    throw new InvalidDataException("DID2 inventory slot exceeds its closed bound.");
+                var publication = DeepIdV2PreKeyPublicationCodec.Decode(
+                    bytes.AsSpan(offset, checked((int)length)));
+                offset += checked((int)length);
                 var receipt = DeepIdV2PreKeyCommitReceiptCodec.Decode(bytes.AsSpan(
                     offset, DeepIdV2PreKeyCommitReceiptCodec.CanonicalLength));
                 offset += DeepIdV2PreKeyCommitReceiptCodec.CanonicalLength;
-                ValidateSlot(aggregateHash, manifest, receipt);
-                state[index] = new Slot(aggregateHash, manifest, receipt);
+                ValidateSlot(aggregateHash, publication, receipt);
+                state[index] = new Slot(aggregateHash, publication, receipt);
             }
+            if (offset != bytes.Length - StateSignatureLength)
+                throw new InvalidDataException("DID2 inventory snapshot has trailing slots or bytes.");
             if (state.Length == 1 && U64(state[0].Manifest.Field(7).Span) != 1)
                 throw new InvalidDataException(
                     "DID2 inventory history lost its first epoch.");
@@ -224,15 +258,21 @@ internal sealed class DeepIdV2InventoryCommitStore : IDisposable
     }
 
     private void ValidateSlot(ReadOnlySpan<byte> aggregateHash,
-        ParsedXpi1V2 manifest, ParsedXic1V2 receipt)
+        ParsedXpp1V2 publication, ParsedXic1V2 receipt)
     {
+        var manifest = publication.Manifest;
         var committedAt = U64(receipt.Field(6).Span);
         if (IsZero(aggregateHash) ||
+            !Fixed(aggregateHash, DeepIdV2BoundedPreKeyPublicationCodec
+                .ComputeAggregateHash(publication.CanonicalBytes.Span)) ||
+            !Fixed(publication.NetworkId.Span, networkId) ||
             !Fixed(manifest.Field(1).Span, networkId) ||
             !Fixed(manifest.Field(2).Span, serviceCapability) ||
             !Fixed(receipt.Field(1).Span, networkId) ||
+            !Fixed(receipt.Field(2).Span, publication.PublicationOperationId.Span) ||
             !Fixed(receipt.Field(3).Span, manifest.ExactHash.Span) ||
             !Fixed(receipt.Field(5).Span, localReplicaId) ||
+            !Fixed(receipt.Field(4).Span, publication.PlacementHash.Span) ||
             committedAt < U64(manifest.Field(14).Span) ||
             committedAt >= U64(manifest.Field(15).Span) ||
             !PublicKeyAuth.VerifyDetached(receipt.Field(7).ToArray(),
@@ -241,14 +281,15 @@ internal sealed class DeepIdV2InventoryCommitStore : IDisposable
                 "DID2 inventory active slot is not this replica's signed manifest.");
     }
 
-    private byte[] EncodeState(IReadOnlyList<Slot> slots)
+    private byte[] EncodeState(IReadOnlyList<Slot> slots, Func<byte[], byte[]> signNodeData)
     {
         if (slots.Count is < 1 or > 2)
             throw new ArgumentException("DID2 active history has an invalid size.",
                 nameof(slots));
-        var bytes = new byte[HeaderLength + slots.Count * SlotLength + 32];
+        var bytes = new byte[checked(HeaderLength + slots.Sum(static slot =>
+            SlotOverhead + slot.Publication.CanonicalBytes.Length) + StateSignatureLength)];
         StatePrefix.CopyTo(bytes);
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(4, 2), 1);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(4, 2), 2);
         networkId.CopyTo(bytes, 6);
         serviceCapability.CopyTo(bytes, 22);
         localReplicaId.CopyTo(bytes, 54);
@@ -258,13 +299,22 @@ internal sealed class DeepIdV2InventoryCommitStore : IDisposable
         {
             slot.AggregateHash.CopyTo(bytes, offset);
             offset += 32;
-            slot.Manifest.CanonicalBytes.Span.CopyTo(bytes.AsSpan(offset));
-            offset += DeepIdV2PreKeyManifestCodec.CanonicalLength;
+            var exact = slot.Publication.CanonicalBytes;
+            BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(offset, 4),
+                checked((uint)exact.Length));
+            offset += 4;
+            exact.Span.CopyTo(bytes.AsSpan(offset));
+            offset += exact.Length;
             slot.Receipt.CanonicalBytes.Span.CopyTo(bytes.AsSpan(offset));
             offset += DeepIdV2PreKeyCommitReceiptCodec.CanonicalLength;
         }
-        HashDomain(StateHashDomain,
-            bytes.AsSpan(0, bytes.Length - 32)).CopyTo(bytes, offset);
+        var signingInput = HashDomain(StateHashDomain,
+            bytes.AsSpan(0, bytes.Length - StateSignatureLength));
+        var signature = signNodeData(signingInput);
+        if (signature is null || signature.Length != StateSignatureLength ||
+            !PublicKeyAuth.VerifyDetached(signature, signingInput, localReplicaId))
+            throw new CryptographicException("The DID2 inventory snapshot signer differs from this replica.");
+        signature.CopyTo(bytes, offset);
         return bytes;
     }
 
@@ -376,6 +426,9 @@ internal sealed class DeepIdV2InventoryCommitStore : IDisposable
         lease.Dispose();
     }
 
-    private sealed record Slot(byte[] AggregateHash, ParsedXpi1V2 Manifest,
-        ParsedXic1V2 Receipt);
+    private sealed record Slot(byte[] AggregateHash, ParsedXpp1V2 Publication,
+        ParsedXic1V2 Receipt)
+    {
+        internal ParsedXpi1V2 Manifest => Publication.Manifest;
+    }
 }

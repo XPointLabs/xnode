@@ -49,6 +49,16 @@ final-commit operation requires exact replay of the staged Commit fragment.
 Both paths then recheck current DID2/device authority and placement before
 advancing the service-capability-keyed inventory state beneath
 `Node:DataDirectory/did2-prekey-commits` and returning one signed XIC1.
+Its local snapshot version 2 atomically retains the exact public XPP1 (all
+one-time and last-resort DPK2 bytes), the exact XIC1 and at most one predecessor
+inventory. A domain-separated snapshot digest is signed by the same registered
+node identity and verified before reading the inventory; no new custody key is
+introduced. Receipt operation/placement/manifest bindings, inventory hash,
+closed allocation bounds and sequential lineage are rechecked after restart.
+The previous metadata-only snapshot format is rejected, not migrated or rebuilt
+from staging. The retained inventory is not claim authority: fresh DID2/device
+verification and both selected replicas' receipts are still required. A signed
+local snapshot alone does not detect restoration of an older valid backup.
 Corrupt/lost active state or conflicting operation/epoch latches the service
 fail-closed. Back up that state with node keys; restoring keys alone is not
 enough. Keep the switch disabled in Production and do not expose the peer route

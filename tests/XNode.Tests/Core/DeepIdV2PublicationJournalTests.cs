@@ -6,6 +6,7 @@ using Deep.Protocol.ContactV2;
 using Deep.Protocol.MessagingWire;
 using Sodium;
 using XNode.Core.ContactPreKey;
+using XNode.Core.Mailbox;
 
 namespace XNode.Tests.Core;
 
@@ -29,12 +30,17 @@ public sealed class DeepIdV2PublicationJournalTests
                 .CanonicalBytes.ToArray();
             Assert.Equal(candidate.Manifest.CanonicalBytes.ToArray(),
                 store.ReadCurrentManifest()!.CanonicalBytes.ToArray());
+            Assert.Equal(candidate.CanonicalBytes.ToArray(),
+                store.ReadCurrentPublication()!.CanonicalBytes.ToArray());
         }
         using (var store = fixture.OpenInventoryStore(signer.PublicKey))
         {
             var replay = store.CommitAuthorized(candidate, 300,
                 _ => throw new InvalidOperationException("Exact replay must not sign."));
             Assert.Equal(receipt, replay.CanonicalBytes.ToArray());
+            Assert.Equal(candidate.CanonicalBytes.ToArray(),
+                store.ReadCurrentPublication()!.CanonicalBytes.ToArray());
+            Assert.Equal(32, store.ReadCurrentPublication()!.OneTimeMembers.Count);
         }
     }
 
@@ -60,6 +66,24 @@ public sealed class DeepIdV2PublicationJournalTests
         }
         Assert.Throws<InvalidDataException>(() =>
             fixture.OpenInventoryStore(signer.PublicKey));
+    }
+
+    [Fact]
+    public void InventoryCommit_WrongSnapshotSignerCannotActivateReceiptOnlyState()
+    {
+        using var fixture = new Fixture();
+        var signer = PublicKeyAuth.GenerateKeyPair(Bytes(32, 0xb8));
+        var other = PublicKeyAuth.GenerateKeyPair(Bytes(32, 0xb9));
+        var calls = 0;
+        using var store = fixture.OpenInventoryStore(signer.PublicKey);
+        Assert.Throws<CryptographicException>(() => store.CommitAuthorized(
+            DeepIdV2PreKeyPublicationCodec.Decode(Aggregate()), 200,
+            input => PublicKeyAuth.SignDetached(input,
+                ++calls == 1 ? signer.PrivateKey : other.PrivateKey)));
+        Assert.Equal(2, calls);
+        Assert.Null(store.ReadCurrentPublication());
+        Assert.Null(store.ReadCurrentManifest());
+        Assert.False(File.Exists(Path.Combine(fixture.InventoryServicePath(), "active.state")));
     }
 
     [Fact]
@@ -94,6 +118,110 @@ public sealed class DeepIdV2PublicationJournalTests
         using var reopened = fixture.OpenInventoryStore(signer.PublicKey);
         Assert.Equal(third.Manifest.CanonicalBytes.ToArray(),
             reopened.ReadCurrentManifest()!.CanonicalBytes.ToArray());
+        Assert.Equal(third.CanonicalBytes.ToArray(),
+            reopened.ReadCurrentPublication()!.CanonicalBytes.ToArray());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void InventoryCommit_CrashAroundAtomicReplaceCannotReturnReceiptOnlyState(bool afterReplace)
+    {
+        using var fixture = new Fixture();
+        var signer = PublicKeyAuth.GenerateKeyPair(Bytes(32, 0xba));
+        var candidate = DeepIdV2PreKeyPublicationCodec.Decode(Aggregate());
+        using (var store = fixture.OpenInventoryStore(signer.PublicKey,
+                   new CrashOnActiveReplace(afterReplace)))
+            Assert.Throws<IOException>(() => store.CommitAuthorized(candidate, 200,
+                input => PublicKeyAuth.SignDetached(input, signer.PrivateKey)));
+
+        using var reopened = fixture.OpenInventoryStore(signer.PublicKey);
+        Assert.Equal(afterReplace, reopened.ReadCurrentPublication() is not null);
+        var receipt = reopened.CommitAuthorized(candidate, 300, input =>
+        {
+            if (afterReplace) throw new InvalidOperationException("Durable replay must not sign.");
+            return PublicKeyAuth.SignDetached(input, signer.PrivateKey);
+        });
+        Assert.Equal(afterReplace ? 200UL : 300UL,
+            BinaryPrimitives.ReadUInt64BigEndian(receipt.Field(6).Span));
+        Assert.Equal(candidate.CanonicalBytes.ToArray(),
+            reopened.ReadCurrentPublication()!.CanonicalBytes.ToArray());
+        Assert.Empty(Directory.EnumerateFiles(fixture.InventoryServicePath(), "*.tmp"));
+    }
+
+    [Theory]
+    [InlineData("operation")]
+    [InlineData("placement")]
+    [InlineData("aggregate-hash")]
+    [InlineData("length")]
+    [InlineData("trailing")]
+    [InlineData("retired-version")]
+    [InlineData("unsigned-payload")]
+    public void InventoryCommit_HostileSnapshotCannotReplaceSignedInventory(string mutation)
+    {
+        using var fixture = new Fixture();
+        var signer = PublicKeyAuth.GenerateKeyPair(Bytes(32, 0xaf));
+        var candidate = DeepIdV2PreKeyPublicationCodec.Decode(Aggregate());
+        using (var store = fixture.OpenInventoryStore(signer.PublicKey))
+            _ = store.CommitAuthorized(candidate, 200,
+                input => PublicKeyAuth.SignDetached(input, signer.PrivateKey));
+        var serviceRoot = fixture.InventoryServicePath();
+        var path = Path.Combine(serviceRoot, "active.state");
+        var bytes = File.ReadAllBytes(path);
+        const int headerLength = 87;
+        const int aggregateOffset = headerLength + 32 + 4;
+        switch (mutation)
+        {
+            case "operation":
+            case "placement":
+                var changed = mutation == "operation"
+                    ? Aggregate(operation: Bytes(32, 0x7a))
+                    : Aggregate(placement: 0x7b);
+                Assert.Equal(candidate.CanonicalBytes.Length, changed.Length);
+                changed.CopyTo(bytes, aggregateOffset);
+                DeepIdV2BoundedPreKeyPublicationCodec.ComputeAggregateHash(changed)
+                    .CopyTo(bytes, headerLength);
+                break;
+            case "aggregate-hash":
+                bytes[headerLength] ^= 1;
+                break;
+            case "length":
+                BinaryPrimitives.WriteUInt32BigEndian(
+                    bytes.AsSpan(headerLength + 32, 4), uint.MaxValue);
+                break;
+            case "trailing":
+                Array.Resize(ref bytes, bytes.Length + 1);
+                break;
+            case "retired-version":
+                BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(4, 2), 1);
+                break;
+            case "unsigned-payload":
+                bytes[aggregateOffset + candidate.CanonicalBytes.Length - 1] ^= 1;
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(mutation));
+        }
+        // Even a locally signed malformed snapshot cannot change an existing
+        // receipt's tuple or bypass closed bounds/version. A payload mutation
+        // without the custody signer must reject independently of its checksum.
+        using (var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256))
+        {
+            hash.AppendData(Encoding.ASCII.GetBytes("Deep/XNode/V2/prekey-active-snapshot"));
+            hash.AppendData([0]);
+            var length = new byte[4];
+            BinaryPrimitives.WriteUInt32BigEndian(length, checked((uint)bytes.Length - 64));
+            hash.AppendData(length);
+            hash.AppendData(bytes.AsSpan(0, bytes.Length - 64));
+            var digest = hash.GetHashAndReset();
+            var signature = mutation == "unsigned-payload"
+                ? new byte[64]
+                : PublicKeyAuth.SignDetached(digest, signer.PrivateKey);
+            signature.CopyTo(bytes, bytes.Length - 64);
+        }
+        File.WriteAllBytes(path, bytes);
+        Assert.Throws<InvalidDataException>(() => fixture.OpenInventoryStore(signer.PublicKey));
+        Assert.True(File.Exists(Path.Combine(serviceRoot, "fault.marker")));
+        Assert.Throws<InvalidDataException>(() => fixture.OpenInventoryStore(signer.PublicKey));
     }
 
     [Fact]
@@ -470,6 +598,23 @@ public sealed class DeepIdV2PublicationJournalTests
         return bytes;
     }
 
+    private sealed class CrashOnActiveReplace(bool afterReplace) : IMailboxDurabilityBarrier
+    {
+        private readonly MailboxDurabilityBarrier inner = new();
+        public void FlushFileAndParentDirectory(string path) => inner.FlushFileAndParentDirectory(path);
+        public void FlushParentDirectory(string path) => inner.FlushParentDirectory(path);
+        public void ReplaceFile(string temporaryPath, string finalPath)
+        {
+            if (Path.GetFileName(finalPath) != "active.state")
+            {
+                inner.ReplaceFile(temporaryPath, finalPath);
+                return;
+            }
+            if (afterReplace) inner.ReplaceFile(temporaryPath, finalPath);
+            throw new IOException("Synthetic crash at the active snapshot replacement.");
+        }
+    }
+
     private sealed class Fixture : IDisposable
     {
         internal string DirectoryPath { get; } = System.IO.Path.Combine(
@@ -480,8 +625,8 @@ public sealed class DeepIdV2PublicationJournalTests
                 Bytes(32, 0x14), Bytes(32, 0x35));
 
         internal DeepIdV2InventoryCommitStore OpenInventoryStore(
-            byte[] replicaId) =>
-            new(DirectoryPath, Network, Bytes(32, 0x35), replicaId);
+            byte[] replicaId, IMailboxDurabilityBarrier? durability = null) =>
+            new(DirectoryPath, Network, Bytes(32, 0x35), replicaId, durability: durability);
 
         internal string InventoryServicePath() =>
             Directory.GetDirectories(Path.Combine(DirectoryPath,
