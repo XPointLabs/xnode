@@ -31,7 +31,7 @@ internal sealed class VerifiedOnionHostReceiveBindingSource(
                 "The verified ONION receive binding is dormant while privacy routing is disabled.");
         }
 
-        var network = await networks.ReadCurrentAsync(localOwnerId, configuration.PublicKey, cancellationToken)
+        var network = await networks.ReadCurrentAsync(localOwnerId, configuration.PublicKey, configuration.NextPublicKey, cancellationToken)
             .ConfigureAwait(false)
             ?? throw new InvalidOperationException(
                 "The ONION authority source returned no current verified snapshot.");
@@ -56,7 +56,7 @@ internal sealed class VerifiedOnionHostReceiveBindingSource(
         return new OnionHostReceiveBinding(
             network,
             local.NodeId.Span,
-            configuration.KeyHandleId.Span);
+            configuration.SelectVerifiedHandle(network, local.NodeId).Span);
     }
 
     private static bool Fixed(ReadOnlySpan<byte> left, ReadOnlySpan<byte> right) =>
@@ -79,19 +79,23 @@ internal sealed class PrivacyRoutingProductionCapability : IHostedService, IAsyn
     private int stopped;
     private int started;
     private int disposed;
+    private readonly ILogger<PrivacyRoutingProductionCapability>? logger;
+    private string? lastFailure;
 
     public PrivacyRoutingProductionCapability(PrivacyRoutingConfiguration configuration,
-        IOnionHostReceiveBindingSource receiveBindings)
-        : this(configuration, receiveBindings, TimeSpan.FromSeconds(10)) { }
+        IOnionHostReceiveBindingSource receiveBindings, ILogger<PrivacyRoutingProductionCapability>? logger = null)
+        : this(configuration, receiveBindings, TimeSpan.FromSeconds(10), logger) { }
 
     internal PrivacyRoutingProductionCapability(PrivacyRoutingConfiguration configuration,
-        IOnionHostReceiveBindingSource receiveBindings, TimeSpan refreshInterval)
+        IOnionHostReceiveBindingSource receiveBindings, TimeSpan refreshInterval,
+        ILogger<PrivacyRoutingProductionCapability>? logger = null)
     {
         this.configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         this.receiveBindings = receiveBindings ?? throw new ArgumentNullException(nameof(receiveBindings));
         if (refreshInterval <= TimeSpan.Zero || refreshInterval > TimeSpan.FromSeconds(10))
             throw new ArgumentOutOfRangeException(nameof(refreshInterval));
         this.refreshInterval = refreshInterval;
+        this.logger = logger;
     }
 
     internal bool IsVerified
@@ -180,7 +184,7 @@ internal sealed class PrivacyRoutingProductionCapability : IHostedService, IAsyn
                 ?? throw new InvalidOperationException(
                     "The ONION receive binding source returned no capability.");
             binding.Network.EnsureCurrent();
-            if (!Fixed(binding.KeyHandleId.Span, configuration.KeyHandleId.Span))
+            if (!configuration.OwnsHandle(binding.KeyHandleId.Span))
             {
                 throw new InvalidOperationException(
                     "The current ONION binding does not match the configured opaque key handle.");
@@ -190,12 +194,14 @@ internal sealed class PrivacyRoutingProductionCapability : IHostedService, IAsyn
                 throw new OperationCanceledException(lifetime.Token);
             bindingCreatedTimestamp = Stopwatch.GetTimestamp();
             proofBackoff = null;
+            lastFailure = null;
             Volatile.Write(ref verifiedBinding, binding);
             return binding;
         }
         catch (Exception exception) when (exception is IOException or HttpRequestException or TimeoutException ||
             exception is OperationCanceledException && !request.IsCancellationRequested)
         {
+            ReportFailure(exception);
             // Repeated local callers must not renew or bypass the same delay.
             // It is a scheduling hint only; no authority survives the failure.
             if (!ReferenceEquals(proofBackoff, exception))
@@ -206,12 +212,36 @@ internal sealed class PrivacyRoutingProductionCapability : IHostedService, IAsyn
             Volatile.Write(ref verifiedBinding, null);
             throw;
         }
-        catch
+        catch (Exception exception)
         {
+            ReportFailure(exception);
             Volatile.Write(ref verifiedBinding, null);
             throw;
         }
         finally { refreshGate.Release(); }
+    }
+
+    private void ReportFailure(Exception exception)
+    {
+        // Closed diagnostic categories only: never log exception messages,
+        // inner exceptions, recipient ids, proof bytes, capabilities or paths.
+        var category = exception switch {
+            DeepIdV2DirectoryProofUnavailableException { StatusCode: System.Net.HttpStatusCode.TooManyRequests } => "proof-rate-limit",
+            DeepIdV2DirectoryProofUnavailableException => "proof-unavailable",
+            HttpRequestException { HttpRequestError: System.Net.Http.HttpRequestError.NameResolutionError } => "http-dns",
+            HttpRequestException { HttpRequestError: System.Net.Http.HttpRequestError.ConnectionError } => "http-connect",
+            HttpRequestException { HttpRequestError: System.Net.Http.HttpRequestError.SecureConnectionError } => "http-tls",
+            HttpRequestException { HttpRequestError: System.Net.Http.HttpRequestError.ResponseEnded } => "http-response-ended",
+            HttpRequestException => "http-transport",
+            TimeoutException or OperationCanceledException => "request-timeout",
+            CryptographicException => "cryptographic-rejection",
+            OnionBoundaryException => "onion-boundary-rejection",
+            InvalidDataException => "malformed-input",
+            IOException => "custody-or-io",
+            _ => "configuration-or-state"
+        };
+        if (lastFailure != category) logger?.LogWarning("ONION current capability unavailable ({Category}); retained custody and floors are unchanged.", category);
+        lastFailure = category;
     }
 
     private async Task RefreshUntilStoppedAsync()
@@ -298,6 +328,10 @@ internal static class PrivacyRoutingProductionComposition
                 configuration.KeyHandleId.Span,
                 configuration.PrivateKeySpan,
                 configuration.StateProtectionKeyPath);
+            if (!configuration.NextPublicKey.IsEmpty)
+                FileOnionKeyAgreementVault.EnsureSlot(configuration.KeyVaultDirectory,
+                    configuration.NextKeyHandleId.Span, configuration.NextPrivateKeySpan,
+                    configuration.StateProtectionKeyPath);
             return new FileOnionKeyAgreementVault(
                 configuration.KeyVaultDirectory,
                 configuration.StateProtectionKeyPath);

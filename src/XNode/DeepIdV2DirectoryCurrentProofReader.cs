@@ -21,6 +21,8 @@ internal interface IDeepIdV2DirectoryProtectedHeadStore
     ValueTask CommitVerifiedAsync(AccountDirectoryProtectedLkg expected,
         VerifiedDeepIdV2DirectoryFreshness verified,
         CancellationToken cancellationToken);
+    ValueTask CommitCatchupAsync(VerifiedDeepIdV2DirectoryCatchup verified,
+        CancellationToken cancellationToken);
 }
 
 /// <summary>
@@ -59,6 +61,10 @@ internal sealed class DeepIdV2DirectoryCurrentProofReader(
         await readGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+            try
+            {
             var storedFloor = await protectedHeads.RestoreAsync(authority,
                     cancellationToken).ConfigureAwait(false) ??
                 throw new CryptographicException(
@@ -118,8 +124,37 @@ internal sealed class DeepIdV2DirectoryCurrentProofReader(
                 return verified;
             }
             finally { CryptographicOperations.ZeroMemory(nonce); }
+            }
+            catch (DeepIdV2DirectoryProofUnavailableException exception) when (
+                attempt == 0 && exception.StatusCode == System.Net.HttpStatusCode.ServiceUnavailable)
+            {
+                await CatchupAsync(authority, cancellationToken).ConfigureAwait(false);
+            }
+            }
+            throw new InvalidOperationException("Bounded proof recovery did not return a result.");
         }
         finally { readGate.Release(); }
+    }
+
+    private async ValueTask CatchupAsync(VerifiedXPointNetworkAuthority authority,
+        CancellationToken cancellationToken)
+    {
+        var floor = RestoreAuthenticatedFloor(await protectedHeads.RestoreAsync(authority, cancellationToken)
+            .ConfigureAwait(false), authority);
+        for (var pageIndex = 0; pageIndex < 16; pageIndex++)
+        {
+            var page = await artifacts.FetchHistoryAsync(floor, cancellationToken).ConfigureAwait(false);
+            var successors = page.ExactSuccessors;
+            if (successors.Count == 0) return;
+            var verified = DeepIdV2DirectoryCatchupVerifier.Verify(authority, floor, successors, page.ConsistencyNodes);
+            await protectedHeads.CommitCatchupAsync(verified, cancellationToken).ConfigureAwait(false);
+            floor = RestoreAuthenticatedFloor(await protectedHeads.RestoreAsync(authority, cancellationToken)
+                .ConfigureAwait(false), authority);
+            if (!floor.ExactAdh1.Span.SequenceEqual(verified.ProtectedLkg.ExactAdh1.Span))
+                throw new CryptographicException("Historical DID2 floor was not durably committed.");
+            if (successors.Count < 64) return;
+        }
+        throw new DeepIdV2DirectoryProofUnavailableException(System.Net.HttpStatusCode.ServiceUnavailable, TimeSpan.FromSeconds(1));
     }
 
     private async ValueTask<OnionMonotonicReading> RequireClockAsync(

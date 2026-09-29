@@ -75,6 +75,8 @@ public sealed class DeepIdV2DirectoryCurrentProofReaderTests
 
     private sealed class MissingFloor : IDeepIdV2DirectoryProtectedHeadStore
     {
+        public ValueTask CommitCatchupAsync(VerifiedDeepIdV2DirectoryCatchup verified,
+            CancellationToken cancellationToken) => throw new InvalidOperationException("No history may be committed.");
         internal bool Called { get; private set; }
 
         public ValueTask<AccountDirectoryProtectedLkg> RestoreAsync(
@@ -94,6 +96,8 @@ public sealed class DeepIdV2DirectoryCurrentProofReaderTests
     private sealed class RejectIfCalledArtifacts :
         IDeepIdV2DirectoryProofArtifactSource
     {
+        public ValueTask<DeepIdV2DirectoryHistoryPage> FetchHistoryAsync(AccountDirectoryProtectedLkg source,
+            CancellationToken cancellationToken) => throw new InvalidOperationException("No history may be fetched.");
         internal bool Called { get; private set; }
 
         public ValueTask<DeepIdV2DirectoryProofWireResponse> FetchAsync(

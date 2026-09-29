@@ -135,7 +135,7 @@ public sealed class Did2SignedMultiRoleHostTests
     private sealed class SignedNetwork(DeepIdV2PublicationAuthorityFixture signed) : IDeepIdV2ReceiveNetworkSource
     {
         public ValueTask<VerifiedOnionNetworkContext> ReadCurrentAsync(ReadOnlyMemory<byte> owner,
-            ReadOnlyMemory<byte> key, CancellationToken cancellationToken)
+            ReadOnlyMemory<byte> key, ReadOnlyMemory<byte> nextKey, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var candidate = OnionPathCandidateSnapshotFactory.Create(signed.NetworkContext).Candidates.Single(node =>

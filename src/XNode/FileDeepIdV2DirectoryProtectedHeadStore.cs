@@ -161,13 +161,29 @@ internal sealed class FileDeepIdV2DirectoryProtectedHeadStore :
         finally { gate.Release(); }
     }
 
-    public async ValueTask CommitVerifiedAsync(
+    public ValueTask CommitVerifiedAsync(
         AccountDirectoryProtectedLkg expected,
         VerifiedDeepIdV2DirectoryFreshness verified,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(expected);
         ArgumentNullException.ThrowIfNull(verified);
+        if (!verified.VerifiedProtectedLkgExactAdh1.Span.SequenceEqual(expected.ExactAdh1.Span) ||
+            !verified.NetworkId.Span.SequenceEqual(networkId))
+            throw new CryptographicException("The DID2 proof is out of scope.");
+        return CommitAuthenticatedAsync(expected, verified.NextProtectedLkg, cancellationToken);
+    }
+
+    public ValueTask CommitCatchupAsync(VerifiedDeepIdV2DirectoryCatchup verified,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(verified);
+        return CommitAuthenticatedAsync(verified.PriorProtectedLkg, verified.ProtectedLkg, cancellationToken);
+    }
+
+    private async ValueTask CommitAuthenticatedAsync(AccountDirectoryProtectedLkg expected,
+        AccountDirectoryProtectedLkg next, CancellationToken cancellationToken)
+    {
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -190,13 +206,9 @@ internal sealed class FileDeepIdV2DirectoryProtectedHeadStore :
                 throw new InvalidDataException(
                     "The DID2 floor index changed since proof verification.");
             if (!current.ExactAdh1.AsSpan().SequenceEqual(
-                    expected.ExactAdh1.Span) ||
-                !verified.VerifiedProtectedLkgExactAdh1.Span.SequenceEqual(
-                    expected.ExactAdh1.Span) ||
-                !verified.NetworkId.Span.SequenceEqual(networkId))
+                    expected.ExactAdh1.Span))
                 throw new CryptographicException(
                     "The DID2 proof did not close the current protected floor.");
-            var next = verified.NextProtectedLkg;
             if (next.ExactAdh1.Span.SequenceEqual(expected.ExactAdh1.Span))
             {
                 if (!next.CoreHash.Span.SequenceEqual(current.CoreHash))

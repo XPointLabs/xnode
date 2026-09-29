@@ -1,5 +1,28 @@
 # Operator Guide
 
+## DID2 recovery candidate
+
+The DID2 proof reader consumes independently verified historical pages and
+durably advances its protected head before requesting a fresh current proof.
+Network closure configuration can use one atomically replaced `PublicBundlePath`;
+it cannot mix that mutable bundle with individually listed file generations.
+The configured public observation credential is not a requester-selected proof.
+
+`PrivacyRouting:NextX25519PrivateKeyPath` may stage one distinct next key in the
+protected vault. A sealed, current signed network view selects the installed
+current or staged slot. Identity keys are never converted to traffic keys;
+unknown/uninstalled signed keys cannot advance the local network floor.
+This is not unlimited unattended key generation or TLS rotation.
+
+The background receive capability reports only closed diagnostic categories,
+not exception messages, recipients, key paths or proof bytes. The general
+development health exemption is not ONION evidence; `deep-dev` requires the
+actual `privacyRouting=ready` result. See
+[Deep DEV](../../deep-devops/docs/DEEP_DEV.md),
+[DR-0014](../../docs/survival-program/decisions/DR-0014-directory-historical-catchup.md)
+and [DR-0015](../../docs/survival-program/decisions/DR-0015-delegated-operational-renewal.md)
+for the normative contracts and retained-custody operations.
+
 ## Verification tooling
 
 Profile-generator restore/closure tests use native `git` and PowerShell on

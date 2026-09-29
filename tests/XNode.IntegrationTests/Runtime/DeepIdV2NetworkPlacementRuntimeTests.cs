@@ -20,15 +20,15 @@ public sealed class DeepIdV2NetworkPlacementRuntimeTests
         using (var floor = files.OpenFloor())
         {
             var source = files.Source(floor);
-            var initial = await source.ReadCurrentAsync(candidate.RouterOwnerId, key, default);
+            var initial = await source.ReadCurrentAsync(candidate.RouterOwnerId, key, default, default);
             Assert.Null(initial.PriorProtectedLkg);
             retained = (await floor.ReadAsync(default))!;
-            var same = await source.ReadCurrentAsync(candidate.RouterOwnerId, key, default);
+            var same = await source.ReadCurrentAsync(candidate.RouterOwnerId, key, default, default);
             Assert.NotNull(same.PriorProtectedLkg);
             Assert.True(FileDeepIdV2NetworkFloorStore.Same(retained, await floor.ReadAsync(default)));
         }
         using var restarted = files.OpenFloor();
-        var current = await files.Source(restarted).ReadCurrentAsync(candidate.RouterOwnerId, key, default);
+        var current = await files.Source(restarted).ReadCurrentAsync(candidate.RouterOwnerId, key, default, default);
         Assert.NotNull(current.PriorProtectedLkg);
         Assert.True(FileDeepIdV2NetworkFloorStore.Same(retained, await restarted.ReadAsync(default)));
         Assert.Equal(3, signed.ProofReads);
@@ -42,7 +42,7 @@ public sealed class DeepIdV2NetworkPlacementRuntimeTests
         using var floor = files.OpenFloor();
         var candidate = OnionPathCandidateSnapshotFactory.Create(signed.NetworkContext).Candidates[0];
         var error = await Assert.ThrowsAsync<OnionBoundaryException>(async () =>
-            await files.Source(floor).ReadCurrentAsync(candidate.RouterOwnerId, ScalarMult.Base(new byte[32]), default));
+            await files.Source(floor).ReadCurrentAsync(candidate.RouterOwnerId, ScalarMult.Base(new byte[32]), default, default));
         Assert.Equal("local-node-key-mismatch", error.Code);
         Assert.Null(await floor.ReadAsync(default));
     }
@@ -56,7 +56,7 @@ public sealed class DeepIdV2NetworkPlacementRuntimeTests
         var candidate = OnionPathCandidateSnapshotFactory.Create(signed.NetworkContext).Candidates[0];
         await Assert.ThrowsAsync<InvalidOperationException>(async () =>
             await files.Source(floor, observer: false).ReadCurrentAsync(candidate.RouterOwnerId,
-                ScalarMult.Base(signed.TestOnionScalar(candidate.NodeId.Span)), default));
+                ScalarMult.Base(signed.TestOnionScalar(candidate.NodeId.Span)), default, default));
         Assert.Equal(0, signed.ProofReads);
         Assert.Null(await floor.ReadAsync(default));
     }
@@ -71,7 +71,7 @@ public sealed class DeepIdV2NetworkPlacementRuntimeTests
         signed.Sample = signed.Freshness.FreshnessDeadlineMonotonicSeconds;
         await Assert.ThrowsAsync<OnionBoundaryException>(async () =>
             await files.Source(floor).ReadCurrentAsync(candidate.RouterOwnerId,
-                ScalarMult.Base(signed.TestOnionScalar(candidate.NodeId.Span)), default));
+                ScalarMult.Base(signed.TestOnionScalar(candidate.NodeId.Span)), default, default));
         Assert.Null(await floor.ReadAsync(default));
     }
 

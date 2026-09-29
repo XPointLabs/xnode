@@ -30,6 +30,8 @@ internal sealed class DeepIdV2DirectoryProofUnavailableException : IOException
 /// </summary>
 internal interface IDeepIdV2DirectoryProofArtifactSource
 {
+    ValueTask<DeepIdV2DirectoryHistoryPage> FetchHistoryAsync(AccountDirectoryProtectedLkg source,
+        CancellationToken cancellationToken);
     ValueTask<DeepIdV2DirectoryProofWireResponse> FetchAsync(
         ParsedAdl1V2 lookup, ParsedDid2 did2, ReadOnlyMemory<byte> nonce,
         ReadOnlyMemory<byte> bootId, ulong monotonicSendSample,
@@ -85,7 +87,8 @@ internal sealed class HttpsDeepIdV2DirectoryProofArtifactSource :
             using var response = await client.SendAsync(message,
                 HttpCompletionOption.ResponseHeadersRead, deadline.Token)
                 .ConfigureAwait(false);
-            var length = RequireResponse(response);
+            var length = RequireResponse(response, endpoint, DeepIdV2DirectoryProofWireCodec.ResponseMediaType,
+                128, DeepIdV2DirectoryProofWireCodec.MaximumResponseLength);
             var body = await ReadExactAsync(response.Content, length,
                 deadline.Token).ConfigureAwait(false);
             try
@@ -98,10 +101,30 @@ internal sealed class HttpsDeepIdV2DirectoryProofArtifactSource :
         finally { CryptographicOperations.ZeroMemory(encoded); }
     }
 
-    private int RequireResponse(HttpResponseMessage response)
+    public async ValueTask<DeepIdV2DirectoryHistoryPage> FetchHistoryAsync(AccountDirectoryProtectedLkg source,
+        CancellationToken cancellationToken)
+    {
+        var encoded = DeepIdV2DirectoryHistoryWireCodec.EncodeRequest(source);
+        var historyEndpoint = new Uri(endpoint, "/api/v2/account-directory/history");
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(requestTimeout);
+        using var message = new HttpRequestMessage(HttpMethod.Post, historyEndpoint);
+        message.Headers.Accept.Add(new(DeepIdV2DirectoryHistoryWireCodec.ResponseMediaType));
+        message.Headers.CacheControl = new() { NoStore = true };
+        message.Content = new ByteArrayContent(encoded);
+        message.Content.Headers.ContentType = new(DeepIdV2DirectoryHistoryWireCodec.RequestMediaType);
+        using var response = await client.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, deadline.Token).ConfigureAwait(false);
+        var length = RequireResponse(response, historyEndpoint, DeepIdV2DirectoryHistoryWireCodec.ResponseMediaType,
+            71, DeepIdV2DirectoryHistoryWireCodec.MaximumResponseLength);
+        var body = await ReadExactAsync(response.Content, length, deadline.Token).ConfigureAwait(false);
+        return DeepIdV2DirectoryHistoryWireCodec.DecodeResponse(body, encoded);
+    }
+
+    private static int RequireResponse(HttpResponseMessage response, Uri expectedEndpoint,
+        string mediaType, int minimumLength, int maximumLength)
     {
         if (response.RequestMessage?.RequestUri is not { } actual ||
-            Uri.Compare(actual, endpoint, UriComponents.AbsoluteUri,
+            Uri.Compare(actual, expectedEndpoint, UriComponents.AbsoluteUri,
                 UriFormat.UriEscaped, StringComparison.Ordinal) != 0)
             throw new InvalidDataException("The DID2 proof endpoint changed.");
         if (response.StatusCode is HttpStatusCode.TooManyRequests or HttpStatusCode.ServiceUnavailable)
@@ -112,18 +135,17 @@ internal sealed class HttpsDeepIdV2DirectoryProofArtifactSource :
             throw new DeepIdV2DirectoryProofUnavailableException(response.StatusCode, delay);
         }
         if (response.StatusCode != HttpStatusCode.OK)
-            throw new IOException("The DID2 directory proof authority is unavailable.");
+            throw new InvalidDataException("The DID2 directory authority rejected the request.");
         var contentType = response.Content.Headers.ContentType;
         if (contentType is null || contentType.Parameters.Count != 0 ||
             !string.Equals(contentType.MediaType,
-                DeepIdV2DirectoryProofWireCodec.ResponseMediaType,
+                mediaType,
                 StringComparison.OrdinalIgnoreCase) ||
             response.Content.Headers.ContentEncoding.Count != 0 ||
             response.Headers.CacheControl?.NoStore != true)
             throw new InvalidDataException("The DID2 proof response headers are invalid.");
         var length = response.Content.Headers.ContentLength;
-        if (length is null or < 128 or
-            > DeepIdV2DirectoryProofWireCodec.MaximumResponseLength)
+        if (length is null || length < minimumLength || length > maximumLength)
             throw new InvalidDataException("The DID2 proof response length is invalid.");
         return checked((int)length.Value);
     }

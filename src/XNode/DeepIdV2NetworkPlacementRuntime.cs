@@ -18,19 +18,20 @@ public sealed class DeepIdV2NetworkPlacementOptions
     public List<string> ExactActiveNodePaths { get; set; } = [];
     public List<string> ExactMailboxProjectionPaths { get; set; } = [];
     public string PublicObservationDid2Path { get; set; } = string.Empty;
+    public string PublicBundlePath { get; set; } = string.Empty;
 
     internal DeepIdV2NetworkClosureFileSource? ValidateAndLoad(
         bool did2ProofEnabled, bool developmentOrUat)
     {
         if (ExactPolicyPaths is null || ExactViewPaths is null ||
             ExactHeadPaths is null || ExactActiveNodePaths is null ||
-            ExactMailboxProjectionPaths is null || PublicObservationDid2Path is null)
+            ExactMailboxProjectionPaths is null || PublicObservationDid2Path is null || PublicBundlePath is null)
             throw new InvalidOperationException(
                 "DID2 network placement configuration has null paths.");
         var any = Enabled || ExactPolicyPaths.Count != 0 ||
             ExactViewPaths.Count != 0 || ExactHeadPaths.Count != 0 ||
             ExactActiveNodePaths.Count != 0 ||
-            ExactMailboxProjectionPaths.Count != 0 || PublicObservationDid2Path.Length != 0;
+            ExactMailboxProjectionPaths.Count != 0 || PublicObservationDid2Path.Length != 0 || PublicBundlePath.Length != 0;
         if (!Enabled)
         {
             if (any) throw new InvalidOperationException(
@@ -40,6 +41,13 @@ public sealed class DeepIdV2NetworkPlacementOptions
         if (!did2ProofEnabled || !developmentOrUat)
             throw new InvalidOperationException(
                 "DID2 UAT placement requires the independent DID2 proof boundary.");
+        if (PublicBundlePath.Length != 0)
+        {
+            if (ExactPolicyPaths.Count + ExactViewPaths.Count + ExactHeadPaths.Count +
+                ExactActiveNodePaths.Count + ExactMailboxProjectionPaths.Count != 0)
+                throw new InvalidOperationException("A mutable closure must use one atomic bundle, not mixed file generations.");
+            return new DeepIdV2NetworkClosureFileSource(PublicBundlePath, PublicObservationDid2Path);
+        }
         return new DeepIdV2NetworkClosureFileSource(ExactPolicyPaths,
             ExactViewPaths, ExactHeadPaths, ExactActiveNodePaths,
             ExactMailboxProjectionPaths, PublicObservationDid2Path);
@@ -51,7 +59,17 @@ internal sealed class DeepIdV2NetworkClosureFileSource
     private const int MaximumChainCount = 4_096;
     private const long MaximumClosureBytes = 64L * 1024 * 1024;
     private readonly string[][] paths;
+    private readonly string? publicBundlePath;
     internal ParsedDid2? Observer { get; }
+
+    internal DeepIdV2NetworkClosureFileSource(string bundlePath, string publicObservationDid2Path)
+    {
+        publicBundlePath = Copy([bundlePath])[0];
+        paths = [];
+        var observer = DeepIdV2NetworkAuthorityFileSource.ReadExact(Copy([publicObservationDid2Path])[0]);
+        Observer = DeepIdV2Codec.DecodeDid2(observer);
+        using var initial = ReadCurrent(); // Validate the bounded frame without promoting authority.
+    }
 
     internal DeepIdV2NetworkClosureFileSource(
         IReadOnlyList<string> policies, IReadOnlyList<string> views,
@@ -91,6 +109,23 @@ internal sealed class DeepIdV2NetworkClosureFileSource
 
     internal DeepIdV2NetworkClosureArtifacts ReadCurrent()
     {
+        if (publicBundlePath is not null)
+        {
+            using var stream = new FileStream(publicBundlePath, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+            if (stream.Length is < 1 || stream.Length > XPointNetworkClosureWireCodec.MaximumResponseLength)
+                throw new InvalidDataException("The atomic network closure is unbounded.");
+            var bytes = new byte[checked((int)stream.Length)];
+            stream.ReadExactly(bytes);
+            if (stream.ReadByte() != -1) throw new IOException("The network closure changed while reading.");
+            var raw = XPointNetworkClosureWireCodec.DecodeResponse(bytes);
+            return new DeepIdV2NetworkClosureArtifacts(new[] {
+                raw.ExactNetworkPolicyChain.Select(static b => b.ToArray()).ToArray(),
+                raw.ExactViewChain.Select(static b => b.ToArray()).ToArray(),
+                raw.ExactHeadChain.Select(static b => b.ToArray()).ToArray(),
+                raw.ExactActiveNodeDescriptors.Select(static b => b.ToArray()).ToArray(),
+                raw.ExactPlacementTopologyChain.Select(static b => b.ToArray()).ToArray()
+            });
+        }
         var groups = new byte[paths.Length][][];
         long total = 0;
         try
@@ -166,7 +201,7 @@ internal interface IDeepIdV2PreKeyPlacementSource
 internal interface IDeepIdV2ReceiveNetworkSource
 {
     ValueTask<VerifiedOnionNetworkContext> ReadCurrentAsync(
-        ReadOnlyMemory<byte> localOwnerId, ReadOnlyMemory<byte> localOnionPublicKey,
+        ReadOnlyMemory<byte> localOwnerId, ReadOnlyMemory<byte> localOnionPublicKey, ReadOnlyMemory<byte> nextInstalledPublicKey,
         CancellationToken cancellationToken);
 }
 
@@ -195,7 +230,7 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
         // Only the configured public observer, never the requester, selects this proof.
         var observer = artifacts.Observer ?? throw new InvalidOperationException(
             "DID2 claim placement requires the configured public observation credential.");
-        var (network, freshness) = await ReadNetworkAsync(observer, default, default,
+        var (network, freshness) = await ReadNetworkAsync(observer, default, default, default,
             cancellationToken).ConfigureAwait(false);
         var placement = ContactServicePlacementFactory.Create(network,
             ContactServiceRequestKind.ClaimPreKey, serviceCapability);
@@ -214,7 +249,7 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
             throw new ArgumentException(
                 "DID2 pre-key publication needs a nonzero service capability.",
                 nameof(serviceCapability));
-        var (network, freshness) = await ReadNetworkAsync(publisher, default, default,
+        var (network, freshness) = await ReadNetworkAsync(publisher, default, default, default,
             cancellationToken).ConfigureAwait(false);
         var placement = ContactServicePlacementFactory.Create(network,
             ContactServiceRequestKind.PublishPreKeyInventory,
@@ -225,7 +260,7 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
     }
 
     public async ValueTask<VerifiedOnionNetworkContext> ReadCurrentAsync(
-        ReadOnlyMemory<byte> localOwnerId, ReadOnlyMemory<byte> localOnionPublicKey,
+        ReadOnlyMemory<byte> localOwnerId, ReadOnlyMemory<byte> localOnionPublicKey, ReadOnlyMemory<byte> nextInstalledPublicKey,
         CancellationToken cancellationToken)
     {
         if (localOwnerId.Length != 32 || localOnionPublicKey.Length != 32 ||
@@ -233,14 +268,16 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
             throw new ArgumentException("The receive host needs its exact independent local node/key binding.");
         var observer = artifacts.Observer ?? throw new InvalidOperationException(
             "DID2 receive authority requires an operator-configured public observation credential.");
-        var result = await ReadNetworkAsync(observer, localOwnerId, localOnionPublicKey,
+        if (!nextInstalledPublicKey.IsEmpty && (nextInstalledPublicKey.Length != 32 || nextInstalledPublicKey.Span.IndexOfAnyExcept((byte)0) < 0))
+            throw new ArgumentException("Staged installed public key is invalid.");
+        var result = await ReadNetworkAsync(observer, localOwnerId, localOnionPublicKey, nextInstalledPublicKey,
             cancellationToken).ConfigureAwait(false);
         return result.Network;
     }
 
     private async ValueTask<(VerifiedOnionNetworkContext Network,
         Deep.Protocol.AccountDirectoryV1.VerifiedDeepIdV2DirectoryFreshness Freshness)> ReadNetworkAsync(
-        ParsedDid2 did2, ReadOnlyMemory<byte> localOwnerId, ReadOnlyMemory<byte> localKey,
+        ParsedDid2 did2, ReadOnlyMemory<byte> localOwnerId, ReadOnlyMemory<byte> localKey, ReadOnlyMemory<byte> nextInstalledKey,
         CancellationToken cancellationToken)
     {
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -266,7 +303,10 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
                     .Where(node => node.RouterOwnerId.Span.SequenceEqual(localOwnerId.Span)).ToArray();
                 if (local.Length != 1)
                     throw new CryptographicException("The signed view does not contain one exact local node.");
-                OnionLocalNodeKeyFactory.EnsureInstalledPublicKey(network, local[0].NodeId, localKey);
+                try { OnionLocalNodeKeyFactory.EnsureInstalledPublicKey(network, local[0].NodeId, localKey); }
+                catch (OnionBoundaryException exception) when (exception.Code == "local-node-key-mismatch" && !nextInstalledKey.IsEmpty) {
+                    OnionLocalNodeKeyFactory.EnsureInstalledPublicKey(network, local[0].NodeId, nextInstalledKey);
+                }
             }
             var committed = await floor.CommitVerifiedAsync(previous, network, cancellationToken).ConfigureAwait(false);
             var retained = await floor.ReadAsync(cancellationToken).ConfigureAwait(false);

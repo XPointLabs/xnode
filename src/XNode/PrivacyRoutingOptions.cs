@@ -13,6 +13,7 @@ public sealed class PrivacyRoutingOptions
     public bool Enabled { get; set; }
 
     public string X25519PrivateKeyPath { get; set; } = "";
+    public string NextX25519PrivateKeyPath { get; set; } = "";
 
     public string PublicPeerBaseUrl { get; set; } = "";
 
@@ -57,6 +58,7 @@ public sealed class PrivacyRoutingOptions
         if (!Enabled)
         {
             if (!string.IsNullOrWhiteSpace(X25519PrivateKeyPath)
+                || !string.IsNullOrWhiteSpace(NextX25519PrivateKeyPath)
                 || !string.IsNullOrWhiteSpace(PublicPeerBaseUrl)
                 || !string.IsNullOrWhiteSpace(StateProtectionKeyPath)
                 || !string.IsNullOrWhiteSpace(ReplayStateRelativePath)
@@ -164,11 +166,10 @@ public sealed class PrivacyRoutingOptions
         var privateKey = DecodeHex32(
             File.ReadAllText(X25519PrivateKeyPath).Trim(),
             "PrivacyRouting X25519 private key");
-        var ed25519Seed = DecodeHex32(
-            node.GetEd25519PrivateKey().Trim(),
-            "Node Ed25519 private seed");
+        byte[] ed25519Seed = [];
         try
         {
+            ed25519Seed = DecodeHex32(node.GetEd25519PrivateKey().Trim(), "Node Ed25519 private seed");
             if (CryptographicOperations.FixedTimeEquals(privateKey, ed25519Seed)
                 || !string.IsNullOrWhiteSpace(node.Ed25519PrivateKeyPath)
                 && string.Equals(
@@ -182,6 +183,11 @@ public sealed class PrivacyRoutingOptions
                 throw new InvalidOperationException(
                     "PrivacyRouting X25519 and Node Ed25519 keys must be independent.");
             }
+        }
+        catch
+        {
+            CryptographicOperations.ZeroMemory(privateKey);
+            throw;
         }
         finally
         {
@@ -197,6 +203,23 @@ public sealed class PrivacyRoutingOptions
 
         try
         {
+            byte[] nextPrivateKey = [];
+            try {
+            if (NextX25519PrivateKeyPath.Length != 0) {
+                if (!Path.IsPathFullyQualified(NextX25519PrivateKeyPath) || !File.Exists(NextX25519PrivateKeyPath) ||
+                    SamePath(NextX25519PrivateKeyPath, X25519PrivateKeyPath) || SamePath(NextX25519PrivateKeyPath, StateProtectionKeyPath) ||
+                    node.Ed25519PrivateKeyPath.Length != 0 && SamePath(NextX25519PrivateKeyPath, node.Ed25519PrivateKeyPath))
+                    throw new InvalidOperationException("The staged ONION key needs a distinct absolute custody file.");
+                nextPrivateKey = DecodeHex32(File.ReadAllText(NextX25519PrivateKeyPath).Trim(), "Staged ONION X25519 key");
+                var identity = DecodeHex32(node.GetEd25519PrivateKey().Trim(), "Node Ed25519 private seed");
+                try {
+                    if (CryptographicOperations.FixedTimeEquals(nextPrivateKey, identity) ||
+                        ScalarMult.Base(nextPrivateKey).AsSpan().SequenceEqual(publicKey)) {
+                        CryptographicOperations.ZeroMemory(nextPrivateKey);
+                        throw new InvalidOperationException("Staged ONION key must be independent of current traffic and identity keys.");
+                    }
+                } finally { CryptographicOperations.ZeroMemory(identity); }
+            }
             var localRouterId = node.GetRouterId();
             var peers = new Dictionary<RouterId, PrivacyPeer>();
             foreach (var configured in Peers)
@@ -233,7 +256,8 @@ public sealed class PrivacyRoutingOptions
                 Path.GetFullPath(StateProtectionKeyPath),
                 replayStatePath,
                 entropyStatePath,
-                keyVaultDirectory);
+                keyVaultDirectory, nextPrivateKey);
+            } catch { CryptographicOperations.ZeroMemory(nextPrivateKey); throw; }
         }
         catch
         {
@@ -390,7 +414,7 @@ public sealed class PrivacyRoutingConfiguration : IDisposable
         string stateProtectionKeyPath = "",
         string replayStatePath = "",
         string entropyStatePath = "",
-        string keyVaultDirectory = "")
+        string keyVaultDirectory = "", byte[]? nextPrivateKey = null)
     {
         Enabled = enabled;
         PrivateKey = privateKey;
@@ -398,6 +422,9 @@ public sealed class PrivacyRoutingConfiguration : IDisposable
         _keyHandleId = enabled
             ? PrivacyRoutingProductionComposition.DeriveKeyHandle(publicKey)
             : [];
+        NextPrivateKey = nextPrivateKey ?? [];
+        _nextPublicKey = NextPrivateKey.Length == 0 ? [] : ScalarMult.Base(NextPrivateKey);
+        _nextKeyHandleId = _nextPublicKey.Length == 0 ? [] : PrivacyRoutingProductionComposition.DeriveKeyHandle(_nextPublicKey);
         PublicPeerEndpoint = publicPeerEndpoint;
         Peers = new ReadOnlyDictionary<RouterId, PrivacyPeer>(
             peers.ToDictionary(static item => item.Key, static item => item.Value));
@@ -417,6 +444,18 @@ public sealed class PrivacyRoutingConfiguration : IDisposable
     internal ReadOnlySpan<byte> PrivateKeySpan => PrivateKey;
     public byte[] PublicKey => _publicKey.ToArray();
     internal ReadOnlyMemory<byte> KeyHandleId => _keyHandleId.ToArray();
+    internal ReadOnlySpan<byte> NextPrivateKeySpan => NextPrivateKey;
+    internal ReadOnlyMemory<byte> NextPublicKey => _nextPublicKey.ToArray();
+    internal ReadOnlyMemory<byte> NextKeyHandleId => _nextKeyHandleId.ToArray();
+    internal bool OwnsHandle(ReadOnlySpan<byte> handle) => handle.SequenceEqual(_keyHandleId) ||
+        _nextKeyHandleId.Length != 0 && handle.SequenceEqual(_nextKeyHandleId);
+    internal ReadOnlyMemory<byte> SelectVerifiedHandle(VerifiedOnionNetworkContext network, ReadOnlyMemory<byte> nodeId)
+    {
+        try { OnionLocalNodeKeyFactory.EnsureInstalledPublicKey(network, nodeId, PublicKey); return KeyHandleId; }
+        catch (OnionBoundaryException exception) when (exception.Code == "local-node-key-mismatch" && _nextPublicKey.Length != 0) {
+            OnionLocalNodeKeyFactory.EnsureInstalledPublicKey(network, nodeId, NextPublicKey); return NextKeyHandleId;
+        }
+    }
     public Uri PublicPeerEndpoint { get; }
     public IReadOnlyDictionary<RouterId, PrivacyPeer> Peers { get; }
     public int MaximumConcurrentRequests { get; }
@@ -436,11 +475,14 @@ public sealed class PrivacyRoutingConfiguration : IDisposable
         {
             CryptographicOperations.ZeroMemory(PrivateKey);
         }
+        CryptographicOperations.ZeroMemory(NextPrivateKey);
     }
 
     private byte[] PrivateKey { get; }
     private readonly byte[] _publicKey;
     private readonly byte[] _keyHandleId;
+    private byte[] NextPrivateKey { get; }
+    private readonly byte[] _nextPublicKey, _nextKeyHandleId;
 }
 
 public sealed class PrivacyPeer
