@@ -35,6 +35,39 @@ VLESS/Reality physical gate passes with direct HTTPS blocked.
 
 ## DID2 directory-proof UAT boundary
 
+### Offline accepted-network checkpoint audit
+
+`did2-network-floor-audit` runs before web-host construction. It authenticates
+an **offline copy** of the exact floor and independent anchor with the copied
+existing Data Protection key ring, unchanged application discriminator and
+directory-genesis/node purpose. Key generation is disabled. It acquires no runtime lease,
+creates no keys or custody directories and offers no import, repair or reset.
+Snapshot acquisition remains an operator custody task: keep it private, copy
+both records and the matching key ring, and compare capture hashes if a writer
+can advance during capture. A mixed capture rejects; do not erase a floor to
+make the audit pass. Coordinated rollback of both records is not detected.
+
+The snapshot contains exactly `floor.bin`, `anchor.bin`, and `keys/` with the
+original bounded `key-*.xml` / `revocation-*.xml` records. Mount it read-only when
+auditing in a container. Scope values are independently configured canonical
+uppercase nonzero 32-byte hashes. Use the reader's `GenesisHeadCoreHashHex`
+(ADH1 directory genesis), **not** `GenesisAuthorityCoreHashHex` (XNA1 network
+genesis). The purpose is unchanged from the live reader. The output is a new
+file outside the snapshot:
+
+```text
+dotnet XNode.dll did2-network-floor-audit --snapshot-root <offline-snapshot> --directory-genesis-core-hash <pinned-directory-genesis-hash> --node-id <registered-node-id> --output <new-history.dnh2>
+```
+
+The output is the unchanged non-secret local DNH2 capsule defined by
+[DR-0012](../../docs/survival-program/decisions/DR-0012-protected-network-history.md).
+The console reports only revision, length and digest. This proves matching local
+custody, not signature freshness, an independent global checkpoint or readiness.
+Treat it as historical predecessor input for the supported operational ceremony;
+the current signed closure still requires full Protocol verification. No protocol
+API, traffic lifetime or registered identity changes. Runtime and audit both reject
+an authenticated anchor whose history length differs from its floor.
+
 `DeepIdV2DirectoryProof` is an opt-in, fail-closed diagnostic proof reader.
 The authorized seed fleet is production infrastructure; `UAT` names its
 pre-release software profile, not a separate remote environment. Mr. X permits

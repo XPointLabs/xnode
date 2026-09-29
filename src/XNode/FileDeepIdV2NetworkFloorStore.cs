@@ -109,14 +109,30 @@ internal sealed class FileDeepIdV2NetworkFloorStore : IDisposable
             if (initialized) throw new InvalidDataException("The initialized network floor disappeared.");
             return null;
         }
-        if (floor is null || anchor is null || floor.Revision != anchor.Revision ||
-            !Fixed(floor.Instance, anchor.Instance) || !Fixed(SHA256.HashData(floor.History), anchor.History))
-            throw new InvalidDataException("The independent network floor and anchor are missing, split or rolled back.");
+        var retained = RequireMatchingPair(floor, anchor);
         initialized = true;
-        return floor;
+        return retained;
     }
 
-    private DeepIdV2NetworkFloor? Read(string path, bool anchor)
+    /// <summary>Authenticates an offline snapshot only; no lease, write, repair or current capability.</summary>
+    internal static DeepIdV2NetworkFloor AuthenticateSnapshot(byte[] floor, byte[] anchor,
+        IDataProtector protector) => RequireMatchingPair(
+            DecodeProtected(floor, anchor: false, protector),
+            DecodeProtected(anchor, anchor: true, protector));
+
+    private static DeepIdV2NetworkFloor RequireMatchingPair(DecodedRecord? floor, DecodedRecord? anchor)
+    {
+        if (floor is null || anchor is null || floor.HistoryLength != anchor.HistoryLength ||
+            floor.Floor.Revision != anchor.Floor.Revision ||
+            !Fixed(floor.Floor.Instance, anchor.Floor.Instance) ||
+            !Fixed(SHA256.HashData(floor.Floor.History), anchor.Floor.History))
+            throw new InvalidDataException("The independent network floor and anchor are missing, split or rolled back.");
+        return floor.Floor;
+    }
+
+    private sealed record DecodedRecord(DeepIdV2NetworkFloor Floor, uint HistoryLength);
+
+    private DecodedRecord? Read(string path, bool anchor)
     {
         if (!File.Exists(path)) return null;
         RejectLinks(path); security.ValidateSecureFile(path);
@@ -124,9 +140,16 @@ internal sealed class FileDeepIdV2NetworkFloorStore : IDisposable
         if (info.Length is < 1 or > MaximumHistoryBytes + HeaderBytes + 1_024)
             throw new InvalidDataException("The protected network floor exceeds its closed byte bound.");
         var protectedBytes = File.ReadAllBytes(path);
+        return DecodeProtected(protectedBytes, anchor, protector);
+    }
+
+    private static DecodedRecord DecodeProtected(byte[] protectedBytes, bool anchor, IDataProtector protector)
+    {
         byte[]? plain = null;
         try
         {
+            if (protectedBytes.Length is < 1 or > MaximumHistoryBytes + HeaderBytes + 1_024)
+                throw new InvalidDataException("The protected network floor exceeds its closed byte bound.");
             plain = protector.Unprotect(protectedBytes);
             if (plain.Length < HeaderBytes || !plain.AsSpan(0, 4).SequenceEqual("DNF2"u8) ||
                 BinaryPrimitives.ReadUInt16BigEndian(plain.AsSpan(4)) != 2 ||
@@ -142,7 +165,7 @@ internal sealed class FileDeepIdV2NetworkFloorStore : IDisposable
             var body = anchor ? plain.AsSpan(32, 32).ToArray() : plain.AsSpan(HeaderBytes).ToArray();
             if (!anchor && !Fixed(SHA256.HashData(body), plain.AsSpan(32, 32)))
                 throw new InvalidDataException("The protected network floor hash is invalid.");
-            return new(revision, plain.AsSpan(16, 16).ToArray(), body);
+            return new(new(revision, plain.AsSpan(16, 16).ToArray(), body), length);
         }
         finally
         {

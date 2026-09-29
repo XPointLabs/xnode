@@ -200,7 +200,7 @@ internal sealed class DeepIdV2DirectoryProofRuntime :
             provider = DataProtectionProvider.Create(
                 new DirectoryInfo(configuration.KeyDirectory),
                 builder => builder.SetApplicationName(
-                    "XPoint.XNode.DID2.DirectoryProof.v2"));
+                    DeepIdV2NetworkFloorAudit.ApplicationName));
             opened = new FileDeepIdV2DirectoryProtectedHeadStore(
                 configuration.StateDirectory,
                 configuration.NodeDataDirectory, genesis,
@@ -246,7 +246,7 @@ internal sealed class DeepIdV2DirectoryProofRuntime :
     internal FileDeepIdV2NetworkFloorStore OpenNetworkFloor(RouterNodeOptions node,
         IMailboxStorageSecurity security, IMailboxDurabilityBarrier durability) =>
         new(configuration.NodeDataDirectory,
-            networkProtection.CreateProtector("Deep.XNode.DID2.NetworkFloor.v2",
+            DeepIdV2NetworkFloorAudit.Protector(networkProtection,
                 Convert.ToHexString(configuration.PinnedGenesisCoreHash),
                 Convert.ToHexString(node.GetRouterId().ToBytes())), security, durability);
 

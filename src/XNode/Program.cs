@@ -17,6 +17,18 @@ using XNode.Registry.Bootstrap;
 using XNode.Registry.Heartbeat;
 using XNode.Transport.Vless;
 
+if (args.Length > 0 && args[0] == "did2-network-floor-audit")
+{
+    try { DeepIdV2NetworkFloorAudit.Run(args); }
+    catch
+    {
+        // Input/custody paths and key-ring diagnostics must not enter public logs.
+        Console.Error.WriteLine("Offline DID2 network-floor audit rejected; no authority or custody change was made.");
+        Environment.ExitCode = 1;
+    }
+    return;
+}
+
 var builder = WebApplication.CreateBuilder(args);
 
 var nodeOptions = builder.Configuration.GetSection("Node").Get<RouterNodeOptions>() ?? new RouterNodeOptions();

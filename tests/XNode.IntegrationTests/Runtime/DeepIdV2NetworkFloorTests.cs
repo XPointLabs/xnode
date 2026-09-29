@@ -79,6 +79,24 @@ public sealed class DeepIdV2NetworkFloorTests
     }
 
     [Fact]
+    public async Task AuthenticatedAnchorWithDifferentHistoryLengthRejectsInRuntimeAndOfflineAudit()
+    {
+        using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var files = new Custody();
+        using (var store = files.Open())
+            await store.CommitVerifiedAsync(null, signed.NetworkContext, default);
+        var plain = files.Protector.Unprotect(File.ReadAllBytes(files.Anchor));
+        var length = System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(plain.AsSpan(64));
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(plain.AsSpan(64), length + 1);
+        File.WriteAllBytes(files.Anchor, files.Protector.Protect(plain));
+        CryptographicOperations.ZeroMemory(plain);
+        Assert.Throws<InvalidDataException>(() => FileDeepIdV2NetworkFloorStore.AuthenticateSnapshot(
+            File.ReadAllBytes(files.Floor), File.ReadAllBytes(files.Anchor), files.Protector));
+        using var restarted = files.Open();
+        await Assert.ThrowsAsync<InvalidDataException>(async () => await restarted.ReadAsync(default));
+    }
+
+    [Fact]
     public async Task WrongPurposeAndConcurrentWriterCannotRestoreOrMutate()
     {
         using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
