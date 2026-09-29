@@ -10,7 +10,7 @@ using XNode.Core.Mailbox;
 
 namespace XNode.Tests.Core;
 
-public sealed class DeepIdV2PublicationJournalTests
+public sealed partial class DeepIdV2PublicationJournalTests
 {
     private static readonly byte[] Network = Bytes(16, 0x11);
     private static readonly byte[] Operation = Bytes(32, 0x12);

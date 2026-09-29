@@ -13,7 +13,7 @@ namespace XNode.Core.ContactPreKey;
 /// current selected placement. One signed receipt is not claim authority:
 /// clients and claims still require both selected replicas' final XIC1.
 /// </summary>
-internal sealed class DeepIdV2InventoryCommitStore : IDisposable
+internal sealed partial class DeepIdV2InventoryCommitStore : IDisposable
 {
     private const string StateHashDomain = "Deep/XNode/V2/prekey-active-snapshot";
     private const string ServicePathDomain = "Deep/XNode/V2/prekey-service-path";
@@ -32,6 +32,7 @@ internal sealed class DeepIdV2InventoryCommitStore : IDisposable
     private readonly IMailboxStorageSecurity security;
     private readonly IMailboxDurabilityBarrier durability;
     private readonly FileStream lease;
+    private readonly object custodyGate = new();
     private bool disposed;
 
     internal DeepIdV2InventoryCommitStore(string dataDirectory,
@@ -82,6 +83,9 @@ internal sealed class DeepIdV2InventoryCommitStore : IDisposable
             var state = ReadState();
             if (state.Length != 0 && !File.Exists(PathFor("activated.marker")))
                 WriteFile("activated.marker", [1]);
+            if (ReadClaimReservations().Length != 0 &&
+                !File.Exists(PathFor("claims-activated.marker")))
+                WriteFile("claims-activated.marker", [1]);
         }
         catch
         {
@@ -92,19 +96,32 @@ internal sealed class DeepIdV2InventoryCommitStore : IDisposable
 
     internal ParsedXpi1V2? ReadCurrentManifest()
     {
-        EnsureAvailable();
-        return ReadState().LastOrDefault()?.Manifest;
+        lock (custodyGate)
+        {
+            EnsureAvailable();
+            return ReadState().LastOrDefault()?.Manifest;
+        }
     }
 
     // Retained exact public inventory, not permission to claim. The claim owner
     // must independently verify current authority and both replica receipts.
     internal ParsedXpp1V2? ReadCurrentPublication()
     {
-        EnsureAvailable();
-        return ReadState().LastOrDefault()?.Publication;
+        lock (custodyGate)
+        {
+            EnsureAvailable();
+            return ReadState().LastOrDefault()?.Publication;
+        }
     }
 
     internal ParsedXic1V2 CommitAuthorized(ParsedXpp1V2 verifiedPublication,
+        ulong committedAtUnixSeconds, Func<byte[], byte[]> signNodeData)
+    {
+        lock (custodyGate)
+            return CommitAuthorizedCore(verifiedPublication, committedAtUnixSeconds, signNodeData);
+    }
+
+    private ParsedXic1V2 CommitAuthorizedCore(ParsedXpp1V2 verifiedPublication,
         ulong committedAtUnixSeconds, Func<byte[], byte[]> signNodeData)
     {
         EnsureAvailable();
@@ -362,6 +379,8 @@ internal sealed class DeepIdV2InventoryCommitStore : IDisposable
     private void EnsureAvailable()
     {
         ObjectDisposedException.ThrowIf(disposed, this);
+        if (claimWriteUncertain)
+            throw new IOException("DID2 claim custody requires reopen after an uncertain write.");
         if (File.Exists(PathFor("fault.marker")) ||
             File.Exists(PathFor("fork.marker")))
             throw new InvalidDataException(
@@ -421,9 +440,12 @@ internal sealed class DeepIdV2InventoryCommitStore : IDisposable
 
     public void Dispose()
     {
-        if (disposed) return;
-        disposed = true;
-        lease.Dispose();
+        lock (custodyGate)
+        {
+            if (disposed) return;
+            disposed = true;
+            lease.Dispose();
+        }
     }
 
     private sealed record Slot(byte[] AggregateHash, ParsedXpp1V2 Publication,

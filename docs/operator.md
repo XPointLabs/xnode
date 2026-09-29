@@ -85,6 +85,24 @@ listener. It is not an unauthenticated direct publication API. This source is
 not yet a production LKG/renewal owner.
 Two-replica dispatch/final verification and client claim/receive remain release
 gates.
+The internal DID2 claim journal now shares the inventory custody lock and stores
+`claims.state` plus `claims-activated.marker` in that same capability directory.
+It reserves only exact locally retained members and retains pending reservations
+across expiry, lost responses and restart. It can record a completed local
+result only from Protocol's verified two-replica signature capability matching
+the durable proposal. The local registered node signs the bounded snapshot;
+restart checks canonical V2 inputs, sequential reservation generations, unique
+one-time IDs and persistent last-resort counters. A write with uncertain outcome
+requires reopen and reconciliation; missing/corrupt activated custody latches
+the entire service closed. Back up these files together with inventory state.
+There is deliberately no timeout release, GC, migration or automatic repair.
+This candidate has bounded local admission capacity and does not detect rollback
+to an older valid complete backup. It is not exposed through a claim endpoint:
+authenticated coordinator/peer prepare and commit, both durable completion
+read-backs, current publisher/device and publication authority, global quotas and signed placement
+handover are still required by the
+[claim specification](../../docs/architecture/CONTACT-RESOLVER-V1.md#34-atomic-pre-key-claim-xpk1--xpc1).
+No operator flag enables messaging from this local journal.
 The separate candidate authority gate reads signed DCA1/XPS1 from the exact
 bounded manifest; it never receives plaintext DCR1. It verifies this support
 against its own fresh DID2 checkpoint; a caller cannot supply a
