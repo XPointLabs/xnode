@@ -54,9 +54,7 @@ internal sealed partial class DeepIdV2InventoryCommitStore : IDisposable
         var root = Path.GetFullPath(Path.Combine(dataDirectory,
             "did2-prekey-commits"));
         var networkRoot = Path.Combine(root, Convert.ToHexString(networkId));
-        directory = Path.Combine(networkRoot, Convert.ToHexString(
-            HashDomain(ServicePathDomain,
-                serviceCapability)));
+        directory = ServiceDirectory(dataDirectory, networkId, serviceCapability);
         foreach (var path in new[] { root, networkRoot, directory })
         {
             RejectExistingLinks(path);
@@ -103,6 +101,23 @@ internal sealed partial class DeepIdV2InventoryCommitStore : IDisposable
         }
     }
 
+    internal static DeepIdV2InventoryCommitStore OpenExisting(string dataDirectory,
+        ReadOnlySpan<byte> networkId, ReadOnlySpan<byte> capability, ReadOnlySpan<byte> replica,
+        IMailboxStorageSecurity security, IMailboxDurabilityBarrier durability)
+    {
+        var directory = ServiceDirectory(dataDirectory, networkId, capability);
+        RejectExistingLinks(directory);
+        if (!new[] { "active.state", "activated.marker", "fault.marker", "fork.marker", "claims.state", "claims-activated.marker" }
+                .Any(name => File.Exists(Path.Combine(directory, name))))
+            throw new InvalidOperationException("DID2 service has no existing inventory custody.");
+        return new(dataDirectory, networkId, capability, replica, security, durability);
+    }
+
+    private static string ServiceDirectory(string dataDirectory, ReadOnlySpan<byte> networkId,
+        ReadOnlySpan<byte> capability) => Path.Combine(Path.GetFullPath(dataDirectory),
+            "did2-prekey-commits", Convert.ToHexString(networkId),
+            Convert.ToHexString(HashDomain(ServicePathDomain, capability)));
+
     // Retained exact public inventory, not permission to claim. The claim owner
     // must independently verify current authority and both replica receipts.
     internal ParsedXpp1V2? ReadCurrentPublication()
@@ -111,6 +126,15 @@ internal sealed partial class DeepIdV2InventoryCommitStore : IDisposable
         {
             EnsureAvailable();
             return ReadState().LastOrDefault()?.Publication;
+        }
+    }
+
+    internal ParsedXic1V2? ReadCurrentCommitReceipt()
+    {
+        lock (custodyGate)
+        {
+            EnsureAvailable();
+            return ReadState().LastOrDefault()?.Receipt;
         }
     }
 

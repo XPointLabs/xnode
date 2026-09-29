@@ -97,12 +97,27 @@ requires reopen and reconciliation; missing/corrupt activated custody latches
 the entire service closed. Back up these files together with inventory state.
 There is deliberately no timeout release, GC, migration or automatic repair.
 This candidate has bounded local admission capacity and does not detect rollback
-to an older valid complete backup. It is not exposed through a claim endpoint:
-authenticated coordinator/peer prepare and commit, both durable completion
-read-backs, current publisher/device and publication authority, global quotas and signed placement
-handover are still required by the
+to an older valid complete backup. `DeepIdV2PreKeyClaim:Enabled=true` now
+exposes the candidate V2 claim on the selected ONION terminal. It defaults to
+false and requires DID2 staging, a configured public observation credential,
+the independent placement/proof source, disabled V1 ContactAuthority and
+Development/UAT. The first ranked selected replica coordinates; the other
+forwards without holding its local claim lock. Internal authenticated replica
+operations 14–17 coordinate, prepare, complete and read the retained inventory
+receipt, respectively. Legacy ClaimPreKey RPC is not a DID2 fallback.
+Both replicas independently verify current recipient/device/publication
+authority and the two selected XIC1 receipts before reservation/completion.
+The coordinator releases success only after both durable completion read-backs;
+the forwarding replica additionally verifies both result signatures. Pending
+uncertainty blocks later selection until the exact operation reconciles.
+Completion divergence persistently fork-latches custody without deleting its
+journals. Unknown capability lookup creates no inventory directories.
+Global admission quotas, complete valid-backup rollback detection, expired
+pending-operation recovery and signed placement handover remain gates under the
 [claim specification](../../docs/architecture/CONTACT-RESOLVER-V1.md#34-atomic-pre-key-claim-xpk1--xpc1).
-No operator flag enables messaging from this local journal.
+This opt-in claim candidate is not messaging activation or physical delivery
+evidence. Keep the flag disabled until the applicable deployment rehearsal
+and device gates are complete; Production startup still rejects activation.
 The separate candidate authority gate reads signed DCA1/XPS1 from the exact
 bounded manifest; it never receives plaintext DCR1. It verifies this support
 against its own fresh DID2 checkpoint; a caller cannot supply a

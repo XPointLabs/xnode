@@ -95,6 +95,7 @@ internal static class ContactReplicaHttpEndpoint
             return Results.StatusCode(StatusCodes.Status504GatewayTimeout);
         }
         catch (Exception exception) when (exception is InvalidDataException
+            or FormatException
             or ArgumentException
             or UnauthorizedAccessException
             or InvalidOperationException

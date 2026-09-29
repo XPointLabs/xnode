@@ -206,6 +206,13 @@ if (did2ReplicaStageEnabled)
     builder.Services.AddSingleton<IContactServiceOpaqueDispatcher,
         DeepIdV2PreKeyOnionDispatcher>();
 }
+var did2ClaimOptions = builder.Configuration.GetSection("DeepIdV2PreKeyClaim")
+    .Get<DeepIdV2PreKeyClaimOptions>() ?? new();
+var did2ClaimEnabled = did2ClaimOptions.Validate(did2ReplicaStageEnabled,
+    did2NetworkPlacement?.Observer is not null, contactServicePlan.RuntimeActivation,
+    builder.Environment.IsDevelopment() || builder.Environment.IsEnvironment("UAT"));
+if (did2ClaimEnabled)
+    builder.Services.AddSingleton<DeepIdV2PreKeyClaimRuntime>();
 var replicaEndpointActive = contactServicePlan.MapReplicaEndpoint ||
     did2ReplicaStageEnabled;
 var groupControlServicePlan = productionGroupControlAuthority is null

@@ -22,7 +22,7 @@ namespace XNode.IntegrationTests.Runtime;
 /// transport/TLS, claim consumption, client composition or physical devices.
 /// </summary>
 internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
-    IDeepIdV2CurrentDirectoryProofSource, IDeepIdV2PreKeyPlacementSource,
+    IDeepIdV2CurrentDirectoryProofSource, IDeepIdV2PreKeyPlacementSource, IDeepIdV2PreKeyClaimPlacementSource,
     IOnionMonotonicClock
 {
     internal static readonly byte[] Network = Bytes(16, 0x11);
@@ -252,6 +252,17 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
             !serviceCapability.Span.SequenceEqual(service))
             throw new CryptographicException("Unrelated test publication placement.");
         return ValueTask.FromResult(Placement);
+    }
+
+    public ValueTask<ContactServicePlacementCapability> MintPreKeyClaimAsync(
+        ReadOnlyMemory<byte> serviceCapability, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!serviceCapability.Span.SequenceEqual(service)) throw new CryptographicException("Unrelated test claim placement.");
+        var placement = ContactServicePlacementFactory.Create(NetworkContext,
+            ContactServiceRequestKind.ClaimPreKey, serviceCapability);
+        return ValueTask.FromResult(ContactServicePlacementCapability.FromNetcodec(placement,
+            ContactServiceRequestKind.ClaimPreKey, serviceCapability, Freshness.TrustedUpperUnixSeconds));
     }
 
     public ValueTask<OnionMonotonicReading> ReadAsync(CancellationToken cancellationToken)

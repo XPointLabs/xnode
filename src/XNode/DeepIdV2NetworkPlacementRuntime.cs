@@ -170,14 +170,38 @@ internal interface IDeepIdV2ReceiveNetworkSource
         CancellationToken cancellationToken);
 }
 
+internal interface IDeepIdV2PreKeyClaimPlacementSource
+{
+    ValueTask<ContactServicePlacementCapability> MintPreKeyClaimAsync(
+        ReadOnlyMemory<byte> serviceCapability, CancellationToken cancellationToken);
+}
+
 internal sealed class DeepIdV2NetworkPlacementRuntime(
     IDeepIdV2CurrentDirectoryProofSource proofs,
     DeepIdV2NetworkAuthorityFileSource authoritySource,
     DeepIdV2NetworkClosureFileSource artifacts,
     FileDeepIdV2NetworkFloorStore floor,
-    IOnionMonotonicClock clock) : IDeepIdV2PreKeyPlacementSource, IDeepIdV2ReceiveNetworkSource
+    IOnionMonotonicClock clock) : IDeepIdV2PreKeyPlacementSource, IDeepIdV2ReceiveNetworkSource,
+    IDeepIdV2PreKeyClaimPlacementSource
 {
     private readonly SemaphoreSlim gate = new(1, 1);
+
+    public async ValueTask<ContactServicePlacementCapability> MintPreKeyClaimAsync(
+        ReadOnlyMemory<byte> serviceCapability, CancellationToken cancellationToken)
+    {
+        if (serviceCapability.Length != 32 || serviceCapability.Span.IndexOfAnyExcept((byte)0) < 0)
+            throw new ArgumentException("DID2 claim needs a nonzero service capability.", nameof(serviceCapability));
+        // Account-independent placement must precede capability-indexed lookup.
+        // Only the configured public observer, never the requester, selects this proof.
+        var observer = artifacts.Observer ?? throw new InvalidOperationException(
+            "DID2 claim placement requires the configured public observation credential.");
+        var (network, freshness) = await ReadNetworkAsync(observer, default, default,
+            cancellationToken).ConfigureAwait(false);
+        var placement = ContactServicePlacementFactory.Create(network,
+            ContactServiceRequestKind.ClaimPreKey, serviceCapability);
+        return ContactServicePlacementCapability.FromNetcodec(placement,
+            ContactServiceRequestKind.ClaimPreKey, serviceCapability, freshness.TrustedUpperUnixSeconds);
+    }
 
     public async ValueTask<ContactServicePlacementCapability>
         MintPreKeyPublicationAsync(ParsedDid2 publisher,
@@ -270,6 +294,8 @@ internal static class DeepIdV2NetworkPlacementHostComposition
         services.AddSingleton<IDeepIdV2PreKeyPlacementSource>(provider =>
             provider.GetRequiredService<DeepIdV2NetworkPlacementRuntime>());
         services.AddSingleton<IDeepIdV2ReceiveNetworkSource>(provider =>
+            provider.GetRequiredService<DeepIdV2NetworkPlacementRuntime>());
+        services.AddSingleton<IDeepIdV2PreKeyClaimPlacementSource>(provider =>
             provider.GetRequiredService<DeepIdV2NetworkPlacementRuntime>());
         services.AddHostedService<DeepIdV2NetworkPlacementHostedService>();
         return services;

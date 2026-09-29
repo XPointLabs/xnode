@@ -18,6 +18,49 @@ internal sealed partial class DeepIdV2InventoryCommitStore
     private const int MaximumClaimStateBytes = 96 * 1024 * 1024;
     private bool claimWriteUncertain;
 
+    /// <summary>Selected coordinator only; runtime authority must precede this local CAS.</summary>
+    internal DeepIdV2ClaimProposal PrepareNextClaim(ParsedXpk1V2 request,
+        ulong trustedLowerUnixSeconds, ulong trustedUpperUnixSeconds,
+        Func<byte[], byte[]> signNodeData)
+    {
+        lock (custodyGate)
+        {
+            EnsureAvailable();
+            ArgumentNullException.ThrowIfNull(request);
+            var inventory = ReadState().LastOrDefault()?.Publication ??
+                throw new InvalidOperationException("DID2 service has no retained inventory.");
+            var reservations = ReadClaimReservations();
+            var generation = U64(inventory.Manifest.Field(5).Span);
+            var prior = reservations.SingleOrDefault(item =>
+                U64(item.Manifest.Field(5).Span) == generation &&
+                Fixed(item.Request.Field(2).Span, request.Field(2).Span));
+            if (prior is not null)
+            {
+                if (!Fixed(prior.Request.CanonicalBytes.Span, request.CanonicalBytes.Span))
+                    throw new DeepIdV2ClaimConflictException(prior.Request.RequestHash.Span, request.RequestHash.Span);
+                return Proposal(prior);
+            }
+            // Do not skip an uncertain earlier generation at the other replica.
+            // Reconcile that exact operation instead of allowing a new selection.
+            if (reservations.Any(item => item.CommittedResult is null))
+                throw new IOException("DID2 claim has an earlier unresolved reservation.");
+            var reserved = reservations.Where(item => item.Offering.Kind == Dpk2PrekeyKind.OneTime)
+                .Select(item => Convert.ToHexString(item.Offering.OneTimePrekeyId.Span))
+                .ToHashSet(StringComparer.Ordinal);
+            var offering = inventory.OneTimeMembers.FirstOrDefault(member =>
+                member.NotBefore <= trustedLowerUnixSeconds && member.ExpiresAt > trustedUpperUnixSeconds &&
+                !reserved.Contains(Convert.ToHexString(member.OneTimePrekeyId.Span))) ?? inventory.LastResortMember;
+            var counter = offering.Kind == Dpk2PrekeyKind.OneTime ? (ushort)0 : checked((ushort)(1 +
+                reservations.Count(item => U64(item.Manifest.Field(5).Span) == generation &&
+                    item.Offering.Kind == Dpk2PrekeyKind.LastResort)));
+            var next = new ClaimReservation(request, offering, inventory.Manifest,
+                reservations.Length == 0 ? 1UL : checked(reservations[^1].Generation + 1), counter);
+            _ = ReserveClaimProposalCore(request, offering, next.Manifest, next.Generation,
+                counter, trustedLowerUnixSeconds, trustedUpperUnixSeconds, signNodeData);
+            return Proposal(next);
+        }
+    }
+
     /// <summary>
     /// Durably reserves the exact externally selected proposal. Pending keys
     /// stay consumed after restart/expiry/lost responses; they are never freed
@@ -129,6 +172,18 @@ internal sealed partial class DeepIdV2InventoryCommitStore
             }
             reservations[index] = proposal;
             return WriteClaimReservations(reservations, signNodeData)[index].CommittedResult!.ToArray();
+        }
+    }
+
+    /// <summary>Runtime calls only after independently verified peer completion
+    /// and local durable read-back disagree. Preserve both journals for repair.</summary>
+    internal void LatchClaimCompletionFork()
+    {
+        lock (custodyGate)
+        {
+            EnsureAvailable();
+            WriteFile("fork.marker", [1]);
+            throw new InvalidDataException("DID2 completed claim replicas diverged; custody is fork-latched.");
         }
     }
 
@@ -337,6 +392,10 @@ internal sealed partial class DeepIdV2InventoryCommitStore
             item.Request.CanonicalBytes.Span, item.Offering.CanonicalBytes.Span,
             item.Manifest.CanonicalBytes.Span, item.Generation, item.Counter));
 
+    private static DeepIdV2ClaimProposal Proposal(ClaimReservation item) => new(
+        item.Request, item.Offering, item.Manifest, item.Generation, item.Counter,
+        item.CommittedResult ?? []);
+
     private sealed record ClaimReservation(ParsedXpk1V2 Request, ParsedDpk2V2 Offering,
         ParsedXpi1V2 Manifest, ulong Generation, ushort Counter, byte[]? CommittedResult = null);
 
@@ -368,6 +427,30 @@ internal sealed partial class DeepIdV2InventoryCommitStore
             generation = item.Generation;
         }
     }
+}
+
+internal sealed class DeepIdV2ClaimProposal(ParsedXpk1V2 request, ParsedDpk2V2 offering,
+    ParsedXpi1V2 manifest, ulong generation, ushort counter, ReadOnlyMemory<byte> completedResult = default)
+{
+    private readonly byte[] completed = completedResult.ToArray();
+    internal ParsedXpk1V2 Request { get; } = request;
+    internal ParsedDpk2V2 Offering { get; } = offering;
+    internal ParsedXpi1V2 Manifest { get; } = manifest;
+    internal ulong Generation { get; } = generation;
+    internal ushort Counter { get; } = counter;
+    internal ReadOnlyMemory<byte> CompletedResult => completed.ToArray();
+}
+
+internal sealed class DeepIdV2ClaimConflictException : InvalidOperationException
+{
+    private readonly byte[] evidence;
+    internal DeepIdV2ClaimConflictException(ReadOnlySpan<byte> previous, ReadOnlySpan<byte> current)
+        : base("DID2 claim operation has a different exact request.")
+    {
+        var bytes = new byte[64]; previous.CopyTo(bytes); current.CopyTo(bytes.AsSpan(32));
+        evidence = SHA256.HashData(bytes);
+    }
+    internal ReadOnlyMemory<byte> EvidenceHash => evidence.ToArray();
 }
 
 /// <summary>Local reservation read-back, never a two-replica claim receipt.</summary>

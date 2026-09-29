@@ -36,6 +36,7 @@ internal sealed class DeepIdV2ReplicaStageReceiver : IContactReplicaCommandRecei
     private readonly IMailboxStorageSecurity security;
     private readonly IMailboxDurabilityBarrier durability;
     private readonly DeepIdV2PublicationFinalCommitter? finalCommitter;
+    private readonly DeepIdV2PreKeyClaimRuntime? claims;
     private readonly string root;
     private readonly SemaphoreSlim stageGate = new(1, 1);
 
@@ -43,13 +44,15 @@ internal sealed class DeepIdV2ReplicaStageReceiver : IContactReplicaCommandRecei
         IDeepIdV2PreKeyPlacementSource placements,
         IMailboxStorageSecurity security,
         IMailboxDurabilityBarrier durability,
-        DeepIdV2PublicationFinalCommitter? finalCommitter = null)
+        DeepIdV2PublicationFinalCommitter? finalCommitter = null,
+        DeepIdV2PreKeyClaimRuntime? claims = null)
     {
         this.node = node ?? throw new ArgumentNullException(nameof(node));
         this.placements = placements ?? throw new ArgumentNullException(nameof(placements));
         this.security = security ?? throw new ArgumentNullException(nameof(security));
         this.durability = durability ?? throw new ArgumentNullException(nameof(durability));
         this.finalCommitter = finalCommitter;
+        this.claims = claims;
         root = Path.Combine(Path.GetFullPath(node.DataDirectory),
             "did2-prekey-stage");
         RejectExistingLinks(root);
@@ -62,6 +65,11 @@ internal sealed class DeepIdV2ReplicaStageReceiver : IContactReplicaCommandRecei
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(command);
+        if (command.Operation is ContactReplicaRpcOperation.CoordinateDid2PreKeyClaim or
+            ContactReplicaRpcOperation.PrepareDid2PreKeyClaim or ContactReplicaRpcOperation.CompleteDid2PreKeyClaim or
+            ContactReplicaRpcOperation.ReadDid2PreKeyInventoryCommit)
+            return await (claims ?? throw new InvalidOperationException("DID2 claim runtime is not enabled."))
+                .ReceiveAsync(command, authenticatedSender, cancellationToken).ConfigureAwait(false);
         if (command.Operation is not
                 (ContactReplicaRpcOperation.StageDid2PreKeyPublication or
                  ContactReplicaRpcOperation.CommitDid2PreKeyPublication) ||
@@ -157,6 +165,10 @@ internal sealed class DeepIdV2ReplicaStageReceiver : IContactReplicaCommandRecei
             requireExactCommitReplay: false, authenticatedSender: null,
             cancellationToken).ConfigureAwait(false);
     }
+
+    internal ValueTask<ReadOnlyMemory<byte>> ReceiveClaimTerminalAsync(ReadOnlyMemory<byte> exactRequest,
+        CancellationToken cancellationToken) => (claims ?? throw new ContactServiceUnavailableException(
+            "DID2 claim runtime is not enabled.")).ReceiveTerminalAsync(exactRequest, cancellationToken);
 
     private async ValueTask<byte[]> StageVerifiedAsync(
         ParsedXpp1V2Fragment fragment, ParsedDid2 publisher,
@@ -382,8 +394,8 @@ internal static class DeepIdV2ReplicaStagePayloadCodec
 
 /// <summary>
 /// DID2-only ONION terminal adapter. The anonymous exit may stage public
-/// bounded bytes only on a freshly selected local replica; every other
-/// ContactResolve operation remains unavailable in this UAT composition.
+/// bounded bytes or use the opt-in V2 claim owner on a freshly selected local
+/// replica. Other ContactResolve operations remain unavailable here.
 /// </summary>
 internal sealed class DeepIdV2PreKeyOnionDispatcher(
     DeepIdV2ReplicaStageReceiver receiver) : IContactServiceOpaqueDispatcher
@@ -393,6 +405,8 @@ internal sealed class DeepIdV2PreKeyOnionDispatcher(
         ReadOnlyMemory<byte> canonicalRequest,
         CancellationToken cancellationToken)
     {
+        if (operation == ContactServiceOperation.ClaimPreKey)
+            return receiver.ReceiveClaimTerminalAsync(canonicalRequest, cancellationToken);
         if (operation != ContactServiceOperation.PublishPreKeyInventory)
             throw new ContactServiceUnavailableException(
                 "Only DID2 V2 pre-key publication is enabled at this ONION exit.");
