@@ -74,7 +74,7 @@ internal sealed class PrivacyRoutingProductionCapability : IHostedService, IAsyn
     private Task? refreshTask;
     private OnionHostReceiveBinding? verifiedBinding;
     private long bindingCreatedTimestamp;
-    private DeepIdV2DirectoryProofUnavailableException? proofBackoff;
+    private Exception? proofBackoff;
     private long proofBackoffTimestamp;
     private int stopped;
     private int started;
@@ -154,9 +154,11 @@ internal sealed class PrivacyRoutingProductionCapability : IHostedService, IAsyn
         await refreshGate.WaitAsync(request.Token).ConfigureAwait(false);
         try
         {
+            request.Token.ThrowIfCancellationRequested();
             if (proofBackoff is { } unavailable &&
                 Stopwatch.GetElapsedTime(proofBackoffTimestamp) <
-                    (unavailable.RetryAfter is { } retryAfter && retryAfter > refreshInterval
+                    (unavailable is DeepIdV2DirectoryProofUnavailableException { RetryAfter: { } retryAfter }
+                        && retryAfter > refreshInterval
                         ? retryAfter : refreshInterval))
                 throw unavailable;
             var retained = Volatile.Read(ref verifiedBinding);
@@ -191,7 +193,8 @@ internal sealed class PrivacyRoutingProductionCapability : IHostedService, IAsyn
             Volatile.Write(ref verifiedBinding, binding);
             return binding;
         }
-        catch (DeepIdV2DirectoryProofUnavailableException exception)
+        catch (Exception exception) when (exception is IOException or HttpRequestException or TimeoutException ||
+            exception is OperationCanceledException && !request.IsCancellationRequested)
         {
             // Repeated local callers must not renew or bypass the same delay.
             // It is a scheduling hint only; no authority survives the failure.

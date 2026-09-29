@@ -246,6 +246,35 @@ public sealed class PrivacyRoutingRuntimeTests
         await capability.StopAsync(default);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DependencyOutageBackoffCannotBeBypassedByLocalTraffic(bool timeout)
+    {
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var configuration = EnabledTestConfiguration();
+        var source = new RefreshBindingSource(Binding(configuration, fixture.NetworkContext))
+            { Fail = true, TimeoutFailure = timeout };
+        await using var capability = new PrivacyRoutingProductionCapability(configuration, source,
+            TimeSpan.FromSeconds(1));
+        await capability.StartAsync(default);
+        Assert.False(capability.IsVerified);
+        for (var index = 0; index < 20; index++)
+        {
+            if (timeout)
+                await Assert.ThrowsAsync<TimeoutException>(
+                    async () => await capability.GetCurrentAsync(default));
+            else
+                await Assert.ThrowsAsync<HttpRequestException>(
+                    async () => await capability.GetCurrentAsync(default));
+        }
+        Assert.Equal(1, source.Calls);
+        source.Fail = false;
+        await WaitUntilAsync(() => capability.IsVerified);
+        Assert.True(source.Calls >= 2);
+        await capability.StopAsync(default);
+    }
+
     [Fact]
     public async Task TrafficReusesOnlyTheCurrentBoundedBindingWithoutAdditionalProofRequests()
     {

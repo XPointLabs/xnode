@@ -30,10 +30,12 @@ Startup without a fresh binding because of a Registry/network outage, a bounded
 HTTP timeout or expired authority keeps the host alive but unready; the same
 worker retries without traffic or an account/key reset. Configuration and
 opaque-key-handle mismatches still reject startup. Persisted corrupt/forked
-state never becomes usable through retry. A typed 429/503 schedules a monotonic
-pause of at least the refresh interval, honoring positive `Retry-After` deltas
-up to the transport's five-minute bound. Traffic shares this gate and cannot
-bypass or extend the same pause; retry creates a new proof nonce. This is a local runtime contract,
+state never becomes usable through retry. Transport failure, timeout and
+dependency-owned cancellation schedule a monotonic pause of at least the
+refresh interval. A typed 429/503 may lengthen it with positive `Retry-After`
+deltas up to the transport's five-minute bound. Caller/host cancellation remains
+prompt. Traffic shares this gate and cannot bypass or extend the same pause;
+retry creates a new proof nonce. This is a local runtime contract,
 not evidence that automated trusted-time/view/key renewal or the Docker soak
 gate has passed.
 
