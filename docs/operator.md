@@ -1,5 +1,15 @@
 # Operator Guide
 
+## Verification tooling
+
+Profile-generator restore/closure tests use native `git` and PowerShell on
+each CI operating system. Windows retains Windows PowerShell by default;
+Linux uses `pwsh`. A local PowerShell 7 regression may set `DEEP_PWSH` to an
+explicit executable for these test subprocesses. This affects the harness,
+not node authority, protocol pins or production configuration. Temporary
+Git isolation overrides are removed when originally absent; an empty override
+does not satisfy the independent snapshot-authority check.
+
 ## Architecture
 
 XNode runs the Deep-native privacy relay and mailbox exit runtime in .NET and supervises Xray only for VLESS ingress. Xray forwards accepted public traffic to the bounded managed-ingress HTTP/2 surface.

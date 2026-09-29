@@ -174,7 +174,8 @@ public sealed class Dnp1ProtocolClosureTests
             "Verify-Dnp1ProtocolClosure.ps1");
         var startInfo = new ProcessStartInfo
         {
-            FileName = OperatingSystem.IsWindows() ? "powershell.exe" : "pwsh",
+            FileName = Environment.GetEnvironmentVariable("DEEP_PWSH") ??
+                (OperatingSystem.IsWindows() ? "powershell.exe" : "pwsh"),
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
@@ -182,10 +183,13 @@ public sealed class Dnp1ProtocolClosureTests
         };
         startInfo.ArgumentList.Add("-NoProfile");
         startInfo.ArgumentList.Add("-NonInteractive");
-        startInfo.ArgumentList.Add("-File");
-        startInfo.ArgumentList.Add(script);
-        startInfo.ArgumentList.Add("-RepositoryRoot");
-        startInfo.ArgumentList.Add(repositoryRoot);
+        // Assert the actual unformatted rejection reason. PowerShell's default
+        // terminal-width error view can truncate it on a Linux runner.
+        startInfo.ArgumentList.Add("-Command");
+        startInfo.ArgumentList.Add("$ErrorActionPreference='Stop'; try { & '" +
+            script.Replace("'", "''", StringComparison.Ordinal) + "' -RepositoryRoot '" +
+            repositoryRoot.Replace("'", "''", StringComparison.Ordinal) +
+            "' } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }");
         using var process = Process.Start(startInfo) ??
             throw new InvalidOperationException("Unable to start the DNP1 closure gate.");
         var output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();

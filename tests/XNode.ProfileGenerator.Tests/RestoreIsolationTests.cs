@@ -79,7 +79,7 @@ public sealed class RestoreIsolationTests
             $"New-ExactGitSourceSnapshot -RepositoryRoot '{Quote(repository.Root)}' " +
             $"-DestinationRoot '{Quote(destination)}' -ExpectedHead '{head}' " +
             $"-ExpectedTree '{tree}'");
-        Assert.Equal(0, result.ExitCode);
+        Assert.True(result.ExitCode == 0, result.Output);
         Assert.Equal("tracked", File.ReadAllText(Path.Combine(destination, "tracked.txt")));
         Assert.Equal(
             "package",
@@ -317,7 +317,8 @@ public sealed class RestoreIsolationTests
     {
         using var process = Process.Start(new ProcessStartInfo
         {
-            FileName = "powershell.exe",
+            FileName = Environment.GetEnvironmentVariable("DEEP_PWSH") ??
+                (OperatingSystem.IsWindows() ? "powershell.exe" : "pwsh"),
             Arguments = $"-NoProfile -NonInteractive -Command \"& {{ {command} }}\"",
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -358,7 +359,7 @@ public sealed class RestoreIsolationTests
     {
         var startInfo = new ProcessStartInfo
         {
-            FileName = "git.exe",
+            FileName = OperatingSystem.IsWindows() ? "git.exe" : "git",
             WorkingDirectory = repositoryRoot,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -424,7 +425,7 @@ public sealed class RestoreIsolationTests
         {
             var startInfo = new ProcessStartInfo
             {
-                FileName = "git.exe",
+                FileName = OperatingSystem.IsWindows() ? "git.exe" : "git",
                 WorkingDirectory = Root,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,

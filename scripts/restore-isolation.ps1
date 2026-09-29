@@ -244,7 +244,14 @@ function New-ExactGitSourceSnapshot {
     }
     finally {
         foreach ($name in $environmentNames) {
-            [Environment]::SetEnvironmentVariable($name, $previous[$name], 'Process')
+            # PowerShell 7.5/.NET 9 preserves an empty environment entry.
+            # An originally absent authority override must be absent again,
+            # not merely empty, before the independent snapshot recheck.
+            if ($null -eq $previous[$name]) {
+                Remove-Item -LiteralPath ('Env:' + $name) -ErrorAction SilentlyContinue
+            } else {
+                [Environment]::SetEnvironmentVariable($name, $previous[$name], 'Process')
+            }
         }
     }
 
