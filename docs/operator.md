@@ -16,12 +16,19 @@ This is not unlimited unattended key generation or TLS rotation.
 
 The background receive capability reports only closed diagnostic categories,
 not exception messages, recipients, key paths or proof bytes. The general
-development health exemption is not ONION evidence; `deep-dev` requires the
+development health exemption applies only when privacy is explicitly disabled.
+When privacy is enabled, missing current verified capability returns readiness
+503 even in Development; `deep-dev` requires the
 actual `privacyRouting=ready` result. See
 [Deep DEV](../../deep-devops/docs/DEEP_DEV.md),
 [DR-0014](../../docs/survival-program/decisions/DR-0014-directory-historical-catchup.md)
 and [DR-0015](../../docs/survival-program/decisions/DR-0015-delegated-operational-renewal.md)
 for the normative contracts and retained-custody operations.
+
+Existing cleartext management/legacy peer listeners explicitly use HTTP/1.1,
+matching Kestrel's actual previous behavior without a misleading HTTP/2 warning.
+TLS listeners keep ALPN HTTP/1.1 + HTTP/2; dedicated privacy/managed-ingress
+HTTP/2 listeners and their authentication/proxy trust checks are unchanged.
 
 ## Verification tooling
 

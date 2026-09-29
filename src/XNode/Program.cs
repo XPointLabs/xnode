@@ -535,7 +535,7 @@ app.MapGet("/health/ready", (
     var mailboxClientReady =
         !mailboxClientActivationPlan.RoutesMapped || mailboxClient.Ready;
     var privacyReady = XNodeReadinessPolicy.IsPrivacyReady(
-        privacy.Enabled && privacyRuntime.ProductionCapabilityAvailable,
+        privacy.Enabled, privacyRuntime.ProductionCapabilityAvailable,
         app.Environment.IsDevelopment());
     var productionMailboxAuthorityReady =
         !productionMailboxAuthorityOptions.Enabled

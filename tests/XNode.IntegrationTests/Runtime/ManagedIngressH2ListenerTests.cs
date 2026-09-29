@@ -26,10 +26,21 @@ public sealed class ManagedIngressH2ListenerTests
         Assert.Null(plan.PrivacyPeer);
         Assert.Empty(plan.ManagedIngressTrustedProxyAddresses);
         Assert.Empty(plan.PrivacyPeerTrustedProxyAddresses);
-        Assert.Equal(HttpProtocols.Http1AndHttp2, plan.Api.Protocols);
-        Assert.Equal(HttpProtocols.Http1AndHttp2, plan.Peer.Protocols);
+        Assert.Equal(HttpProtocols.Http1, plan.Api.Protocols);
+        Assert.Equal(HttpProtocols.Http1, plan.Peer.Protocols);
         Assert.Equal(new Uri(node.ApiListenUrl).Port, plan.ManagedIngressPort);
         Assert.Equal(new Uri(node.PeerRpcListenUrl).Port, plan.PrivacyPeerPort);
+    }
+
+    [Fact]
+    public void ExistingTlsListenersRetainAlpnHttp2AndHttp1()
+    {
+        var plan = NodeListenerConfiguration.Create(new RouterNodeOptions {
+            ApiListenUrl = "https://127.0.0.1:8443",
+            PeerRpcListenUrl = "https://127.0.0.1:8444",
+        });
+        Assert.Equal(HttpProtocols.Http1AndHttp2, plan.Api.Protocols);
+        Assert.Equal(HttpProtocols.Http1AndHttp2, plan.Peer.Protocols);
     }
 
     [Fact]

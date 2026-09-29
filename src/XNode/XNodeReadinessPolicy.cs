@@ -13,8 +13,8 @@ internal sealed record RequiredTerminalServicesStatus(
 
 internal static class XNodeReadinessPolicy
 {
-    internal static bool IsPrivacyReady(bool privacyEnabled, bool isDevelopment) =>
-        privacyEnabled || isDevelopment;
+    internal static bool IsPrivacyReady(bool privacyEnabled, bool capabilityAvailable, bool isDevelopment) =>
+        privacyEnabled ? capabilityAvailable : isDevelopment;
 
     internal static RequiredTerminalServicesStatus RequiredTerminals(
         RequiredTerminalServicesOptions options,

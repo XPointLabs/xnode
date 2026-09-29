@@ -3,18 +3,22 @@ namespace XNode.IntegrationTests;
 public sealed class XNodeReadinessPolicyTests
 {
     [Theory]
-    [InlineData(true, false, true)]
-    [InlineData(true, true, true)]
-    [InlineData(false, true, true)]
-    [InlineData(false, false, false)]
-    public void Privacy_readiness_is_optional_only_in_development(
+    [InlineData(true, true, false, true)]
+    [InlineData(true, true, true, true)]
+    [InlineData(true, false, false, false)]
+    [InlineData(true, false, true, false)]
+    [InlineData(false, false, true, true)]
+    [InlineData(false, false, false, false)]
+    [InlineData(false, true, false, false)]
+    public void Enabled_privacy_fails_closed_even_in_development(
         bool privacyEnabled,
+        bool capabilityAvailable,
         bool isDevelopment,
         bool expected)
     {
         Assert.Equal(
             expected,
-            XNodeReadinessPolicy.IsPrivacyReady(privacyEnabled, isDevelopment));
+            XNodeReadinessPolicy.IsPrivacyReady(privacyEnabled, capabilityAvailable, isDevelopment));
     }
 
     [Theory]

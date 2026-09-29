@@ -148,7 +148,11 @@ internal static class NodeListenerConfiguration
                 $"{configurationName} must be an absolute HTTP(S) listener URL.");
         }
 
-        return CreateBinding(uri, HttpProtocols.Http1AndHttp2);
+        // Mixed H1/H2 requires TLS ALPN. Cleartext management/legacy peer
+        // listeners already ran H1 only in Kestrel; explicit H1 avoids a false
+        // H2 advertisement. Dedicated authenticated H2 listeners are unchanged.
+        return CreateBinding(uri, uri.Scheme == Uri.UriSchemeHttps
+            ? HttpProtocols.Http1AndHttp2 : HttpProtocols.Http1);
     }
 
     private static NodeListenerBinding ParseDedicatedH2Listener(
