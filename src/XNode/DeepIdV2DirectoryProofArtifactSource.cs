@@ -6,6 +6,23 @@ using Deep.Protocol.ApplicationCore;
 
 namespace XNode;
 
+internal sealed class DeepIdV2DirectoryProofUnavailableException : IOException
+{
+    internal DeepIdV2DirectoryProofUnavailableException(HttpStatusCode statusCode, TimeSpan? retryAfter)
+        : base("The DID2 directory proof authority is unavailable.")
+    {
+        if (statusCode is not (HttpStatusCode.TooManyRequests or HttpStatusCode.ServiceUnavailable))
+            throw new ArgumentOutOfRangeException(nameof(statusCode));
+        if (retryAfter is { } delay && (delay < TimeSpan.Zero || delay > TimeSpan.FromMinutes(5)))
+            throw new ArgumentOutOfRangeException(nameof(retryAfter));
+        StatusCode = statusCode;
+        RetryAfter = retryAfter;
+    }
+
+    internal HttpStatusCode StatusCode { get; }
+    internal TimeSpan? RetryAfter { get; }
+}
+
 /// <summary>
 /// Fetches only raw, request-bound DID2 directory artifacts. A successful HTTP
 /// exchange is not directory freshness or publication authority. Production DI
@@ -83,12 +100,19 @@ internal sealed class HttpsDeepIdV2DirectoryProofArtifactSource :
 
     private int RequireResponse(HttpResponseMessage response)
     {
-        if (response.StatusCode != HttpStatusCode.OK)
-            throw new IOException("The DID2 directory proof authority is unavailable.");
         if (response.RequestMessage?.RequestUri is not { } actual ||
             Uri.Compare(actual, endpoint, UriComponents.AbsoluteUri,
                 UriFormat.UriEscaped, StringComparison.Ordinal) != 0)
             throw new InvalidDataException("The DID2 proof endpoint changed.");
+        if (response.StatusCode is HttpStatusCode.TooManyRequests or HttpStatusCode.ServiceUnavailable)
+        {
+            var delta = response.Headers.RetryAfter?.Delta;
+            TimeSpan? delay = delta is { } value && value > TimeSpan.Zero
+                ? (value > TimeSpan.FromMinutes(5) ? TimeSpan.FromMinutes(5) : value) : null;
+            throw new DeepIdV2DirectoryProofUnavailableException(response.StatusCode, delay);
+        }
+        if (response.StatusCode != HttpStatusCode.OK)
+            throw new IOException("The DID2 directory proof authority is unavailable.");
         var contentType = response.Content.Headers.ContentType;
         if (contentType is null || contentType.Parameters.Count != 0 ||
             !string.Equals(contentType.MediaType,

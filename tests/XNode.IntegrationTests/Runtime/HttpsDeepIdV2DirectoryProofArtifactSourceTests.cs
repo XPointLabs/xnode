@@ -42,8 +42,50 @@ public sealed class HttpsDeepIdV2DirectoryProofArtifactSourceTests
         var source = new HttpsDeepIdV2DirectoryProofArtifactSource(
             client, "https://registry.example");
 
-        await Assert.ThrowsAsync<IOException>(async () =>
+        await Assert.ThrowsAsync<DeepIdV2DirectoryProofUnavailableException>(async () =>
             await source.FetchAsync(lookup, did2, Nonce, Boot, 123, default));
+    }
+
+    [Theory]
+    [InlineData(429, "12", 12)]
+    [InlineData(503, "3600", 300)]
+    [InlineData(503, "0", 0)]
+    [InlineData(429, "-1", 0)]
+    [InlineData(429, "invalid", 0)]
+    [InlineData(429, "Wed, 21 Oct 2015 07:28:00 GMT", 0)]
+    public async Task UnavailableResponseHasBoundedDeltaHintAndDoesNotRetryTheNonce(
+        int status, string hint, int seconds)
+    {
+        var did2 = Did2();
+        var calls = 0;
+        using var client = new HttpClient(new DelegateHandler(request =>
+        {
+            calls++;
+            var response = new HttpResponseMessage((HttpStatusCode)status) { RequestMessage = request };
+            response.Headers.TryAddWithoutValidation("Retry-After", hint);
+            return Task.FromResult(response);
+        }));
+        var source = new HttpsDeepIdV2DirectoryProofArtifactSource(client, "https://registry.example");
+        var error = await Assert.ThrowsAsync<DeepIdV2DirectoryProofUnavailableException>(async () =>
+            await source.FetchAsync(Lookup(did2), did2, Nonce, Boot, 123, default));
+        Assert.Equal((HttpStatusCode)status, error.StatusCode);
+        Assert.Equal(seconds == 0 ? (TimeSpan?)null : TimeSpan.FromSeconds(seconds), error.RetryAfter);
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
+    public async Task RedirectedThrottlingResponseCannotInstallBackoff()
+    {
+        var did2 = Did2();
+        using var client = new HttpClient(new DelegateHandler(_ => Task.FromResult(
+            new HttpResponseMessage(HttpStatusCode.TooManyRequests)
+            {
+                RequestMessage = new HttpRequestMessage(HttpMethod.Post,
+                    "https://other.example/api/v2/account-directory/proofs")
+            })));
+        var source = new HttpsDeepIdV2DirectoryProofArtifactSource(client, "https://registry.example");
+        await Assert.ThrowsAsync<InvalidDataException>(async () =>
+            await source.FetchAsync(Lookup(did2), did2, Nonce, Boot, 123, default));
     }
 
     [Fact]

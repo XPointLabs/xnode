@@ -124,12 +124,15 @@ public sealed class PrivacyRoutingRuntimeTests
         }
         var binding = Binding(configuration, network, stale ? null : Bytes(0x55));
         if (stale) await Task.Delay(TimeSpan.FromMilliseconds(1_100));
-        var capability = new PrivacyRoutingProductionCapability(
+        await using var capability = new PrivacyRoutingProductionCapability(
             configuration,
             new FixedBindingSource(binding));
 
-        await Assert.ThrowsAnyAsync<Exception>(async () =>
-            await capability.StartAsync(default));
+        if (stale)
+            await capability.StartAsync(default); // Alive, never ready on expired evidence.
+        else
+            await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await capability.StartAsync(default)); // Wrong configured key is not retryable.
 
         Assert.False(capability.IsVerified);
     }
@@ -175,6 +178,72 @@ public sealed class PrivacyRoutingRuntimeTests
         Assert.False(capability.IsVerified);
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
             await capability.GetCurrentAsync(default));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task StartupDuringAuthorityOutageRecoversWithoutRestartOrTraffic(bool timeout)
+    {
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var configuration = EnabledTestConfiguration();
+        var source = new RefreshBindingSource(Binding(configuration, fixture.NetworkContext))
+            { Fail = true, TimeoutFailure = timeout };
+        await using var capability = new PrivacyRoutingProductionCapability(configuration, source,
+            TimeSpan.FromMilliseconds(20));
+        await capability.StartAsync(default);
+        Assert.False(capability.IsVerified);
+        await WaitUntilAsync(() => source.Calls >= 3);
+        Assert.False(capability.IsVerified);
+        source.Fail = false;
+        await WaitUntilAsync(() => capability.IsVerified);
+        for (var cycle = 0; cycle < 5; cycle++)
+        {
+            source.Fail = true;
+            await WaitUntilAsync(() => !capability.IsVerified);
+            source.Fail = false;
+            await WaitUntilAsync(() => capability.IsVerified);
+        }
+        await capability.StopAsync(default);
+        Assert.False(capability.IsVerified);
+    }
+
+    [Fact]
+    public async Task CancelledStartupDoesNotStartTheRecoveryLoop()
+    {
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var configuration = EnabledTestConfiguration();
+        var source = new RefreshBindingSource(Binding(configuration, fixture.NetworkContext));
+        await using var capability = new PrivacyRoutingProductionCapability(configuration, source,
+            TimeSpan.FromMilliseconds(20));
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => capability.StartAsync(cancelled.Token));
+        var calls = source.Calls;
+        await Task.Delay(60);
+        Assert.Equal(calls, source.Calls);
+        Assert.False(capability.IsVerified);
+    }
+
+    [Fact]
+    public async Task ThrottlingBackoffSurvivesLocalTrafficWithoutExtendingOrBypassingDelay()
+    {
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var configuration = EnabledTestConfiguration();
+        var source = new RefreshBindingSource(Binding(configuration, fixture.NetworkContext))
+            { Fail = true, RateLimited = true };
+        await using var capability = new PrivacyRoutingProductionCapability(configuration, source,
+            TimeSpan.FromMilliseconds(20));
+        await capability.StartAsync(default);
+        Assert.False(capability.IsVerified);
+        source.Fail = false;
+        for (var index = 0; index < 20; index++)
+            await Assert.ThrowsAsync<DeepIdV2DirectoryProofUnavailableException>(
+                async () => await capability.GetCurrentAsync(default));
+        Assert.Equal(1, source.Calls);
+        await WaitUntilAsync(() => capability.IsVerified);
+        Assert.True(source.Calls >= 2);
+        await capability.StopAsync(default);
     }
 
     [Fact]
@@ -242,6 +311,8 @@ public sealed class PrivacyRoutingRuntimeTests
         private int calls;
         internal int Calls => Volatile.Read(ref calls);
         internal volatile bool Fail;
+        internal bool TimeoutFailure { get; init; }
+        internal bool RateLimited { get; init; }
         internal bool BlockRefresh { get; init; }
         internal bool RefreshCancelled { get; private set; }
         internal TaskCompletionSource RefreshEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -255,7 +326,14 @@ public sealed class PrivacyRoutingRuntimeTests
                 catch (OperationCanceledException) { RefreshCancelled = true; throw; }
             }
             cancellationToken.ThrowIfCancellationRequested();
-            if (Fail) throw new HttpRequestException("Closed test refresh failure.");
+            if (Fail)
+            {
+                if (RateLimited)
+                    throw new DeepIdV2DirectoryProofUnavailableException(
+                        System.Net.HttpStatusCode.TooManyRequests, TimeSpan.FromSeconds(1));
+                if (TimeoutFailure) throw new TimeoutException("Closed test refresh timeout.");
+                throw new HttpRequestException("Closed test refresh failure.");
+            }
             return binding;
         }
     }

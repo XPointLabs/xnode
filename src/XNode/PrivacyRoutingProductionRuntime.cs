@@ -74,6 +74,8 @@ internal sealed class PrivacyRoutingProductionCapability : IHostedService, IAsyn
     private Task? refreshTask;
     private OnionHostReceiveBinding? verifiedBinding;
     private long bindingCreatedTimestamp;
+    private DeepIdV2DirectoryProofUnavailableException? proofBackoff;
+    private long proofBackoffTimestamp;
     private int stopped;
     private int started;
     private int disposed;
@@ -111,7 +113,22 @@ internal sealed class PrivacyRoutingProductionCapability : IHostedService, IAsyn
         {
             return;
         }
-        _ = await ReadCurrentAsync(forceRefresh: true, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            _ = await ReadCurrentAsync(forceRefresh: true, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is IOException or HttpRequestException or TimeoutException or
+            CryptographicException or OnionBoundaryException or OperationCanceledException)
+        {
+            // Dependency loss or expired authority is an unavailable capability,
+            // not a fatal host startup. Keep mutations closed and let the same
+            // bounded fresh-proof loop recover; never revive a retained binding.
+            Volatile.Write(ref verifiedBinding, null);
+        }
         refreshTask = RefreshUntilStoppedAsync();
     }
 
@@ -137,6 +154,11 @@ internal sealed class PrivacyRoutingProductionCapability : IHostedService, IAsyn
         await refreshGate.WaitAsync(request.Token).ConfigureAwait(false);
         try
         {
+            if (proofBackoff is { } unavailable &&
+                Stopwatch.GetElapsedTime(proofBackoffTimestamp) <
+                    (unavailable.RetryAfter is { } retryAfter && retryAfter > refreshInterval
+                        ? retryAfter : refreshInterval))
+                throw unavailable;
             var retained = Volatile.Read(ref verifiedBinding);
             if (!forceRefresh && retained is not null &&
                 Stopwatch.GetElapsedTime(bindingCreatedTimestamp) < refreshInterval)
@@ -165,8 +187,21 @@ internal sealed class PrivacyRoutingProductionCapability : IHostedService, IAsyn
             if (Volatile.Read(ref stopped) != 0)
                 throw new OperationCanceledException(lifetime.Token);
             bindingCreatedTimestamp = Stopwatch.GetTimestamp();
+            proofBackoff = null;
             Volatile.Write(ref verifiedBinding, binding);
             return binding;
+        }
+        catch (DeepIdV2DirectoryProofUnavailableException exception)
+        {
+            // Repeated local callers must not renew or bypass the same delay.
+            // It is a scheduling hint only; no authority survives the failure.
+            if (!ReferenceEquals(proofBackoff, exception))
+            {
+                proofBackoff = exception;
+                proofBackoffTimestamp = Stopwatch.GetTimestamp();
+            }
+            Volatile.Write(ref verifiedBinding, null);
+            throw;
         }
         catch
         {
@@ -186,7 +221,7 @@ internal sealed class PrivacyRoutingProductionCapability : IHostedService, IAsyn
                 try { _ = await ReadCurrentAsync(forceRefresh: true, lifetime.Token).ConfigureAwait(false); }
                 catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { break; }
                 catch (Exception exception) when (exception is IOException or InvalidOperationException or
-                    HttpRequestException or UnauthorizedAccessException or CryptographicException or
+                    HttpRequestException or TimeoutException or UnauthorizedAccessException or CryptographicException or
                     FormatException or OnionBoundaryException or OperationCanceledException)
                 {
                     // Never retain stale authority after a failed refresh. The

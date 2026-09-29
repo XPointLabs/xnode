@@ -26,6 +26,16 @@ Health reads remain side-effect-free. A failed refresh clears readiness; a
 later refresh can recover only with fully verified fresh authority. Stop cancels
 the worker and prevents an in-flight result from reactivating readiness. This
 does not renew offline-root checkpoints or extend signed artifact lifetimes.
+Startup without a fresh binding because of a Registry/network outage, a bounded
+HTTP timeout or expired authority keeps the host alive but unready; the same
+worker retries without traffic or an account/key reset. Configuration and
+opaque-key-handle mismatches still reject startup. Persisted corrupt/forked
+state never becomes usable through retry. A typed 429/503 schedules a monotonic
+pause of at least the refresh interval, honoring positive `Retry-After` deltas
+up to the transport's five-minute bound. Traffic shares this gate and cannot
+bypass or extend the same pause; retry creates a new proof nonce. This is a local runtime contract,
+not evidence that automated trusted-time/view/key renewal or the Docker soak
+gate has passed.
 
 Current product status (2026-08-30): this server path is implemented, but the
 MAUI authenticated-mailbox transport does not yet dial it through its Reality
