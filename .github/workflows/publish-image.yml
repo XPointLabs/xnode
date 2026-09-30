@@ -45,7 +45,8 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ github.token }}
+          # Existing package access belongs to the operator's CI credential.
+          password: ${{ secrets.XPOINTLABS_CI_TOKEN }}
       - name: Prepare image tags
         id: tags
         shell: bash

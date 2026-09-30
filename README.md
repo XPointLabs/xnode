@@ -3,6 +3,10 @@
 Production images are published to `ghcr.io/xpointlabs/xnode` only through the
 manual **Publish production image** GitHub Actions workflow. A push to `main`
 never publishes or changes a release tag.
+The manual publisher authenticates to GHCR with the existing repository secret
+`XPOINTLABS_CI_TOKEN`, which must have access to the package and `write:packages`.
+There is no fallback to the repository-scoped Actions token: checkout access
+and `permissions: packages: write` alone do not grant access to an existing package.
 The image build consumes the matching `deep-protocol` source branch as a
 named build context and uses the same source-cutover flags as XNode CI.
 For a local build from sibling checkouts, pass
