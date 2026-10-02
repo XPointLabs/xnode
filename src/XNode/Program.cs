@@ -53,21 +53,20 @@ var productionMailboxAuthorityOptions = builder.Configuration
 var privacyRoutingOptions = builder.Configuration.GetSection("PrivacyRouting")
     .Get<PrivacyRoutingOptions>(options => options.ErrorOnUnknownConfiguration = true) ?? new PrivacyRoutingOptions();
 var contactServiceOptions = builder.Configuration.GetSection("ContactService")
-    .Get<ContactServicePersistenceOptions>() ?? new ContactServicePersistenceOptions();
-var productionContactAuthorityOptions = builder.Configuration.GetSection("ContactAuthority")
-    .Get<ProductionContactAuthorityOptions>() ?? new ProductionContactAuthorityOptions();
+    .Get<ContactServicePersistenceOptions>(options => options.ErrorOnUnknownConfiguration = true) ?? new ContactServicePersistenceOptions();
+RetiredAuthorityConfiguration.RequireAbsent(builder.Configuration);
 var did2DirectoryProofOptions = builder.Configuration.GetSection("DeepIdV2DirectoryProof")
     .Get<DeepIdV2DirectoryProofOptions>() ?? new DeepIdV2DirectoryProofOptions();
 var did2NetworkPlacementOptions = builder.Configuration.GetSection("DeepIdV2NetworkPlacement")
     .Get<DeepIdV2NetworkPlacementOptions>() ?? new DeepIdV2NetworkPlacementOptions();
+var contactCoordinationOptions = builder.Configuration.GetSection("ContactCoordination")
+    .Get<ContactCoordinationOptions>(options => options.ErrorOnUnknownConfiguration = true) ?? new();
 var did2ReplicaStageOptions = builder.Configuration.GetSection("DeepIdV2ReplicaStage")
     .Get<DeepIdV2ReplicaStageOptions>() ?? new DeepIdV2ReplicaStageOptions();
+var did2ContactResolverOptions = builder.Configuration.GetSection("DeepIdV2ContactResolver")
+    .Get<DeepIdV2ContactResolverOptions>(options => options.ErrorOnUnknownConfiguration = true) ?? new();
 var groupControlServiceOptions = builder.Configuration.GetSection("GroupControlService")
     .Get<GroupControlServiceOptions>() ?? new GroupControlServiceOptions();
-var productionGroupControlAuthorityOptions = builder.Configuration
-    .GetSection("GroupControlAuthority")
-    .Get<ProductionGroupControlAuthorityOptions>()
-    ?? new ProductionGroupControlAuthorityOptions();
 var requiredTerminalServices = builder.Configuration
     .GetSection("RequiredTerminals")
     .Get<RequiredTerminalServicesOptions>()
@@ -88,20 +87,14 @@ var privacyRouting = privacyRoutingOptions.ValidateAndLoad(
     nodeOptions,
     builder.Environment.IsDevelopment(),
     developmentUatPrivatePeerAddressPolicy);
-var productionContactAuthority = productionContactAuthorityOptions.ValidateAndLoad(
-    nodeOptions,
-    contactServiceOptions);
 var did2DirectoryProof = did2DirectoryProofOptions.ValidateAndLoad(
     nodeOptions,
-    builder.Environment.IsDevelopment() || builder.Environment.IsEnvironment("UAT"),
-    productionContactAuthority is not null);
+    builder.Environment.IsDevelopment() || builder.Environment.IsEnvironment("UAT"));
 var did2NetworkPlacement = did2NetworkPlacementOptions.ValidateAndLoad(
     did2DirectoryProof is not null,
     builder.Environment.IsDevelopment() || builder.Environment.IsEnvironment("UAT"));
-var productionGroupControlAuthority = productionGroupControlAuthorityOptions.ValidateAndLoad(
-    nodeOptions,
-    groupControlServiceOptions,
-    productionContactAuthority is not null);
+var contactCoordinationOrigin = contactCoordinationOptions.Validate(
+    privacyRouting.Enabled, did2DirectoryProof is not null && did2NetworkPlacement?.Observer is not null);
 mailboxOptions.Validate();
 mailboxPeerAuthorityOptions.Validate(mailboxOptions.Enabled);
 productionMailboxAuthorityOptions.Validate(
@@ -173,9 +166,7 @@ builder.Services.AddSingleton(productionMailboxAuthorityOptions);
 builder.Services.AddSingleton(privacyRoutingOptions);
 builder.Services.AddSingleton(privacyRouting);
 builder.Services.AddSingleton(contactServiceOptions);
-builder.Services.AddSingleton(productionContactAuthorityOptions);
 builder.Services.AddSingleton(groupControlServiceOptions);
-builder.Services.AddSingleton(productionGroupControlAuthorityOptions);
 builder.Services.AddSingleton(developmentUatPrivatePeerAddressPolicy);
 builder.Services.AddSingleton(mailboxAuthorityForwardingOptions);
 builder.Services.AddSingleton(mailboxAuthorityForwarding);
@@ -190,7 +181,18 @@ builder.Services.AddSingleton<ILocalNativeMailboxExitDispatcher>(provider =>
 builder.Services.AddSingleton<IMailboxAuthorityForwardingClient,
     MailboxAuthorityForwardingClient>();
 builder.Services.AddSingleton<RoutedNativeMailboxExitDispatcher>();
-builder.Services.AddSingleton<PrivacyTerminalExitDispatcher>();
+if (contactCoordinationOrigin is not null)
+{
+    builder.Services.AddSingleton(provider => new HttpContactCoordinationBackendClient(
+        contactCoordinationOrigin, Convert.FromHexString(did2DirectoryProofOptions.NetworkIdHex),
+        provider.GetRequiredService<RouterNodeOptions>(), provider.GetRequiredService<IClock>()));
+    builder.Services.AddSingleton<ContactCoordinationOnionDispatcher>();
+}
+builder.Services.AddSingleton(provider => new PrivacyTerminalExitDispatcher(
+    provider.GetRequiredService<RoutedNativeMailboxExitDispatcher>(),
+    provider.GetRequiredService<IContactServiceOpaqueDispatcher>(),
+    provider.GetRequiredService<GroupControlOnionTerminalAdapter>(),
+    provider.GetService<ContactCoordinationOnionDispatcher>()));
 builder.Services.AddSingleton<INativeMailboxExitDispatcher>(provider =>
     provider.GetRequiredService<PrivacyTerminalExitDispatcher>());
 builder.Services.AddSingleton(mailboxClientActivationPlan);
@@ -201,38 +203,35 @@ if (did2DirectoryProof is not null)
     builder.Services.AddDeepIdV2DirectoryProof(did2DirectoryProof);
 if (did2NetworkPlacement is not null)
     builder.Services.AddDeepIdV2NetworkPlacement(did2NetworkPlacement);
-var contactServicePlan = productionContactAuthority is null
-    ? builder.Services.AddContactServiceBoundary(contactServiceOptions)
-    : builder.Services.AddProductionContactAuthorityBoundary(
-        nodeOptions,
-        contactServiceOptions,
-        productionContactAuthority);
+var contactServicePlan = builder.Services.AddDid2ContactServiceBoundary(contactServiceOptions);
 var did2ReplicaStageEnabled = did2ReplicaStageOptions.Validate(
-    did2NetworkPlacement is not null, contactServicePlan.RuntimeActivation,
+    did2NetworkPlacement is not null,
     builder.Environment.IsDevelopment() || builder.Environment.IsEnvironment("UAT"));
 if (did2ReplicaStageEnabled)
 {
     builder.Services.AddSingleton<DeepIdV2PublicationFinalCommitter>();
     builder.Services.AddSingleton<DeepIdV2ReplicaStageReceiver>();
+    builder.Services.AddSingleton<IContactReplicaCommandReceiver>(provider => provider.GetRequiredService<DeepIdV2ReplicaStageReceiver>());
     builder.Services.RemoveAll<IContactServiceOpaqueDispatcher>();
     builder.Services.AddSingleton<IContactServiceOpaqueDispatcher,
-        DeepIdV2PreKeyOnionDispatcher>();
+        DeepIdV2ContactOnionDispatcher>();
 }
 var did2ClaimOptions = builder.Configuration.GetSection("DeepIdV2PreKeyClaim")
     .Get<DeepIdV2PreKeyClaimOptions>() ?? new();
 var did2ClaimEnabled = did2ClaimOptions.Validate(did2ReplicaStageEnabled,
-    did2NetworkPlacement?.Observer is not null, contactServicePlan.RuntimeActivation,
+    did2NetworkPlacement?.Observer is not null,
     builder.Environment.IsDevelopment() || builder.Environment.IsEnvironment("UAT"));
 if (did2ClaimEnabled)
     builder.Services.AddSingleton<DeepIdV2PreKeyClaimRuntime>();
+var did2ContactResolverEnabled = did2ContactResolverOptions.Validate(did2NetworkPlacement?.Observer is not null,
+    privacyRouting.Enabled, did2ReplicaStageEnabled);
+if (did2ContactResolverEnabled)
+    builder.Services.AddDid2ContactResolver(did2ContactResolverOptions);
+if (contactServiceOptions.RuntimeActivation && !did2ContactResolverEnabled)
+    throw new InvalidOperationException("ContactService activation requires the complete DID2 resolver composition.");
 var replicaEndpointActive = contactServicePlan.MapReplicaEndpoint ||
     did2ReplicaStageEnabled;
-var groupControlServicePlan = productionGroupControlAuthority is null
-    ? builder.Services.AddGroupControlServiceBoundary(groupControlServiceOptions)
-    : builder.Services.AddProductionGroupControlAuthorityBoundary(
-        nodeOptions,
-        groupControlServiceOptions,
-        productionGroupControlAuthority);
+var groupControlServicePlan = builder.Services.AddGroupControlServiceBoundary(groupControlServiceOptions);
 builder.Services.AddProductionPrivacyRoutingBoundary(
     privacyRouting,
     nodeOptions);
@@ -850,7 +849,7 @@ app.MapPost(MailboxWireHttpContract.PeerTombstoneRoute, (
         cancellationToken));
 
 app.MapContactReplicaEndpoint(contactServicePlan, listenerPlan.PrivacyPeerPort);
-app.MapDeepIdV2ReplicaStageEndpoint(did2ReplicaStageEnabled,
+app.MapDeepIdV2ContactReplicaEndpoint(did2ReplicaStageEnabled,
     listenerPlan.PrivacyPeerPort);
 app.MapGroupControlReplicaEndpoint(
     groupControlServicePlan,

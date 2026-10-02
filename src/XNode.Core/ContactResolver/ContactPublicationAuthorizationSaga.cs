@@ -54,9 +54,9 @@ internal sealed class ContactPublicationAuthorizationSagaOptions
 /// </summary>
 internal sealed class ContactPublicationAuthorizationSaga : IDisposable
 {
-    private const int SchemaVersion = 1;
+    private const int SchemaVersion = 2;
     private const int MaximumPlaintextBytes = 32 * 1024 * 1024;
-    private static readonly byte[] FormatMagic = "XPA1SAG1"u8.ToArray();
+    private static readonly byte[] FormatMagic = "XPA2SAG2"u8.ToArray();
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -221,6 +221,20 @@ internal sealed class ContactPublicationAuthorizationSaga : IDisposable
                 SagaStatus.Committed => ContactPublicationAuthorizationSagaDisposition.ExistingCommitted,
                 _ => ContactPublicationAuthorizationSagaDisposition.ConflictLatched
             };
+        }
+    }
+
+    internal void RequireExactCommitted(VerifiedXpa1PublicationAuthorization authorization, Xpu1Request request)
+    {
+        ArgumentNullException.ThrowIfNull(authorization); ArgumentNullException.ThrowIfNull(request);
+        ContactServiceOpaqueFacade.ValidatePublicationAuthorization(authorization, request);
+        var candidate = SagaRecord.From(authorization, request, 0, retentionSeconds);
+        lock (gate)
+        {
+            ThrowIfUnavailable();
+            if (!document.Records.TryGetValue(Convert.ToHexString(candidate.AuthorizationId), out var retained) ||
+                retained.Status != SagaStatus.Committed || !retained.ExactEquals(candidate))
+                throw new InvalidDataException("The publication receipt does not bind an exact committed authorization.");
         }
     }
 

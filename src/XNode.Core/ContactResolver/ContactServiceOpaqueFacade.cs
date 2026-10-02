@@ -386,6 +386,7 @@ internal sealed class ContactServiceOpaqueFacade : IDisposable
                         "A committed XPU1 requires two durable replica outcomes.");
                 }
                 publicationAuthorizationSaga.Commit(authorization, request, Now());
+                await authorization.EnsureCurrentAsync(cancellationToken).ConfigureAwait(false);
                 payload =
                 [
                     U64(result.Generation),
@@ -396,6 +397,7 @@ internal sealed class ContactServiceOpaqueFacade : IDisposable
                         PublishTuple(result),
                         cancellationToken).ConfigureAwait(false)
                 ];
+                await authorization.EnsureCurrentAsync(cancellationToken).ConfigureAwait(false);
             }
             catch (Exception exception) when (exception is ContactServiceReceiptAuthorityException
                 or IOException

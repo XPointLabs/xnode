@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 using Deep.Protocol.ContactV1;
 using Deep.Protocol.XPointNetworkV1;
+using Deep.Protocol.DeepExtension.PrivacyRouting;
 using XNode.Core;
 
 namespace XNode.IntegrationTests.Runtime;
@@ -20,7 +21,7 @@ public sealed class ContactAuthoritySourceTests
         var source = new RecordingSnapshotSource();
         var adapter = new VerifiedContactServicePlacementAuthoritySource(
             source,
-            new FixedClock(DateTimeOffset.FromUnixTimeSeconds(100)));
+            new RejectMonotonicClock());
 
         await Assert.ThrowsAnyAsync<ArgumentException>(async () =>
             await adapter.MintAsync(
@@ -37,7 +38,7 @@ public sealed class ContactAuthoritySourceTests
         var source = new RecordingSnapshotSource();
         var adapter = new VerifiedContactServicePlacementAuthoritySource(
             source,
-            new FixedClock(DateTimeOffset.FromUnixTimeSeconds(100)));
+            new RejectMonotonicClock());
 
         await Assert.ThrowsAsync<ArgumentException>(async () =>
             await adapter.MintAsync(
@@ -55,7 +56,7 @@ public sealed class ContactAuthoritySourceTests
             new IOException("verified directory unavailable"));
         var adapter = new VerifiedContactServicePlacementAuthoritySource(
             source,
-            new FixedClock(DateTimeOffset.FromUnixTimeSeconds(100)));
+            new RejectMonotonicClock());
 
         await Assert.ThrowsAsync<IOException>(async () =>
             await adapter.MintAsync(
@@ -245,10 +246,10 @@ public sealed class ContactAuthoritySourceTests
             .ToArray();
 
         Assert.Equal(
-            [typeof(IContactVerifiedAuthoritySnapshotSource), typeof(IClock)],
+            [typeof(IDeepIdV2ContactStoreAuthoritySource), typeof(IOnionMonotonicClock)],
             placementDependencies);
         Assert.Equal(
-            [typeof(IContactVerifiedAuthoritySnapshotSource)],
+            [typeof(IDeepIdV2ContactStoreAuthoritySource)],
             authorizationDependencies);
         Assert.Equal(
             [typeof(IVerifiedContactRouteClosureSource), typeof(IClock)],
@@ -292,17 +293,22 @@ public sealed class ContactAuthoritySourceTests
     {
         public DateTimeOffset UtcNow => now;
     }
+    private sealed class RejectMonotonicClock : IOnionMonotonicClock
+    {
+        public ValueTask<OnionMonotonicReading> ReadAsync(CancellationToken ct) =>
+            throw new InvalidOperationException("A rejected request must not read monotonic time.");
+    }
 
     private sealed class RecordingSnapshotSource(Exception? failure = null)
-        : IContactVerifiedAuthoritySnapshotSource
+        : IDeepIdV2ContactStoreAuthoritySource
     {
         public int Calls { get; private set; }
 
-        public ValueTask<ContactVerifiedAuthoritySnapshot> ReadCurrentAsync(
+        public ValueTask<DeepIdV2ContactStoreAuthority> ReadPublicationAuthorityAsync(
             CancellationToken cancellationToken)
         {
             Calls++;
-            return ValueTask.FromException<ContactVerifiedAuthoritySnapshot>(
+            return ValueTask.FromException<DeepIdV2ContactStoreAuthority>(
                 failure ?? new InvalidOperationException("No synthetic verified capability."));
         }
     }

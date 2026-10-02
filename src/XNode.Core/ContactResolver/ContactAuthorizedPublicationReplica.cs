@@ -31,6 +31,7 @@ internal sealed class ContactAuthorizedPublicationReplica
             .ConfigureAwait(false);
         ContactServiceOpaqueFacade.ValidatePublicationAuthorization(authorization, request);
         var now = checked((ulong)clock.UtcNow.ToUnixTimeSeconds());
+        await authorization.EnsureCurrentAsync(cancellationToken).ConfigureAwait(false);
         var reservation = saga.Reserve(authorization, request, now);
         if (reservation == ContactPublicationAuthorizationSagaDisposition.ConflictLatched)
         {

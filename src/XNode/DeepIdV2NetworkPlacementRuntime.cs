@@ -211,15 +211,33 @@ internal interface IDeepIdV2PreKeyClaimPlacementSource
         ReadOnlyMemory<byte> serviceCapability, CancellationToken cancellationToken);
 }
 
+internal sealed record DeepIdV2ContactStoreAuthority(
+    VerifiedOnionNetworkContext Network, VerifiedXPointNetworkAuthority Authority,
+    Deep.Protocol.AccountDirectoryV1.VerifiedDeepIdV2DirectoryFreshness Freshness,
+    OnionTrustedTimeAuthority TrustedTime);
+
+internal interface IDeepIdV2ContactStoreAuthoritySource
+{
+    ValueTask<DeepIdV2ContactStoreAuthority> ReadPublicationAuthorityAsync(CancellationToken cancellationToken);
+}
+
 internal sealed class DeepIdV2NetworkPlacementRuntime(
     IDeepIdV2CurrentDirectoryProofSource proofs,
     DeepIdV2NetworkAuthorityFileSource authoritySource,
     DeepIdV2NetworkClosureFileSource artifacts,
     FileDeepIdV2NetworkFloorStore floor,
     IOnionMonotonicClock clock) : IDeepIdV2PreKeyPlacementSource, IDeepIdV2ReceiveNetworkSource,
-    IDeepIdV2PreKeyClaimPlacementSource
+    IDeepIdV2PreKeyClaimPlacementSource, IDeepIdV2ContactStoreAuthoritySource
 {
     private readonly SemaphoreSlim gate = new(1, 1);
+
+    public async ValueTask<DeepIdV2ContactStoreAuthority> ReadPublicationAuthorityAsync(CancellationToken cancellationToken)
+    {
+        var observer = artifacts.Observer ?? throw new InvalidOperationException(
+            "DID2 publication needs the configured public observation credential.");
+        var current = await ReadNetworkAsync(observer, default, default, default, cancellationToken).ConfigureAwait(false);
+        return new(current.Network, current.Authority, current.Freshness, new OnionTrustedTimeAuthority(clock));
+    }
 
     public async ValueTask<ContactServicePlacementCapability> MintPreKeyClaimAsync(
         ReadOnlyMemory<byte> serviceCapability, CancellationToken cancellationToken)
@@ -230,7 +248,7 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
         // Only the configured public observer, never the requester, selects this proof.
         var observer = artifacts.Observer ?? throw new InvalidOperationException(
             "DID2 claim placement requires the configured public observation credential.");
-        var (network, freshness) = await ReadNetworkAsync(observer, default, default, default,
+        var (network, freshness, _) = await ReadNetworkAsync(observer, default, default, default,
             cancellationToken).ConfigureAwait(false);
         var placement = ContactServicePlacementFactory.Create(network,
             ContactServiceRequestKind.ClaimPreKey, serviceCapability);
@@ -249,7 +267,7 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
             throw new ArgumentException(
                 "DID2 pre-key publication needs a nonzero service capability.",
                 nameof(serviceCapability));
-        var (network, freshness) = await ReadNetworkAsync(publisher, default, default, default,
+        var (network, freshness, _) = await ReadNetworkAsync(publisher, default, default, default,
             cancellationToken).ConfigureAwait(false);
         var placement = ContactServicePlacementFactory.Create(network,
             ContactServiceRequestKind.PublishPreKeyInventory,
@@ -276,7 +294,8 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
     }
 
     private async ValueTask<(VerifiedOnionNetworkContext Network,
-        Deep.Protocol.AccountDirectoryV1.VerifiedDeepIdV2DirectoryFreshness Freshness)> ReadNetworkAsync(
+        Deep.Protocol.AccountDirectoryV1.VerifiedDeepIdV2DirectoryFreshness Freshness,
+        VerifiedXPointNetworkAuthority Authority)> ReadNetworkAsync(
         ParsedDid2 did2, ReadOnlyMemory<byte> localOwnerId, ReadOnlyMemory<byte> localKey, ReadOnlyMemory<byte> nextInstalledKey,
         CancellationToken cancellationToken)
     {
@@ -313,9 +332,27 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
             if (!FileDeepIdV2NetworkFloorStore.Same(committed, retained))
                 throw new IOException("The DID2 network floor changed before capability release.");
             network.EnsureCurrent();
-            return (network, freshness);
+            var retainedAuthority = authoritySource.ReadCurrent();
+            using var retainedArtifacts = artifacts.ReadCurrent();
+            if (!CryptographicOperations.FixedTimeEquals(authority.AuthorityCoreReference.Span, retainedAuthority.AuthorityCoreReference.Span) ||
+                !CryptographicOperations.FixedTimeEquals(authority.Dts1PolicyCoreReference.Span, retainedAuthority.Dts1PolicyCoreReference.Span) ||
+                !CryptographicOperations.FixedTimeEquals(authority.TimeSourcePolicyHash.Span, retainedAuthority.TimeSourcePolicyHash.Span) ||
+                !SameSeries(exact.Policies, retainedArtifacts.Policies) || !SameSeries(exact.Views, retainedArtifacts.Views) ||
+                !SameSeries(exact.Heads, retainedArtifacts.Heads) || !SameSeries(exact.Nodes, retainedArtifacts.Nodes) ||
+                !SameSeries(exact.Projections, retainedArtifacts.Projections))
+                throw new CryptographicException("DID2 network authority changed before capability release.");
+            cancellationToken.ThrowIfCancellationRequested();
+            return (network, freshness, authority);
         }
         finally { gate.Release(); }
+    }
+
+    private static bool SameSeries(IReadOnlyList<ReadOnlyMemory<byte>> left, IReadOnlyList<ReadOnlyMemory<byte>> right)
+    {
+        if (left.Count != right.Count) return false;
+        for (var i = 0; i < left.Count; i++)
+            if (!CryptographicOperations.FixedTimeEquals(left[i].Span, right[i].Span)) return false;
+        return true;
     }
 }
 
@@ -336,6 +373,8 @@ internal static class DeepIdV2NetworkPlacementHostComposition
         services.AddSingleton<IDeepIdV2ReceiveNetworkSource>(provider =>
             provider.GetRequiredService<DeepIdV2NetworkPlacementRuntime>());
         services.AddSingleton<IDeepIdV2PreKeyClaimPlacementSource>(provider =>
+            provider.GetRequiredService<DeepIdV2NetworkPlacementRuntime>());
+        services.AddSingleton<IDeepIdV2ContactStoreAuthoritySource>(provider =>
             provider.GetRequiredService<DeepIdV2NetworkPlacementRuntime>());
         services.AddHostedService<DeepIdV2NetworkPlacementHostedService>();
         return services;

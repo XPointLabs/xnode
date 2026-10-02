@@ -12,10 +12,9 @@ public sealed class DeepIdV2ReplicaStageOptions
 {
     public bool Enabled { get; set; }
 
-    internal bool Validate(bool placementEnabled, bool v1ContactEnabled,
-        bool developmentOrUat)
+    internal bool Validate(bool placementEnabled, bool developmentOrUat)
     {
-        if (Enabled && (!placementEnabled || v1ContactEnabled ||
+        if (Enabled && (!placementEnabled ||
                 !developmentOrUat))
             throw new InvalidOperationException(
                 "DID2 replica staging requires an independent UAT V2 placement boundary.");
@@ -397,8 +396,8 @@ internal static class DeepIdV2ReplicaStagePayloadCodec
 /// bounded bytes or use the opt-in V2 claim owner on a freshly selected local
 /// replica. Other ContactResolve operations remain unavailable here.
 /// </summary>
-internal sealed class DeepIdV2PreKeyOnionDispatcher(
-    DeepIdV2ReplicaStageReceiver receiver) : IContactServiceOpaqueDispatcher
+internal sealed class DeepIdV2ContactOnionDispatcher(
+    DeepIdV2ReplicaStageReceiver receiver, Did2ContactResolverDispatcher? contacts = null) : IContactServiceOpaqueDispatcher
 {
     public ValueTask<ReadOnlyMemory<byte>> DispatchAsync(
         ContactServiceOperation operation,
@@ -407,6 +406,9 @@ internal sealed class DeepIdV2PreKeyOnionDispatcher(
     {
         if (operation == ContactServiceOperation.ClaimPreKey)
             return receiver.ReceiveClaimTerminalAsync(canonicalRequest, cancellationToken);
+        if (operation is ContactServiceOperation.PublishDcr or ContactServiceOperation.ResolveDcr or ContactServiceOperation.AcquireMailboxGrant)
+            return (contacts ?? throw new ContactServiceUnavailableException("DID2 contact resolver is not enabled."))
+                .DispatchAsync(operation, canonicalRequest, cancellationToken);
         if (operation != ContactServiceOperation.PublishPreKeyInventory)
             throw new ContactServiceUnavailableException(
                 "Only DID2 V2 pre-key publication is enabled at this ONION exit.");

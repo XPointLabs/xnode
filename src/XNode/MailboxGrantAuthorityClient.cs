@@ -62,24 +62,23 @@ internal sealed class HttpsMailboxGrantAuthorityClient
 
     private readonly HttpClient httpClient;
     private readonly RouterNodeOptions node;
-    private readonly ContactAuthorityHttpSourceOptions source;
     private readonly IClock clock;
     private readonly Uri endpoint;
 
     public HttpsMailboxGrantAuthorityClient(
         HttpClient httpClient,
         RouterNodeOptions node,
-        ContactAuthorityHttpSourceOptions source,
+        Uri authorityOrigin,
         IClock clock)
     {
         this.httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         this.node = node ?? throw new ArgumentNullException(nameof(node));
-        this.source = source ?? throw new ArgumentNullException(nameof(source));
+        ArgumentNullException.ThrowIfNull(authorityOrigin);
         this.clock = clock ?? throw new ArgumentNullException(nameof(clock));
         endpoint = new UriBuilder(
-            source.Endpoint.Scheme,
-            source.Endpoint.Host,
-            source.Endpoint.IsDefaultPort ? -1 : source.Endpoint.Port,
+            authorityOrigin.Scheme,
+            authorityOrigin.Host,
+            authorityOrigin.IsDefaultPort ? -1 : authorityOrigin.Port,
             EndpointPath).Uri;
     }
 

@@ -38,4 +38,17 @@
     <ProjectReference Include="..\..\src\XNode\XNode.csproj" />
   </ItemGroup>
 
+  <!-- Explicit local business slice only; the default release gate still compiles every test. -->
+  <ItemGroup Condition="'$(ContactCoordinationFocused)' == 'true'">
+    <Compile Remove="**\*.cs" />
+    <Compile Include="Runtime\ContactCoordinationBackendClientTests.cs" />
+    <Compile Include="Runtime\ContactCoordinationOnionDispatcherTests.cs" />
+    <Compile Include="Runtime\Did2ContactServiceCompositionTests.cs" />
+    <Compile Include="Runtime\DeepIdV2PublicationAuthorityFixture.cs" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(PublicationConsumerFocused)' == 'true'">
+    <Compile Remove="**\*.cs" />
+    <Compile Include="Runtime\DeepIdV2PublicationAuthorityFixture.cs" />
+    <Compile Include="Runtime\DeepIdV2OpaquePublicationConsumerTests.cs" />
+  </ItemGroup>
 </Project>

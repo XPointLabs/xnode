@@ -1043,58 +1043,6 @@ internal static class GroupControlServiceHostComposition
         return plan;
     }
 
-    internal static GroupControlServiceHostCompositionPlan AddProductionGroupControlAuthorityBoundary(
-        this IServiceCollection services,
-        RouterNodeOptions node,
-        GroupControlServiceOptions options,
-        ProductionGroupControlAuthorityConfiguration configuration)
-    {
-        ArgumentNullException.ThrowIfNull(services);
-        ArgumentNullException.ThrowIfNull(node);
-        ArgumentNullException.ThrowIfNull(options);
-        ArgumentNullException.ThrowIfNull(configuration);
-        RequireRegistered<IContactVerifiedAuthoritySnapshotSource>(services);
-        RequireRegistered<IOnionMonotonicClock>(services);
-        RequireRegistered<Microsoft.AspNetCore.DataProtection.IDataProtectionProvider>(services);
-
-        services.AddSingleton(configuration);
-        services.AddSingleton<IGroupControlAuthorityArtifactSource>(provider =>
-            new FileGroupControlAuthorityArtifactSource(
-                provider.GetRequiredService<ProductionGroupControlAuthorityConfiguration>(),
-                provider.GetRequiredService<IMailboxStorageSecurity>()));
-        services.AddSingleton<IGroupControlAuthorityLineageStore>(provider =>
-            new FileGroupControlAuthorityLineageStore(
-                provider.GetRequiredService<ProductionGroupControlAuthorityConfiguration>(),
-                provider.GetRequiredService<Microsoft.AspNetCore.DataProtection.IDataProtectionProvider>(),
-                provider.GetRequiredService<IMailboxStorageSecurity>(),
-                provider.GetRequiredService<IMailboxDurabilityBarrier>()));
-        services.AddSingleton(provider => new ProductionGroupControlAuthoritySource(
-            provider.GetRequiredService<IContactVerifiedAuthoritySnapshotSource>(),
-            provider.GetRequiredService<IGroupControlAuthorityArtifactSource>(),
-            provider.GetRequiredService<IOnionMonotonicClock>(),
-            provider.GetRequiredService<IGroupControlAuthorityLineageStore>(),
-            provider.GetRequiredService<RouterNodeOptions>(),
-            provider.GetRequiredService<ProductionGroupControlAuthorityConfiguration>()));
-        services.AddSingleton<IGroupControlAuthoritySource>(provider =>
-            provider.GetRequiredService<ProductionGroupControlAuthoritySource>());
-        var plan = new GroupControlServiceHostCompositionPlan(true, true);
-        services.AddSingleton(options);
-        services.AddSingleton(plan);
-        services.AddSingleton(provider => new GroupControlLocalReplicaRuntime(
-            provider.GetRequiredService<RouterNodeOptions>(),
-            provider.GetRequiredService<IClock>(),
-            provider.GetRequiredService<IMailboxStorageSecurity>(),
-            provider.GetRequiredService<IMailboxDurabilityBarrier>()));
-        services.AddSingleton<IGroupControlReplicaPeerClient, HttpGroupControlReplicaPeerClient>();
-        services.AddSingleton<IGroupControlReplicaBindingSource>(provider =>
-            new ProductionGroupControlReplicaBindingSource(
-                provider.GetRequiredService<GroupControlLocalReplicaRuntime>(),
-                provider.GetRequiredService<IGroupControlReplicaPeerClient>()));
-        AddActiveBoundaryServices(services);
-        services.AddHostedService<ProductionGroupControlAuthorityHostedService>();
-        return plan;
-    }
-
     internal static GroupControlServiceHostCompositionPlan AddUatGroupControlServiceBoundary(
         this IServiceCollection services,
         GroupControlServiceOptions options,

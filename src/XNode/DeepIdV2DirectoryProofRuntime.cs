@@ -30,8 +30,7 @@ public sealed class DeepIdV2DirectoryProofOptions
     public int RequestTimeoutSeconds { get; set; }
 
     internal DeepIdV2DirectoryProofConfiguration? ValidateAndLoad(
-        RouterNodeOptions node, bool developmentOrUat,
-        bool v1ContactAuthorityEnabled)
+        RouterNodeOptions node, bool developmentOrUat)
     {
         ArgumentNullException.ThrowIfNull(node);
         if (RegistryOrigin is null || NetworkIdHex is null ||
@@ -55,9 +54,9 @@ public sealed class DeepIdV2DirectoryProofOptions
                 "DID2 directory proof configuration is partial while disabled.");
             return null;
         }
-        if (!developmentOrUat || v1ContactAuthorityEnabled)
+        if (!developmentOrUat)
             throw new InvalidOperationException(
-                "DID2 proof UAT must not reuse the V1 contact authority or activate as production.");
+                "DID2 proof activation requires the reviewed development/UAT composition.");
         if (string.IsNullOrWhiteSpace(RegistryOrigin) ||
             string.IsNullOrWhiteSpace(GenesisHeadPath) ||
             !Path.IsPathFullyQualified(GenesisHeadPath) ||

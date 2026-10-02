@@ -13,9 +13,9 @@ namespace XNode;
 public sealed class DeepIdV2PreKeyClaimOptions
 {
     public bool Enabled { get; set; }
-    internal bool Validate(bool stageEnabled, bool hasObserver, bool v1Enabled, bool developmentOrUat)
+    internal bool Validate(bool stageEnabled, bool hasObserver, bool developmentOrUat)
     {
-        if (Enabled && (!stageEnabled || !hasObserver || v1Enabled || !developmentOrUat))
+        if (Enabled && (!stageEnabled || !hasObserver || !developmentOrUat))
             throw new InvalidOperationException("DID2 claim needs independent UAT placement, observer and publication custody.");
         return Enabled;
     }

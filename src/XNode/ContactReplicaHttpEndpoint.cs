@@ -101,6 +101,7 @@ internal static class ContactReplicaHttpEndpoint
             or InvalidOperationException
             or IOException
             or CryptographicException
+            or Deep.Protocol.DeepExtension.PrivacyRouting.OnionBoundaryException
             or ContactServiceReceiptAuthorityException)
         {
             return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
@@ -138,9 +139,9 @@ internal static class ContactReplicaHttpEndpoint
     }
 }
 
-internal static class DeepIdV2ReplicaStageEndpointMapping
+internal static class DeepIdV2ContactReplicaEndpointMapping
 {
-    internal static IEndpointRouteBuilder MapDeepIdV2ReplicaStageEndpoint(
+    internal static IEndpointRouteBuilder MapDeepIdV2ContactReplicaEndpoint(
         this IEndpointRouteBuilder endpoints, bool enabled,
         int peerListenerPort)
     {
@@ -150,7 +151,7 @@ internal static class DeepIdV2ReplicaStageEndpointMapping
             HttpContext context,
             ContactServicePersistenceOptions options,
             ContactReplicaReplayGuard replay,
-            DeepIdV2ReplicaStageReceiver receiver,
+            IContactReplicaCommandReceiver receiver,
             RouterNodeOptions node,
             IClock clock,
             CancellationToken cancellationToken) =>

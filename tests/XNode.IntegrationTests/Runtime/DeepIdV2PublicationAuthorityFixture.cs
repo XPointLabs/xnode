@@ -5,6 +5,7 @@ using System.Text;
 using Deep.Protocol.AccountDirectoryV1;
 using Deep.Protocol.ApplicationCore;
 using Deep.Protocol.ContactV2;
+using Deep.Protocol.ContactV1;
 using Deep.Protocol.DeepExtension.PrivacyRouting;
 using Deep.Protocol.DeepNative;
 using Deep.Protocol.Identity;
@@ -23,7 +24,7 @@ namespace XNode.IntegrationTests.Runtime;
 /// </summary>
 internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
     IDeepIdV2CurrentDirectoryProofSource, IDeepIdV2PreKeyPlacementSource, IDeepIdV2PreKeyClaimPlacementSource,
-    IOnionMonotonicClock
+    IOnionMonotonicClock, IDeepIdV2ContactStoreAuthoritySource
 {
     internal static readonly byte[] Network = Bytes(16, 0x11);
     internal static readonly byte[] Boot = Bytes(16, 0xf3);
@@ -31,7 +32,12 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
     private readonly byte[] service;
     private DeepIdV2PublicationAuthorityFixture(byte serviceMarker) => service = Bytes(32, serviceMarker);
     private readonly TestSigner[] nodes = [new(0x70), new(0x71), new(0x72)];
+    private TestSigner[] ceremonyWitnesses = [];
+    internal PendingXPointNetworkOperationalGenesis PendingOperational { get; private set; } = null!;
+    internal AuthoredXPointNetworkOperationalGenesis CompletedOperational { get; private set; } = null!;
+    internal int TopologySignatureCalls => ceremonyWitnesses.Sum(w => w.TopologySignatureCalls);
     internal ParsedDid2 Publisher { get; private set; } = null!;
+    internal DeepPermanentIdV2 ContactAddress { get; private set; } = null!;
     internal VerifiedDeepIdV2DirectoryFreshness Freshness { get; private set; } = null!;
     internal VerifiedOnionNetworkContext NetworkContext { get; private set; } = null!;
     internal VerifiedXPointNetworkAuthority Authority { get; private set; } = null!;
@@ -43,33 +49,47 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
     internal ReadOnlyMemory<byte> Head { get; private set; }
     internal IReadOnlyList<ReadOnlyMemory<byte>> Descriptors { get; private set; } = [];
     internal ReadOnlyMemory<byte> Projection { get; private set; }
+    internal ReadOnlyMemory<byte> MailboxAuthority { get; private set; }
     internal ContactServicePlacementCapability Placement { get; private set; } = null!;
     internal ParsedXpp1V2 Publication { get; private set; } = null!;
     internal byte[] Dca { get; private set; } = [];
     internal byte[] Xps { get; private set; } = [];
+    internal Xpu1Request ContactPublication { get; private set; } = null!;
+    internal VerifiedDeepIdV2ContactRouteClosure ContactRoute { get; private set; } = null!;
+    internal AuthoredDeepIdV2ContactObject ContactObject { get; private set; } = null!;
+    internal ContactPublicationAuthorityWireRequest ContactOwnedRequest { get; private set; } = null!;
+    internal Xpu1Request AlternateContactPublication { get; private set; } = null!;
     internal ulong Sample { get; set; } = 100;
     internal bool RejectProof { get; set; }
     internal int ProofReads { get; private set; }
+    internal Queue<OnionMonotonicReading> ClockReadings { get; } = new();
+    private DeepIdV2DirectoryProofMaterial proofMaterial = null!;
+    private VerifiedDeepIdV2DirectoryQuery proofQuery = null!;
+    private AccountDirectoryProtectedLkg initialDirectoryFloor = null!;
+    private ReadOnlyMemory<byte> exactDirectoryHead;
+    private AuthoredAccountDirectoryHeadMutation directoryMutation = null!;
 
     internal ValueTask<VerifiedOnionNetworkContext> VerifyHistoryAsync(ReadOnlyMemory<byte> history,
         CancellationToken cancellationToken = default) =>
         OnionNetworkContextVerifier.VerifyFromProtectedHistoryAsync(Authority, Freshness,
             [Policy], [View], [Head], Descriptors, [Projection], history, new(this), cancellationToken);
 
-    internal static async Task<DeepIdV2PublicationAuthorityFixture> CreateAsync(byte serviceMarker = 0x35)
+    internal static async Task<DeepIdV2PublicationAuthorityFixture> CreateAsync(byte serviceMarker = 0x35,
+        bool authorContactPublication = false, byte networkCommitmentMarker = 0, byte rootMarker = 0x20)
     {
         var fixture = new DeepIdV2PublicationAuthorityFixture(serviceMarker);
-        try { await fixture.AuthorAsync(); return fixture; }
+        try { await fixture.AuthorAsync(authorContactPublication, networkCommitmentMarker, rootMarker); return fixture; }
         catch { fixture.Dispose(); throw; }
     }
 
-    private async Task AuthorAsync()
+    private async Task AuthorAsync(bool authorContactPublication, byte networkCommitmentMarker, byte rootMarker)
     {
-        using var root = new TestSigner(0x20);
+        using var root = new TestSigner(rootMarker);
         using var w1 = new TestSigner(0x30);
         using var w2 = new TestSigner(0x31);
         using var w3 = new TestSigner(0x32);
         TestSigner[] witnesses = [w1, w2, w3];
+        ceremonyWitnesses = witnesses;
         var bootstrap = await XPointNetworkBootstrapAuthor.AuthorGenesisAsync(
             new XPointNetworkGenesisAuthoringRequest(Bytes(32, 0x12), Network,
                 [new(root.RootKeyId.Span, 0, root.Ed25519PublicKey.Span,
@@ -94,12 +114,12 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
                 Enumerable.Range(0, 5).Select(role => (ReadOnlyMemory<byte>)
                     NodeRolePublicKey((byte)(0x10 + index * 5 + role))).ToArray()))
             .ToArray();
-        var operational = await XPointNetworkOperationalGenesisAuthor.AuthorAsync(
+        var pendingOperational = await XPointNetworkOperationalGenesisAuthor.AuthorNetworkCandidateAsync(
             new XPointNetworkOperationalGenesisRequest(Bytes(32, 0x12), bootstrap,
-                [root], witnesses, descriptors, Bytes(32, 0xf1), Hash("xcc"),
+                [root], witnesses, descriptors, networkCommitmentMarker == 0 ? Hash("xcc") : Hash("xcc-" + networkCommitmentMarker),
                 Hash("xcb"), Hash("pma"), NodeRolePublicKey(0x31),
-                NodeRolePublicKey(0x32), 990, 1_000, 1_500, Bytes(32, 0xf2),
-                Boot, 100, 100, 100, 1_100, 5));
+                NodeRolePublicKey(0x32), 990, 1_000, 1_500));
+        PendingOperational = pendingOperational;
 
         using var phrase = DeepRecoveryV1.Generate();
         using var recovery = DeepRecoveryV1.DeriveAccountCapabilities(phrase, Network, 1);
@@ -116,6 +136,7 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
         var authorization = recovery.AuthorGenesisDca1V2(binding, directory, device, 1_000);
         var checkpoint = recovery.AuthorGenesisAdc1V2(binding, directory, 1_000);
         Publisher = binding.Head.DeepId;
+        ContactAddress = DeepIdV2Root.DerivePermanentIdV2(phrase);
         Dca = authorization.Record.CanonicalBytes.ToArray();
 
         var genesis = await DeepIdV2DirectoryHeadAuthor.AuthorGenesisAsync(
@@ -127,7 +148,7 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
             genesis.ProtectedHead);
         var nonce = Bytes(32, 0xf2);
         var request = new AccountDirectoryProofAuthoringRequest(Network, nonce, Boot, 100,
-            head.ExactAdh1.Span, operational.ExactXnv1.Span, 1_100, 5, 1_100, 1_130,
+            head.ExactAdh1.Span, pendingOperational.ExactXnv1.Span, 1_100, 5, 1_100, 1_130,
             AccountDirectoryDtt1IssuanceEpoch.Derive(bootstrap.Authority, 1_100, 5), 2);
         using var pq = DeepMlDsa65CandidateVerifierFactory.OpenForCurrentProcess();
         var proof = await DeepIdV2DirectoryProofAuthor.IssueGenesisAsync(
@@ -135,10 +156,15 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
         var lookup = DeepIdV2AccountDirectoryLookupCodec.Author(Publisher, Network,
             genesis.ProtectedHead.LogGeneration, genesis.CoreHash.Span, 1,
             new byte[38], new byte[32]);
+        proofMaterial = material; exactDirectoryHead = head.ExactAdh1; directoryMutation = head;
+        initialDirectoryFloor = genesis.ProtectedHead;
+        proofQuery = VerifiedDeepIdV2DirectoryQuery.VerifyDid2(lookup, Publisher);
         Freshness = DeepIdV2DirectoryCurrentProofVerifier.VerifyRequestedDid2(
             bootstrap.Authority, proof.ExactAdh1, proof.ExactDtt1, proof.ExactAdp1V2,
             nonce, VerifiedDeepIdV2DirectoryQuery.VerifyDid2(lookup, Publisher),
             new(Boot, 100, 100, 100), genesis.ProtectedHead, 1, 2, pq);
+        var operational = await XPointNetworkOperationalGenesisAuthor.CompleteDid2Async(pendingOperational, Freshness, new(this));
+        CompletedOperational = operational;
         var network = await OnionNetworkContextVerifier.VerifyAsync(bootstrap.Authority,
             Freshness, [operational.ExactXvp1], [operational.ExactXnv1],
             [operational.ExactXnh1], operational.ExactXnd1, [operational.ExactPmt2],
@@ -153,6 +179,7 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
         Head = operational.ExactXnh1;
         Descriptors = operational.ExactXnd1;
         Projection = operational.ExactPmt2;
+        MailboxAuthority = operational.ExactPma2;
         var placement = ContactServicePlacementFactory.Create(network,
             ContactServiceRequestKind.PublishPreKeyInventory, service);
         Placement = ContactServicePlacementCapability.FromNetcodec(placement,
@@ -212,12 +239,89 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
                     DeepIdV2PreKeyManifestCodec.CreateSignatureInput(xpiFields), key.PrivateKey)));
             Publication = DeepIdV2PreKeyPublicationCodec.Decode(DeepIdV2PreKeyPublicationCodec.Encode(
                 Network, Bytes(32, 0xd1), Placement.PlacementHash.Span, manifest, members, last));
+            if (authorContactPublication)
+            {
+                var current = DeepIdV2CurrentContactAuthorizationVerifier.Verify(Freshness,
+                    authorization, Boot, Sample);
+                var time = new OnionTrustedTimeAuthority(this);
+                var advertisement = await DeepIdV2ContactRouteAuthor.AuthorAdvertisementAsync(
+                    current, network, Authority, secrets, 32, Bytes(32, 0x41), Bytes(32, 0x42),
+                    ScalarMult.Base(Bytes(32, 0x43)), 1_000, 1_400, time);
+                var threshold = await DeepIdV2ContactRouteAuthor.AuthorThresholdAsync(current,
+                    network, Authority, advertisement.CanonicalBytes, witnesses, 1_000, 1_400, time);
+                var route = await DeepIdV2ContactRouteAuthor.CompleteGenesisAsync(current,
+                    network, Authority, secrets, advertisement.CanonicalBytes, threshold, 1, time);
+                var resolverCapability = DeepIdV2Root.DerivePermanentIdV2(phrase).ResolverReadCapability.ToArray();
+                AuthoredDeepIdV2ContactObject contact;
+                try
+                {
+                    contact = await DeepIdV2ContactObjectAuthor.AuthorGenesisAsync(route, secrets,
+                        [DeepIdV2PreKeyServiceCodec.Decode(Xps)], "DID2 store QA", resolverCapability);
+                }
+                finally { CryptographicOperations.ZeroMemory(resolverCapability); }
+                var candidate = await DeepIdV2PublicationAuthorityAuthor.AuthorGenesisRequestAsync(
+                    route, contact, secrets, Bytes(32, 0x47), Bytes(32, 0x48), Bytes(32, 0x49));
+                var authorized = await DeepIdV2PublicationAuthorityAuthor.AuthorThresholdAsync(
+                    route, candidate.WireRequest, witnesses);
+                ContactRoute = route; ContactObject = contact; ContactOwnedRequest = candidate.WireRequest;
+                ContactPublication = Xpu1Codec.Decode(authorized.ExactXpu1.Span);
+                var alternate = await DeepIdV2PublicationAuthorityAuthor.AuthorThresholdAsync(
+                    route, candidate.WireRequest, witnesses[..2]);
+                AlternateContactPublication = Xpu1Codec.Decode(alternate.ExactXpu1.Span);
+            }
         }
         finally
         {
             foreach (var value in new[] { seed, agreement, id, revocation, key.PrivateKey })
                 CryptographicOperations.ZeroMemory(value);
         }
+    }
+
+    internal async Task<VerifiedDeepIdV2ContactRouteClosure> RefreshContactProofAsync(ulong sample, ulong proofTime)
+    {
+        var current = await RefreshCurrentDirectoryEvidenceAsync(sample, proofTime);
+        return await DeepIdV2ContactRouteVerifier.VerifyAsync(current, NetworkContext, Authority,
+            ContactRoute.ExactXir1V2, ContactRoute.ExactRouteClosure, new(this));
+    }
+
+    internal async Task<DeepIdV2CurrentContactAuthorization> AdvanceDirectoryWithAnotherAccountAsync(VerifiedAdc1V2 additional)
+    {
+        var original = Freshness.CurrentCheckpoint!;
+        using var w1 = new TestSigner(0x30); using var w2 = new TestSigner(0x31); using var w3 = new TestSigner(0x32);
+        var next = await DeepIdV2DirectoryHeadAuthor.AdvanceAsync(Authority, directoryMutation.ProtectedHead,
+            new(directoryMutation.ExactAllTransitions, [original], [additional], 990, 1_500, 2), [w1, w2, w3]);
+        // This client already verified the previous head. Advance from that
+        // genuine retained floor, not a two-head jump from empty genesis.
+        initialDirectoryFloor = directoryMutation.ProtectedHead;
+        var lookup = DeepIdV2AccountDirectoryLookupCodec.Author(Publisher, Network,
+            initialDirectoryFloor.LogGeneration, initialDirectoryFloor.CoreHash.Span, 1, new byte[38], new byte[32]);
+        proofQuery = VerifiedDeepIdV2DirectoryQuery.VerifyDid2(lookup, Publisher);
+        proofMaterial = DeepIdV2DirectoryProofMaterialAuthor.Create(next.ProtectedHead, next.ExactAllTransitions,
+            [original, additional], original.Checkpoint.DirectoryLeafKey.Span, initialDirectoryFloor);
+        exactDirectoryHead = next.ExactAdh1; directoryMutation = next;
+        return await RefreshCurrentDirectoryEvidenceAsync(Sample, 1_100);
+    }
+
+    private async Task<DeepIdV2CurrentContactAuthorization> RefreshCurrentDirectoryEvidenceAsync(ulong sample, ulong proofTime)
+    {
+        Sample = sample;
+        using var w1 = new TestSigner(0x30); using var w2 = new TestSigner(0x31); using var w3 = new TestSigner(0x32);
+        using var pq = DeepMlDsa65CandidateVerifierFactory.OpenForCurrentProcess();
+        var nonce = Bytes(32, 0xf4);
+        var request = new AccountDirectoryProofAuthoringRequest(Network, nonce, Boot, sample,
+            exactDirectoryHead.Span, View.Span, proofTime, 5, proofTime, proofTime + 30,
+            AccountDirectoryDtt1IssuanceEpoch.Derive(Authority, proofTime, 5), 2);
+        var proof = await DeepIdV2DirectoryProofAuthor.IssueGenesisAsync(Authority, request, proofMaterial,
+            [w1, w2, w3], 1, pq);
+        Freshness = DeepIdV2DirectoryCurrentProofVerifier.VerifyRequestedDid2(Authority,
+            proof.ExactAdh1, proof.ExactDtt1, proof.ExactAdp1V2, nonce, proofQuery,
+            new(Boot, sample, sample, sample), initialDirectoryFloor, 1, 2, pq);
+        NetworkContext = await OnionNetworkContextVerifier.VerifyAsync(Authority, Freshness,
+            [Policy], [View], [Head], Descriptors, [Projection], null, new(this), default);
+        var checkpoint = Freshness.CurrentCheckpoint!;
+        var dca = DeepIdV2ContactAuthorizationCodec.Verify(DeepIdV2ContactAuthorizationCodec.Decode(Dca),
+            checkpoint.Binding, checkpoint.Directory);
+        return DeepIdV2CurrentContactAuthorizationVerifier.Verify(Freshness, dca, Boot, Sample);
     }
 
     internal TestSigner Node(ReadOnlySpan<byte> id)
@@ -268,7 +372,16 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
     public ValueTask<OnionMonotonicReading> ReadAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (ClockReadings.TryDequeue(out var reading)) return ValueTask.FromResult(reading);
         return ValueTask.FromResult(new OnionMonotonicReading(Boot, Sample));
+    }
+
+    public ValueTask<DeepIdV2ContactStoreAuthority> ReadPublicationAuthorityAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (RejectProof) throw new CryptographicException("Current test DID2 proof unavailable.");
+        return ValueTask.FromResult(new DeepIdV2ContactStoreAuthority(NetworkContext,
+            Authority, Freshness, new OnionTrustedTimeAuthority(this)));
     }
 
     public void Dispose() { foreach (var node in nodes) node.Dispose(); }
@@ -326,7 +439,8 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
 
     internal sealed class TestSigner : IDisposable,
         IXPointNetworkBootstrapRootSigner, IXPointNetworkWitnessSigner,
-        IAccountDirectoryAdh1WitnessSigner
+        IAccountDirectoryAdh1WitnessSigner, IContactRouteAuthorityWitnessSigner,
+        IXpa1PublicationAuthorizationWitnessSigner
     {
         private readonly byte marker;
         private readonly KeyPair key;
@@ -337,6 +451,7 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
             key = PublicKeyAuth.GenerateKeyPair(Seed);
         }
         internal byte[] Seed { get; }
+        internal int TopologySignatureCalls { get; private set; }
         public ReadOnlyMemory<byte> RootKeyId => Bytes(32, marker);
         public ReadOnlyMemory<byte> SignerId => marker >= 0x70 ? key.PublicKey : Bytes(32, marker);
         public ReadOnlyMemory<byte> WitnessId => SignerId;
@@ -348,8 +463,18 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
             Memory<byte> signature64, CancellationToken cancellationToken) =>
             Sign(request.SigningInput, signature64, cancellationToken);
         public ValueTask<int> SignAsync(XPointNetworkOperationalSigningRequest request,
+            Memory<byte> signature64, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (request.Purpose == XPointNetworkOperationalSignaturePurpose.MailboxTopology)
+                TopologySignatureCalls++;
+            return Sign(request.SigningInput, signature64, cancellationToken);
+        }
+        public ValueTask<int> SignAsync(ContactRouteAuthoritySigningRequest request,
             Memory<byte> signature64, CancellationToken cancellationToken) =>
             Sign(request.SigningInput, signature64, cancellationToken);
+        public ValueTask<ReadOnlyMemory<byte>> SignXpa1Async(ReadOnlyMemory<byte> input,
+            CancellationToken cancellationToken) => SignWitness(input, cancellationToken);
         private ValueTask<int> Sign(ReadOnlyMemory<byte> input, Memory<byte> destination,
             CancellationToken cancellationToken)
         {

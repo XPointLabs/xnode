@@ -59,8 +59,9 @@ internal sealed class HttpContactReplicaPeerClient : IContactReplicaPeerClient
     {
         ArgumentNullException.ThrowIfNull(command);
         var local = node.GetRouterId();
-        command.Placement.EnsureUsable(
-            checked((ulong)clock.UtcNow.ToUnixTimeSeconds()));
+        // The sender must own the actual NETCODEC capability. OS epoch time
+        // below authenticates HTTP admission only, never placement validity.
+        command.Placement.VerifiedPlacement.Network.EnsureCurrent();
         var remoteBytes = command.Placement.OtherReplica(local.ToBytes());
         var remote = RouterId.FromBytes(remoteBytes);
         if (!privacy.Enabled
@@ -121,6 +122,7 @@ internal sealed class HttpContactReplicaPeerClient : IContactReplicaPeerClient
                 checked((int)length),
                 timeout.Token).ConfigureAwait(false);
             var decoded = ContactReplicaWireCodec.DecodeResponse(exact);
+            command.Placement.VerifiedPlacement.Network.EnsureCurrent();
             var headers = ReadHeaders(response);
             if (!ContactReplicaPeerAuthenticator.VerifyResponse(
                     headers,

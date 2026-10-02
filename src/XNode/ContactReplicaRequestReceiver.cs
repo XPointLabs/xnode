@@ -86,11 +86,6 @@ internal sealed class ContactReplicaRequestReceiver : IContactReplicaCommandRece
                 command.Payload,
                 current.RequestKind,
                 cancellationToken).ConfigureAwait(false),
-            ContactReplicaRpcOperation.ApplyPreKeyPublication =>
-                await ApplyPreKeyPublicationAsync(
-                    command.Payload,
-                    current,
-                    cancellationToken).ConfigureAwait(false),
             _ => throw new InvalidDataException("The contact replica RPC operation is unknown.")
         };
         return new ContactReplicaRpcResponse(
@@ -98,46 +93,6 @@ internal sealed class ContactReplicaRequestReceiver : IContactReplicaCommandRece
             command.CorrelationId.ToArray(),
             localId,
             payload);
-    }
-
-    private async ValueTask<byte[]> ApplyPreKeyPublicationAsync(
-        ReadOnlyMemory<byte> payload,
-        ContactServicePlacementCapability current,
-        CancellationToken cancellationToken)
-    {
-        var request = ContactReplicaPayloadCodec.DecodeBoundedPreKeyPublication(payload.Span);
-        if (current.RequestKind != Deep.Protocol.XPointNetworkV1.ContactServiceRequestKind.PublishPreKeyInventory
-            || !Fixed(request.NetworkId.Span, current.NetworkId.Span)
-            || !Fixed(request.ViewHash.Span, current.ViewHash.Span)
-            || !Fixed(request.PlacementHash.Span, current.PlacementHash.Span)
-            || !Fixed(local.ResolvePublicationServiceCapability(request).Span, current.ShardKey.Span))
-        {
-            throw new UnauthorizedAccessException(
-                "The exact bounded XPP1 request is outside the locally minted placement.");
-        }
-        var recipients = authorities.PreKeyRecipients
-            ?? throw new InvalidOperationException(
-                "Bounded XPP1 replica activation requires verified recipient evidence.");
-        var snapshots = authorities.Snapshots
-            ?? throw new InvalidOperationException(
-                "Bounded XPP1 replica activation requires a verified authority snapshot.");
-        var candidates = await recipients.ReadCurrentCandidatesAsync(
-                request.NetworkId,
-                cancellationToken)
-            .ConfigureAwait(false);
-        var snapshot = await snapshots.ReadCurrentAsync(cancellationToken).ConfigureAwait(false);
-        snapshot.EnsureConsistent();
-        var now = checked((ulong)clock.UtcNow.ToUnixTimeSeconds());
-        var exactReceipt = await local.ApplyPublicationAsync(
-                request,
-                current,
-                candidates,
-                snapshot.TrustedTimeAuthority,
-                now,
-                cancellationToken)
-            .ConfigureAwait(false);
-        return ContactReplicaPayloadCodec.EncodeBoundedPreKeyReceipt(
-            Xic1BoundedCodec.Decode(exactReceipt.Span));
     }
 
     private async ValueTask<byte[]> ReadXurAsync(
@@ -206,25 +161,30 @@ internal sealed class ContactReplicaRequestReceiver : IContactReplicaCommandRece
         CancellationToken cancellationToken)
     {
         var request = ContactReplicaPayloadCodec.DecodeReceiptRequest(payload.Span);
-        await VerifyReceiptEvidenceAsync(
+        var authorization = await VerifyReceiptEvidenceAsync(
             request.Request,
             request.EvidenceOperation,
             request.EvidencePayload,
             requestKind,
             cancellationToken).ConfigureAwait(false);
+        if (authorization is not null)
+            await authorization.EnsureCurrentAsync(cancellationToken).ConfigureAwait(false);
         var receipt = await local.Binding.ReceiptAuthority.IssueAsync(
             request.Request,
             cancellationToken).ConfigureAwait(false);
+        if (authorization is not null)
+            await authorization.EnsureCurrentAsync(cancellationToken).ConfigureAwait(false);
         return ContactReplicaPayloadCodec.Encode(receipt);
     }
 
-    private async ValueTask VerifyReceiptEvidenceAsync(
+    private async ValueTask<VerifiedXpa1PublicationAuthorization?> VerifyReceiptEvidenceAsync(
         ContactServiceReplicaReceiptRequest receipt,
         ContactReplicaRpcOperation operation,
         ReadOnlyMemory<byte> payload,
         Deep.Protocol.XPointNetworkV1.ContactServiceRequestKind requestKind,
         CancellationToken cancellationToken)
     {
+        VerifiedXpa1PublicationAuthorization? publicationAuthorization = null;
         byte[] expected;
         switch (receipt.Kind)
         {
@@ -233,24 +193,19 @@ internal sealed class ContactReplicaRequestReceiver : IContactReplicaCommandRece
                     && operation == ContactReplicaRpcOperation.PublishDcr:
             {
                 var request = ContactReplicaPayloadCodec.DecodeAuthorizedPublish(payload.Span);
-                ContactPublicationAuthorizationSagaDisposition authorizationDisposition;
+                var authorization = await authorities.PublicationAuthorizations.VerifyAsync(request,
+                    cancellationToken).ConfigureAwait(false);
+                publicationAuthorization = authorization;
+                ContactServiceOpaqueFacade.ValidatePublicationAuthorization(authorization, request);
                 try
                 {
-                    authorizationDisposition = local.AuthorizationSaga.Read(
-                        ContactServiceOpaqueFacade.Xpa1AuthorizationId(request.ExactXpa1.Span));
+                    local.AuthorizationSaga.RequireExactCommitted(authorization, request);
                 }
-                catch (Exception exception) when (exception is KeyNotFoundException or IOException)
+                catch (Exception exception) when (exception is KeyNotFoundException or IOException or InvalidDataException)
                 {
                     throw new ContactServiceReceiptAuthorityException(
-                        "The local XPA saga has no committed publication authorization.",
+                        "The local XPA saga has no exact committed publication authorization.",
                         exception);
-                }
-
-                if (authorizationDisposition
-                    != ContactPublicationAuthorizationSagaDisposition.ExistingCommitted)
-                {
-                    throw new ContactServiceReceiptAuthorityException(
-                        "The local XPA saga has not committed this publication authorization.");
                 }
                 var result = await local.Binding.ResolverReplica.ResolveCurrentDcrAsync(
                     request.LocatorHash,
@@ -399,6 +354,7 @@ internal sealed class ContactReplicaRequestReceiver : IContactReplicaCommandRece
             throw new ContactServiceReceiptAuthorityException(
                 "The requested receipt tuple does not match the local durable replica result.");
         }
+        return publicationAuthorization;
     }
 
     private static bool OperationMatches(

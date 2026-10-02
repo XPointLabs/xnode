@@ -391,7 +391,19 @@ internal sealed class AuthenticatedRemoteContactServiceReplica :
         var payload = ContactReplicaPayloadCodec.Encode(request);
         Remember(ContactServiceReceiptKind.InviteClaimCommit, ContactReplicaRpcOperation.ReadDcrClaim, payload);
         var response = await SendAsync(ContactReplicaRpcOperation.ReadDcrClaim, payload, cancellationToken);
-        return ContactReplicaPayloadCodec.DecodeDcrResolve(response.Payload.Span);
+        var result = ContactReplicaPayloadCodec.DecodeDcrResolve(response.Payload.Span);
+        if (result.Publication?.UsageLimit == 0 && exactServiceRequest.Length != 0)
+        {
+            // Permanent preflight reads do not consume an invite. The peer still
+            // independently rereads durable state and verifies this exact tuple
+            // when issuing its read receipt; this witness is not authority.
+            var exact = Xiq1Codec.Decode(exactServiceRequest);
+            if (!Fixed(exact.RequestHash.Span, request.RequestHash)
+                || !Fixed(exact.LocatorHash.Span, request.LocatorHash))
+                throw new InvalidDataException("The exact XIQ request does not bind the permanent-contact preflight.");
+            Remember(ContactServiceReceiptKind.ResolveRead, ContactReplicaRpcOperation.ReadCurrentDcr, exactServiceRequest);
+        }
+        return result;
     }
 
     public async ValueTask<ContactResolverMutationResult> WriteXurSuccessorAsync(

@@ -145,7 +145,7 @@ public sealed class DeepIdV2ReplicaStageReceiverTests
                 RouterId = Convert.ToHexString(Local)
             }, source, new MailboxStorageSecurity(),
                 new MailboxDurabilityBarrier());
-            var dispatcher = new DeepIdV2PreKeyOnionDispatcher(receiver);
+            var dispatcher = new DeepIdV2ContactOnionDispatcher(receiver);
             var publisher = DeepIdV2Codec.DecodeDid2(Did2());
             var fragments = DeepIdV2BoundedPreKeyPublicationCodec.CreateSequence(
                 Aggregate(), View, publisher.CanonicalBytes.Span,

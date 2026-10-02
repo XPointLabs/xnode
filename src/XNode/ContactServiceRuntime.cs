@@ -39,8 +39,6 @@ public sealed class ContactServicePersistenceOptions
     public int ReplicaTimeoutSeconds { get; set; } = 5;
     public int ReplayCapacity { get; set; } = 100_000;
     public int ReplayTtlSeconds { get; set; } = 300;
-    public int RecipientEvidenceMaximumProtectedStateBytes { get; set; } = 16 * 1024 * 1024;
-    public int RecipientEvidenceMaximumEntries { get; set; } = 4_096;
 
     internal TimeSpan ReplicaTimeout => TimeSpan.FromSeconds(ReplicaTimeoutSeconds);
     internal TimeSpan ReplayTtl => TimeSpan.FromSeconds(ReplayTtlSeconds);
@@ -49,9 +47,7 @@ public sealed class ContactServicePersistenceOptions
     {
         if (ReplicaTimeoutSeconds is < 1 or > 30
             || ReplayCapacity is < 1_000 or > 10_000_000
-            || ReplayTtlSeconds is < 120 or > 3_600
-            || RecipientEvidenceMaximumProtectedStateBytes is < 4_096 or > 128 * 1024 * 1024
-            || RecipientEvidenceMaximumEntries is < 16 or > 65_536)
+            || ReplayTtlSeconds is < 120 or > 3_600)
         {
             throw new InvalidOperationException("ContactService transport resource bounds are invalid.");
         }
@@ -75,21 +71,15 @@ internal sealed class ContactServiceAuthoritySources
 {
     internal ContactServiceAuthoritySources(
         IContactServicePlacementAuthoritySource placements,
-        IContactPublicationAuthorizationVerifier publicationAuthorizations,
-        IContactPreKeyRecipientAuthoritySource? preKeyRecipients = null,
-        IContactVerifiedAuthoritySnapshotSource? snapshots = null)
+        IContactPublicationAuthorizationVerifier publicationAuthorizations)
     {
         Placements = placements ?? throw new ArgumentNullException(nameof(placements));
         PublicationAuthorizations = publicationAuthorizations
             ?? throw new ArgumentNullException(nameof(publicationAuthorizations));
-        PreKeyRecipients = preKeyRecipients;
-        Snapshots = snapshots;
     }
 
     internal IContactServicePlacementAuthoritySource Placements { get; }
     internal IContactPublicationAuthorizationVerifier PublicationAuthorizations { get; }
-    internal IContactPreKeyRecipientAuthoritySource? PreKeyRecipients { get; }
-    internal IContactVerifiedAuthoritySnapshotSource? Snapshots { get; }
 
     internal static ContactServiceAuthoritySources ForTransportTests(
         IContactServicePlacementAuthoritySource placements) => new(
@@ -211,96 +201,6 @@ internal sealed class ContactServiceLocalReplicaRuntime : IDisposable
     internal ReadOnlyMemory<byte> ResolvePublicationServiceCapability(
         Xpp1BoundedRequest request) => preKeyStore.ResolvePublicationServiceCapability(request);
 
-    internal async ValueTask<ReadOnlyMemory<byte>> ApplyPublicationAsync(
-        Xpp1BoundedRequest request,
-        ContactServicePlacementCapability placement,
-        IReadOnlyList<ContactPreKeyRecipientAuthorityCandidate> candidates,
-        OnionTrustedTimeAuthority trustedTime,
-        ulong receiptAtUnixSeconds,
-        CancellationToken cancellationToken)
-    {
-        var staged = preKeyStore.ApplyPublicationStage(
-            request,
-            receiptAuthority.ReplicaId.Span,
-            receiptAtUnixSeconds,
-            receiptAuthority.SignBoundedPreKeyReceipt);
-        if (staged.StoredReceipt is not null)
-        {
-            return staged.StoredReceipt.CanonicalBytes;
-        }
-        if (staged.UnsignedReceipt is not null)
-        {
-            return receiptAuthority.SignBoundedPreKeyReceipt(staged.UnsignedReceipt);
-        }
-        if (request is not Xpp1CommitRequest commit)
-        {
-            throw new InvalidOperationException("Only a complete XPP1 commit may enter candidate verification.");
-        }
-
-        var context = preKeyStore.ReadPublicationCommit(commit);
-        VerifiedPreKeyInventoryCandidate? verified = null;
-        foreach (var candidate in candidates)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            try
-            {
-                VerifiedPreKeyInventoryCandidate current;
-                if (context.PredecessorExactXpi1.IsEmpty)
-                {
-                    current = await PreKeyInventoryPublicationVerifier.VerifyCandidateAsync(
-                        context.Transition,
-                        placement.VerifiedPlacement,
-                        candidate.Authority,
-                        candidate.Bundle,
-                        trustedTime,
-                        predecessor: null,
-                        cancellationToken).ConfigureAwait(false);
-                }
-                else
-                {
-                    var lineage = PreKeyInventoryPublicationVerifier.RestoreReplicaLineage(
-                        context.PredecessorExactXpi1.Span,
-                        context.PredecessorXpi1Hash.Span,
-                        candidate.Authority,
-                        candidate.Bundle);
-                    current = await PreKeyInventoryPublicationVerifier.VerifyCandidateAsync(
-                        context.Transition,
-                        lineage,
-                        placement.VerifiedPlacement,
-                        candidate.Authority,
-                        candidate.Bundle,
-                        trustedTime,
-                        cancellationToken).ConfigureAwait(false);
-                }
-                if (verified is not null)
-                {
-                    throw new InvalidDataException(
-                        "Multiple current recipient authorities verified the same bounded XPP1 publication.");
-                }
-                verified = current;
-            }
-            catch (PreKeyInventoryPublicationVerificationException)
-            {
-                // A capability-keyed bounded scan deliberately lets Protocol reject
-                // non-matching recipient evidence; raw cache metadata never selects it.
-            }
-        }
-        if (verified is null)
-        {
-            throw new InvalidOperationException(
-                "No current verified recipient authority closes the bounded XPP1 publication.");
-        }
-        var plan = PreKeyPublicationReplicaState.PrepareActivation(context.Transition, verified);
-        var unsigned = preKeyStore.ActivatePublication(
-            commit,
-            plan,
-            placement.ReplicaIds,
-            receiptAuthority.ReplicaId.Span,
-            receiptAtUnixSeconds);
-        var exactReceipt = receiptAuthority.SignBoundedPreKeyReceipt(unsigned);
-        return preKeyStore.StoreActivatedPublicationReceipt(commit, exactReceipt).CanonicalBytes;
-    }
-
     public void Dispose()
     {
         if (disposed)
@@ -390,12 +290,6 @@ internal sealed class ProductionContactServiceOpaqueDispatcher :
         CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
-        if (operation == ContactServiceOperation.PublishPreKeyInventory)
-        {
-            return await DispatchPreKeyPublicationAsync(
-                canonicalRequest,
-                cancellationToken).ConfigureAwait(false);
-        }
         if (operation == ContactServiceOperation.AcquireMailboxGrant)
         {
             return await DispatchMailboxGrantAsync(
@@ -440,71 +334,6 @@ internal sealed class ProductionContactServiceOpaqueDispatcher :
                 (ContactServiceFacadeOperation)operation,
                 canonicalRequest,
                 cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            gate.Release();
-        }
-    }
-
-    private async ValueTask<ReadOnlyMemory<byte>> DispatchPreKeyPublicationAsync(
-        ReadOnlyMemory<byte> canonicalRequest,
-        CancellationToken cancellationToken)
-    {
-        if (canonicalRequest.Length > Xpp1BoundedCodec.MaximumCanonicalRequestBytes)
-        {
-            throw new InvalidDataException("The bounded XPP1 request exceeds its canonical transport limit.");
-        }
-        var request = Xpp1BoundedCodec.Decode(canonicalRequest.Span);
-        var shardKey = local.ResolvePublicationServiceCapability(request);
-        var gate = executionGates[BinaryPrimitives.ReadUInt16BigEndian(
-            SHA256.HashData(shardKey.Span)) % executionGates.Length];
-        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            var placement = await authorities.Placements.MintAsync(
-                    ContactServiceRequestKind.PublishPreKeyInventory,
-                    shardKey,
-                    cancellationToken)
-                .ConfigureAwait(false);
-            var now = checked((ulong)clock.UtcNow.ToUnixTimeSeconds());
-            placement.EnsureUsable(now);
-            if (placement.RequestKind != ContactServiceRequestKind.PublishPreKeyInventory
-                || !Fixed(placement.ShardKey.Span, shardKey.Span)
-                || !placement.ContainsReplica(node.GetRouterId().ToBytes())
-                || !Fixed(request.NetworkId.Span, placement.NetworkId.Span)
-                || !Fixed(request.ViewHash.Span, placement.ViewHash.Span)
-                || !Fixed(request.PlacementHash.Span, placement.PlacementHash.Span))
-            {
-                throw new InvalidOperationException(
-                    "The local node or exact bounded XPP1 envelope is outside the NETCODEC placement capability.");
-            }
-            var recipients = authorities.PreKeyRecipients
-                ?? throw new InvalidOperationException(
-                    "Bounded XPP1 activation requires the verified recipient evidence source.");
-            var snapshots = authorities.Snapshots
-                ?? throw new InvalidOperationException(
-                    "Bounded XPP1 activation requires the current verified authority snapshot.");
-            var candidates = await recipients.ReadCurrentCandidatesAsync(
-                    request.NetworkId,
-                    cancellationToken)
-                .ConfigureAwait(false);
-            var snapshot = await snapshots.ReadCurrentAsync(cancellationToken)
-                .ConfigureAwait(false);
-            snapshot.EnsureConsistent();
-            if (!Fixed(snapshot.Network.NetworkId.Span, request.NetworkId.Span))
-            {
-                throw new InvalidOperationException(
-                    "The current trusted-time snapshot does not bind the bounded XPP1 network.");
-            }
-            return await local.ApplyPublicationAsync(
-                    request,
-                    placement,
-                    candidates,
-                    snapshot.TrustedTimeAuthority,
-                    now,
-                    cancellationToken)
-                .ConfigureAwait(false);
         }
         finally
         {
@@ -583,11 +412,9 @@ internal sealed class ProductionContactServiceOpaqueDispatcher :
                         now);
             }
 
-            var responseExpiry = Math.Min(
-                checked(now + 300),
-                route.EffectiveExpiresAtUnixSeconds == 0
-                    ? checked(now + 300)
-                    : route.EffectiveExpiresAtUnixSeconds);
+            // Exact unknown-outcome retry must not change the issuer's journal
+            // scope/deadline each time the node observes another second.
+            var responseExpiry = BinaryPrimitives.ReadUInt64BigEndian(request.Field(10).Span);
             var routeHash = route.Disposition == ContactResolverReadDisposition.Current
                 ? SHA256.HashData(route.CanonicalRouteClosure)
                 : new byte[32];
@@ -704,6 +531,25 @@ internal sealed class ProductionContactServiceOpaqueDispatcher :
 
 internal static class ContactServiceHostComposition
 {
+    internal static ContactServiceHostCompositionPlan AddDid2ContactServiceBoundary(
+        this IServiceCollection services, ContactServicePersistenceOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(options);
+        options.Validate();
+        if (!options.RuntimeActivation)
+            return services.AddContactServiceBoundary(options);
+        RequireRegistered<IDeepIdV2ContactStoreAuthoritySource>(services);
+        RequireRegistered<IOnionMonotonicClock>(services);
+        var plan = ContactServiceHostCompositionPlan.CreateForDeferredAuthorities(options);
+        services.TryAddSingleton(options);
+        services.TryAddSingleton(plan);
+        services.TryAddSingleton<ContactReplicaReplayGuard>();
+        services.TryAddSingleton<IContactReplicaPeerClient, HttpContactReplicaPeerClient>();
+        services.TryAddSingleton<IMailboxGrantAuthorityClient, UnavailableMailboxGrantAuthorityClient>();
+        return plan;
+    }
+
     internal static ContactServiceHostCompositionPlan AddContactServiceBoundary(
         this IServiceCollection services,
         ContactServicePersistenceOptions options,
@@ -730,65 +576,6 @@ internal static class ContactServiceHostComposition
         services.AddSingleton<IContactServiceOpaqueDispatcher>(provider =>
             provider.GetRequiredService<ProductionContactServiceOpaqueDispatcher>());
         services.AddSingleton<ContactReplicaRequestReceiver>();
-        return plan;
-    }
-
-    /// <summary>
-    /// Explicit production activation path. Merely configuring ContactService is
-    /// insufficient: raw artifact, protected monotonic clock, data-protection and
-    /// verified authority sources must already be registered in DI.
-    /// </summary>
-    internal static ContactServiceHostCompositionPlan AddProductionContactServiceBoundary(
-        this IServiceCollection services,
-        ContactServicePersistenceOptions options,
-        ContactAuthoritySnapshotPersistenceOptions authorityOptions)
-    {
-        ArgumentNullException.ThrowIfNull(services);
-        ArgumentNullException.ThrowIfNull(options);
-        ArgumentNullException.ThrowIfNull(authorityOptions);
-        RequireRegistered<IContactAuthorityArtifactPackageSource>(services);
-        RequireRegistered<IOnionMonotonicClock>(services);
-        RequireRegistered<IDataProtectionProvider>(services);
-
-        var plan = ContactServiceHostCompositionPlan.CreateForDeferredAuthorities(options);
-        services.TryAddSingleton(authorityOptions);
-        services.TryAddSingleton<ProductionContactVerifiedAuthoritySnapshotSource>(provider => new(
-            provider.GetRequiredService<IContactAuthorityArtifactPackageSource>(),
-            provider.GetRequiredService<IOnionMonotonicClock>(),
-            provider.GetRequiredService<ContactAuthoritySnapshotPersistenceOptions>(),
-            provider.GetRequiredService<RouterNodeOptions>(),
-            provider.GetRequiredService<IDataProtectionProvider>(),
-            provider.GetRequiredService<IMailboxStorageSecurity>(),
-            provider.GetRequiredService<IMailboxDurabilityBarrier>()));
-        services.TryAddSingleton<IContactVerifiedAuthoritySnapshotSource>(provider =>
-            provider.GetRequiredService<ProductionContactVerifiedAuthoritySnapshotSource>());
-        services.TryAddSingleton<IContactRouteCurrentNetworkAuthoritySource>(provider =>
-            provider.GetRequiredService<ProductionContactVerifiedAuthoritySnapshotSource>());
-        services.TryAddSingleton<VerifiedContactServicePlacementAuthoritySource>(provider => new(
-            provider.GetRequiredService<IContactVerifiedAuthoritySnapshotSource>(),
-            provider.GetRequiredService<IClock>()));
-        services.TryAddSingleton<IContactServicePlacementAuthoritySource>(provider =>
-            provider.GetRequiredService<VerifiedContactServicePlacementAuthoritySource>());
-        services.TryAddSingleton<VerifiedContactPublicationAuthorizationVerifier>(provider => new(
-            provider.GetRequiredService<IContactVerifiedAuthoritySnapshotSource>()));
-        services.TryAddSingleton<IContactPublicationAuthorizationVerifier>(provider =>
-            provider.GetRequiredService<VerifiedContactPublicationAuthorizationVerifier>());
-        services.TryAddSingleton<ContactServiceAuthoritySources>(provider => new(
-            provider.GetRequiredService<IContactServicePlacementAuthoritySource>(),
-            provider.GetRequiredService<IContactPublicationAuthorizationVerifier>(),
-            provider.GetRequiredService<IContactPreKeyRecipientAuthoritySource>(),
-            provider.GetRequiredService<IContactVerifiedAuthoritySnapshotSource>()));
-        services.TryAddSingleton(options);
-        services.TryAddSingleton(plan);
-        services.TryAddSingleton<ContactReplicaReplayGuard>();
-        services.TryAddSingleton<IContactReplicaPeerClient, HttpContactReplicaPeerClient>();
-        services.TryAddSingleton<IMailboxGrantAuthorityClient,
-            UnavailableMailboxGrantAuthorityClient>();
-        services.TryAddSingleton<ContactServiceLocalReplicaRuntime>();
-        services.TryAddSingleton<ProductionContactServiceOpaqueDispatcher>();
-        services.TryAddSingleton<IContactServiceOpaqueDispatcher>(provider =>
-            provider.GetRequiredService<ProductionContactServiceOpaqueDispatcher>());
-        services.TryAddSingleton<ContactReplicaRequestReceiver>();
         return plan;
     }
 
@@ -836,6 +623,7 @@ public sealed class PrivacyTerminalExitDispatcher : INativeMailboxExitDispatcher
     private readonly RoutedNativeMailboxExitDispatcher mailbox;
     private readonly IContactServiceOpaqueDispatcher contact;
     private readonly GroupControlOnionTerminalAdapter groupControl;
+    private readonly ContactCoordinationOnionDispatcher? coordination;
 
     public PrivacyTerminalExitDispatcher(
         RoutedNativeMailboxExitDispatcher mailbox,
@@ -845,6 +633,13 @@ public sealed class PrivacyTerminalExitDispatcher : INativeMailboxExitDispatcher
         this.mailbox = mailbox ?? throw new ArgumentNullException(nameof(mailbox));
         this.contact = contact ?? throw new ArgumentNullException(nameof(contact));
         this.groupControl = groupControl ?? throw new ArgumentNullException(nameof(groupControl));
+    }
+
+    internal PrivacyTerminalExitDispatcher(RoutedNativeMailboxExitDispatcher mailbox,
+        IContactServiceOpaqueDispatcher contact, GroupControlOnionTerminalAdapter groupControl,
+        ContactCoordinationOnionDispatcher? coordination) : this(mailbox, contact, groupControl)
+    {
+        this.coordination = coordination;
     }
 
     // Keeps focused tests and non-hosted callers fail-closed while Program uses
@@ -867,6 +662,9 @@ public sealed class PrivacyTerminalExitDispatcher : INativeMailboxExitDispatcher
         ArgumentNullException.ThrowIfNull(request);
         var privacyOperation = request.Operation;
         var canonicalBody = request.CanonicalBytes;
+        if (canonicalBody.Length >= 4 && canonicalBody.Span[..4].SequenceEqual("XCA2"u8))
+            return coordination is null ? NativeMailboxDispatchResult.RejectedBeforeForward() :
+                await coordination.DispatchAsync(request, cancellationToken).ConfigureAwait(false);
         if (TryGroupControlOperation(canonicalBody.Span))
         {
             if (!OuterOperationMatchesGroupControl(privacyOperation))

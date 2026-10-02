@@ -1,5 +1,76 @@
 # Operator Guide
 
+## Private DID2 mailbox grant candidate
+
+[DR-0054](../../docs/survival-program/decisions/DR-0054-did2-private-mailbox-grant-issuance.md)
+connects acquisition to the same current DID2 ONION/contact replica graph.
+It is disabled by default. Explicit `DeepIdV2ContactResolver:MailboxGrantEnabled`
+requires the enabled DID2 resolver and one
+`DeepIdV2ContactResolver:MailboxGrantAuthorityOrigin` HTTPS origin without a
+path, user information, query or fragment. The client uses platform TLS without
+redirects/cookies/decompression and signs admission with the existing registered
+node key. No mailbox issuer key is installed on XNode. Both selected stores
+independently attest their current durable publication/role lookup; exact retry
+preserves the original result deadline. Existing observer, proof/network floor,
+V2 staging and candidate environment guards still apply.
+This opt-in composition is not production activation or device delivery evidence.
+
+## Private DID2 coordination backend candidate
+
+[DR-0048](../../docs/survival-program/decisions/DR-0048-private-contact-coordination-peer-authentication.md)
+defines the independent calling-node proof. The bounded backend client signs
+using the node's existing `Node:Ed25519PrivateKeyPath`/registered identity and
+one operator-configured HTTPS origin. It never changes registration keys,
+follows redirects, accepts an arbitrary target URL or bypasses platform TLS.
+Registry separately requires the intended public keys in its transport access
+list; do not copy node private keys into Registry or client configuration.
+
+The host candidate registers the verified carrier defined by
+[DR-0049](../../docs/survival-program/decisions/DR-0049-did2-three-hop-coordination-carrier.md)
+only with explicit `ContactCoordination:Enabled=true` and one
+`ContactCoordination:BackendOrigin` HTTPS origin. Partial disabled settings,
+unknown configuration fields, an unavailable privacy carrier or missing
+independent DID2 observer configuration fail startup. Existing DID2 proof/network
+options still restrict activation to Development/UAT; this does not relax them
+or certify a production deployment. The default is disabled.
+
+Provision the intended registered public node keys separately at Registry;
+no key reset or private-key transfer is needed. Explicit
+`DeepIdV2ContactResolver:Enabled=true` connects DID2 publication/resolve to the
+V2 contact terminal under
+[DR-0050](../../docs/survival-program/decisions/DR-0050-did2-contact-service-composition.md).
+It requires the independent DID2 observer/network boundary, privacy carrier and
+`DeepIdV2ReplicaStage:Enabled=true`. `ContactService` runtime/endpoint flags may
+be enabled only together and with this complete DID2 resolver composition.
+The existing candidate environment guards are unchanged. The same
+one authenticated replica route multiplexes current contact/prekey operations;
+no second route or public direct fallback is introduced. Store expiry/retention
+uses fresh signed DID2 time plus boot-scoped monotonic elapsed time, while peer
+HTTP signatures use the separate host clock. Missing/expired/rolled-back proof
+fails closed. Full production clock/floor/root/package activation remains gated.
+The `ContactCoordinationFocused=true` local lane exercises real public DID2/NET
+ceremony, node signatures and HTTP-handler boundaries; it does not replace the
+full default suite, socket TLS, multi-node rehearsal or physical device E2E.
+
+## DID2 opaque contact-publication candidate
+
+The sole XPU/XPA reader and node publication authorization now follow
+[DR-0039](../../docs/survival-program/decisions/DR-0039-did2-opaque-publication-consumer.md).
+Placement and authorization both use the independently configured DID2
+observer proof, protected network floor and signed network artifacts; the old
+Contact snapshot is not a publication fallback. Missing DID2 composition
+rejects rather than reusing old proof material.
+
+Existing publication-authorization saga files are incompatible and fail closed.
+An explicit isolated QA saga reset is required; there is no automatic reset
+or migration. Preserve registered node keys and unrelated stores. The local
+business slice verifies real DID2 signatures, opaque storage, two durable
+replica receipts, restart and exact retry after a discarded response. It is
+not socket/TLS, authenticated remote-peer, shipping client or physical-device
+evidence. Private coordination ingress and mailbox membership/grants remain
+activation gates. The default full test suite is unchanged; only an explicit
+`PublicationConsumerFocused=true` local run selects this small slice.
+
 ## DID2 recovery candidate
 
 The DID2 proof reader consumes independently verified historical pages and
@@ -119,7 +190,8 @@ It independently verifies the exact signed XNA1/DTS1 authority lineage from
 `NetworkIdHex` and `GenesisAuthorityCoreHashHex`, restores an exact signed DID2
 genesis head from `GenesisHeadPath` and `GenesisHeadCoreHashHex`, then protects
 successor heads beneath `Node:DataDirectory`. It refuses to start in Production
-or alongside the V1 `ContactAuthority` boundary. It does **not** yet activate
+and rejects the removed `ContactAuthority`/`GroupControlAuthority` sections,
+including disabled settings. It does **not** by itself activate
 DID2 contact publication, pre-key claims, messages, or groups. Do not advertise
 it as an E2E-capable XNode release.
 The internal candidate gate combines a durably complete XPP1 V2 journal,
@@ -139,7 +211,7 @@ recipient-specific DID2 directory proof before minting a NETCODEC capability.
 `DeepIdV2ReplicaStage:Enabled=true` adds authenticated peer staging on the
 existing HTTP/2 replica port and a DID2-only ONION ContactResolve terminal on
 a selected local replica. It requires this independent DID2 placement source,
-refuses V1 ContactAuthority activation, and is accepted only in
+rejects retired authority configuration, and is accepted only in
 UAT/Development. Peer requests re-mint current placement and check the
 authenticated selected peer; ONION terminal requests use only a newly minted
 verified placement and reject an unselected local exit. Both durably stage
@@ -185,7 +257,7 @@ This candidate has bounded local admission capacity and does not detect rollback
 to an older valid complete backup. `DeepIdV2PreKeyClaim:Enabled=true` now
 exposes the candidate V2 claim on the selected ONION terminal. It defaults to
 false and requires DID2 staging, a configured public observation credential,
-the independent placement/proof source, disabled V1 ContactAuthority and
+the independent placement/proof source, absent retired authority sections and
 Development/UAT. The first ranked selected replica coordinates; the other
 forwards without holding its local claim lock. Internal authenticated replica
 operations 14–17 coordinate, prepare, complete and read the retained inventory
@@ -1089,14 +1161,11 @@ Registry and production startup has no `ContactRouteClosure` Registry adapter.
 The permanent resolve response includes two authenticated `resolve-read`
 receipts, while a one-time resolve includes the existing durable claim receipts.
 
-Verified recipient evidence learned from an authenticated XIS1 response remains
-in a separate protected cache below
-`<Node.DataDirectory>/contact-authority-v1/recipient-resolve-evidence-v1.bin`.
-Its limits are `ContactService:RecipientEvidenceMaximumProtectedStateBytes` and
-`ContactService:RecipientEvidenceMaximumEntries`. This cache never performs a
-locator lookup; it only retains Protocol-verified resolve/claim evidence needed
-to authorize later pre-key operations. Corrupt or rolled-back protected state
-fails closed at startup.
+The DID2 host no longer reads the former V1 recipient-evidence cache.
+`ContactService` configuration is closed: the removed recipient-evidence limits
+and all unknown fields reject startup. Rebuild and repin the complete DID2
+consumer graph before activation; there is no old-cache reader or migration.
+See [DR-0069](../../docs/survival-program/decisions/DR-0069-did2-retired-identity-surface-removal.md).
 
 Side-effect-free post-verification cancellation may instead persist `Released`. This is not a
 deletion: the counter floor and exact claim digest survive restart, exact retry can reserve it
