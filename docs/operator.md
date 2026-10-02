@@ -73,6 +73,15 @@ activation gates. The default full test suite is unchanged; only an explicit
 
 ## DID2 recovery candidate
 
+The hosted ContactResolve terminal now reports only closed dependency-failure
+categories (`proof-rate-limit`, `proof-unavailable`, cryptographic/authorization
+rejection, custody/I/O or configuration/state). Logging is bounded to one
+warning per ten seconds per process, across categories. It never emits exception
+objects/messages, account identifiers, capabilities, payloads or origins.
+These diagnostics retain outcome-unknown behavior; they do not permit a retry,
+receipt, fallback or successful publication. The native DID2 focused runtime
+batch passes 37/37; production/device evidence is a separate requirement.
+
 Malformed external authority responses and frames keep ONION readiness closed,
 but do not terminate its bounded idle acquisition loop, including at startup.
 No rejected response or retained stale binding is served; recovery requires a

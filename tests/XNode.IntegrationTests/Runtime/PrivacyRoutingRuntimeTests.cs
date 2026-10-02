@@ -5,12 +5,55 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Deep.Protocol.ContactV2;
 using XNode.Core;
 
 namespace XNode.IntegrationTests.Runtime;
 
 public sealed class PrivacyRoutingRuntimeTests
 {
+    [Theory]
+    [InlineData("rate-limit", "proof-rate-limit")]
+    [InlineData("proof", "proof-unavailable")]
+    [InlineData("crypto", "cryptographic-rejection")]
+    [InlineData("authorization", "authorization-rejection")]
+    [InlineData("io", "custody-or-io")]
+    [InlineData("state", "configuration-or-state")]
+    public async Task ContactDependencyDiagnosticsAreClosedBoundedAndNeverReleaseSuccess(string failure, string expected)
+    {
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        const string privateText = "private identifier capability path payload and endpoint";
+        var effects = new Effects { ContactFailure = failure switch
+        {
+            "rate-limit" => new DeepIdV2DirectoryProofUnavailableException(System.Net.HttpStatusCode.TooManyRequests, TimeSpan.FromSeconds(1)),
+            "proof" => new DeepIdV2DirectoryProofUnavailableException(System.Net.HttpStatusCode.ServiceUnavailable, null),
+            "crypto" => new System.Security.Cryptography.CryptographicException(privateText),
+            "authorization" => new UnauthorizedAccessException(privateText),
+            "io" => new IOException(privateText),
+            _ => new InvalidOperationException(privateText)
+        }};
+        var log = new ClosedTerminalLogger();
+        var terminal = Terminal(effects, log);
+        var fragment = DeepIdV2BoundedPreKeyPublicationCodec.CreateSequence(
+            fixture.Publication.CanonicalBytes.Span, fixture.Placement.ViewHash.Span,
+            fixture.Publisher.CanonicalBytes.Span, fixture.Dca, fixture.Xps)[0];
+        var request = OnionTerminalPayloadVerifierV1.VerifyRequest(fixture.NetworkContext,
+            OnionOperation.ContactResolve, fragment);
+        for (var index = 0; index < 2; index++)
+        {
+            var result = await terminal.DispatchAsync(request, default);
+            Assert.Equal(NativeMailboxDispatchCertainty.OutcomeUnknownAfterForward, result.Certainty);
+            Assert.False(result.Success);
+            Assert.True(result.CanonicalBody.IsEmpty);
+        }
+        Assert.Equal(2, effects.ContactCalls);
+        var message = Assert.Single(log.Messages);
+        Assert.Contains($"({expected})", message);
+        Assert.DoesNotContain("private", message);
+        Assert.Equal(0, log.ExceptionObjects);
+    }
+
     [Fact]
     public void EnabledOptionsRejectIncompleteProductionStateConfiguration()
     {
@@ -612,7 +655,7 @@ public sealed class PrivacyRoutingRuntimeTests
         Effects effects)
         => new(configuration, effects, Terminal(effects));
 
-    private static PrivacyTerminalExitDispatcher Terminal(Effects effects)
+    private static PrivacyTerminalExitDispatcher Terminal(Effects effects, ILogger<PrivacyTerminalExitDispatcher>? logger = null)
     {
         var routedMailbox = new RoutedNativeMailboxExitDispatcher(
             new MailboxAuthorityForwardingConfiguration(
@@ -620,7 +663,8 @@ public sealed class PrivacyRoutingRuntimeTests
                 allowedExitRouterIds: new HashSet<RouterId>()),
             effects,
             effects);
-        return new PrivacyTerminalExitDispatcher(routedMailbox, effects);
+        return new PrivacyTerminalExitDispatcher(routedMailbox, effects,
+            new GroupControlOnionTerminalAdapter(new UnavailableGroupControlTerminalDispatcher()), null, logger);
     }
 
     private static PrivacyRoutingConfiguration EnabledTestConfiguration() => new(
@@ -671,6 +715,7 @@ public sealed class PrivacyRoutingRuntimeTests
         IMailboxAuthorityForwardingClient,
         IContactServiceOpaqueDispatcher
     {
+        internal Exception? ContactFailure { get; init; }
         public int PeerCalls { get; private set; }
         public int MailboxCalls { get; private set; }
         public int AuthorityForwardingCalls { get; private set; }
@@ -709,7 +754,21 @@ public sealed class PrivacyRoutingRuntimeTests
             CancellationToken cancellationToken)
         {
             ContactCalls++;
+            if (ContactFailure is not null) throw ContactFailure;
             return ValueTask.FromResult(ReadOnlyMemory<byte>.Empty);
+        }
+    }
+
+    private sealed class ClosedTerminalLogger : ILogger<PrivacyTerminalExitDispatcher>
+    {
+        internal List<string> Messages { get; } = [];
+        internal int ExceptionObjects { get; private set; }
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel level) => true;
+        public void Log<TState>(LogLevel level, EventId id, TState state, Exception? error, Func<TState, Exception?, string> formatter)
+        {
+            if (error is not null) ExceptionObjects++;
+            Messages.Add(formatter(state, error));
         }
     }
 

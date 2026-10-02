@@ -192,7 +192,8 @@ builder.Services.AddSingleton(provider => new PrivacyTerminalExitDispatcher(
     provider.GetRequiredService<RoutedNativeMailboxExitDispatcher>(),
     provider.GetRequiredService<IContactServiceOpaqueDispatcher>(),
     provider.GetRequiredService<GroupControlOnionTerminalAdapter>(),
-    provider.GetService<ContactCoordinationOnionDispatcher>()));
+    provider.GetService<ContactCoordinationOnionDispatcher>(),
+    provider.GetRequiredService<ILogger<PrivacyTerminalExitDispatcher>>()));
 builder.Services.AddSingleton<INativeMailboxExitDispatcher>(provider =>
     provider.GetRequiredService<PrivacyTerminalExitDispatcher>());
 builder.Services.AddSingleton(mailboxClientActivationPlan);

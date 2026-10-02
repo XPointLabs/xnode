@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using System.Buffers.Binary;
 using System.Security.Cryptography;
+using System.Diagnostics;
 using XNode.Core;
 using XNode.Core.ContactPreKey;
 using XNode.Core.ContactResolver;
@@ -624,6 +625,8 @@ public sealed class PrivacyTerminalExitDispatcher : INativeMailboxExitDispatcher
     private readonly IContactServiceOpaqueDispatcher contact;
     private readonly GroupControlOnionTerminalAdapter groupControl;
     private readonly ContactCoordinationOnionDispatcher? coordination;
+    private readonly ILogger<PrivacyTerminalExitDispatcher>? logger;
+    private long failureLogTimestamp;
 
     public PrivacyTerminalExitDispatcher(
         RoutedNativeMailboxExitDispatcher mailbox,
@@ -637,9 +640,11 @@ public sealed class PrivacyTerminalExitDispatcher : INativeMailboxExitDispatcher
 
     internal PrivacyTerminalExitDispatcher(RoutedNativeMailboxExitDispatcher mailbox,
         IContactServiceOpaqueDispatcher contact, GroupControlOnionTerminalAdapter groupControl,
-        ContactCoordinationOnionDispatcher? coordination) : this(mailbox, contact, groupControl)
+        ContactCoordinationOnionDispatcher? coordination,
+        ILogger<PrivacyTerminalExitDispatcher>? logger = null) : this(mailbox, contact, groupControl)
     {
         this.coordination = coordination;
+        this.logger = logger;
     }
 
     // Keeps focused tests and non-hosted callers fail-closed while Program uses
@@ -729,8 +734,31 @@ public sealed class PrivacyTerminalExitDispatcher : INativeMailboxExitDispatcher
             or CryptographicException
             or UnauthorizedAccessException)
         {
+            ReportUnknownCompletion(exception);
             return NativeMailboxDispatchResult.OutcomeUnknownAfterForward();
         }
+    }
+
+    private void ReportUnknownCompletion(Exception exception)
+    {
+        if (logger is null) return;
+        var previous = Volatile.Read(ref failureLogTimestamp);
+        // A valid anonymous request must not turn dependency failures into
+        // unbounded log traffic. This is diagnostic scheduling, not trust/time.
+        if (previous != 0 && Stopwatch.GetElapsedTime(previous) < TimeSpan.FromSeconds(10)) return;
+        if (Interlocked.CompareExchange(ref failureLogTimestamp, Stopwatch.GetTimestamp(), previous) != previous) return;
+        var category = exception switch
+        {
+            DeepIdV2DirectoryProofUnavailableException { StatusCode: System.Net.HttpStatusCode.TooManyRequests } => "proof-rate-limit",
+            DeepIdV2DirectoryProofUnavailableException => "proof-unavailable",
+            CryptographicException => "cryptographic-rejection",
+            UnauthorizedAccessException => "authorization-rejection",
+            IOException => "custody-or-io",
+            _ => "configuration-or-state"
+        };
+        // No exception object/message, payload, identity, capability or origin
+        // enters logs. Classification cannot change unknown completion.
+        logger.LogWarning("DID2 ContactResolve terminal could not complete ({Category}); completion remains unknown.", category);
     }
 
     internal static bool TryContactOperation(
