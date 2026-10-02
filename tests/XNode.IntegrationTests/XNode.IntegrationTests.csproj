@@ -51,4 +51,9 @@
     <Compile Include="Runtime\DeepIdV2PublicationAuthorityFixture.cs" />
     <Compile Include="Runtime\DeepIdV2OpaquePublicationConsumerTests.cs" />
   </ItemGroup>
+  <ItemGroup Condition="'$(PrivacyRecoveryFocused)' == 'true'">
+    <Compile Remove="**\*.cs" />
+    <Compile Include="Runtime\PrivacyRoutingRuntimeTests.cs" />
+    <Compile Include="Runtime\DeepIdV2PublicationAuthorityFixture.cs" />
+  </ItemGroup>
 </Project>

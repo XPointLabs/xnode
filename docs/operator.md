@@ -73,6 +73,16 @@ activation gates. The default full test suite is unchanged; only an explicit
 
 ## DID2 recovery candidate
 
+Malformed external authority responses and frames keep ONION readiness closed,
+but do not terminate its bounded idle acquisition loop, including at startup.
+No rejected response or retained stale binding is served; recovery requires a
+new independently verified current binding. Known malformed responses use the
+same local retry delay, without resetting floors, changing keys or bypassing
+Registry throttling. Health reads perform no proof issuance. Wrong local key
+configuration still rejects startup rather than being treated as a network retry.
+The explicit `PrivacyRecoveryFocused=true` local test slice checks this lifecycle;
+it does not replace production recovery or physical messaging evidence.
+
 The DID2 proof reader consumes independently verified historical pages and
 durably advances its protected head before requesting a fresh current proof.
 Network closure configuration can use one atomically replaced `PublicBundlePath`;

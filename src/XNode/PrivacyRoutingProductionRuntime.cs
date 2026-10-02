@@ -125,7 +125,7 @@ internal sealed class PrivacyRoutingProductionCapability : IHostedService, IAsyn
         {
             throw;
         }
-        catch (Exception exception) when (exception is IOException or HttpRequestException or TimeoutException or
+        catch (Exception exception) when (exception is IOException or InvalidDataException or FormatException or HttpRequestException or TimeoutException or
             CryptographicException or OnionBoundaryException or OperationCanceledException)
         {
             // Dependency loss or expired authority is an unavailable capability,
@@ -198,7 +198,7 @@ internal sealed class PrivacyRoutingProductionCapability : IHostedService, IAsyn
             Volatile.Write(ref verifiedBinding, binding);
             return binding;
         }
-        catch (Exception exception) when (exception is IOException or HttpRequestException or TimeoutException ||
+        catch (Exception exception) when (exception is IOException or InvalidDataException or FormatException or HttpRequestException or TimeoutException ||
             exception is OperationCanceledException && !request.IsCancellationRequested)
         {
             ReportFailure(exception);
@@ -236,7 +236,7 @@ internal sealed class PrivacyRoutingProductionCapability : IHostedService, IAsyn
             TimeoutException or OperationCanceledException => "request-timeout",
             CryptographicException => "cryptographic-rejection",
             OnionBoundaryException => "onion-boundary-rejection",
-            InvalidDataException => "malformed-input",
+            InvalidDataException or FormatException => "malformed-input",
             IOException => "custody-or-io",
             _ => "configuration-or-state"
         };
@@ -253,7 +253,7 @@ internal sealed class PrivacyRoutingProductionCapability : IHostedService, IAsyn
             {
                 try { _ = await ReadCurrentAsync(forceRefresh: true, lifetime.Token).ConfigureAwait(false); }
                 catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { break; }
-                catch (Exception exception) when (exception is IOException or InvalidOperationException or
+                catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException or
                     HttpRequestException or TimeoutException or UnauthorizedAccessException or CryptographicException or
                     FormatException or OnionBoundaryException or OperationCanceledException)
                 {

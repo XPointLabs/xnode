@@ -60,7 +60,7 @@ public sealed class PrivacyRoutingRuntimeTests
     }
 
     [Fact]
-    public void ProductionCompositionUsesDid2AuthorityWithoutActivatingV1ResolveClient()
+    public void ProductionCompositionRegistersTheSingleDid2ReceiveAuthority()
     {
         var services = new ServiceCollection();
         using var configuration = EnabledTestConfiguration();
@@ -74,9 +74,8 @@ public sealed class PrivacyRoutingRuntimeTests
                 IsRelay = true
             });
 
-        Assert.DoesNotContain(services, descriptor =>
-            descriptor.ServiceType == typeof(IPrivacyRoutedContactRecipientResolveClient));
-        Assert.Contains(services, descriptor => descriptor.ServiceType == typeof(IOnionHostReceiveBindingSource));
+        Assert.Single(services, descriptor => descriptor.ServiceType == typeof(IDeepIdV2ReceiveNetworkSource));
+        Assert.Single(services, descriptor => descriptor.ServiceType == typeof(IOnionHostReceiveBindingSource));
     }
 
     [Fact]
@@ -225,6 +224,42 @@ public sealed class PrivacyRoutingRuntimeTests
         Assert.False(capability.IsVerified);
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task MalformedAuthorityResponseNeverKillsIdleRecoveryOrRevivesRetainedBinding(
+        bool failAtStartup, bool malformedFrame)
+    {
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var configuration = EnabledTestConfiguration();
+        var source = new RefreshBindingSource(Binding(configuration, fixture.NetworkContext))
+            { Fail = failAtStartup, MalformedFailure = true, MalformedFrame = malformedFrame };
+        await using var capability = new PrivacyRoutingProductionCapability(configuration, source,
+            TimeSpan.FromMilliseconds(20));
+        await capability.StartAsync(default);
+        Assert.Equal(!failAtStartup, capability.IsVerified);
+        source.Fail = true;
+        await WaitUntilAsync(() => !capability.IsVerified);
+        var failedCalls = source.Calls;
+        // Continued idle acquisition, not health or traffic, must survive repeated
+        // response/codec rejections. No rejected or previously retained binding.
+        await WaitUntilAsync(() => source.Calls >= failedCalls + 2);
+        Assert.False(capability.IsVerified);
+        source.Fail = false;
+        await WaitUntilAsync(() => capability.IsVerified);
+        source.Fail = true;
+        await WaitUntilAsync(() => !capability.IsVerified);
+        source.Fail = false;
+        await WaitUntilAsync(() => capability.IsVerified);
+        await capability.StopAsync(default);
+        Assert.False(capability.IsVerified);
+        var stoppedCalls = source.Calls;
+        await Task.Delay(60);
+        Assert.Equal(stoppedCalls, source.Calls);
+    }
+
     [Fact]
     public async Task ThrottlingBackoffSurvivesLocalTrafficWithoutExtendingOrBypassingDelay()
     {
@@ -341,6 +376,8 @@ public sealed class PrivacyRoutingRuntimeTests
         internal int Calls => Volatile.Read(ref calls);
         internal volatile bool Fail;
         internal bool TimeoutFailure { get; init; }
+        internal bool MalformedFailure { get; init; }
+        internal bool MalformedFrame { get; init; }
         internal bool RateLimited { get; init; }
         internal bool BlockRefresh { get; init; }
         internal bool RefreshCancelled { get; private set; }
@@ -357,6 +394,11 @@ public sealed class PrivacyRoutingRuntimeTests
             cancellationToken.ThrowIfCancellationRequested();
             if (Fail)
             {
+                if (MalformedFailure)
+                {
+                    if (MalformedFrame) throw new FormatException("Closed test malformed authority frame.");
+                    throw new InvalidDataException("Closed test rejected authority response.");
+                }
                 if (RateLimited)
                     throw new DeepIdV2DirectoryProofUnavailableException(
                         System.Net.HttpStatusCode.TooManyRequests, TimeSpan.FromSeconds(1));
