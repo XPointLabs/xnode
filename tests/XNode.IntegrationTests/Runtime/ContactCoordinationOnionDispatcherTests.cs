@@ -26,7 +26,8 @@ public sealed class ContactCoordinationOnionDispatcherTests
         var routeBody = ContactRouteAuthorityWireCodec.EncodeRequest(request);
         var routeResponse = ContactRouteAuthorityWireCodec.EncodeResponse(request,
             new(request.NetworkId.Span, request.RequestNonce.Span, route.Route.Selection.CanonicalBytes.Span,
-                route.Route.Route.CanonicalBytes.Span, route.Route.Successor.CanonicalBytes.Span));
+                route.Route.Route.CanonicalBytes.Span, route.Route.Successor.CanonicalBytes.Span,
+                fixture.Freshness.ExactAdh1.Span));
         var publicationBody = ContactPublicationAuthorityWireCodec.EncodeRequest(fixture.ContactOwnedRequest);
         var publicationResponse = ContactPublicationAuthorityWireCodec.EncodeResponse(fixture.ContactOwnedRequest,
             new(fixture.ContactOwnedRequest.NetworkId.Span, fixture.ContactOwnedRequest.RequestNonce.Span,
