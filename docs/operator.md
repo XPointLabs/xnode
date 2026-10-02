@@ -18,9 +18,11 @@ This opt-in composition is not production activation or device delivery evidence
 ## Private DID2 coordination backend candidate
 
 Coordination consumers must rebuild/repin with Registry and clients under
-[DR75](../../docs/survival-program/decisions/DR-0075-did2-issued-head-response-custody.md).
-The route response now retains its actual signed issuance head; the request and
-outer ONION wrapper remain unchanged. Before activating matched artifacts,
+[DR77](../../docs/survival-program/decisions/DR-0077-did2-route-successor-coordination.md).
+The route response retains its actual signed issuance head; the enclosed current
+request now carries bounded exact predecessor records for renewal. The outer
+ONION wrapper and calling-node signature scheme stay unchanged, and the full
+request remains authenticated. Before activating matched artifacts,
 the Registry operator performs its explicit journal provisioning described in
 [the Registry runbook](../../deep-registry-api/docs/DID2_ROUTE_THRESHOLD_COORDINATION.md).
 No registered Ed25519/BLS key or node state reset is implied. An older backend

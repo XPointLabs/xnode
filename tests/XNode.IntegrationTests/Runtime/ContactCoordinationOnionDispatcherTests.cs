@@ -14,17 +14,19 @@ namespace XNode.IntegrationTests.Runtime;
 // HTTP handler and proof/clock retrieval are in-process. No socket/device claim.
 public sealed class ContactCoordinationOnionDispatcherTests
 {
-    [Fact]
-    public async Task BothCanonicalTargetsBindSelectedGatewayAndRejectSubstitutionWithoutSuccess()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task BothCanonicalTargetsBindSelectedGatewayAndRejectSubstitutionWithoutSuccess(bool successor)
     {
-        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync(authorContactPublication: true);
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync(authorContactPublication: true, authorRouteSuccessor: successor);
         var route = fixture.ContactRoute;
         var floor = fixture.Freshness.NextProtectedLkg;
-        var request = new ContactRouteAuthorityWireRequest(fixture.NetworkContext.NetworkId.Span,
+        var request = successor ? fixture.RouteSuccessorRequest : new ContactRouteAuthorityWireRequest(fixture.NetworkContext.NetworkId.Span,
             DeepIdV2PublicationAuthorityFixture.Bytes(32, 0x58), fixture.Freshness.QueriedDirectoryLeafKey.Span,
             floor.LogGeneration, floor.CoreHash.Span, fixture.Dca, route.Route.Authorization.CanonicalBytes.Span);
         var routeBody = ContactRouteAuthorityWireCodec.EncodeRequest(request);
-        var routeResponse = ContactRouteAuthorityWireCodec.EncodeResponse(request,
+        var routeResponse = ContactRouteAuthorityWireCodec.EncodeResponse(request, successor ? fixture.RouteSuccessorResponse :
             new(request.NetworkId.Span, request.RequestNonce.Span, route.Route.Selection.CanonicalBytes.Span,
                 route.Route.Route.CanonicalBytes.Span, route.Route.Successor.CanonicalBytes.Span,
                 fixture.Freshness.ExactAdh1.Span));

@@ -56,6 +56,8 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
     internal byte[] Xps { get; private set; } = [];
     internal Xpu1Request ContactPublication { get; private set; } = null!;
     internal VerifiedDeepIdV2ContactRouteClosure ContactRoute { get; private set; } = null!;
+    internal ContactRouteAuthorityWireRequest RouteSuccessorRequest { get; private set; } = null!;
+    internal ContactRouteAuthorityWireResponse RouteSuccessorResponse { get; private set; } = null!;
     internal AuthoredDeepIdV2ContactObject ContactObject { get; private set; } = null!;
     internal ContactPublicationAuthorityWireRequest ContactOwnedRequest { get; private set; } = null!;
     internal Xpu1Request AlternateContactPublication { get; private set; } = null!;
@@ -75,14 +77,15 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
             [Policy], [View], [Head], Descriptors, [Projection], history, new(this), cancellationToken);
 
     internal static async Task<DeepIdV2PublicationAuthorityFixture> CreateAsync(byte serviceMarker = 0x35,
-        bool authorContactPublication = false, byte networkCommitmentMarker = 0, byte rootMarker = 0x20)
+        bool authorContactPublication = false, byte networkCommitmentMarker = 0, byte rootMarker = 0x20,
+        bool authorRouteSuccessor = false)
     {
         var fixture = new DeepIdV2PublicationAuthorityFixture(serviceMarker);
-        try { await fixture.AuthorAsync(authorContactPublication, networkCommitmentMarker, rootMarker); return fixture; }
+        try { await fixture.AuthorAsync(authorContactPublication, networkCommitmentMarker, rootMarker, authorRouteSuccessor); return fixture; }
         catch { fixture.Dispose(); throw; }
     }
 
-    private async Task AuthorAsync(bool authorContactPublication, byte networkCommitmentMarker, byte rootMarker)
+    private async Task AuthorAsync(bool authorContactPublication, byte networkCommitmentMarker, byte rootMarker, bool authorRouteSuccessor)
     {
         using var root = new TestSigner(rootMarker);
         using var w1 = new TestSigner(0x30);
@@ -268,6 +271,23 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
                 var alternate = await DeepIdV2PublicationAuthorityAuthor.AuthorThresholdAsync(
                     route, candidate.WireRequest, witnesses[..2]);
                 AlternateContactPublication = Xpu1Codec.Decode(alternate.ExactXpu1.Span);
+                if (authorRouteSuccessor)
+                {
+                    var predecessor = await DeepIdV2ContactRouteVerifier.VerifyPredecessorAsync(current, network,
+                        Authority, route.ExactXir1V2, route.ExactRouteClosure, time);
+                    var next = await DeepIdV2ContactRouteAuthor.AuthorAdvertisementSuccessorAsync(current, network, Authority,
+                        secrets, advertisement.CanonicalBytes, Bytes(32, 0x51), Bytes(32, 0x52),
+                        ScalarMult.Base(Bytes(32, 0x53)), 1_450, time);
+                    var nextThreshold = await DeepIdV2ContactRouteAuthor.AuthorThresholdSuccessorAsync(current, network, Authority,
+                        predecessor, next.CanonicalBytes, witnesses, 1_450, time);
+                    var floor = Freshness.NextProtectedLkg;
+                    RouteSuccessorRequest = new(Network, Bytes(32, 0x54), Freshness.QueriedDirectoryLeafKey.Span,
+                        floor.LogGeneration, floor.CoreHash.Span, Dca, next.CanonicalBytes.Span,
+                        predecessor.ExactXir1V2.Span, predecessor.ExactRouteClosure.Span);
+                    RouteSuccessorResponse = new(Network, RouteSuccessorRequest.RequestNonce.Span,
+                        nextThreshold.Selection.CanonicalBytes.Span, nextThreshold.LiveRoute.CanonicalBytes.Span,
+                        nextThreshold.Successor.CanonicalBytes.Span, Freshness.ExactAdh1.Span);
+                }
             }
         }
         finally

@@ -54,7 +54,7 @@ internal sealed class HttpContactCoordinationBackendClient
         cancellationToken.ThrowIfCancellationRequested();
         var limits = target switch
         {
-            ContactCoordinationTarget.Route => (ContactRouteAuthorityWireCodec.RequestBytes, ContactRouteAuthorityWireCodec.RequestBytes,
+            ContactCoordinationTarget.Route => (ContactRouteAuthorityWireCodec.MinimumRequestBytes, ContactRouteAuthorityWireCodec.MaximumRequestBytes,
                 ContactRouteAuthorityWireCodec.MinimumResponseBytes, ContactRouteAuthorityWireCodec.MaximumResponseBytes,
                 "/api/v2/contact-route-authority", ContactRouteAuthorityWireCodec.RequestMediaType, ContactRouteAuthorityWireCodec.ResponseMediaType),
             ContactCoordinationTarget.Publication => (ContactPublicationAuthorityWireCodec.MinimumRequestBytes, ContactPublicationAuthorityWireCodec.MaximumRequestBytes,
