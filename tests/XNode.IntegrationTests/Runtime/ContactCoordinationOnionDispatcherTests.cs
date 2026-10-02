@@ -31,6 +31,7 @@ public sealed class ContactCoordinationOnionDispatcherTests
                 route.Route.Route.CanonicalBytes.Span, route.Route.Successor.CanonicalBytes.Span,
                 fixture.Freshness.ExactAdh1.Span));
         var publicationBody = ContactPublicationAuthorityWireCodec.EncodeRequest(fixture.ContactOwnedRequest);
+        Assert.Equal(3, BinaryPrimitives.ReadUInt16BigEndian(publicationBody));
         var publicationResponse = ContactPublicationAuthorityWireCodec.EncodeResponse(fixture.ContactOwnedRequest,
             new(fixture.ContactOwnedRequest.NetworkId.Span, fixture.ContactOwnedRequest.RequestNonce.Span,
                 fixture.ContactPublication.CanonicalBytes.Span));
@@ -78,10 +79,11 @@ public sealed class ContactCoordinationOnionDispatcherTests
             Assert.True(result.Success);
             Assert.Equal(response, ContactCoordinationOnionCodec.DecodeResponse(parsed, result.CanonicalBody.Span));
             var count = calls;
-            foreach (var mutation in new[] { "version", "reserved", "target", "length", "trailing", "short" })
+            foreach (var mutation in new[] { "version", "body-version", "reserved", "target", "length", "trailing", "short" })
             {
                 var invalid = exact.ToArray();
                 if (mutation == "version") invalid[5] = 1;
+                if (mutation == "body-version") invalid[ContactCoordinationOnionCodec.HeaderBytes + 1] = 2;
                 if (mutation == "reserved") invalid[7] = 1;
                 if (mutation == "target") invalid[6] = 3;
                 if (mutation == "length") invalid[11] ^= 1;
