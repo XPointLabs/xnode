@@ -15,7 +15,7 @@ internal sealed class FileMailboxGrantRevocationStore : IAsyncDisposable
 {
     private const int MaximumProtectedBytes = MailboxGrantRevocationV1Codec.MaximumBytes + 1_024;
     private readonly string directory, floorPath, anchorPath, enrollmentPath, latchPath;
-    private readonly byte[] network, policy;
+    private readonly byte[] localNode, network, policy;
     private readonly MailboxCapabilityDomain role;
     private readonly IDataProtector floorProtection, anchorProtection, enrollmentProtection, latchProtection;
     private readonly IMailboxStorageSecurity security;
@@ -46,6 +46,7 @@ internal sealed class FileMailboxGrantRevocationStore : IAsyncDisposable
             pma2CoreReference38[6..].IndexOfAnyExcept((byte)0) < 0 ||
             role is not (MailboxCapabilityDomain.Deposit or MailboxCapabilityDomain.Retrieve))
             throw new ArgumentException("MGR1 custody scope is invalid.");
+        localNode = localNodeId32.ToArray();
         network = networkId16.ToArray(); policy = pma2CoreReference38.ToArray(); this.role = role;
         // Local naming/protection context only; this is not a wire hash or authority.
         var scope = Convert.ToHexString(SHA256.HashData([.. localNodeId32, .. network, .. policy, (byte)role]));
@@ -63,6 +64,15 @@ internal sealed class FileMailboxGrantRevocationStore : IAsyncDisposable
             FileShare.None, 1, FileOptions.WriteThrough);
         try { security.SecureFile(lockPath); security.ValidateSecureFile(lockPath); }
         catch { writerLease.Dispose(); throw; }
+    }
+
+    internal void RequireScope(ReadOnlySpan<byte> nodeId, ReadOnlySpan<byte> networkId,
+        ReadOnlySpan<byte> policyReference, MailboxCapabilityDomain domain)
+    {
+        CheckAvailable();
+        if (!Fixed(localNode, nodeId) || !Fixed(network, networkId) ||
+            !Fixed(policy, policyReference) || role != domain)
+            throw new CryptographicException("MGR1 native owner differs from the current node/network/policy/role.");
     }
 
     /// <summary>Explicit genuinely new-scope provisioning only; never a missing-floor recovery fallback.</summary>
@@ -155,6 +165,7 @@ internal sealed class FileMailboxGrantRevocationStore : IAsyncDisposable
     /// must fail again after its awaited verification, not only before I/O.</summary>
     internal sealed class CurrentLease(VerifiedMailboxGrantRevocationV1 capability, Action requireActive)
     {
+        internal void RequireActive() => requireActive();
         internal async ValueTask EnsureCurrentAsync(CancellationToken token = default)
         {
             requireActive();

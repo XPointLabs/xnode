@@ -242,9 +242,9 @@ public sealed class MailboxGrantRevocationStoreTests
         Assert.Throws<ArgumentException>(() => files.Open(custody: bad));
     }
 
-    private static ValueTask<VerifiedMailboxHostAuthorityV2> Host(DeepIdV2PublicationAuthorityFixture signed, IOnionMonotonicClock? clock = null) =>
+    internal static ValueTask<VerifiedMailboxHostAuthorityV2> Host(DeepIdV2PublicationAuthorityFixture signed, IOnionMonotonicClock? clock = null) =>
         MailboxHostAuthorityV2Verifier.VerifyAsync(signed.NetworkContext, signed.Authority, signed.MailboxAuthority, new(clock ?? signed));
-    private static byte[] Snapshot(DeepIdV2PublicationAuthorityFixture signed, MailboxCapabilityDomain role = MailboxCapabilityDomain.Deposit,
+    internal static byte[] Snapshot(DeepIdV2PublicationAuthorityFixture signed, MailboxCapabilityDomain role = MailboxCapabilityDomain.Deposit,
         ulong generation = 1, byte[]? prior = null, byte[][]? serials = null, ulong expires = 1_120)
     {
         var key = PublicKeyAuth.GenerateKeyPair(Bytes(32, role == MailboxCapabilityDomain.Deposit ? (byte)0x31 : (byte)0x32));
@@ -259,7 +259,7 @@ public sealed class MailboxGrantRevocationStoreTests
         }
         finally { CryptographicOperations.ZeroMemory(key.PrivateKey); }
     }
-    private static byte[] Grant(DeepIdV2PublicationAuthorityFixture signed, VerifiedMailboxHostAuthorityV2 host,
+    internal static byte[] Grant(DeepIdV2PublicationAuthorityFixture signed, VerifiedMailboxHostAuthorityV2 host,
         MailboxCapabilityDomain role, byte serial)
     {
         var crypto = new SodiumMailboxCapabilityCrypto(); var seed = Bytes(32, role == MailboxCapabilityDomain.Deposit ? (byte)0x31 : (byte)0x32);
@@ -292,7 +292,8 @@ public sealed class MailboxGrantRevocationStoreTests
             return new(DeepIdV2PublicationAuthorityFixture.Boot, 100);
         }
     }
-    private sealed class Custody(DeepIdV2PublicationAuthorityFixture signed, MailboxCapabilityDomain role = MailboxCapabilityDomain.Deposit) : IDisposable
+    internal sealed class Custody(DeepIdV2PublicationAuthorityFixture signed, MailboxCapabilityDomain role = MailboxCapabilityDomain.Deposit,
+        byte[]? nodeId = null) : IDisposable
     {
         internal string Root { get; } = Path.Combine(Path.GetTempPath(), "native-mgr1-" + Guid.NewGuid().ToString("N"));
         internal string Data => Path.Combine(Root, "node-data"); internal string Keys => Path.Combine(Root, "protection");
@@ -304,7 +305,7 @@ public sealed class MailboxGrantRevocationStoreTests
         {
             var security = new MailboxStorageSecurity(); security.SecureDirectory(Keys); security.SecureDirectory(Data);
             var provider = DataProtectionProvider.Create(new DirectoryInfo(Keys), builder => builder.SetApplicationName("XPoint.XNode.MGR1.NativeTests.v1"));
-            return new(Data, custody ?? Path.Combine(Root, "custody"), Bytes(32, 0x70), signed.NetworkContext.NetworkId.Span,
+            return new(Data, custody ?? Path.Combine(Root, "custody"), nodeId ?? Bytes(32, 0x70), signed.NetworkContext.NetworkId.Span,
                 Reference(signed), role, provider, security, barrier ?? new MailboxDurabilityBarrier());
         }
         public void Dispose() { if (Directory.Exists(Root)) Directory.Delete(Root, recursive: true); }

@@ -75,6 +75,7 @@ public sealed class MailboxAuthenticatedRuntimeReservation
     private int _sideEffectsStarted;
     private int _executionOwned;
     private int _requestCleanupStarted;
+    private Action? _requireCurrentLease;
     private MailboxClientCanonicalOutcomeReservation? _outcomeReservation;
 
     internal MailboxAuthenticatedRuntimeReservation(
@@ -106,8 +107,20 @@ public sealed class MailboxAuthenticatedRuntimeReservation
 
     public bool SideEffectsStarted => Volatile.Read(ref _sideEffectsStarted) != 0;
 
-    public void MarkSideEffectsStarted() =>
+    internal void BindCurrentLease(Action requireCurrentLease)
+    {
+        ArgumentNullException.ThrowIfNull(requireCurrentLease);
+        if (Interlocked.CompareExchange(ref _requireCurrentLease, requireCurrentLease, null) is not null)
+            throw new InvalidOperationException("Mailbox reservation already has a current lease.");
+    }
+
+    internal void RequireCurrentLease() => _requireCurrentLease?.Invoke();
+
+    public void MarkSideEffectsStarted()
+    {
+        RequireCurrentLease();
         Interlocked.Exchange(ref _sideEffectsStarted, 1);
+    }
 
     internal void AttachOutcomeReservation(
         MailboxClientCanonicalOutcomeReservation reservation)
@@ -262,6 +275,54 @@ public sealed class MailboxAuthenticatedCapabilityRuntime
             _crypto,
             _revocations,
             replayScope);
+        return RecoverReservation(verified, retainUntil);
+    }
+
+    // Native current admission supplies only independently verified policy/time
+    // inside its protected MGR1 lease. It does not use the legacy source or UTC.
+    internal MailboxAuthenticatedRuntimeReservation VerifyCurrent(
+        ReadOnlyMemory<byte> canonicalMau3, MailboxAuthenticatedVerificationPolicy policy,
+        ulong trustedUpper, IMailboxCapabilityRevocationSource revocations, Action requireLease)
+    {
+        requireLease();
+        var decoded = MailboxAuthenticatedClientRequestCodec.Decode(canonicalMau3.Span);
+        var grant = decoded.Presentation.Grant;
+        var retainUntil = _replay.RetainUntilUnixSeconds(grant.ExpiresAtUnixSeconds);
+        var replay = new AfterAuthenticationReplay(_replay, trustedUpper, retainUntil, grant, requireLease);
+        var verified = MailboxAuthenticatedClientRequestCodec.Verify(canonicalMau3.Span,
+            policy with { NowUnixSeconds = trustedUpper }, _crypto, revocations, replay);
+        var result = RecoverReservation(verified, retainUntil);
+        result.BindCurrentLease(requireLease);
+        // A current admission reservation crossing expiry/cancel remains pending,
+        // even when no mailbox effect has yet occurred. Cleanup must not erase it.
+        result.MarkSideEffectsStarted();
+        return result;
+    }
+
+    private sealed class AfterAuthenticationReplay(DurableMailboxCapabilityReplayJournal owner,
+        ulong upper, ulong retainUntil, MailboxAuthenticatedGrant grant, Action requireLease)
+        : IMailboxCapabilityReplayJournal
+    {
+        public MailboxCapabilityAtomicReplayEvaluation EvaluateAndReserve(MailboxCapabilityAtomicReplayClaim claim)
+        {
+            // Called by the canonical verifier only after body/issuer/holder/revocation.
+            // No fake replay disposition, provisional capability or UTC floor write.
+            requireLease();
+            var scope = owner.CreateEvaluationScope(upper, retainUntil);
+            if (scope.EffectiveNowUnixSeconds >= grant.ExpiresAtUnixSeconds)
+                throw new MailboxAuthenticatedCapabilityException(
+                    MailboxAuthenticatedCapabilityError.OutsideValidityWindow,
+                    "Current grant is below the durable accepted-time floor.");
+            return scope.EvaluateAndReserve(claim);
+        }
+
+        public void CompleteAtomically(MailboxCapabilityAtomicReplayClaim claim, ReadOnlyMemory<byte> outcome) =>
+            throw new InvalidOperationException("Current admission completes through its native outcome owner.");
+    }
+
+    private MailboxAuthenticatedRuntimeReservation RecoverReservation(
+        VerifiedMailboxAuthenticatedClientRequest verified, ulong retainUntil)
+    {
         var claim = verified.Capability.ReplayClaim;
         var outcomeKey = MailboxClientCanonicalOutcomeKey.Create(
             MailboxCapabilityReplayStateMachine.ComputeScopeKey(claim),
@@ -552,5 +613,6 @@ public sealed class MailboxAuthenticatedCapabilityRuntime
                 "The authenticated mailbox reservation belongs to another runtime.",
                 nameof(reservation));
         }
+        reservation.RequireCurrentLease();
     }
 }

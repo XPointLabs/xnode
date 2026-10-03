@@ -1,5 +1,27 @@
 # Operator Guide
 
+## Current native mailbox admission candidate
+
+`CurrentMailboxAdmission` connects the closed current network/PMA2 host verifier
+to both restored native MGR1 owners and the existing durable replay/outcome
+stores. The bounded operation owns captured MAU3 bytes and selected canonical
+node facts; it rechecks current source, protected time and actual role revocation
+before reservation and across the callback/result boundary. Holder/body rejection
+does not advance the replay time floor. Expiry, cancellation or unavailable
+authority after reservation retains exact Pending custody.
+
+This internal owner has no activation flag and is not registered by Program.
+Its scoped request currently supports admission/execution ownership and terminal
+outcomes, not mailbox storage or peer receipts. Do not enable the retired provider
+as a bridge. Current endpoint/DI composition, matching node signing custody,
+rotated distinct ID/key evidence and grant-bound peer quorum remain required.
+The trusted monotonic clock must be the same protected owner used by the actual
+network source when composing this candidate. No host-UTC fallback is accepted.
+The sole contracts remain
+[DR-0081](../../docs/survival-program/decisions/DR-0081-did2-mailbox-selection-grant-clean-break.md)
+and [DR-0083](../../docs/survival-program/decisions/DR-0083-current-mailbox-grant-revocation.md).
+See the [native connected checkpoint](testing/s02-current-mailbox-admission-2026-10-03.md).
+
 ## Mailbox ingress operation binding
 
 The native Store/Retrieve/ACK dispatcher captures the bounded exact MAU3 bytes
