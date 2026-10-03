@@ -116,6 +116,10 @@ public sealed class ContactCoordinationOnionDispatcherTests
         Assert.Equal(NativeMailboxDispatchCertainty.RejectedBeforeForward,
             (await dispatcher.DispatchAsync(foreignProjection, default)).Certainty);
         Assert.Equal("DID2 coordination rejected: phase=CurrentnessBefore, check=Projection, certainty=RejectedBeforeForward, category=cryptographic.", logger.Entries[^1]);
+        var warningCount = logger.Entries.Count;
+        Assert.Equal(NativeMailboxDispatchCertainty.RejectedBeforeForward,
+            (await dispatcher.DispatchAsync(foreignProjection, default)).Certainty);
+        Assert.Equal(warningCount, logger.Entries.Count); // Bounded metadata, unchanged rejection.
         Assert.Equal(2, calls);
         var missingNode = new RouterNodeOptions { RouterId = new string('f', 64) };
         var foreign = new ContactCoordinationOnionDispatcher(fixture, backend, missingNode, fixture, logger);
@@ -143,6 +147,12 @@ public sealed class ContactCoordinationOnionDispatcherTests
             (await dispatcher.DispatchAsync(pending, default)).Certainty);
         Assert.Equal("DID2 coordination rejected: phase=CurrentnessBefore, check=ProofFreshness, certainty=RejectedBeforeForward, category=cryptographic.", logger.Entries[^1]);
         Assert.Equal(4, calls);
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        warningCount = logger.Entries.Count;
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => dispatcher.DispatchAsync(pending, cancelled.Token));
+        Assert.Equal(4, calls);
+        Assert.Equal(warningCount, logger.Entries.Count);
         Assert.All(logger.Entries, entry => Assert.DoesNotContain("Current test DID2 proof unavailable", entry));
     }
 

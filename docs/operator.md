@@ -94,7 +94,9 @@ activation gates. The default full test suite is unchanged; only an explicit
 Private contact coordination logs one closed warning on rejected completion:
 `phase`, `check`, dispatch `certainty` and a fixed exception category. These
 values identify whether independent authority, a currentness predicate, backend
-exchange or reply pairing failed. No exception text/object, payload, credential,
+exchange or reply pairing failed. Repeated warnings are throttled per fixed
+phase/check bucket using local monotonic diagnostic scheduling, not trusted time.
+No exception text/object, payload, credential,
 capability, node identifier or authority bytes are logged. Diagnostics do not
 change the DR48/DR49 checks, authorize replay or prove physical delivery. A
 pre-backend rejection remains `RejectedBeforeForward`; every failure after the

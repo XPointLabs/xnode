@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Security.Cryptography;
+using System.Diagnostics;
 using Deep.Protocol.ContactV1;
 using Deep.Protocol.ContactV2;
 using Deep.Protocol.DeepExtension.PrivacyRouting;
@@ -13,6 +14,11 @@ internal sealed class ContactCoordinationOnionDispatcher(
     HttpContactCoordinationBackendClient backend, RouterNodeOptions node, IOnionMonotonicClock clock,
     ILogger<ContactCoordinationOnionDispatcher> logger)
 {
+    // Fixed closed buckets bound repeated anonymous failures without retaining
+    // request identifiers. Stopwatch is diagnostic scheduling, never trusted time.
+    private const int CheckCount = (int)CurrentnessCheck.PlacementExpiry + 1;
+    private readonly long[] failureLogTimestamps = new long[((int)DiagnosticPhase.Pairing + 1) * CheckCount];
+
     internal async Task<NativeMailboxDispatchResult> DispatchAsync(
         VerifiedCanonicalOnionRequest request, CancellationToken cancellationToken)
     {
@@ -58,10 +64,20 @@ internal sealed class ContactCoordinationOnionDispatcher(
                 NativeMailboxDispatchResult.RejectedBeforeForward();
             // Closed metadata only: never pass the exception, its message, request,
             // credential, capability, node identity or authority bytes to logging.
-            logger.LogWarning("DID2 coordination rejected: phase={Phase}, check={Check}, certainty={Certainty}, category={Category}.",
-                phase, diagnostic.Check, result.Certainty, FailureCategory(error));
+            ReportRejection(phase, diagnostic.Check, result.Certainty, error);
             return result;
         }
+    }
+
+    private void ReportRejection(DiagnosticPhase phase, CurrentnessCheck check,
+        NativeMailboxDispatchCertainty certainty, Exception error)
+    {
+        ref var timestamp = ref failureLogTimestamps[(int)phase * CheckCount + (int)check];
+        var previous = Volatile.Read(ref timestamp);
+        if (previous != 0 && Stopwatch.GetElapsedTime(previous) < TimeSpan.FromSeconds(10)) return;
+        if (Interlocked.CompareExchange(ref timestamp, Stopwatch.GetTimestamp(), previous) != previous) return;
+        logger.LogWarning("DID2 coordination rejected: phase={Phase}, check={Check}, certainty={Certainty}, category={Category}.",
+            phase, check, certainty, FailureCategory(error));
     }
 
     private async ValueTask<VerifiedContactServicePlacement> RequireCurrentAsync(
