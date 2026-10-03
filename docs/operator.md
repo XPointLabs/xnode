@@ -388,6 +388,47 @@ is rejected. Startup verifies the signed authority and restores the protected
 head before serving requests. The native ML-DSA verifier used here is still a
 hash-pinned candidate, not production release approval.
 
+## Current mailbox revocation custody candidate
+
+`FileMailboxGrantRevocationStore` is an internal native-state owner for the
+[DR-0083 contract](../../docs/survival-program/decisions/DR-0083-current-mailbox-grant-revocation.md).
+It is not registered in Program and adds no usable configuration flag, HTTP
+endpoint, admission fallback or release activation. Current client/peer mailbox
+integration and issuer renewal remain prerequisites.
+
+The caller must provision a separate persistent custody root outside, and not
+enclosing, replaceable `Node:DataDirectory`, plus a recoverable persistent Data
+Protection key ring outside those replaceable volumes. The injected provider's
+key-ring location is a host-composition obligation; this store does not infer
+or validate it. Do not use an ephemeral provider or regenerate lost protection.
+Each node/network/policy/role scope has an exclusive writer lease and
+purpose-separated protected enrollment, anchor, floor and fault records. These
+protect exact signed source bytes; they are not another mailbox wire format.
+
+First enrollment is an explicit genuinely new-scope provisioning operation,
+not restore behavior. Reads/admission/advance never create a missing floor.
+Missing, corrupt, split or partial state rejects without deleting evidence;
+an authenticated issuer conflict persists a fault latch and preserves the
+previous floor. An uncertain write faults the running owner. Interrupted
+replacement must be recovered from authenticated retained custody; operators
+must not clear the latch, remove partial records, re-enroll an old scope or
+reset node identity just to obtain readiness. A complete exact write can be
+restored after restart even when the original call returned uncertainty.
+
+Floor replacement and the entire bounded operation callback share one owner.
+Consumers must await their work, check authority at the required mutation and
+receipt boundaries, and not retain the operation lease. A check continuing
+after lease closure also rejects after its awaited verification. The callback
+does not by itself implement replay reservation, peer quorum or safe receipts.
+
+Preserve the complete custody root and its existing protection keys for recovery,
+alongside the registered node keys. This is local protected custody, not a
+hardware monotonic counter: joint rollback/loss of all independent custody and
+keys across restart cannot be detected by these files alone. No automated
+enrollment is provided for that recovery condition. Native source/restart
+evidence and remaining integration limits are recorded in the
+[S01 checkpoint](testing/s01-mailbox-revocation-native-2026-10-03.md).
+
 The registry payload advertises the transport parameters clients need:
 
 - mask domain
