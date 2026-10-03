@@ -25,7 +25,7 @@ fallback. Endpoint errors are bounded empty-body responses without private logs.
 
 These internal owners have no activation flag and are not registered by Program.
 Do not enable the retired provider as a bridge. Current Program/DI composition,
-client Store/Retrieve/ACK adapter and rotated distinct ID/key evidence remain
+public client Store/Retrieve/ACK composition and rotated distinct ID/key evidence remain
 required. Two-store loopback HTTP evidence is not deployed, onion or physical
 client delivery evidence. Internal client Store now binds captured MAU3 to the
 exact peer request under the same native admission owner and persists final
@@ -36,8 +36,8 @@ quorum journal, public wire field, authority adapter or activation switch.
 The current internal Store producer now owns a durable random nonce and complete
 signed peer frame in the existing operation ledger before any peer effect.
 Reopening retains those exact bytes; known replay or existing mutation custody
-without its intent rejects instead of reminting. The local ledger is schema 4;
-older schema 3 or malformed state rejects without migration or automatic reset.
+without its intent rejects instead of reminting. The local ledger is schema 5;
+older schemas 3/4 or malformed state reject without migration or automatic reset.
 This is not another journal or a production data/key reset. Current reservations
 do not use host UTC for garbage collection; capacity remains backpressure until
 protected retention is composed. A pre-intent write failure can remain Pending;
@@ -52,9 +52,21 @@ ambiguous cursors fail closed rather than silently omitting retained messages.
 Native mutation counts include a file that persisted before its flush reported
 failure, even without reopening the owner. This is local candidate evidence,
 not an activated public endpoint or global cursor-order guarantee.
+Internal client ACK now captures the entire signed tombstone batch in that same
+operation ledger before any peer effect. Native completed mutation records on
+either replica supply the targets; a coordinator client Store ledger is not
+required on the receiving replica. Every item needs two actual authenticated
+replica receipts, saved before the canonical MAR1 aggregate is persisted in the
+existing client outcome store. Lost responses or interruptions retain the exact
+intent; retry never remints a peer nonce or resurrects a deleted blob.
+Pagination expiry still rejects new work. Exact saved ACK intent and Retrieve
+outcome recovery do not depend on a still-live page token, but always require
+independently current grant/time, both restored revocation floors and native
+request binding; ACK also revalidates each original peer request/quorum.
+Missing intent, changed request or unavailable current authority fails closed.
 The cursor is still per-coordinator, not globally ordered across the two exits.
 Cross-coordinator cursor ownership, late completion below a snapshot boundary,
-client ACK and guarded startup/recovery need connection before the atomic
+and guarded startup/recovery need connection before the atomic
 Program cutover. Retained-route/old-epoch Retrieve remains unfinished.
 The trusted monotonic clock must be the same protected owner used by the actual
 network source when composing this candidate. No host-UTC fallback is accepted.
@@ -73,6 +85,8 @@ actual producer custody, crash/capacity/hostile-input boundaries and final gates
 The [current Retrieve checkpoint](testing/s03-current-retrieve-2026-10-04.md)
 records both-replica reads, bounded cross-replica pagination, native custody
 failure checks and the remaining ordering/activation boundaries.
+The [current ACK checkpoint](testing/s03-current-ack-2026-10-04.md) records
+either-replica ACK, exact batch/quorum recovery, capacity and crash boundaries.
 The descriptor transport API owner is
 [DR-0085](../../docs/survival-program/decisions/DR-0085-current-mailbox-replica-transport-facts.md).
 

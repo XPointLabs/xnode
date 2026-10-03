@@ -226,14 +226,16 @@ public sealed partial class CurrentMailboxPeerHttpTests
         Assert.Equal(1, f.Sender.Node.OutcomeCount);
     }
 
-    [Fact]
-    public async Task CurrentStoreRejectsIncompatibleIntentLedgerWithoutRepair()
+    [Theory]
+    [InlineData(3)]
+    [InlineData(4)]
+    public async Task CurrentStoreRejectsIncompatibleIntentLedgerWithoutRepair(int schema)
     {
         await using var f = await Fixture.CreateAsync(); f.OpenLedger();
         var client = f.ClientStoreFrame(); f.RemoteHost.DropNext = true;
         _ = await f.Coordinator.StoreClientAsync(client, f.Ledger!);
         var path = f.LedgerFile; f.Ledger!.Dispose(); f.Ledger = null;
-        var old = File.ReadAllText(path).Replace("\"schemaVersion\":4", "\"schemaVersion\":3", StringComparison.Ordinal);
+        var old = File.ReadAllText(path).Replace("\"schemaVersion\":5", $"\"schemaVersion\":{schema}", StringComparison.Ordinal);
         File.WriteAllText(path, old); f.OpenLedger();
         await Assert.ThrowsAsync<InvalidDataException>(() => f.Coordinator.StoreClientAsync(client, f.Ledger!).AsTask());
         Assert.Equal(old, File.ReadAllText(path)); Assert.Equal(1, f.RemoteHost.Requests);
@@ -552,6 +554,11 @@ public sealed partial class CurrentMailboxPeerHttpTests
         internal CurrentMailboxReplicationCoordinator Coordinator = null!;
         internal ObservedPeerClient PeerClient = new();
         internal MailboxClientOperationLedger? Ledger;
+        internal MailboxClientOperationLedger? RecipientLedger;
+        private bool coordinatorOnRecipient;
+        internal MailboxClientOperationLedger AckLedger => (coordinatorOnRecipient ? RecipientLedger : Ledger)!;
+        internal int AllHttpRequests => hosts.Sum(host => host.Requests);
+        internal string AckLedgerFile => Path.Combine((coordinatorOnRecipient ? Recipient : Sender).Node.DataRoot, IntentDirectory, "operations.json");
         private const string IntentDirectory = "mailbox-client-intent";
         private int intentEntries = 100_000;
         internal string LedgerFile => Path.Combine(Sender.Node.DataRoot, IntentDirectory, "operations.json");
@@ -595,10 +602,26 @@ public sealed partial class CurrentMailboxPeerHttpTests
             }
             catch { await f.DisposeAsync(); throw; }
         }
-        internal void Bind()
+        internal void OpenRecipientLedger(int maximumEntries = 100_000)
         {
-            RemoteHost.Endpoint = new(Recipient.Receiver, RemoteHost.Port);
-            Coordinator = new(Sender.Receiver, PeerClient, new ReplicatedMailboxOptions { Enabled = true });
+            RecipientLedger?.Dispose();
+            RecipientLedger = new(Recipient.Node.DataRoot, new MailboxClientAdapterOptions
+            {
+                DirectoryName = IntentDirectory,
+                MaxOperationEntries = maximumEntries,
+                MaxCursorAuthorities = Math.Min(4096, maximumEntries),
+                MaxConcurrentSingleFlights = Math.Min(1024, maximumEntries)
+            }, clock: new NoUtcIntentClock());
+        }
+        internal void Bind(bool? onRecipient = null)
+        {
+            if (onRecipient is not null) coordinatorOnRecipient = onRecipient.Value;
+            var senderHost = hosts.Single(host => host.Port == Sender.Node.Replicas.Single(replica => replica.NodeId.Span.SequenceEqual(Sender.Node.Node)).Transport.Port);
+            var recipientHost = hosts.Single(host => host.Port == Recipient.Node.Replicas.Single(replica => replica.NodeId.Span.SequenceEqual(Recipient.Node.Node)).Transport.Port);
+            senderHost.Endpoint = new(Sender.Receiver, senderHost.Port);
+            recipientHost.Endpoint = new(Recipient.Receiver, recipientHost.Port);
+            RemoteHost = coordinatorOnRecipient ? senderHost : recipientHost;
+            Coordinator = new(coordinatorOnRecipient ? Recipient.Receiver : Sender.Receiver, PeerClient, new ReplicatedMailboxOptions { Enabled = true });
         }
         internal byte[] ClientStoreFrame(byte[]? envelope = null, ulong counter = 1)
         {
@@ -614,13 +637,15 @@ public sealed partial class CurrentMailboxPeerHttpTests
         internal void Reopen()
         {
             var hadLedger = Ledger is not null; Ledger?.Dispose(); Ledger = null;
+            var hadRecipientLedger = RecipientLedger is not null; RecipientLedger?.Dispose(); RecipientLedger = null;
             Sender.Node.ReopenRuntime(); Recipient.Node.ReopenRuntime(); Sender.Reopen(); Recipient.Reopen();
-            if (hadLedger) OpenLedger(); Bind();
+            if (hadLedger) OpenLedger(); if (hadRecipientLedger) OpenRecipientLedger(); Bind();
         }
         public async ValueTask DisposeAsync()
         {
             foreach (var host in hosts) await host.DisposeAsync();
             Ledger?.Dispose();
+            RecipientLedger?.Dispose();
             if (Sender is not null) await Sender.DisposeAsync(); if (Recipient is not null) await Recipient.DisposeAsync();
             Signed?.Dispose();
         }

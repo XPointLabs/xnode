@@ -23,26 +23,9 @@ internal sealed partial class CurrentMailboxReplicaReceiver
                 if (!Fixed(crypto.GetPublicKey(seed), local.SigningPublicKey.Span))
                     throw new CryptographicException("Current Retrieve signing custody differs from its descriptor.");
                 var upper = await scope.Lease.CheckAsync(ct).ConfigureAwait(false);
-                ulong snapshot = 0;
-                if (body.AfterCursor == 0)
-                {
-                    if (!body.ContinuationToken.IsEmpty) throw new CryptographicException("Current Retrieve continuation is invalid.");
-                }
-                else
-                {
-                    bool Verify(ReadOnlySpan<byte> statement, ReadOnlySpan<byte> signature)
-                    {
-                        foreach (var replica in scope.Replicas)
-                            if (crypto.Verify(replica.SigningPublicKey.Span, statement, signature)) return true;
-                        return false;
-                    }
-                    if (!MailboxContinuationToken.TryRead(body.ContinuationToken.Span, body.Epoch, body.AfterCursor,
-                            upper, body.MailboxId.Bytes.Span, scope.Grant.PlacementCommitment.Span,
-                            scope.Host.MembershipCommitment.Span, MailboxContinuationToken.RetrievePurpose, Verify, out var window) ||
-                        body.MaximumItems > window.MaximumItems)
-                        throw new CryptographicException("Current Retrieve continuation is invalid.");
-                    snapshot = window.SnapshotHighWater;
-                }
+                // Admission recovered this exact request's native outcome.
+                // Pagination expiry must not discard it or remint a page, but
+                // independent current grant/time/revocation checks remain required.
                 if (request.RecoveredOutcome is { } recovered)
                 {
                     if (recovered.Kind != MailboxClientCanonicalOutcomeKind.Success || recovered.Operation != MailboxAuthenticatedOperation.Retrieve)
@@ -66,6 +49,26 @@ internal sealed partial class CurrentMailboxReplicaReceiver
                     if (page.Epoch != body.Epoch || !Fixed(page.OperationId.Span, body.OperationId.Span))
                         throw new InvalidDataException("Current Retrieve outcome differs from the request.");
                     return (await request.CompleteRecoveredAsync(ct).ConfigureAwait(false)).CanonicalBytes;
+                }
+                ulong snapshot = 0;
+                if (body.AfterCursor == 0)
+                {
+                    if (!body.ContinuationToken.IsEmpty) throw new CryptographicException("Current Retrieve continuation is invalid.");
+                }
+                else
+                {
+                    bool Verify(ReadOnlySpan<byte> statement, ReadOnlySpan<byte> signature)
+                    {
+                        foreach (var replica in scope.Replicas)
+                            if (crypto.Verify(replica.SigningPublicKey.Span, statement, signature)) return true;
+                        return false;
+                    }
+                    if (!MailboxContinuationToken.TryRead(body.ContinuationToken.Span, body.Epoch, body.AfterCursor,
+                            upper, body.MailboxId.Bytes.Span, scope.Grant.PlacementCommitment.Span,
+                            scope.Host.MembershipCommitment.Span, MailboxContinuationToken.RetrievePurpose, Verify, out var window) ||
+                        body.MaximumItems > window.MaximumItems)
+                        throw new CryptographicException("Current Retrieve continuation is invalid.");
+                    snapshot = window.SnapshotHighWater;
                 }
                 if (!await request.TryAcquireExecutionAsync(ct).ConfigureAwait(false))
                     throw new InvalidOperationException("Current Retrieve already has an active execution.");

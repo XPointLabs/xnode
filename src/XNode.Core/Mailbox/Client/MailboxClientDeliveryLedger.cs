@@ -21,7 +21,10 @@ public sealed record MailboxClientAckItemReservation(
     MailboxClientLedgerState State,
     string Error,
     MailboxClientCompletionReservation? Completion,
-    ReadOnlyMemory<byte> CachedReceipt);
+    ReadOnlyMemory<byte> CachedReceipt)
+{
+    internal ReadOnlyMemory<byte> CanonicalPeerRequest { get; init; }
+}
 
 public sealed record MailboxClientAckReservation(
     string OperationKey,
@@ -56,7 +59,8 @@ internal sealed record MailboxClientLedgerAckItem(
     ulong CoordinatorSequence,
     string FirstReplicaReceipt,
     string SecondReplicaReceipt,
-    string Receipt);
+    string Receipt,
+    string PeerRequest);
 
 public sealed partial class MailboxClientOperationLedger
 {
@@ -245,6 +249,7 @@ public sealed partial class MailboxClientOperationLedger
                 "reserved",
                 "",
                 0,
+                "",
                 "",
                 "",
                 "")).ToArray();
@@ -648,6 +653,11 @@ public sealed partial class MailboxClientOperationLedger
                 throw new InvalidDataException("Mailbox ack authority is invalid.");
             }
 
+            if (operation.Items.Any(candidate => candidate is null || candidate.PeerRequest is null))
+                throw new InvalidDataException("Mailbox ack intent contains null.");
+            var current = operation.Items[0].PeerRequest.Length != 0;
+            if (operation.Items.Any(candidate => (candidate.PeerRequest.Length != 0) != current))
+                throw new InvalidDataException("Mailbox ack intent is incomplete.");
             ulong priorCursor = 0;
             ulong maximumItemExpiry = 0;
             foreach (var item in operation.Items)
@@ -661,11 +671,12 @@ public sealed partial class MailboxClientOperationLedger
                 }
 
                 var digest = DecodeLowerHex(item.EnvelopeDigest, 32);
-                var store = document.Operations.Values.SingleOrDefault(candidate =>
+                if (current) ValidateCurrentAckItem(operation, item);
+                var store = current ? null : document.Operations.Values.SingleOrDefault(candidate =>
                     candidate.Epoch == operation.Epoch
                     && candidate.Cursor == item.Cursor
                     && string.Equals(candidate.MailboxId, operation.MailboxId, StringComparison.Ordinal));
-                if (store is null
+                if (!current && (store is null
                     || !store.Tombstoned
                     || store.State != "durable"
                     || store.ExpiresAtUnixSeconds != item.ExpiresAtUnixSeconds
@@ -682,7 +693,7 @@ public sealed partial class MailboxClientOperationLedger
                         digest)
                     || !store.ExpectedReplicaIds.SequenceEqual(
                         operation.ExpectedReplicaIds,
-                        StringComparer.Ordinal))
+                        StringComparer.Ordinal)))
                 {
                     throw new InvalidDataException("Mailbox ack item target is invalid.");
                 }
@@ -693,7 +704,7 @@ public sealed partial class MailboxClientOperationLedger
                         "Mailbox ack target is bound to multiple operations.");
                 }
 
-                ValidateAckItemState(item);
+                ValidateAckItemState(item, current);
                 if (item.CoordinatorSequence != 0)
                 {
                     maximumSequence = Math.Max(maximumSequence, item.CoordinatorSequence);
@@ -715,7 +726,7 @@ public sealed partial class MailboxClientOperationLedger
         }
     }
 
-    private static void ValidateAckItemState(MailboxClientLedgerAckItem item)
+    private static void ValidateAckItemState(MailboxClientLedgerAckItem item, bool current = false)
     {
         if (item.State is null
             || item.Error is null
@@ -751,16 +762,17 @@ public sealed partial class MailboxClientOperationLedger
         var hasReceipt = IsCanonicalBase64(
             item.Receipt,
             MailboxReceiptV2Limits.MaximumQuorumLength);
-        var valid = item.State switch
-        {
-            "reserved" => item.CoordinatorSequence == 0
-                && rawCompletionEmpty && rawReceiptEmpty && item.Error.Length == 0,
-            "retryable" => item.CoordinatorSequence == 0
-                && rawCompletionEmpty && rawReceiptEmpty && item.Error.Length != 0,
-            "completing" => hasCompletion && rawReceiptEmpty && item.Error.Length == 0,
-            "durable" => hasCompletion && hasReceipt && item.Error.Length == 0,
-            _ => false
-        };
+        var valid = current ? item.CoordinatorSequence == 0 && rawCompletionEmpty && item.Error.Length == 0 &&
+            (item.State == "reserved" && rawReceiptEmpty || item.State == "durable" && hasReceipt) : item.State switch
+            {
+                "reserved" => item.CoordinatorSequence == 0
+                    && rawCompletionEmpty && rawReceiptEmpty && item.Error.Length == 0,
+                "retryable" => item.CoordinatorSequence == 0
+                    && rawCompletionEmpty && rawReceiptEmpty && item.Error.Length != 0,
+                "completing" => hasCompletion && rawReceiptEmpty && item.Error.Length == 0,
+                "durable" => hasCompletion && hasReceipt && item.Error.Length == 0,
+                _ => false
+            };
         if (!valid)
         {
             throw new InvalidDataException("Mailbox ack state is inconsistent.");
@@ -849,7 +861,11 @@ public sealed partial class MailboxClientOperationLedger
                         Convert.FromBase64String(item.SecondReplicaReceipt)),
                 item.Receipt.Length == 0
                     ? ReadOnlyMemory<byte>.Empty
-                    : Convert.FromBase64String(item.Receipt))).ToArray());
+                    : Convert.FromBase64String(item.Receipt))
+            {
+                CanonicalPeerRequest = item.PeerRequest.Length == 0
+                        ? ReadOnlyMemory<byte>.Empty : Convert.FromBase64String(item.PeerRequest)
+            }).ToArray());
 }
 
 public sealed class MailboxClientAckTargetException : Exception;

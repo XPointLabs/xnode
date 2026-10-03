@@ -14,7 +14,7 @@ internal interface ICurrentMailboxReplicaPeerClient
 
 /// <summary>Same current admission/replay/storage owner as the recipient. A
 /// remote failure leaves real local custody and peer Pending, never quorum.</summary>
-internal sealed class CurrentMailboxReplicationCoordinator(CurrentMailboxReplicaReceiver local,
+internal sealed partial class CurrentMailboxReplicationCoordinator(CurrentMailboxReplicaReceiver local,
     ICurrentMailboxReplicaPeerClient peer, ReplicatedMailboxOptions options)
 {
     private readonly TimeSpan timeout = CaptureTimeout(options);

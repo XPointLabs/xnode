@@ -94,7 +94,7 @@ internal sealed record MailboxClientLedgerOperation(
 
 public sealed partial class MailboxClientOperationLedger : IDisposable
 {
-    private const int SchemaVersion = 4;
+    private const int SchemaVersion = 5;
     private const long MaximumDocumentBytes = 768L * 1024 * 1024;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _directory;
@@ -567,7 +567,7 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
                     "Mailbox operation authority is missing."),
                 StringComparer.Ordinal);
             document.AckOperations = new(
-                document.AckOperations ?? [],
+                document.AckOperations ?? throw new InvalidDataException("Mailbox ack intent authority is missing."),
                 StringComparer.Ordinal);
             ValidateDocument(document);
             return document;

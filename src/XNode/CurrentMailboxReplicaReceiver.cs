@@ -40,11 +40,32 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
     internal ReadOnlyMemory<byte> AuthorStoreRequest(CurrentMailboxAdmission.GrantScope scope,
         ReadOnlyMemory<byte> canonicalEnvelope, ulong cursor, ulong createdAt)
     {
+        var envelope = MailboxAuthenticatedRequestTranscript.DecodeStoreBody(canonicalEnvelope.Span);
+        return AuthorRequest(scope, MailboxPeerReplicationOperation.Store, envelope.Epoch,
+            envelope.OperationId, envelope.MailboxId.Bytes, canonicalEnvelope, cursor, createdAt, envelope.ExpiresAtUnixSeconds);
+    }
+
+    internal ReadOnlyMemory<byte> AuthorTombstoneRequest(CurrentMailboxAdmission.GrantScope scope,
+        MailboxAuthenticatedAckBody body, MailboxCurrentAckTarget target, ulong createdAt) =>
+        AuthorRequest(scope, MailboxPeerReplicationOperation.Tombstone, body.Epoch,
+            body.OperationId, body.MailboxId.Bytes, target.EnvelopeDigest, target.Cursor, createdAt, target.ExpiresAtUnixSeconds);
+
+    internal Task<IReadOnlyList<MailboxCurrentAckTarget>> ReadAckTargetsAsync(CurrentMailboxAdmission.GrantScope scope,
+        MailboxAuthenticatedAckBody body, CancellationToken token)
+    {
+        scope.Lease.RequireActive();
+        if (!ReferenceEquals(scope.Owner, admission)) throw new CryptographicException("Current ACK belongs to another native owner.");
+        return mutations.ReadCurrentAckTargetsAsync(body, scope.Host.MembershipCommitment, scope.Lease, token);
+    }
+
+    private ReadOnlyMemory<byte> AuthorRequest(CurrentMailboxAdmission.GrantScope scope,
+        MailboxPeerReplicationOperation operation, ulong epoch, ReadOnlyMemory<byte> operationId,
+        ReadOnlyMemory<byte> mailbox, ReadOnlyMemory<byte> payload, ulong cursor, ulong createdAt, ulong expiresAt)
+    {
         scope.Lease.RequireActive();
         ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
         if (!ReferenceEquals(scope.Owner, admission))
-            throw new CryptographicException("Current Store producer belongs to another native admission owner.");
-        var envelope = MailboxAuthenticatedRequestTranscript.DecodeStoreBody(canonicalEnvelope.Span);
+            throw new CryptographicException("Current peer producer belongs to another native admission owner.");
         var local = scope.Replicas.Single(replica => Fixed(replica.NodeId.Span, admission.LocalNodeId.Span));
         var remote = scope.Replicas.Single(replica => !Fixed(replica.NodeId.Span, local.NodeId.Span));
         if (!Fixed(crypto.GetPublicKey(seed), local.SigningPublicKey.Span))
@@ -62,20 +83,20 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
         };
         return MailboxPeerWireV2Codec.Encode(crypto.SignRequest(new MailboxPeerWireRequestV2
         {
-            Operation = MailboxPeerReplicationOperation.Store,
-            Epoch = envelope.Epoch,
-            OperationId = envelope.OperationId,
+            Operation = operation,
+            Epoch = epoch,
+            OperationId = operationId,
             SenderRouterId = local.NodeId,
             RecipientRouterId = remote.NodeId,
             MembershipCommitment = scope.Host.MembershipCommitment,
             PlacementCommitment = scope.Grant.PlacementCommitment,
-            BlindedMailboxId = envelope.MailboxId.Bytes,
+            BlindedMailboxId = mailbox,
             Cursor = cursor,
             CreatedAtUnixSeconds = createdAt,
-            ExpiresAtUnixSeconds = envelope.ExpiresAtUnixSeconds,
+            ExpiresAtUnixSeconds = expiresAt,
             ReplayNonce = RandomNumberGenerator.GetBytes(32),
-            PayloadDigest = SHA256.HashData(canonicalEnvelope.Span),
-            Payload = canonicalEnvelope,
+            PayloadDigest = SHA256.HashData(payload.Span),
+            Payload = payload,
             SenderMembershipProof = Membership(local),
             RecipientMembershipProof = Membership(remote),
             Signature = ReadOnlyMemory<byte>.Empty
