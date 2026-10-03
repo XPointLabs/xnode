@@ -251,18 +251,41 @@ public sealed class ContactReplicaTransportTests : IDisposable
     }
 
     [Fact]
-    public async Task HttpTransportTimeoutIsOutcomeUnknown()
+    public async Task HttpTransportRejectsUntrustedPlacementBeforeCallingHandler()
     {
         var sender = Identity(0x13);
         var recipient = Identity(0x24);
-        var now = DateTimeOffset.Parse("2026-09-07T10:00:00Z");
+        var now = DateTimeOffset.FromUnixTimeSeconds(1100);
         var shard = Bytes(0x46, 32);
-        var placement = Placement(
-            ContactServiceRequestKind.PublishInvite,
-            shard,
-            sender.Id,
-            recipient.Id,
-            now.AddHours(1));
+        var placement = Placement(ContactServiceRequestKind.PublishInvite, shard,
+            sender.Id, recipient.Id, now.AddHours(1));
+        using var privacy = Privacy(sender.Id, recipient.Id);
+        var handlerCalls = 0;
+        var client = new HttpContactReplicaPeerClient(sender.Options, privacy, Options(),
+            new FixedClock(now), _ => new DelegateHandler((_, _) =>
+            {
+                Interlocked.Increment(ref handlerCalls);
+                throw new InvalidOperationException("Untrusted placement must not reach HTTP.");
+            }));
+        var command = new ContactReplicaRpcCommand(placement,
+            ContactReplicaRpcOperation.ReadCurrentDcr, Bytes(0x72, 32),
+            ContactReplicaPayloadCodec.EncodeFixed32(shard));
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await client.SendAsync(command, default));
+        Assert.Equal(0, handlerCalls);
+    }
+
+    [Fact]
+    public async Task HttpTransportTimeoutIsOutcomeUnknown()
+    {
+        using var ceremony = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        var now = DateTimeOffset.FromUnixTimeSeconds(1100);
+        var shard = Bytes(0x46, 32);
+        var placement = VerifiedPlacement(ceremony, shard);
+        var sender = Identity(ceremony.Node(placement.ReplicaIds[0].Span));
+        var recipient = Identity(ceremony.Node(placement.ReplicaIds[1].Span));
+        var handlerCalls = 0;
+        var handlerCancelled = false;
         using var privacy = Privacy(sender.Id, recipient.Id);
         var options = Options();
         options.ReplicaTimeoutSeconds = 1;
@@ -273,7 +296,16 @@ public sealed class ContactReplicaTransportTests : IDisposable
             new FixedClock(now),
             _ => new DelegateHandler(async (_, token) =>
             {
-                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                Interlocked.Increment(ref handlerCalls);
+                try
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested)
+                {
+                    handlerCancelled = true;
+                    throw;
+                }
                 throw new InvalidOperationException();
             }));
         var command = new ContactReplicaRpcCommand(
@@ -285,22 +317,21 @@ public sealed class ContactReplicaTransportTests : IDisposable
         var failure = await Assert.ThrowsAsync<IOException>(async () =>
             await client.SendAsync(command, default));
         Assert.Contains("deadline", failure.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, handlerCalls);
+        Assert.True(handlerCancelled);
     }
 
     [Fact]
     public async Task HttpTransportRejectsAResponseSignedByTheWrongPeer()
     {
-        var sender = Identity(0x15);
-        var recipient = Identity(0x26);
+        using var ceremony = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
         var stranger = Identity(0x37);
-        var now = DateTimeOffset.Parse("2026-09-07T10:00:00Z");
+        var now = DateTimeOffset.FromUnixTimeSeconds(1100);
         var shard = Bytes(0x48, 32);
-        var placement = Placement(
-            ContactServiceRequestKind.PublishInvite,
-            shard,
-            sender.Id,
-            recipient.Id,
-            now.AddHours(1));
+        var placement = VerifiedPlacement(ceremony, shard);
+        var sender = Identity(ceremony.Node(placement.ReplicaIds[0].Span));
+        var recipient = Identity(ceremony.Node(placement.ReplicaIds[1].Span));
+        var handlerCalls = 0;
         using var privacy = Privacy(sender.Id, recipient.Id);
         var client = new HttpContactReplicaPeerClient(
             sender.Options,
@@ -309,6 +340,7 @@ public sealed class ContactReplicaTransportTests : IDisposable
             new FixedClock(now),
             _ => new DelegateHandler((request, _) =>
             {
+                Interlocked.Increment(ref handlerCalls);
                 var correlation = Convert.FromHexString(
                     request.Headers.GetValues(
                         ContactReplicaPeerAuthenticator.CorrelationHeader).Single());
@@ -341,8 +373,10 @@ public sealed class ContactReplicaTransportTests : IDisposable
             Bytes(0x76, 32),
             ContactReplicaPayloadCodec.EncodeFixed32(shard));
 
-        await Assert.ThrowsAsync<IOException>(async () =>
+        var failure = await Assert.ThrowsAsync<IOException>(async () =>
             await client.SendAsync(command, default));
+        Assert.Equal(1, handlerCalls);
+        Assert.Contains("peer or correlation binding", failure.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -662,6 +696,14 @@ public sealed class ContactReplicaTransportTests : IDisposable
             checked((ulong)validUntil.ToUnixTimeSeconds()),
             [first.ToBytes(), second.ToBytes()]);
 
+    private static ContactServicePlacementCapability VerifiedPlacement(
+        DeepIdV2PublicationAuthorityFixture ceremony, byte[] shard) =>
+        ContactServicePlacementCapability.FromNetcodec(
+            ContactServicePlacementFactory.Create(ceremony.NetworkContext,
+                ContactServiceRequestKind.PublishInvite, shard),
+            ContactServiceRequestKind.PublishInvite, shard,
+            ceremony.Freshness.TrustedUpperUnixSeconds);
+
     private static ContactServicePersistenceOptions Options() => new()
     {
         ReplicaTimeoutSeconds = 5,
@@ -689,6 +731,18 @@ public sealed class ContactReplicaTransportTests : IDisposable
         1024,
         1_000,
         TimeSpan.FromMinutes(5));
+
+    private static IdentityFixture Identity(DeepIdV2PublicationAuthorityFixture.TestSigner signer)
+    {
+        var id = RouterId.FromBytes(signer.SignerId.Span);
+        var seedHex = Convert.ToHexStringLower(signer.Seed);
+        return new IdentityFixture(id, seedHex, new RouterNodeOptions
+        {
+            RouterId = id.Value,
+            Ed25519PrivateKey = seedHex,
+            DataDirectory = Path.GetTempPath()
+        });
+    }
 
     private static IdentityFixture Identity(byte fill, string? data = null)
     {

@@ -1,8 +1,10 @@
 using System.Buffers.Binary;
-using System.Reflection;
 using System.Security.Cryptography;
 using Deep.Protocol.ContactV1;
+using Deep.Protocol.ContactV2;
+using Deep.Protocol.DeepExtension.PrivacyRouting;
 using Deep.Protocol.MessagingWire;
+using Deep.Protocol.XPointNetworkV1;
 using Sodium;
 using XNode.Core;
 using XNode.Core.ContactPreKey;
@@ -109,29 +111,29 @@ public sealed class ContactPreKeyXpc1ResponseTests
     [Fact]
     public void PublicVerifierContractIsPresentWithoutServerRawKeyInputs()
     {
-        var verify = Assert.Single(
-            typeof(Xpc1PreKeyClaimReceiptVerifier).GetMethods(),
-            static method => method.Name == "VerifyAsync");
-        Assert.DoesNotContain(verify.GetParameters(), static parameter =>
-            parameter.ParameterType == typeof(byte[])
-            || parameter.ParameterType == typeof(ReadOnlyMemory<byte>)
-            || parameter.ParameterType == typeof(bool));
+        Func<ParsedXpk1V2, ParsedXpc1V2, VerifiedContactServicePlacement,
+            DeepIdV2CurrentContactAuthorization, ParsedDcr1V2,
+            OnionTrustedTimeAuthority, CancellationToken,
+            ValueTask<VerifiedXpc1V2PreKeyClaimReceipt>> verify =
+            DeepIdV2PreKeyClaimReceiptVerifier.VerifyAsync;
+        Assert.NotNull(verify);
+        Assert.All(typeof(DeepIdV2PreKeyClaimReceiptVerifier).GetMethods()
+            .Where(static method => method.Name.StartsWith("Verify", StringComparison.Ordinal)),
+            static method => Assert.DoesNotContain(method.GetParameters(), static parameter =>
+                parameter.ParameterType == typeof(byte[])
+                || parameter.ParameterType == typeof(ReadOnlyMemory<byte>)
+                || parameter.ParameterType == typeof(bool)));
 
         var inventoryCapability = typeof(VerifiedOpaquePreKeyInventory);
         Assert.False(inventoryCapability.IsPublic);
         Assert.Empty(inventoryCapability.GetConstructors());
-        var projection = Assert.Single(inventoryCapability.GetMethods(
-            BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.DeclaredOnly),
-            static method => method.Name == "FromVerifiedPublication");
-        Assert.Equal(
-            [typeof(VerifiedPreKeyInventoryPublication)],
-            projection.GetParameters().Select(static parameter => parameter.ParameterType).ToArray());
-        var install = Assert.Single(typeof(ContactPreKeyOpaqueStore).GetMethods(
-            BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly),
-            static method => method.Name == "InstallVerifiedInventory");
-        Assert.Equal(
-            [typeof(VerifiedOpaquePreKeyInventory)],
-            install.GetParameters().Select(static parameter => parameter.ParameterType).ToArray());
+        Func<VerifiedPreKeyInventoryInstallationPlan, IReadOnlyList<ReadOnlyMemory<byte>>,
+            VerifiedOpaquePreKeyInventory> projection = VerifiedOpaquePreKeyInventory.FromInstallationPlan;
+        Func<ContactPreKeyOpaqueStore, VerifiedOpaquePreKeyInventory, ContactPreKeyInventoryResult>
+            install = static (store, inventory) => store.InstallVerifiedInventory(inventory);
+        Assert.NotNull(projection);
+        Assert.NotNull(install);
+        Assert.Throws<ArgumentNullException>(() => projection(null!, []));
     }
 
     private static void AssertClaim(Fixture fixture, Xpc1Result result)

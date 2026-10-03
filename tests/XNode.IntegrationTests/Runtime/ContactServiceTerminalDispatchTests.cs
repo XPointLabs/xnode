@@ -1,6 +1,9 @@
 using Deep.Protocol.DeepExtension.PrivacyRouting;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
-using System.Text.Json;
+using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace XNode.IntegrationTests.Runtime;
 
@@ -104,21 +107,32 @@ public sealed class ContactServiceTerminalDispatchTests
     }
 
     [Fact]
-    public void ProductionCompositionKeepsContactRuntimeAndReplicaEndpointDormant()
+    public async Task ShippingDefaultsComposeDormantDid2ContactBoundary()
     {
         var root = FindRepositoryRoot();
-        var program = File.ReadAllText(Path.Combine(root, "src", "XNode", "Program.cs"));
-
-        Assert.DoesNotContain("ContactServiceOpaqueFacade", program,
-            StringComparison.Ordinal);
-        Assert.Contains(nameof(ContactServiceHostComposition.AddContactServiceBoundary), program,
-            StringComparison.Ordinal);
-
-        using var settings = JsonDocument.Parse(File.ReadAllText(
-            Path.Combine(root, "src", "XNode", "appsettings.json")));
-        var contact = settings.RootElement.GetProperty("ContactService");
-        Assert.False(contact.GetProperty("runtimeActivation").GetBoolean());
-        Assert.False(contact.GetProperty("mapReplicaEndpoint").GetBoolean());
+        var settings = new ConfigurationBuilder()
+            .AddJsonFile(Path.Combine(root, "src", "XNode", "appsettings.json"))
+            .Build();
+        var options = settings.GetRequiredSection("ContactService")
+            .Get<ContactServicePersistenceOptions>()!;
+        Assert.False(options.RuntimeActivation);
+        Assert.False(options.MapReplicaEndpoint);
+        var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+        {
+            EnvironmentName = "Production"
+        });
+        var plan = builder.Services.AddDid2ContactServiceBoundary(options);
+        await using var app = builder.Build();
+        app.MapContactReplicaEndpoint(plan, peerListenerPort: 8083);
+        var dispatcher = app.Services.GetRequiredService<IContactServiceOpaqueDispatcher>();
+        Assert.IsType<UnavailableContactServiceOpaqueDispatcher>(dispatcher);
+        await Assert.ThrowsAsync<ContactServiceUnavailableException>(async () =>
+            await dispatcher.DispatchAsync(ContactServiceOperation.ResolveDcr,
+                "XIQ1"u8.ToArray(), default));
+        Assert.DoesNotContain(
+            ((IEndpointRouteBuilder)app).DataSources.SelectMany(static source => source.Endpoints),
+            endpoint => endpoint is RouteEndpoint route
+                && route.RoutePattern.RawText == ContactReplicaHttpContract.Route);
     }
 
     private static PrivacyTerminalExitDispatcher Create(

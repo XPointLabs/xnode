@@ -1,0 +1,128 @@
+# S00 — XNode baseline and first fixture repair
+
+This is test evidence, not a protocol specification or release qualification.
+Execution order is owned by the workspace `docs/architecture/IMPLEMENTATION-PLAN-V1.md`.
+No production deployment, device installation, account reset or physical E2E was performed.
+No production runtime code, wire format or authority policy was changed.
+
+## Source matrix
+
+Branch: `release-candidate/prod-20260909`.
+
+| Repository | Input HEAD |
+| --- | --- |
+| XPointLabs | `faeb267` |
+| xnode | `b5899c90707c7c12b30849f05e0bb3ff9090217b` plus the test changes in this checkpoint |
+| deep-protocol | `17a7c8be2b222eb0855d381b5040864dc14b4c9e` |
+| deep-client-shared | `cba9f21fd15e33fb48fb3cdb71927cb7b0615053` |
+| deep-client-maui | `11f1c8fb8a0d70178fa62ad78e69e93da1bb400a` |
+| deep-registry-api | `5c79cb07620915769f673fd4b92624d774ad709e` |
+| deep-devops | `af4f833787b2dcb41e8aac7ed8b54d69d4cbdfe3` |
+
+The test graph uses `DeepProtocolSourceCutover=true`: current Protocol project
+references, not a claim that frozen NuGet packages or installed clients match.
+
+## Reproduction and results
+
+Run from the xnode repository:
+
+```powershell
+dotnet test XNode.slnx -c Release -p:DeepProtocolSourceCutover=true `
+  --logger trx --results-directory artifacts/s00/baseline --verbosity quiet
+
+dotnet test XNode.slnx -c Release -p:DeepProtocolSourceCutover=true `
+  --filter "FullyQualifiedName~ContactReplicaTransportTests|FullyQualifiedName~ContactServiceTerminalDispatchTests|FullyQualifiedName~PublicVerifierContractIsPresentWithoutServerRawKeyInputs" `
+  --logger trx --results-directory artifacts/s00/closed-boundaries --verbosity quiet
+
+dotnet test tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj -c Release `
+  -p:DeepProtocolSourceCutover=true `
+  --filter "FullyQualifiedName~ContactAuthorizedPublicationReplicaTests|FullyQualifiedName~ContactReplicaTransportTests|FullyQualifiedName~ContactServiceTerminalDispatchTests" `
+  --logger trx --results-directory artifacts/s00/signed-publication --verbosity quiet
+
+dotnet test XNode.slnx -c Release -p:DeepProtocolSourceCutover=true `
+  --logger trx --results-directory artifacts/s00/checkpoint-1 --verbosity quiet
+```
+
+Both full runs rebuilt current sources and exited **1**, not success.
+
+| Assembly | Fresh baseline pass/fail | Checkpoint pass/fail |
+| --- | --- | --- |
+| ProfileGenerator | 107 / 0 | 107 / 0 |
+| Unit | 281 / 16 | 282 / 13 |
+| Integration | 445 / 3 | 452 / 0 |
+| Total | 833 / 19 | 841 / 13 |
+
+There were no skipped tests in either full run. The total increased from 852
+to 854: two publication cases moved from Unit to Integration; one pre-HTTP
+rejection case and one forged-witness/no-mutation case were added.
+Focused results were 1 unit + 33 integration, then 36 integration, all passing.
+These overlap the full run; do not add them to its unique-test count.
+The final forged-witness test was added after the focused run and passed in
+the final full Integration suite. No build warnings appeared in these commands.
+After changing the restart test's cleanup to a scoped `using`, a final focused
+`ContactAuthorizedPublicationReplicaTests` run rebuilt and passed all 3 cases
+with TRX in `artifacts/s00/publication-final`; it is also overlapping evidence.
+
+Local raw TRX files remain under ignored `artifacts/s00/`; they contain machine
+paths and are not committed. Their SHA-256 digests identify the exact runs:
+
+| Assembly | Baseline TRX SHA-256 | Checkpoint TRX SHA-256 |
+| --- | --- | --- |
+| ProfileGenerator | `12422e5b5ef9523340daccf82e32c441a560a279f9410ff5be06059cb9b8c4a1` | `65bfc6614d75dcb993b74face7d2baa3462c1884a06a95ff714b7c8a815efdf9` |
+| Unit | `fc0f043e7c22faf8f8b71c96faca3d0c3624417bd91d7e6660022a3e89210ee7` | `e3e40175baa0e6d5d71b279974b4e2b007d6d57456f268226f1a83c45ac33983` |
+| Integration | `e176b513f84272d4102d007e3e58eed4b6a268c418f437c01a2dbb659382ba72` | `db6b9d6de876366a1e6f14f3e2fb4520539565fe363e89e04000d5e6c9ea9e7f` |
+
+## Classification of all 19 baseline failures
+
+Six repaired failures were stale harness/contracts, not evidence of broken
+HTTP timeout handling, peer-signature validation or durable publication:
+
+| Baseline test | Cause and current check |
+| --- | --- |
+| `ContactReplicaTransportTests.HttpTransportTimeoutIsOutcomeUnknown` | Untrusted placement rejected before HTTP. Uses a genuinely signed DID2 network/placement; asserts exactly one handler call, cancellation and outcome-unknown deadline. |
+| `ContactReplicaTransportTests.HttpTransportRejectsAResponseSignedByTheWrongPeer` | Same premature rejection. Uses signed placement and asserts the handler ran and peer/correlation rejection occurred. |
+| `ContactServiceTerminalDispatchTests.ProductionCompositionKeepsContactRuntimeAndReplicaEndpointDormant` | Source-text assertion expected a retired composition method. Replaced by `ShippingDefaultsComposeDormantDid2ContactBoundary`: actual shipping JSON, current DI, unavailable dispatch and no mapped replica route. This is not full Program/Release composition qualification. |
+| `ContactPreKeyXpc1ResponseTests.PublicVerifierContractIsPresentWithoutServerRawKeyInputs` | Reflection expected the removed V1 public verifier. Checks the compile-time current DID2 verifier signature and verified installation-plan boundary, private capability construction and null-plan rejection. |
+| `ContactAuthorizedPublicationReplicaTests.ExactXpaReservationAndCommitSurviveReplicaRestart` | Synthetic V1 route failed current codec bounds before mutation. Moved to Integration and uses genuine DID2 authoring/verifier, durable stores and saga; replay after restart passes. |
+| `ContactAuthorizedPublicationReplicaTests.SameAuthorizationWithChangedAuthorizedBodyFailsBeforeSecondMutation` | Same stale fixture and a capability-construction bypass. Current case uses two valid threshold witness sets for the same authorization/body with different exact requests; verifies permanent conflict and unchanged stored object. A separate forged-witness test proves no reservation/mutation and subsequent valid publication still commits. |
+
+All 13 remaining failures are in `ContactServiceOpaqueFacadeTests`. The
+immediate failing prerequisite is the same obsolete `Xpa1AuthorizationTestFixture`
+request: current `Xpu1Codec.RequireBounds` rejects its route before the business
+scenario. It also mints a sealed authority using uninitialized-object/unsafe
+access rather than the public verifier. These tests are retained and failing,
+not removed, skipped, or counted as product passes.
+
+| Remaining scenario | Immediate classification |
+| --- | --- |
+| `CommittedFailpointReturnsUnknownWithoutReceiptsAndRestartExactReplays` | Stale signed-publication fixture; business outcome unverified |
+| `PartialReplicaCommitStaysReservedWithoutReceiptsThenReconciles` | Same |
+| `ContextMismatchDoesNotMutateAndAcceptedPublishDurablyExactReplays` | Same |
+| `ReservedFailpointNeverReturnsCommittedAndRestartFinishesExactRequest` | Same |
+| `SameAuthorizationChangedExactBodyPermanentlyLatchesConflict` | Same; rewrite with a genuinely valid exact-request conflict, not forged authority |
+| `PublishedClosureCommitsOneTimeInviteAndSuccessExactReplays` | Same; additionally current author/verifier supports permanent publication only, so a signed current invite prerequisite is absent |
+| `ReceiptIssuanceHonorsCallerCancellationWithoutReturningAResponse` | Same; cancellation assertion receives fixture ArgumentException before dispatch |
+| `PartialAuthorityFailureNeverEmitsTheSuccessfulPartialReceipt` | Same |
+| `ResolveUsesPublishedRouteClosureWithoutExternalLocatorLookup` | Same |
+| `InvalidSignatureSizeFailsClosedWithoutReceiptEmission` | Same |
+| `ConcurrentExactAuthorizationIsConsumedOnceAndOnlyExactReplaysFollow` | Same |
+| `RemoteShapedAuthoritiesAreDelegatedAndReceiptsStayCanonicallySorted` | Same |
+| `CrossReplicaReceiptSubstitutionFailsClosedWithoutReceiptEmission` | Same |
+
+The immediate harness classification does not prove those runtime scenarios
+are correct. Repair them with current signed fixtures, then classify any newly
+reached product failure separately. The current publication verifier explicitly
+rejects nonzero usage limits/non-genesis publication; do not restore a V1
+capability seam to make the invite case green. Reconcile its current contract
+and missing producer/consumer under the unified plan.
+
+## Limits and remaining S00 work
+
+- HTTP tests use an injected handler: no socket/TLS, remote replica or device claim.
+- The signed ceremony uses test-owned keys/native crypto; no production secrets.
+- The two-replica placement fixture does not prove distinct node-ID/receipt-key
+  support, node admission, revocation or grant-bound peer quorum.
+- No removed admission/journal experiment was restored; DR-0082 remains the baseline.
+- S00 is still open: 13 node cases, fresh Registry classification/isolated DB,
+  current XPP fixtures and workspace governance drift remain to be completed.
+- Release/physical E2E and the S01 admission/lifecycle decisions remain open.
