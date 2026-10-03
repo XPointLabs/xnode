@@ -180,6 +180,15 @@ public sealed class MailboxDurabilityBarrier : IMailboxDurabilityBarrier
 {
     private const uint MoveFileReplaceExisting = 0x1;
     private const uint MoveFileWriteThrough = 0x8;
+    private Action<int> RetryDelay { get; }
+
+    public MailboxDurabilityBarrier() : this(Thread.Sleep) { }
+
+    internal MailboxDurabilityBarrier(Action<int> retryDelay)
+    {
+        ArgumentNullException.ThrowIfNull(retryDelay);
+        RetryDelay = retryDelay;
+    }
 
     public void FlushFileAndParentDirectory(string path)
     {
@@ -213,15 +222,19 @@ public sealed class MailboxDurabilityBarrier : IMailboxDurabilityBarrier
     {
         if (OperatingSystem.IsWindows())
         {
-            if (!MoveFileEx(
-                    temporaryPath,
-                    finalPath,
-                    MoveFileReplaceExisting | MoveFileWriteThrough))
+            // A short-lived reader/filter can deny rename after the private
+            // temporary file has been flushed. Retry only the same native move,
+            // never recreate the source, change ACLs or infer success from the
+            // destination. Missing source or exhausted budget remains uncertain.
+            for (var attempt = 0; ; attempt++)
             {
-                throw new Win32Exception(Marshal.GetLastPInvokeError());
+                if (MoveFileEx(temporaryPath, finalPath,
+                        MoveFileReplaceExisting | MoveFileWriteThrough)) return;
+                var error = Marshal.GetLastPInvokeError();
+                if (error is not (5 or 32 or 33) || attempt == 3 || !File.Exists(temporaryPath))
+                    throw new Win32Exception(error);
+                RetryDelay(10 << attempt);
             }
-
-            return;
         }
 
         File.Move(temporaryPath, finalPath, overwrite: true);

@@ -533,7 +533,10 @@ public sealed class DeepIdV2PreKeyClaimRuntimeTests
         internal bool ExpireAfterPrepare { get; set; }
         internal int HttpCalls { get; private set; }
         internal int UnavailableResponses { get; private set; }
-        internal IMailboxDurabilityBarrier Durability { get; set; } = new MailboxDurabilityBarrier();
+        private readonly ObservedNativeDurability nativeDurability = new();
+        internal IMailboxDurabilityBarrier Durability { get; set; }
+
+        private Harness() { Durability = nativeDurability; }
 
         internal static async Task<Harness> CreateAsync(ushort lastResortReuseLimit = 1)
         {
@@ -594,6 +597,9 @@ public sealed class DeepIdV2PreKeyClaimRuntimeTests
         internal ParsedXpc1V2 Verify(ParsedXpk1V2 request, ReadOnlyMemory<byte> response)
         {
             var parsed = DeepIdV2PreKeyClaimResultCodec.Decode(response.Span, request.CanonicalBytes.Span);
+            Assert.True(parsed.Status == Xpc1V2Status.Claimed,
+                $"Expected claimed result; actual status={parsed.Status}, mutation={parsed.MutationOutcome}; " +
+                $"native durability failures=[{string.Join(',', nativeDurability.Failures)}].");
             _ = DeepIdV2PreKeyClaimReplicaSignatureVerifier.Verify(request, parsed, Placement.VerifiedPlacement);
             Assert.Equal(Xpc1V2Status.Claimed, parsed.Status); return parsed;
         }
@@ -727,6 +733,40 @@ public sealed class DeepIdV2PreKeyClaimRuntimeTests
             RouterId authenticatedSender, CancellationToken cancellationToken) =>
             rewrite(command, await inner.ReceiveAsync(command, authenticatedSender, cancellationToken));
     }
+    // Observe the real barrier without retries, permission changes or payload/path
+    // output. A non-success result must not hide native I/O behind placement errors.
+    private sealed class ObservedNativeDurability : IMailboxDurabilityBarrier
+    {
+        private readonly MailboxDurabilityBarrier inner = new();
+        internal System.Collections.Concurrent.ConcurrentQueue<string> Failures { get; } = new();
+        public void FlushFileAndParentDirectory(string path) => Observe("flush-file", path,
+            () => inner.FlushFileAndParentDirectory(path));
+        public void FlushParentDirectory(string path) => Observe("flush-parent", path,
+            () => inner.FlushParentDirectory(path));
+        public void ReplaceFile(string temporaryPath, string finalPath) => Observe("replace", finalPath,
+            () => inner.ReplaceFile(temporaryPath, finalPath));
+        public void DeleteFile(string path) => Observe("delete-file", path, () => inner.DeleteFile(path));
+        public void DeleteDirectory(string path) => Observe("delete-directory", path, () => inner.DeleteDirectory(path));
+
+        private void Observe(string operation, string path, Action action)
+        {
+            try { action(); }
+            catch (Exception error) when (error is System.ComponentModel.Win32Exception or IOException or UnauthorizedAccessException)
+            {
+                var kind = Path.GetFileName(path) switch
+                {
+                    "claims.state" => "claim-state",
+                    "active.state" => "inventory-state",
+                    _ => "other"
+                };
+                var code = error is System.ComponentModel.Win32Exception native
+                    ? native.NativeErrorCode : error.HResult;
+                Failures.Enqueue($"{operation}:{kind}:{error.GetType().Name}:{code}");
+                throw;
+            }
+        }
+    }
+
     // Deterministic native error classification, not a diagnosis of the observed
     // intermittent Windows lock. No retry, ACL change or write suppression.
     private sealed class NativeCompletionFailure(string replicaDirectory, int error, bool afterReplace) : IMailboxDurabilityBarrier

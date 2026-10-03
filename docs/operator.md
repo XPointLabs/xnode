@@ -144,8 +144,18 @@ I/O uncertainty. A claim whose reservation/completion cannot be confirmed return
 returns a bodyless, unsigned HTTP 503 for these errors. After storage readiness
 is restored, reconcile the exact original operation; do not substitute a new
 operation or assume that the failed response means no write occurred. This is
-error containment, not a diagnosis of intermittent Windows access-denied errors,
-an automatic retry, or permission to weaken storage ACLs.
+error containment, not identification of the process responsible for intermittent
+Windows access-denied errors or permission to weaken storage ACLs.
+
+The native Windows replacement barrier now makes at most four attempts to move
+the **same already flushed temporary file** with unchanged replace/write-through
+flags. Only native access/sharing/lock errors (5/32/33) with the source still
+present permit the three bounded waits (10/20/40 ms). It never recreates a missing
+source, clears protection, changes ACLs or infers success from a destination file.
+Persistent denial and every other error still throw; the caller's read-back,
+uncertainty and exact-operation recovery obligations remain unchanged. Unix
+replacement and logical deletion behavior are unchanged. This is local storage
+retry, not grant renewal or another remotely issued/signed operation.
 
 Native prekey custody also distinguishes an unavailable read from a proven
 corrupt snapshot. I/O or access failure before capture of the bounded snapshot

@@ -619,3 +619,6 @@ claim B8 fixed. Existing permanent-contact behavior is unchanged.
 | Full Unit | `ed10c836b65493207cb138e05ae9d716ff3fe0343123aa06610eeac3e651f35f` |
 | Full Integration | `671bf1dd14ae16dc408877ffc55401cc23767deae7dbf4c4743d38c12ca272ed` |
 | External runtime gate | `c644f9fdf4ccbf66b6f5d0cde9e8c60be59cbcf8032117c2db780523beb1a2e9` |
+
+Subsequent native replacement reproduction and bounded-retry evidence:
+[S00 native replacement checkpoint](s00-native-replacement-2026-10-03.md).
