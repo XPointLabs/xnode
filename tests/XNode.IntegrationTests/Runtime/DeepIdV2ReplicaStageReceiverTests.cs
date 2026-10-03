@@ -101,20 +101,17 @@ public sealed class DeepIdV2ReplicaStageReceiverTests
     }
 
     [Fact]
-    public void StagingSwitch_RejectsV1OrMissingPlacement()
+    public void StagingSwitch_RequiresPlacementAndUat()
     {
         var options = new DeepIdV2ReplicaStageOptions { Enabled = true };
         Assert.Throws<InvalidOperationException>(() => options.Validate(
-            placementEnabled: false, v1ContactEnabled: false,
+            placementEnabled: false,
             developmentOrUat: true));
         Assert.Throws<InvalidOperationException>(() => options.Validate(
-            placementEnabled: true, v1ContactEnabled: true,
-            developmentOrUat: true));
-        Assert.Throws<InvalidOperationException>(() => options.Validate(
-            placementEnabled: true, v1ContactEnabled: false,
+            placementEnabled: true,
             developmentOrUat: false));
         Assert.True(options.Validate(placementEnabled: true,
-            v1ContactEnabled: false, developmentOrUat: true));
+            developmentOrUat: true));
     }
 
     [Fact]

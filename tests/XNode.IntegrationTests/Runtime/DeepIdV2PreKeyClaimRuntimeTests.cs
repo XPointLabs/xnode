@@ -128,11 +128,10 @@ public sealed class DeepIdV2PreKeyClaimRuntimeTests
     public void ClaimFlag_RequiresObserverAndDID2OnlyPublicationBoundary()
     {
         var options = new DeepIdV2PreKeyClaimOptions { Enabled = true };
-        Assert.True(options.Validate(true, true, false, true));
-        Assert.Throws<InvalidOperationException>(() => options.Validate(false, true, false, true));
-        Assert.Throws<InvalidOperationException>(() => options.Validate(true, false, false, true));
-        Assert.Throws<InvalidOperationException>(() => options.Validate(true, true, true, true));
-        Assert.Throws<InvalidOperationException>(() => options.Validate(true, true, false, false));
+        Assert.True(options.Validate(true, true, true));
+        Assert.Throws<InvalidOperationException>(() => options.Validate(false, true, true));
+        Assert.Throws<InvalidOperationException>(() => options.Validate(true, false, true));
+        Assert.Throws<InvalidOperationException>(() => options.Validate(true, true, false));
     }
 
     [Fact]

@@ -266,7 +266,9 @@ public sealed class MailboxAuthenticatedCapabilityRuntimeTests : IDisposable
         using var journal = new DurableMailboxCapabilityReplayJournal(_directory);
 
         var issuerTamper = fixture.Encoded.ToArray();
-        issuerTamper[16 + 72 + 208] ^= 1;
+        issuerTamper[MailboxAuthenticatedClientRequestCodec.HeaderLength + 72 +
+            MailboxAuthenticatedCapabilityLimits.GrantLength -
+            MailboxAuthenticatedCapabilityLimits.SignatureLength] ^= 1;
         var issuerError = Assert.Throws<MailboxAuthenticatedCapabilityException>(() =>
             Runtime(fixture, journal).Verify(issuerTamper));
         Assert.Equal(
@@ -274,7 +276,9 @@ public sealed class MailboxAuthenticatedCapabilityRuntimeTests : IDisposable
             issuerError.Error);
 
         var holderTamper = fixture.Encoded.ToArray();
-        holderTamper[16 + 344] ^= 1;
+        holderTamper[MailboxAuthenticatedClientRequestCodec.HeaderLength +
+            MailboxAuthenticatedCapabilityLimits.PresentationLength -
+            MailboxAuthenticatedCapabilityLimits.SignatureLength] ^= 1;
         var holderError = Assert.Throws<MailboxAuthenticatedCapabilityException>(() =>
             Runtime(fixture, journal).Verify(holderTamper));
         Assert.Equal(
@@ -507,6 +511,7 @@ public sealed class MailboxAuthenticatedCapabilityRuntimeTests : IDisposable
                 MembershipCommitment = Range(0xb0, 32),
                 IssuerPublicKey = crypto.GetPublicKey(issuerSeed),
                 HolderPublicKey = crypto.GetPublicKey(holderSeed),
+                SelectionInput = Range(0xa0, 32),
                 IssuerSignature = ReadOnlyMemory<byte>.Empty
             },
             issuerSeed);

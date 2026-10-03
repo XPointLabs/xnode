@@ -478,6 +478,7 @@ public sealed class MailboxClientActivatedEndToEndTests : IDisposable
                     Epoch = 7,
                     Generation = 7,
                     Serial = Filled(serial, 16),
+                    SelectionInput = Filled(0x54, 32),
                     NotBeforeUnixSeconds = Now - 60,
                     ExpiresAtUnixSeconds = Now + 3600,
                     OverlapUntilUnixSeconds = 0,

@@ -9,16 +9,14 @@ public sealed class DeepIdV2DirectoryProofOptionsTests
     {
         var node = new RouterNodeOptions();
         Assert.Null(new DeepIdV2DirectoryProofOptions()
-            .ValidateAndLoad(node, developmentOrUat: true,
-                v1ContactAuthorityEnabled: false));
+            .ValidateAndLoad(node, developmentOrUat: true));
         Assert.Throws<InvalidOperationException>(() =>
             new DeepIdV2DirectoryProofOptions { RegistryOrigin = "https://registry.example" }
-                .ValidateAndLoad(node, developmentOrUat: true,
-                    v1ContactAuthorityEnabled: false));
+                .ValidateAndLoad(node, developmentOrUat: true));
     }
 
     [Fact]
-    public void EnabledProof_RequiresUatAndIndependentV2Authority()
+    public void EnabledProof_RequiresUat()
     {
         var options = ValidOptions();
         var node = new RouterNodeOptions
@@ -26,13 +24,8 @@ public sealed class DeepIdV2DirectoryProofOptionsTests
             DataDirectory = Path.Combine(Path.GetTempPath(), "did2-proof-test")
         };
         Assert.Throws<InvalidOperationException>(() =>
-            options.ValidateAndLoad(node, developmentOrUat: false,
-                v1ContactAuthorityEnabled: false));
-        Assert.Throws<InvalidOperationException>(() =>
-            options.ValidateAndLoad(node, developmentOrUat: true,
-                v1ContactAuthorityEnabled: true));
-        Assert.NotNull(options.ValidateAndLoad(node, developmentOrUat: true,
-            v1ContactAuthorityEnabled: false));
+            options.ValidateAndLoad(node, developmentOrUat: false));
+        Assert.NotNull(options.ValidateAndLoad(node, developmentOrUat: true));
     }
 
     [Fact]
@@ -45,17 +38,17 @@ public sealed class DeepIdV2DirectoryProofOptionsTests
         var options = ValidOptions();
         options.RegistryOrigin = "http://registry.example";
         Assert.Throws<ArgumentException>(() => options.ValidateAndLoad(node,
-            developmentOrUat: true, v1ContactAuthorityEnabled: false));
+            developmentOrUat: true));
 
         options = ValidOptions();
         options.DataProtectionKeysRelativeDirectory = "did2-proof/state/keys";
         Assert.Throws<InvalidOperationException>(() => options.ValidateAndLoad(node,
-            developmentOrUat: true, v1ContactAuthorityEnabled: false));
+            developmentOrUat: true));
 
         options = ValidOptions();
         options.StateRelativeDirectory = "../escaped";
         Assert.Throws<InvalidOperationException>(() => options.ValidateAndLoad(node,
-            developmentOrUat: true, v1ContactAuthorityEnabled: false));
+            developmentOrUat: true));
     }
 
     private static DeepIdV2DirectoryProofOptions ValidOptions() => new()

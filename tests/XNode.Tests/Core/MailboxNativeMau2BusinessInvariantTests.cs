@@ -1514,6 +1514,7 @@ public sealed class MailboxNativeMau2BusinessInvariantTests : IDisposable
                 MembershipCommitment = membershipCommitment,
                 IssuerPublicKey = crypto.GetPublicKey(IssuerSeed),
                 HolderPublicKey = crypto.GetPublicKey(HolderSeed),
+                SelectionInput = Filled(0x54, 32),
                 IssuerSignature = ReadOnlyMemory<byte>.Empty
             },
             IssuerSeed);
