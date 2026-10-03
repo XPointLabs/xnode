@@ -531,3 +531,91 @@ No multi-node rerun: production path/peer/transport sources unchanged.
 | Full Unit | `eadb5fb8b0bbf9f90ed83053c0e94439a92992d06fb74deaf0df2be80c2c64b0` |
 | Full Integration | `31e69e8832e83392fd12eca82682a1af0938d7bd7e0296b9c7fd2813af6f7227` |
 | External smoke runtime gate | `0a34ee8db4ef9ddbcaa44976e419f5ac19017100e8b7c41d27d4a618acedebf6` |
+
+## Checkpoint 7 — native read uncertainty preserves signed custody
+
+Inputs: XNode `2843169d80c9f950173f834339b28aba526bcc9c`, Protocol
+`149d689c86a73c2bbc47f028948c96f553680d32`, workspace
+`700db07b9eb935783d8fcf67e14acaa5908eef82`.
+The preceding intermittent Windows failures remain open. Fresh unmodified
+claim/journal/lineage selection passes **45/45**, but one successful selection
+does not prove their root cause or remediation.
+
+A distinct defect was reproduced with native exclusive file handles over real
+signed `active.state` and `claims.state`. Both readers previously treated the
+native open failure as corrupt state and called `Fault`: active state attempted
+quarantine and leaked a native sharing error; the claims reader persisted a
+corruption marker despite no evidence of bad bytes. Regressions initially
+failed **0 pass / 2 fail**, not at a synthetic signature/fixture prerequisite.
+
+The readers now distinguish failure to capture the bounded snapshot from
+validation of captured bytes. Native I/O/access failure before capture rethrows
+without mutation/latch/quarantine. No cached state is returned, no operation is
+authorized and no ACL or authority check is bypassed. After release, signature,
+scope and reservation validation run normally. Exact completed bytes and
+original reservations remain usable without a new signer, including cold reopen.
+Captured corruption, wrong scope/signature and missing activated state retain
+their persistent fault/recovery behavior.
+
+Final new selection **4/4**: two native lock/unlock/restart cases and two actual
+corrupt-signature cases. The latter require the durable fault marker, preserved
+quarantine/damaged input and rejection after restart. No fake verified
+capability, mocked filesystem/security or no-op durability barrier is used.
+This fixes read-error misclassification, **not** the earlier intermittent
+`MoveFileEx` access-denied on valid replacements, nor the unexplained concurrent
+non-success result. Those two observations are not reclassified as fixed.
+
+```powershell
+dotnet test tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj -c Release -p:DeepProtocolSourceCutover=true -p:ShouldUnsetParentConfigurationAndPlatform=false --no-build --filter 'FullyQualifiedName~DeepIdV2PreKeyClaimRuntimeTests|FullyQualifiedName~DeepIdV2ClaimJournalTests|FullyQualifiedName~DeepIdV2InventoryLineageTests' --logger 'trx;LogFileName=windows-custody-recheck.trx' --results-directory artifacts/s00/windows-custody-recheck --verbosity quiet
+dotnet test tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj -c Release -p:DeepProtocolSourceCutover=true -p:ShouldUnsetParentConfigurationAndPlatform=false --filter 'FullyQualifiedName~NativeExclusiveReadFailure|FullyQualifiedName~CorruptSignedSnapshotStill' --logger 'trx;LogFileName=read-uncertainty-final.trx' --results-directory artifacts/s00/read-uncertainty-final --verbosity quiet
+dotnet build XNode.slnx -c Release -p:DeepProtocolSourceCutover=true -p:ShouldUnsetParentConfigurationAndPlatform=false --no-restore -warnaserror --verbosity minimal
+dotnet test XNode.slnx -c Release -p:DeepProtocolSourceCutover=true -p:ShouldUnsetParentConfigurationAndPlatform=false --no-restore -warnaserror --logger trx --results-directory artifacts/s00/read-uncertainty-full --verbosity quiet
+../deep-devops/scripts/test-env.ps1 -Suite smoke -BackendMode external -ManagedExternalProfile backend-external -RequireRouterNoMock -RunArtifactDirectory '<absolute fresh child of deep-devops/artifacts>'
+```
+
+Final Release source build: **0 warnings / 0 errors**. Full source solution:
+**901 pass / 1 fail / 0 skips** (902): ProfileGenerator 107/107, Unit 266/266,
+Integration 528 pass / 1 B8 fail. No other tests removed or assertions weakened.
+Shipping package/current mailbox graph remains a separate open gate.
+
+Isolated project `deep-s00-read-uncertainty-20261003` smoke exits 0: fixture
+validation, ten runner/contract tests, real non-mocked Xray, all runtime hard/soft
+checks and secret scan pass. Only its temporary containers/volumes were removed;
+six existing deep-dev containers remain healthy. Three existing external Node
+Dockerfile `InvalidDefaultArgInFrom` warnings remain outside .NET compilation.
+No multi-node rerun: storage read classification changes, not path selection,
+peer transport/framing or release transport composition. This is not physical
+contact/message/attachment/group evidence. Production, devices, registered node
+keys, operator secrets and signed source bytes were not changed.
+
+### B8 investigation: real missing one-time producer contract
+
+[DR-0037](../../../docs/survival-program/decisions/DR-0037-did2-owned-contact-object.md)
+and [DR-0038](../../../docs/survival-program/decisions/DR-0038-did2-publication-coordination.md)
+authorize reusable genesis, not one-time creation. The current object author
+requires reusable XIR1/policy9 and encrypts with the permanent resolver derivation.
+The threshold author uses permanent DID2-derived locator/kind1/usage0;
+`ContactPublicationAuthorityWireCodec.RequireExactBody` enforces those same
+values. Its current signed request has no one-time locator/expected-object/expiry
+commitment for witnesses. Parsable XPA1 kind2 cannot supply that missing authority.
+
+The sole [contact owner](../../../docs/architecture/CONTACT-AND-GROUP-PROTOCOL-V1.md#6-permanent-deep-id-resolution-and-one-time-invitation)
+requires a separate opaque locator and exact bundle-bound invitation AEAD;
+the [resolver owner](../../../docs/architecture/CONTACT-RESOLVER-V1.md#31-publish-xpu1)
+requires witnesses to recompute the one-time locator commitment without receiving
+the decryption key. A usage-limit toggle, unsigned fixture field or sending the
+whole secret DIA1 to the threshold would not meet that contract. Close the
+artifact-specific owned author and signed public commitment contract before
+implementing matched producer/consumer and replacing the visibly failing fixture.
+This investigation introduces no new wire/version/API or activation and does not
+claim B8 fixed. Existing permanent-contact behavior is unchanged.
+
+| Raw ignored evidence | SHA-256 |
+| --- | --- |
+| Unmodified Windows selection | `d7bdcbb1cbf181882436024eb8d8a9d505a995e6816cadb0bb7e1997d5bb4fd7` |
+| Native read regression before fix | `b3a916e59f16b535026c6dd77325d41012929bc43efa15684ec05f47ba3bcc11` |
+| Final four regressions | `e93fbbc9623bc3d302afbf3ce24de2a9cbf9e495346638161ce000d24be0b711` |
+| Full ProfileGenerator | `d8615e6213ec830b79b1b97aec2171aade99c0852a346e63c2bceb0a7609209f` |
+| Full Unit | `ed10c836b65493207cb138e05ae9d716ff3fe0343123aa06610eeac3e651f35f` |
+| Full Integration | `671bf1dd14ae16dc408877ffc55401cc23767deae7dbf4c4743d38c12ca272ed` |
+| External runtime gate | `c644f9fdf4ccbf66b6f5d0cde9e8c60be59cbcf8032117c2db780523beb1a2e9` |

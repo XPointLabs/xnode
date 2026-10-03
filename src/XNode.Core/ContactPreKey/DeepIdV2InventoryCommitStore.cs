@@ -223,6 +223,7 @@ internal sealed partial class DeepIdV2InventoryCommitStore : IDisposable
                 Fault("DID2 inventory custody lost its activated state.");
             return [];
         }
+        var snapshotCaptured = false;
         try
         {
             security.ValidateSecureFile(path);
@@ -251,6 +252,7 @@ internal sealed partial class DeepIdV2InventoryCommitStore : IDisposable
             stream.ReadExactly(bytes.AsSpan(HeaderLength));
             if (stream.ReadByte() != -1)
                 throw new InvalidDataException("DID2 inventory snapshot exceeds its bound.");
+            snapshotCaptured = true;
             if (!PublicKeyAuth.VerifyDetached(bytes.AsSpan(^StateSignatureLength).ToArray(),
                     HashDomain(StateHashDomain,
                         bytes.AsSpan(0, bytes.Length - StateSignatureLength)), localReplicaId))
@@ -289,6 +291,14 @@ internal sealed partial class DeepIdV2InventoryCommitStore : IDisposable
                 DeepIdV2PreKeyLineageVerifier.VerifySuccessor(
                     state[1].Manifest, state[0].Manifest);
             return state;
+        }
+        catch (Exception exception) when (!snapshotCaptured &&
+            (exception is IOException or UnauthorizedAccessException))
+        {
+            // Native read/access uncertainty is not proof of corrupt custody.
+            // Fail closed without writing a permanent latch or moving the
+            // authenticated snapshot; a later read still verifies everything.
+            throw;
         }
         catch (Exception exception) when (exception is FormatException or
             InvalidDataException or IOException or UnauthorizedAccessException)

@@ -87,6 +87,88 @@ public sealed class DeepIdV2ClaimJournalTests
     }
 
     [Theory]
+    [InlineData("active.state")]
+    [InlineData("claims.state")]
+    public async Task NativeExclusiveReadFailureDoesNotLatchOrDestroyAuthenticatedCustody(string snapshot)
+    {
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        var root = TemporaryRoot();
+        try
+        {
+            var placement = Placement(fixture); var node = placement.RankedReplicaNodeIds[0];
+            var request = Request(fixture, placement); var offering = fixture.Publication.OneTimeMembers[0];
+            var verified = VerifiedResult(fixture, placement, request, offering, 0);
+            using var store = Open(fixture, root, node);
+            _ = store.CommitAuthorized(fixture.Publication, 1_100, input => Sign(fixture, node, input));
+            _ = store.ReserveClaimProposal(request, offering, fixture.Publication.Manifest,
+                1, 0, 1_095, 1_105, input => Sign(fixture, node, input));
+            Assert.Equal(verified.ExactResult.ToArray(), store.CompleteClaimLocally(verified,
+                input => Sign(fixture, node, input)).ToArray());
+            var path = Assert.Single(Directory.GetFiles(root, snapshot, SearchOption.AllDirectories));
+            var before = SHA256.HashData(File.ReadAllBytes(path));
+            // Real native FileShare denial, not an injected corrupt byte or a
+            // fake filesystem/security owner. No recovery/reset is performed.
+            using (var locked = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                Assert.ThrowsAny<IOException>(() =>
+                {
+                    if (snapshot == "active.state") _ = store.ReadCurrentManifest();
+                    else _ = store.ReserveClaimProposal(request, offering, fixture.Publication.Manifest,
+                        1, 0, 1_095, 1_105, _ => throw new InvalidOperationException("Do not resign."));
+                });
+                Assert.Empty(Directory.GetFiles(root, "fault.marker", SearchOption.AllDirectories));
+                Assert.Empty(Directory.GetFiles(root, "*.quarantine.*", SearchOption.AllDirectories));
+            }
+            Assert.Equal(before, SHA256.HashData(File.ReadAllBytes(path)));
+            Assert.Equal(fixture.Publication.Manifest.CanonicalBytes.ToArray(), store.ReadCurrentManifest()!.CanonicalBytes.ToArray());
+            Assert.True(store.ReserveClaimProposal(request, offering, fixture.Publication.Manifest,
+                1, 0, 1_095, 1_105, _ => throw new InvalidOperationException("Do not resign.")).ExactReplay);
+            Assert.Equal(verified.ExactResult.ToArray(), store.CompleteClaimLocally(verified,
+                _ => throw new InvalidOperationException("Do not rewrite completed results.")).ToArray());
+            store.Dispose();
+            using var reopened = Open(fixture, root, node);
+            Assert.True(reopened.ReserveClaimProposal(request, offering, fixture.Publication.Manifest,
+                1, 0, 1_095, 1_105, _ => throw new InvalidOperationException("Do not resign after restart.")).ExactReplay);
+            Assert.Equal(verified.ExactResult.ToArray(), reopened.CompleteClaimLocally(verified,
+                _ => throw new InvalidOperationException("Do not rewrite after restart.")).ToArray());
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Theory]
+    [InlineData("active.state")]
+    [InlineData("claims.state")]
+    public async Task CorruptSignedSnapshotStillLatchesAndPreservesQuarantineAcrossRestart(string snapshot)
+    {
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        var root = TemporaryRoot();
+        try
+        {
+            var placement = Placement(fixture); var node = placement.RankedReplicaNodeIds[0];
+            var request = Request(fixture, placement); var offering = fixture.Publication.OneTimeMembers[0];
+            using var store = Open(fixture, root, node);
+            _ = store.CommitAuthorized(fixture.Publication, 1_100, input => Sign(fixture, node, input));
+            _ = store.ReserveClaimProposal(request, offering, fixture.Publication.Manifest,
+                1, 0, 1_095, 1_105, input => Sign(fixture, node, input));
+            var path = Assert.Single(Directory.GetFiles(root, snapshot, SearchOption.AllDirectories));
+            var damaged = File.ReadAllBytes(path); damaged[^1] ^= 1;
+            File.WriteAllBytes(path, damaged);
+            Assert.Throws<InvalidDataException>(() =>
+            {
+                if (snapshot == "active.state") _ = store.ReadCurrentManifest();
+                else _ = store.ReserveClaimProposal(request, offering, fixture.Publication.Manifest,
+                    1, 0, 1_095, 1_105, _ => throw new InvalidOperationException("Never resign corrupt custody."));
+            });
+            Assert.Single(Directory.GetFiles(root, "fault.marker", SearchOption.AllDirectories));
+            var quarantine = Assert.Single(Directory.GetFiles(root, "active.state.quarantine.*", SearchOption.AllDirectories));
+            Assert.Equal(damaged, File.ReadAllBytes(snapshot == "active.state" ? quarantine : path));
+            store.Dispose();
+            Assert.Throws<InvalidDataException>(() => Open(fixture, root, node));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task CrashAtCompletion_ReconcilesOnlyTheSameReservedTuple(bool afterReplace)

@@ -225,6 +225,7 @@ internal sealed partial class DeepIdV2InventoryCommitStore
                 Fault("DID2 claim custody lost or never completed its activated state.");
             return [];
         }
+        var snapshotCaptured = false;
         try
         {
             security.ValidateSecureFile(path);
@@ -238,8 +239,10 @@ internal sealed partial class DeepIdV2InventoryCommitStore
                 throw new InvalidDataException("DID2 claim custody changed while opening.");
             var bytes = new byte[checked((int)stream.Length)];
             stream.ReadExactly(bytes);
-            if (stream.ReadByte() != -1 ||
-                !bytes.AsSpan(0, 4).SequenceEqual(ClaimPrefix) ||
+            if (stream.ReadByte() != -1)
+                throw new InvalidDataException("DID2 claim custody changed while reading.");
+            snapshotCaptured = true;
+            if (!bytes.AsSpan(0, 4).SequenceEqual(ClaimPrefix) ||
                 BinaryPrimitives.ReadUInt16BigEndian(bytes.AsSpan(4, 2)) != 2 ||
                 !Fixed(bytes.AsSpan(6, 16), networkId) ||
                 !Fixed(bytes.AsSpan(22, 32), serviceCapability) ||
@@ -292,6 +295,13 @@ internal sealed partial class DeepIdV2InventoryCommitStore
             if (offset != end)
                 throw new InvalidDataException("DID2 claim custody has trailing bytes.");
             return state.ToArray();
+        }
+        catch (Exception exception) when (!snapshotCaptured &&
+            (exception is IOException or UnauthorizedAccessException))
+        {
+            // An unavailable native read cannot justify a durable corruption
+            // latch. Keep the exact reservation/result for verified reconciliation.
+            throw;
         }
         catch (Exception exception) when (exception is FormatException or InvalidDataException or IOException or
             UnauthorizedAccessException or CryptographicException or InvalidOperationException)

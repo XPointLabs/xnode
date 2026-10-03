@@ -147,6 +147,16 @@ operation or assume that the failed response means no write occurred. This is
 error containment, not a diagnosis of intermittent Windows access-denied errors,
 an automatic retry, or permission to weaken storage ACLs.
 
+Native prekey custody also distinguishes an unavailable read from a proven
+corrupt snapshot. I/O or access failure before capture of the bounded snapshot
+rejects the operation without creating a corruption latch or moving authenticated
+state to quarantine. Once access is restored, every signature/scope check still
+runs; the original reservation and completed result can exact-replay, including
+after restart. Invalid captured records and missing activated custody still
+reject with persistent fault/quarantine. Do not reset inventory or keys to
+recover from a file lock. This distinction does not diagnose or eliminate the
+earlier intermittent native replacement access-denied failure.
+
 Malformed external authority responses and frames keep ONION readiness closed,
 but do not terminate its bounded idle acquisition loop, including at startup.
 No rejected response or retained stale binding is served; recovery requires a
