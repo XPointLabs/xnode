@@ -1,5 +1,22 @@
 # Operator Guide
 
+## Current DID2 mailbox issuer input
+
+The independent node network boundary now retains and validates the public
+PMA2 chain required by [DR-0052](../../docs/survival-program/decisions/DR-0052-did2-mailbox-authority-distribution.md).
+File-based inputs require `DeepIdV2NetworkPlacement:ExactMailboxAuthorityPaths`
+alongside the existing projection paths; the atomic NCP2 bundle retains its
+eighth chain. Missing configuration rejects, with no issuer synthesis or older
+reader. Re-export/re-prepare the complete public configuration and match the
+runtime/installer before rollout. Do not reset registered keys or network floors.
+
+The runtime selects exactly the PMA2 referenced by verified current PMT2,
+verifies its root threshold and full independently authenticated time interval
+before floor advancement, then rechecks inputs/time before releasing a snapshot.
+The internal snapshot carries only that verified public issuer policy. This
+does not activate the dormant mailbox authority/replication graph, issue grants,
+or prove device message delivery. No issuer signing key is installed on XNode.
+
 ## Private DID2 mailbox grant candidate
 
 [DR-0054](../../docs/survival-program/decisions/DR-0054-did2-private-mailbox-grant-issuance.md)

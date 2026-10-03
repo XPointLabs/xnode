@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using Deep.Protocol.DeepExtension.PrivacyRouting;
+using Deep.Protocol.XPointNetworkV1;
 using Microsoft.AspNetCore.DataProtection;
 using Sodium;
 using XNode.Core.Mailbox;
@@ -75,11 +76,77 @@ public sealed class DeepIdV2NetworkPlacementRuntimeTests
         Assert.Null(await floor.ReadAsync(default));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ActualFileAndAtomicBundleRetainAndVerifyCurrentIssuer(bool atomic)
+    {
+        using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var files = new Assets(signed);
+        using var floor = files.OpenFloor();
+        var current = await files.Source(floor, atomic: atomic).ReadPublicationAuthorityAsync(default);
+        Assert.Equal(signed.MailboxAuthority.ToArray(), current.MailboxAuthority.ExactPma2.ToArray());
+        Assert.True(current.MailboxAuthority.BindsProjection(signed.Projection.Span));
+        Assert.NotNull(await floor.ReadAsync(default));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task InvalidIssuerSignatureRejectsBeforeNetworkFloorPromotion(bool atomic)
+    {
+        using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var files = new Assets(signed);
+        using var floor = files.OpenFloor();
+        files.CorruptIssuerSignature();
+        await Assert.ThrowsAsync<CryptographicException>(async () =>
+            await files.Source(floor, atomic: atomic).ReadPublicationAuthorityAsync(default));
+        Assert.Null(await floor.ReadAsync(default));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DuplicateCurrentIssuerRejectsBeforeNetworkFloorPromotion(bool atomic)
+    {
+        using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var files = new Assets(signed);
+        using var floor = files.OpenFloor();
+        await Assert.ThrowsAsync<CryptographicException>(async () =>
+            await files.Source(floor, atomic: atomic, duplicateIssuer: true).ReadPublicationAuthorityAsync(default));
+        Assert.Null(await floor.ReadAsync(default));
+    }
+
+    [Fact]
+    public async Task IssuerChangedDuringFloorCommitCannotReleaseAuthority()
+    {
+        using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var files = new Assets(signed);
+        using var floor = files.OpenFloor(files.CorruptIssuerSignature);
+        var error = await Assert.ThrowsAsync<CryptographicException>(async () =>
+            await files.Source(floor).ReadPublicationAuthorityAsync(default));
+        Assert.Contains("changed before capability release", error.Message);
+        // The independently valid NET floor remains committed; no issuer
+        // capability was released, no repair/reset to empty occurred.
+        Assert.NotNull(await floor.ReadAsync(default));
+    }
+
+    [Fact]
+    public async Task MonotonicRollbackDuringFloorCommitCannotReleaseAuthority()
+    {
+        using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var files = new Assets(signed);
+        using var floor = files.OpenFloor(() => signed.Sample = 99);
+        await Assert.ThrowsAsync<CryptographicException>(async () =>
+            await files.Source(floor).ReadPublicationAuthorityAsync(default));
+        Assert.NotNull(await floor.ReadAsync(default));
+    }
+
     private sealed class Assets : IDisposable
     {
         private readonly string root = Path.Combine(Path.GetTempPath(), "did2-placement-source-" + Guid.NewGuid().ToString("N"));
         private readonly DeepIdV2PublicationAuthorityFixture signed;
-        private readonly string policy, view, head, projection, observer, authority, time;
+        private readonly string policy, view, head, projection, mailboxAuthority, observer, authority, time;
         private readonly string[] nodes;
         private readonly IDataProtector protector = new EphemeralDataProtectionProvider().CreateProtector("test-network", "test-node");
         internal Assets(DeepIdV2PublicationAuthorityFixture signed)
@@ -88,17 +155,51 @@ public sealed class DeepIdV2NetworkPlacementRuntimeTests
             Directory.CreateDirectory(root);
             policy = Write("policy.xvp1", signed.Policy); view = Write("view.xnv1", signed.View);
             head = Write("head.xnh1", signed.Head); projection = Write("projection.pmt2", signed.Projection);
+            mailboxAuthority = Write("issuer.pma2", signed.MailboxAuthority);
             observer = Write("observer.did2", signed.Publisher.CanonicalBytes);
             authority = Write("authority.xna1", signed.ExactAuthority); time = Write("time.dts1", signed.ExactTimePolicy);
             nodes = signed.Descriptors.Select((bytes, index) => Write("node-" + index + ".xnd1", bytes)).ToArray();
         }
         private string Write(string name, ReadOnlyMemory<byte> bytes)
         { var path = Path.Combine(root, name); File.WriteAllBytes(path, bytes.ToArray()); return path; }
-        internal FileDeepIdV2NetworkFloorStore OpenFloor() => new(Path.Combine(root, "node-state"),
-            protector, new MailboxStorageSecurity(), new MailboxDurabilityBarrier());
-        internal DeepIdV2NetworkPlacementRuntime Source(FileDeepIdV2NetworkFloorStore floor, bool observer = true) =>
-            new(signed, new(signed.GenesisPin, [authority], [time]),
-                new([policy], [view], [head], nodes, [projection], observer ? this.observer : ""), floor, signed);
+        internal void CorruptIssuerSignature()
+        {
+            var bytes = File.ReadAllBytes(mailboxAuthority);
+            bytes[^1] ^= 1;
+            File.WriteAllBytes(mailboxAuthority, bytes);
+        }
+        internal FileDeepIdV2NetworkFloorStore OpenFloor(Action? afterFloorWrite = null) => new(Path.Combine(root, "node-state"),
+            protector, new MailboxStorageSecurity(), new ObservedDurability(afterFloorWrite));
+        internal DeepIdV2NetworkPlacementRuntime Source(FileDeepIdV2NetworkFloorStore floor,
+            bool observer = true, bool atomic = false, bool duplicateIssuer = false)
+        {
+            var issuerPaths = new[] { mailboxAuthority };
+            if (duplicateIssuer)
+            {
+                var second = Write("duplicate.pma2", File.ReadAllBytes(mailboxAuthority));
+                issuerPaths = [mailboxAuthority, second];
+            }
+            var source = atomic
+                ? new DeepIdV2NetworkClosureFileSource(Write("network.ncp2",
+                    XPointNetworkClosureWireCodec.EncodeResponse(DeepIdV2PublicationAuthorityFixture.Network,
+                        [signed.ExactAuthority], [signed.ExactTimePolicy], [signed.Policy], [signed.View],
+                        [signed.Head], signed.Descriptors, [signed.Projection],
+                        issuerPaths.Select(path => (ReadOnlyMemory<byte>)File.ReadAllBytes(path)).ToArray())), this.observer)
+                : new DeepIdV2NetworkClosureFileSource([policy], [view], [head], nodes, [projection],
+                    issuerPaths, observer ? this.observer : "");
+            return new(signed, new(signed.GenesisPin, [authority], [time]), source, floor, signed);
+        }
         public void Dispose() => Directory.Delete(root, recursive: true);
+    }
+
+    private sealed class ObservedDurability(Action? afterFloorWrite) : IMailboxDurabilityBarrier
+    {
+        private readonly MailboxDurabilityBarrier actual = new();
+        public void FlushParentDirectory(string path) => actual.FlushParentDirectory(path);
+        public void FlushFileAndParentDirectory(string path)
+        {
+            actual.FlushFileAndParentDirectory(path);
+            if (Path.GetFileName(path) == "floor.bin") afterFloorWrite?.Invoke();
+        }
     }
 }

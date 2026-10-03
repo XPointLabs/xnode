@@ -45,6 +45,8 @@
     <Compile Include="Runtime\ContactCoordinationOnionDispatcherTests.cs" />
     <Compile Include="Runtime\Did2ContactServiceCompositionTests.cs" />
     <Compile Include="Runtime\DeepIdV2PublicationAuthorityFixture.cs" />
+    <Compile Include="Runtime\DeepIdV2NetworkPlacementOptionsTests.cs" />
+    <Compile Include="Runtime\DeepIdV2NetworkPlacementRuntimeTests.cs" />
   </ItemGroup>
   <ItemGroup Condition="'$(PublicationConsumerFocused)' == 'true'">
     <Compile Remove="**\*.cs" />

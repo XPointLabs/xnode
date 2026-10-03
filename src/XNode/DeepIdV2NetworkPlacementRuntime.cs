@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using Deep.Protocol.ApplicationCore;
+using Deep.Protocol.ContactV1;
 using Deep.Protocol.DeepExtension.PrivacyRouting;
 using Deep.Protocol.XPointNetworkV1;
 
@@ -17,6 +18,7 @@ public sealed class DeepIdV2NetworkPlacementOptions
     public List<string> ExactHeadPaths { get; set; } = [];
     public List<string> ExactActiveNodePaths { get; set; } = [];
     public List<string> ExactMailboxProjectionPaths { get; set; } = [];
+    public List<string> ExactMailboxAuthorityPaths { get; set; } = [];
     public string PublicObservationDid2Path { get; set; } = string.Empty;
     public string PublicBundlePath { get; set; } = string.Empty;
 
@@ -25,13 +27,13 @@ public sealed class DeepIdV2NetworkPlacementOptions
     {
         if (ExactPolicyPaths is null || ExactViewPaths is null ||
             ExactHeadPaths is null || ExactActiveNodePaths is null ||
-            ExactMailboxProjectionPaths is null || PublicObservationDid2Path is null || PublicBundlePath is null)
+            ExactMailboxProjectionPaths is null || ExactMailboxAuthorityPaths is null || PublicObservationDid2Path is null || PublicBundlePath is null)
             throw new InvalidOperationException(
                 "DID2 network placement configuration has null paths.");
         var any = Enabled || ExactPolicyPaths.Count != 0 ||
             ExactViewPaths.Count != 0 || ExactHeadPaths.Count != 0 ||
             ExactActiveNodePaths.Count != 0 ||
-            ExactMailboxProjectionPaths.Count != 0 || PublicObservationDid2Path.Length != 0 || PublicBundlePath.Length != 0;
+            ExactMailboxProjectionPaths.Count != 0 || ExactMailboxAuthorityPaths.Count != 0 || PublicObservationDid2Path.Length != 0 || PublicBundlePath.Length != 0;
         if (!Enabled)
         {
             if (any) throw new InvalidOperationException(
@@ -44,13 +46,13 @@ public sealed class DeepIdV2NetworkPlacementOptions
         if (PublicBundlePath.Length != 0)
         {
             if (ExactPolicyPaths.Count + ExactViewPaths.Count + ExactHeadPaths.Count +
-                ExactActiveNodePaths.Count + ExactMailboxProjectionPaths.Count != 0)
+                ExactActiveNodePaths.Count + ExactMailboxProjectionPaths.Count + ExactMailboxAuthorityPaths.Count != 0)
                 throw new InvalidOperationException("A mutable closure must use one atomic bundle, not mixed file generations.");
             return new DeepIdV2NetworkClosureFileSource(PublicBundlePath, PublicObservationDid2Path);
         }
         return new DeepIdV2NetworkClosureFileSource(ExactPolicyPaths,
             ExactViewPaths, ExactHeadPaths, ExactActiveNodePaths,
-            ExactMailboxProjectionPaths, PublicObservationDid2Path);
+            ExactMailboxProjectionPaths, ExactMailboxAuthorityPaths, PublicObservationDid2Path);
     }
 }
 
@@ -74,22 +76,25 @@ internal sealed class DeepIdV2NetworkClosureFileSource
     internal DeepIdV2NetworkClosureFileSource(
         IReadOnlyList<string> policies, IReadOnlyList<string> views,
         IReadOnlyList<string> heads, IReadOnlyList<string> nodes,
-        IReadOnlyList<string> projections, string publicObservationDid2Path = "")
+        IReadOnlyList<string> projections, IReadOnlyList<string> mailboxAuthorities,
+        string publicObservationDid2Path = "")
     {
         ArgumentNullException.ThrowIfNull(policies);
         ArgumentNullException.ThrowIfNull(views);
         ArgumentNullException.ThrowIfNull(heads);
         ArgumentNullException.ThrowIfNull(nodes);
         ArgumentNullException.ThrowIfNull(projections);
+        ArgumentNullException.ThrowIfNull(mailboxAuthorities);
         if (policies.Count is < 1 or > MaximumChainCount ||
             views.Count is < 1 or > MaximumChainCount ||
             heads.Count != views.Count ||
             nodes.Count is < 1 or > MaximumChainCount ||
-            projections.Count is < 1 or > MaximumChainCount)
+            projections.Count is < 1 or > MaximumChainCount ||
+            mailboxAuthorities.Count is < 1 or > MaximumChainCount)
             throw new ArgumentException(
                 "DID2 network closure requires bounded complete ordered chains.");
         paths = [Copy(policies), Copy(views), Copy(heads), Copy(nodes),
-            Copy(projections)];
+            Copy(projections), Copy(mailboxAuthorities)];
         var comparer = OperatingSystem.IsWindows()
             ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
         if (paths.SelectMany(static group => group).Distinct(comparer).Count() !=
@@ -123,7 +128,8 @@ internal sealed class DeepIdV2NetworkClosureFileSource
                 raw.ExactViewChain.Select(static b => b.ToArray()).ToArray(),
                 raw.ExactHeadChain.Select(static b => b.ToArray()).ToArray(),
                 raw.ExactActiveNodeDescriptors.Select(static b => b.ToArray()).ToArray(),
-                raw.ExactPlacementTopologyChain.Select(static b => b.ToArray()).ToArray()
+                raw.ExactPlacementTopologyChain.Select(static b => b.ToArray()).ToArray(),
+                raw.ExactMailboxAuthorityChain.Select(static b => b.ToArray()).ToArray()
             });
         }
         var groups = new byte[paths.Length][][];
@@ -179,6 +185,7 @@ internal sealed class DeepIdV2NetworkClosureArtifacts(byte[][][] groups) :
     internal IReadOnlyList<ReadOnlyMemory<byte>> Heads => Copy(groups[2]);
     internal IReadOnlyList<ReadOnlyMemory<byte>> Nodes => Copy(groups[3]);
     internal IReadOnlyList<ReadOnlyMemory<byte>> Projections => Copy(groups[4]);
+    internal IReadOnlyList<ReadOnlyMemory<byte>> MailboxAuthorities => Copy(groups[5]);
 
     private static IReadOnlyList<ReadOnlyMemory<byte>> Copy(byte[][] group) =>
         Array.AsReadOnly(group.Select(static exact =>
@@ -214,7 +221,7 @@ internal interface IDeepIdV2PreKeyClaimPlacementSource
 internal sealed record DeepIdV2ContactStoreAuthority(
     VerifiedOnionNetworkContext Network, VerifiedXPointNetworkAuthority Authority,
     Deep.Protocol.AccountDirectoryV1.VerifiedDeepIdV2DirectoryFreshness Freshness,
-    OnionTrustedTimeAuthority TrustedTime);
+    OnionTrustedTimeAuthority TrustedTime, VerifiedMailboxAuthorityV2 MailboxAuthority);
 
 internal interface IDeepIdV2ContactStoreAuthoritySource
 {
@@ -236,7 +243,7 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
         var observer = artifacts.Observer ?? throw new InvalidOperationException(
             "DID2 publication needs the configured public observation credential.");
         var current = await ReadNetworkAsync(observer, default, default, default, cancellationToken).ConfigureAwait(false);
-        return new(current.Network, current.Authority, current.Freshness, new OnionTrustedTimeAuthority(clock));
+        return new(current.Network, current.Authority, current.Freshness, new OnionTrustedTimeAuthority(clock), current.MailboxAuthority);
     }
 
     public async ValueTask<ContactServicePlacementCapability> MintPreKeyClaimAsync(
@@ -248,7 +255,7 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
         // Only the configured public observer, never the requester, selects this proof.
         var observer = artifacts.Observer ?? throw new InvalidOperationException(
             "DID2 claim placement requires the configured public observation credential.");
-        var (network, freshness, _) = await ReadNetworkAsync(observer, default, default, default,
+        var (network, freshness, _, _) = await ReadNetworkAsync(observer, default, default, default,
             cancellationToken).ConfigureAwait(false);
         var placement = ContactServicePlacementFactory.Create(network,
             ContactServiceRequestKind.ClaimPreKey, serviceCapability);
@@ -267,7 +274,7 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
             throw new ArgumentException(
                 "DID2 pre-key publication needs a nonzero service capability.",
                 nameof(serviceCapability));
-        var (network, freshness, _) = await ReadNetworkAsync(publisher, default, default, default,
+        var (network, freshness, _, _) = await ReadNetworkAsync(publisher, default, default, default,
             cancellationToken).ConfigureAwait(false);
         var placement = ContactServicePlacementFactory.Create(network,
             ContactServiceRequestKind.PublishPreKeyInventory,
@@ -295,7 +302,7 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
 
     private async ValueTask<(VerifiedOnionNetworkContext Network,
         Deep.Protocol.AccountDirectoryV1.VerifiedDeepIdV2DirectoryFreshness Freshness,
-        VerifiedXPointNetworkAuthority Authority)> ReadNetworkAsync(
+        VerifiedXPointNetworkAuthority Authority, VerifiedMailboxAuthorityV2 MailboxAuthority)> ReadNetworkAsync(
         ParsedDid2 did2, ReadOnlyMemory<byte> localOwnerId, ReadOnlyMemory<byte> localKey, ReadOnlyMemory<byte> nextInstalledKey,
         CancellationToken cancellationToken)
     {
@@ -316,6 +323,8 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
                     exact.Policies, exact.Views, exact.Heads, exact.Nodes, exact.Projections,
                     previous.History, time, cancellationToken).ConfigureAwait(false);
             network.EnsureCurrent();
+            var issuer = await VerifyMailboxAuthorityAsync(network, authority, freshness, exact,
+                cancellationToken).ConfigureAwait(false);
             if (!localOwnerId.IsEmpty)
             {
                 var local = OnionPathCandidateSnapshotFactory.Create(network).Candidates
@@ -339,12 +348,48 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
                 !CryptographicOperations.FixedTimeEquals(authority.TimeSourcePolicyHash.Span, retainedAuthority.TimeSourcePolicyHash.Span) ||
                 !SameSeries(exact.Policies, retainedArtifacts.Policies) || !SameSeries(exact.Views, retainedArtifacts.Views) ||
                 !SameSeries(exact.Heads, retainedArtifacts.Heads) || !SameSeries(exact.Nodes, retainedArtifacts.Nodes) ||
-                !SameSeries(exact.Projections, retainedArtifacts.Projections))
+                !SameSeries(exact.Projections, retainedArtifacts.Projections) ||
+                !SameSeries(exact.MailboxAuthorities, retainedArtifacts.MailboxAuthorities))
                 throw new CryptographicException("DID2 network authority changed before capability release.");
+            var finalIssuer = await VerifyMailboxAuthorityAsync(network, authority, freshness,
+                retainedArtifacts, cancellationToken).ConfigureAwait(false);
+            if (!CryptographicOperations.FixedTimeEquals(issuer.Policy.ExactPma2.Span,
+                    finalIssuer.Policy.ExactPma2.Span) ||
+                !CryptographicOperations.FixedTimeEquals(issuer.Reading.BootId.Span, finalIssuer.Reading.BootId.Span) ||
+                finalIssuer.Reading.SampleSeconds < issuer.Reading.SampleSeconds)
+                throw new CryptographicException("DID2 mailbox issuer changed or crossed a clock discontinuity before release.");
             cancellationToken.ThrowIfCancellationRequested();
-            return (network, freshness, authority);
+            return (network, freshness, authority, finalIssuer.Policy);
         }
         finally { gate.Release(); }
+    }
+
+    private async ValueTask<(VerifiedMailboxAuthorityV2 Policy, OnionMonotonicReading Reading)>
+        VerifyMailboxAuthorityAsync(VerifiedOnionNetworkContext network,
+        VerifiedXPointNetworkAuthority authority,
+        Deep.Protocol.AccountDirectoryV1.VerifiedDeepIdV2DirectoryFreshness freshness,
+        DeepIdV2NetworkClosureArtifacts exact, CancellationToken ct)
+    {
+        network.EnsureCurrent();
+        var projection = ContactCodec.Decode(ProtocolMagic.PMT2, exact.Projections[^1].Span);
+        if (!network.BindsProjection(ContactCodec.ArtifactReference(ProtocolMagic.PMT2, projection).CanonicalBytes))
+            throw new CryptographicException("DID2 mailbox policy requires the exact current PMT2.");
+        var records = exact.MailboxAuthorities.Select(bytes => ContactCodec.Decode(ProtocolMagic.PMA2, bytes.Span)).ToArray();
+        var matches = records.Where(record => CryptographicOperations.FixedTimeEquals(
+            record.CoreHash.Span, projection.Field(4).Span[6..])).ToArray();
+        if (matches.Length != 1)
+            throw new CryptographicException("DID2 current PMT2 must name exactly one distributed PMA2.");
+        var reading = await clock.ReadAsync(ct).ConfigureAwait(false) ??
+            throw new CryptographicException("DID2 mailbox issuer time is unavailable.");
+        if (!freshness.IsCurrentAtMonotonic(reading.BootId.Span, reading.SampleSeconds))
+            throw new CryptographicException("DID2 mailbox issuer needs the current independent proof.");
+        var elapsed = checked(reading.SampleSeconds - freshness.MonotonicSample);
+        var policy = MailboxAuthorityV2Verifier.Verify(authority, matches[0].CanonicalBytes.Span,
+            checked(freshness.TrustedLowerUnixSeconds + elapsed), checked(freshness.TrustedUpperUnixSeconds + elapsed));
+        if (!policy.BindsProjection(projection.CanonicalBytes.Span))
+            throw new CryptographicException("DID2 mailbox issuer does not bind the current projection.");
+        network.EnsureCurrent(); ct.ThrowIfCancellationRequested();
+        return (policy, reading);
     }
 
     private static bool SameSeries(IReadOnlyList<ReadOnlyMemory<byte>> left, IReadOnlyList<ReadOnlyMemory<byte>> right)

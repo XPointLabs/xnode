@@ -401,7 +401,9 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
         cancellationToken.ThrowIfCancellationRequested();
         if (RejectProof) throw new CryptographicException("Current test DID2 proof unavailable.");
         return ValueTask.FromResult(new DeepIdV2ContactStoreAuthority(NetworkContext,
-            Authority, Freshness, new OnionTrustedTimeAuthority(this)));
+            Authority, Freshness, new OnionTrustedTimeAuthority(this),
+            MailboxAuthorityV2Verifier.Verify(Authority, MailboxAuthority.Span,
+                Freshness.TrustedLowerUnixSeconds, Freshness.TrustedUpperUnixSeconds)));
     }
 
     public void Dispose() { foreach (var node in nodes) node.Dispose(); }

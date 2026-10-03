@@ -45,6 +45,11 @@ public sealed class DeepIdV2NetworkPlacementOptionsTests
         options.ExactActiveNodePaths = ["relative-node.xnd1"];
         Assert.Throws<ArgumentException>(() => options.ValidateAndLoad(
             did2ProofEnabled: true, developmentOrUat: true));
+
+        options = ValidOptions();
+        options.ExactMailboxAuthorityPaths = [];
+        Assert.Throws<ArgumentException>(() => options.ValidateAndLoad(
+            did2ProofEnabled: true, developmentOrUat: true));
     }
 
     [Fact]
@@ -55,18 +60,20 @@ public sealed class DeepIdV2NetworkPlacementOptionsTests
         Directory.CreateDirectory(root);
         try
         {
-            var paths = Enumerable.Range(0, 5)
+            var paths = Enumerable.Range(0, 6)
                 .Select(index => Path.Combine(root, $"artifact-{index}.bin"))
                 .ToArray();
             foreach (var path in paths) File.WriteAllBytes(path, [1, 2, 3]);
             var source = new DeepIdV2NetworkClosureFileSource(
-                [paths[0]], [paths[1]], [paths[2]], [paths[3]], [paths[4]]);
+                [paths[0]], [paths[1]], [paths[2]], [paths[3]], [paths[4]], [paths[5]]);
             using (var artifacts = source.ReadCurrent())
             {
                 Assert.Equal(new byte[] { 1, 2, 3 },
                     artifacts.Policies.Single().ToArray());
                 Assert.Equal(new byte[] { 1, 2, 3 },
                     artifacts.Projections.Single().ToArray());
+                Assert.Equal(new byte[] { 1, 2, 3 },
+                    artifacts.MailboxAuthorities.Single().ToArray());
             }
             File.WriteAllBytes(paths[2], new byte[65_536]);
             Assert.Throws<InvalidDataException>(source.ReadCurrent);
@@ -84,6 +91,7 @@ public sealed class DeepIdV2NetworkPlacementOptionsTests
         ExactViewPaths = [Path.Combine(Path.GetTempPath(), "view.xnv1")],
         ExactHeadPaths = [Path.Combine(Path.GetTempPath(), "head.xnh1")],
         ExactActiveNodePaths = [Path.Combine(Path.GetTempPath(), "node.xnd1")],
-        ExactMailboxProjectionPaths = [Path.Combine(Path.GetTempPath(), "projection.pmt2")]
+        ExactMailboxProjectionPaths = [Path.Combine(Path.GetTempPath(), "projection.pmt2")],
+        ExactMailboxAuthorityPaths = [Path.Combine(Path.GetTempPath(), "issuer.pma2")]
     };
 }
