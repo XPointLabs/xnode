@@ -7,6 +7,7 @@ using Deep.Protocol.ContactV2;
 using Deep.Protocol.DeepExtension.PrivacyRouting;
 using Deep.Protocol.XPointNetworkV1;
 using XNode.Core;
+using Microsoft.Extensions.Logging;
 
 namespace XNode.IntegrationTests.Runtime;
 
@@ -64,7 +65,8 @@ public sealed class ContactCoordinationOnionDispatcherTests
                     ContactRouteAuthorityWireCodec.ResponseMediaType : ContactPublicationAuthorityWireCodec.ResponseMediaType);
                 return result;
             }));
-        var dispatcher = new ContactCoordinationOnionDispatcher(fixture, backend, node, fixture);
+        var logger = new DiagnosticLogger();
+        var dispatcher = new ContactCoordinationOnionDispatcher(fixture, backend, node, fixture, logger);
         foreach (var (target, body, response) in new[] {
             (ContactCoordinationTarget.Route, routeBody, routeResponse),
             (ContactCoordinationTarget.Publication, publicationBody, publicationResponse) })
@@ -103,6 +105,7 @@ public sealed class ContactCoordinationOnionDispatcherTests
             Assert.Equal(count, calls);
         }
         Assert.Equal(2, calls);
+        Assert.Empty(logger.Entries);
         var pending = OnionTerminalPayloadVerifierV1.VerifyRequest(fixture.NetworkContext,
             OnionOperation.ContactResolve, ContactCoordinationOnionCodec.EncodeRequest(ContactCoordinationTarget.Route, routeBody));
         var badProjection = routeBody.ToArray();
@@ -112,26 +115,35 @@ public sealed class ContactCoordinationOnionDispatcherTests
             OnionOperation.ContactResolve, ContactCoordinationOnionCodec.EncodeRequest(ContactCoordinationTarget.Route, badProjection));
         Assert.Equal(NativeMailboxDispatchCertainty.RejectedBeforeForward,
             (await dispatcher.DispatchAsync(foreignProjection, default)).Certainty);
+        Assert.Equal("DID2 coordination rejected: phase=CurrentnessBefore, check=Projection, certainty=RejectedBeforeForward, category=cryptographic.", logger.Entries[^1]);
         Assert.Equal(2, calls);
         var missingNode = new RouterNodeOptions { RouterId = new string('f', 64) };
-        var foreign = new ContactCoordinationOnionDispatcher(fixture, backend, missingNode, fixture);
+        var foreign = new ContactCoordinationOnionDispatcher(fixture, backend, missingNode, fixture, logger);
         Assert.Equal(NativeMailboxDispatchCertainty.RejectedBeforeForward,
             (await foreign.DispatchAsync(pending, default)).Certainty);
+        Assert.Equal("DID2 coordination rejected: phase=CurrentnessBefore, check=Gateway, certainty=RejectedBeforeForward, category=cryptographic.", logger.Entries[^1]);
         fixture.RejectProof = true;
         Assert.Equal(NativeMailboxDispatchCertainty.RejectedBeforeForward,
             (await dispatcher.DispatchAsync(pending, default)).Certainty);
+        Assert.Equal("DID2 coordination rejected: phase=AuthorityBefore, check=None, certainty=RejectedBeforeForward, category=cryptographic.", logger.Entries[^1]);
         fixture.RejectProof = false; Assert.Equal(2, calls);
         corruptPair = true;
         Assert.Equal(NativeMailboxDispatchCertainty.OutcomeUnknownAfterForward,
             (await dispatcher.DispatchAsync(pending, default)).Certainty);
+        // The bounded backend intentionally converts malformed response pairing
+        // to IOException without retaining its exception text.
+        Assert.Equal("DID2 coordination rejected: phase=Backend, check=None, certainty=OutcomeUnknownAfterForward, category=io.", logger.Entries[^1]);
         corruptPair = false; rejectAfterForward = true;
         Assert.Equal(NativeMailboxDispatchCertainty.OutcomeUnknownAfterForward,
             (await dispatcher.DispatchAsync(pending, default)).Certainty);
+        Assert.Equal("DID2 coordination rejected: phase=AuthorityAfter, check=None, certainty=OutcomeUnknownAfterForward, category=cryptographic.", logger.Entries[^1]);
         fixture.RejectProof = false; rejectAfterForward = false;
         fixture.Sample = 500;
         Assert.Equal(NativeMailboxDispatchCertainty.RejectedBeforeForward,
             (await dispatcher.DispatchAsync(pending, default)).Certainty);
+        Assert.Equal("DID2 coordination rejected: phase=CurrentnessBefore, check=ProofFreshness, certainty=RejectedBeforeForward, category=cryptographic.", logger.Entries[^1]);
         Assert.Equal(4, calls);
+        Assert.All(logger.Entries, entry => Assert.DoesNotContain("Current test DID2 proof unavailable", entry));
     }
 
     [Fact]
@@ -167,4 +179,18 @@ public sealed class ContactCoordinationOnionDispatcherTests
     }
     private sealed class Handler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send) : HttpMessageHandler
     { protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) => send(request, ct); }
+
+    private sealed class DiagnosticLogger : ILogger<ContactCoordinationOnionDispatcher>
+    {
+        internal List<string> Entries { get; } = [];
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state,
+            Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            Assert.Equal(LogLevel.Warning, logLevel);
+            Assert.Null(exception);
+            Entries.Add(formatter(state, exception));
+        }
+    }
 }

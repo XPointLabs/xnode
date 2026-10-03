@@ -91,6 +91,15 @@ activation gates. The default full test suite is unchanged; only an explicit
 
 ## DID2 recovery candidate
 
+Private contact coordination logs one closed warning on rejected completion:
+`phase`, `check`, dispatch `certainty` and a fixed exception category. These
+values identify whether independent authority, a currentness predicate, backend
+exchange or reply pairing failed. No exception text/object, payload, credential,
+capability, node identifier or authority bytes are logged. Diagnostics do not
+change the DR48/DR49 checks, authorize replay or prove physical delivery. A
+pre-backend rejection remains `RejectedBeforeForward`; every failure after the
+backend boundary remains `OutcomeUnknownAfterForward`.
+
 The hosted ContactResolve terminal now reports only closed dependency-failure
 categories (`proof-rate-limit`, `proof-unavailable`, cryptographic/authorization
 rejection, custody/I/O or configuration/state). Logging is bounded to one
