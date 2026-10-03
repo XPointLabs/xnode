@@ -16,11 +16,18 @@ tombstone and descriptor-key receipt. Restoring its peer replay journal no
 longer collects custody using host UTC. Both selected proofs must bind the
 actual current host; no retired proof verifier is used on this path.
 
+The current peer HTTP endpoint/client and sender coordinator now share this
+protected owner. The client connects only to the selected descriptor's exact
+TLS origin/current SPKI; quorum requires two independently verified receipts.
+A lost remote response retains sender Pending and can reconcile on exact retry
+after reopening both stores. Unsupported transport or authority loss is not a
+fallback. Endpoint errors are bounded empty-body responses without private logs.
+
 These internal owners have no activation flag and are not registered by Program.
-Do not enable the retired provider as a bridge. Current endpoint/DI composition,
-client Store/Retrieve/ACK adapter, rotated distinct ID/key evidence and two-store
-peer quorum remain required. Local receipt evidence is not activated HTTP or
-physical delivery evidence.
+Do not enable the retired provider as a bridge. Current Program/DI composition,
+client Store/Retrieve/ACK adapter and rotated distinct ID/key evidence remain
+required. Two-store loopback HTTP evidence is not deployed, onion or physical
+client delivery evidence; the outer canonical client outcome is not connected.
 The trusted monotonic clock must be the same protected owner used by the actual
 network source when composing this candidate. No host-UTC fallback is accepted.
 The sole contracts remain
@@ -29,6 +36,10 @@ and [DR-0083](../../docs/survival-program/decisions/DR-0083-current-mailbox-gran
 See the [native connected checkpoint](testing/s02-current-mailbox-admission-2026-10-03.md).
 The [current peer checkpoint](testing/s03-current-peer-native-2026-10-03.md)
 records durable Store/read/tombstone/reopen and callback-expiry tests.
+The [HTTP checkpoint](testing/s03-current-peer-http-2026-10-03.md) records actual
+pinned TLS/HTTP2, two-store quorum, lost-response and concurrent-retry evidence.
+The descriptor transport API owner is
+[DR-0085](../../docs/survival-program/decisions/DR-0085-current-mailbox-replica-transport-facts.md).
 
 ## Mailbox ingress operation binding
 

@@ -103,7 +103,7 @@ public sealed class CurrentMailboxReplicaReceiverTests
     private static byte ReadStatus(string path)
     { using var document = JsonDocument.Parse(File.ReadAllBytes(path)); return document.RootElement.GetProperty("status").GetByte(); }
 
-    private sealed class Fixture : IAsyncDisposable
+    internal sealed class Fixture : IAsyncDisposable
     {
         internal CurrentMailboxAdmissionTests.Fixture Node = null!;
         internal readonly SodiumMailboxPeerReplicationCrypto Crypto = new();
@@ -118,9 +118,10 @@ public sealed class CurrentMailboxReplicaReceiverTests
         private readonly BlindedPlacementId placement = new(Bytes(32, 0x55));
         internal string[] ReplayFiles => Directory.GetFiles(Path.Combine(Node.DataRoot, options.PeerReplayDirectoryName), "*.json");
         internal string[] MutationFiles => Directory.GetFiles(Path.Combine(Node.DataRoot, options.PeerMutationDirectoryName), "*.json");
-        internal static async Task<Fixture> CreateAsync()
+        internal static async Task<Fixture> CreateAsync(DeepIdV2PublicationAuthorityFixture? signed = null, int localReplicaIndex = 0)
         {
-            var f = new Fixture { Node = await CurrentMailboxAdmissionTests.Fixture.CreateAsync(MailboxAuthenticatedOperation.Store) };
+            var f = new Fixture { Node = await CurrentMailboxAdmissionTests.Fixture.CreateAsync(MailboxAuthenticatedOperation.Store,
+                signed: signed, localReplicaIndex: localReplicaIndex) };
             f.SenderSeed = f.Node.Signed.Node(f.Node.Replicas[1].NodeId.Span).Seed;
             f.Envelope = MailboxClientCodec.EncodeEncryptedEnvelope(new()
             {
@@ -175,7 +176,7 @@ public sealed class CurrentMailboxReplicaReceiverTests
         public async ValueTask DisposeAsync()
         { Receiver.Dispose(); mutations.Dispose(); replay.Dispose(); await Node.DisposeAsync(); }
     }
-    private sealed class Fault : IMailboxPeerMutationFaultInjector
+    internal sealed class Fault : IMailboxPeerMutationFaultInjector
     { internal Action<MailboxPeerMutationFaultPoint>? Action; public void Inject(MailboxPeerMutationFaultPoint point) => Action?.Invoke(point); }
     private sealed class NoUtcClock : IClock
     { public DateTimeOffset UtcNow => throw new InvalidOperationException("Current peer path must not read host UTC."); }

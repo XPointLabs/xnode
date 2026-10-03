@@ -30,6 +30,7 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
     internal static readonly byte[] Boot = Bytes(16, 0xf3);
     internal static readonly byte[] Service = Bytes(32, 0x35);
     private readonly byte[] service;
+    internal sealed record TransportOrigin(IPAddress Address, ushort Port, ReadOnlyMemory<byte> CurrentSpki, ReadOnlyMemory<byte> NextSpki);
     private DeepIdV2PublicationAuthorityFixture(byte serviceMarker) => service = Bytes(32, serviceMarker);
     private readonly TestSigner[] nodes = [new(0x70), new(0x71), new(0x72)];
     private TestSigner[] ceremonyWitnesses = [];
@@ -83,15 +84,17 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
     internal static async Task<DeepIdV2PublicationAuthorityFixture> CreateAsync(byte serviceMarker = 0x35,
         bool authorContactPublication = false, byte networkCommitmentMarker = 0, byte rootMarker = 0x20,
         bool authorRouteSuccessor = false, ushort lastResortReuseLimit = 1,
-        bool authorInventoryRotation = false, bool corruptFirstPreKeyBundleSignature = false)
+        bool authorInventoryRotation = false, bool corruptFirstPreKeyBundleSignature = false,
+        IReadOnlyList<TransportOrigin>? transportOrigins = null)
     {
         var fixture = new DeepIdV2PublicationAuthorityFixture(serviceMarker);
-        try { await fixture.AuthorAsync(authorContactPublication, networkCommitmentMarker, rootMarker, authorRouteSuccessor, lastResortReuseLimit, authorInventoryRotation, corruptFirstPreKeyBundleSignature); return fixture; }
+        try { await fixture.AuthorAsync(authorContactPublication, networkCommitmentMarker, rootMarker, authorRouteSuccessor, lastResortReuseLimit, authorInventoryRotation, corruptFirstPreKeyBundleSignature, transportOrigins); return fixture; }
         catch { fixture.Dispose(); throw; }
     }
 
     private async Task AuthorAsync(bool authorContactPublication, byte networkCommitmentMarker, byte rootMarker, bool authorRouteSuccessor,
-        ushort lastResortReuseLimit, bool authorInventoryRotation, bool corruptFirstPreKeyBundleSignature)
+        ushort lastResortReuseLimit, bool authorInventoryRotation, bool corruptFirstPreKeyBundleSignature,
+        IReadOnlyList<TransportOrigin>? transportOrigins)
     {
         using var root = new TestSigner(rootMarker);
         using var w1 = new TestSigner(0x30);
@@ -116,8 +119,9 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
                 Bytes(32, (byte)(0x80 + index)), Bytes(32, (byte)(0x90 + index)),
                 Bytes(32, (byte)(0xa0 + index)), Bytes(32, (byte)(0xb0 + index)),
                 (uint)(64_500 + index), 840, Bytes(32, (byte)(0xc0 + index)),
-                IPAddress.Parse($"192.0.2.{index + 1}"), 443,
-                Bytes(32, (byte)(0xd0 + index)), Bytes(32, (byte)(0xd8 + index)),
+                transportOrigins?[index].Address ?? IPAddress.Parse($"192.0.2.{index + 1}"), transportOrigins?[index].Port ?? 443,
+                transportOrigins is null ? Bytes(32, (byte)(0xd0 + index)) : transportOrigins[index].CurrentSpki.Span,
+                transportOrigins is null ? Bytes(32, (byte)(0xd8 + index)) : transportOrigins[index].NextSpki.Span,
                 ScalarMult.Base(Bytes(32, (byte)(0xe0 + index))),
                 ScalarMult.Base(Bytes(32, (byte)(0xe8 + index))),
                 Enumerable.Range(0, 5).Select(role => (ReadOnlyMemory<byte>)

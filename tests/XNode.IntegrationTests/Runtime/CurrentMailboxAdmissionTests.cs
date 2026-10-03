@@ -218,17 +218,18 @@ public sealed class CurrentMailboxAdmissionTests
         private MailboxClientCanonicalOutcomeStore outcomes = null!;
         internal MailboxAuthenticatedCapabilityRuntime Runtime = null!;
         internal CurrentMailboxAdmission Admission = null!;
+        private bool ownsSigned;
         internal string DataRoot => depositFiles.Data;
 
         internal static async Task<Fixture> CreateAsync(MailboxAuthenticatedOperation operation,
-            MailboxCapabilityDomain? missing = null)
+            MailboxCapabilityDomain? missing = null, DeepIdV2PublicationAuthorityFixture? signed = null, int localReplicaIndex = 0)
         {
-            var f = new Fixture { Signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync() };
+            var f = new Fixture { Signed = signed ?? await DeepIdV2PublicationAuthorityFixture.CreateAsync(), ownsSigned = signed is null };
             f.Host = await MailboxGrantRevocationStoreTests.Host(f.Signed);
             var role = operation == MailboxAuthenticatedOperation.Store ? MailboxCapabilityDomain.Deposit : MailboxCapabilityDomain.Retrieve;
             f.ExactGrant = Grant(f.Signed, f.Host, role, 0x51);
             f.Replicas = await f.Host.ResolveGrantReplicasAsync(f.ExactGrant);
-            f.Node = f.Replicas[0].NodeId.ToArray();
+            f.Node = f.Replicas[localReplicaIndex].NodeId.ToArray();
             f.depositFiles = new(f.Signed, MailboxCapabilityDomain.Deposit, f.Node);
             f.retrieveFiles = new(f.Signed, MailboxCapabilityDomain.Retrieve, f.Node);
             f.Deposit = f.depositFiles.Open(); f.Retrieve = f.retrieveFiles.Open();
@@ -249,7 +250,7 @@ public sealed class CurrentMailboxAdmissionTests
         {
             outcomes.Dispose(); Replay.Dispose();
             await Retrieve.DisposeAsync(); await Deposit.DisposeAsync();
-            retrieveFiles.Dispose(); depositFiles.Dispose(); Signed.Dispose();
+            retrieveFiles.Dispose(); depositFiles.Dispose(); if (ownsSigned) Signed.Dispose();
         }
     }
     private sealed class NoUtcClock : IClock
