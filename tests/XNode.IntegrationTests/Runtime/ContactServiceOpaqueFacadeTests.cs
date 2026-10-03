@@ -1,83 +1,24 @@
 using System.Buffers.Binary;
-using System.Security.Cryptography;
 using System.Text;
 using Deep.Protocol.ContactV1;
 using Rebex.Security.Cryptography;
+using XNode.Core;
 using XNode.Core.ContactPreKey;
 using XNode.Core.ContactResolver;
 using XNode.Core.Mailbox;
 
-namespace XNode.Tests.Core;
+namespace XNode.IntegrationTests.Runtime;
 
-public sealed class ContactServiceOpaqueFacadeTests
+public sealed class ContactServiceOpaqueFacadeTests : IClassFixture<CurrentContactPublicationFixture>
 {
-    private static readonly Xpa1AuthorizationTestFixture PublicationAuthorizations = new();
-
-    // Frozen canonical minimum XRR1/XRA1/XRC1/XSS1/PMT2/PMS2 closure from the
-    // protocol codec vectors. Keeping bytes here avoids any production authoring
-    // or InternalsVisibleTo test seam.
-    private const string CanonicalRouteClosureBase64 =
-        "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" +
-        "AAAAAAAAAAAAAAAAAAAAAAAA";
+    private readonly CurrentContactPublicationFixture PublicationAuthorizations;
+    public ContactServiceOpaqueFacadeTests(CurrentContactPublicationFixture publicationAuthorizations) =>
+        PublicationAuthorizations = publicationAuthorizations;
 
     [Fact]
     public async Task ContextMismatchDoesNotMutateAndAcceptedPublishDurablyExactReplays()
     {
-        using var fixture = new Fixture();
+        using var fixture = new Fixture(PublicationAuthorizations);
         var request = Xpu();
         fixture.Context.Status = ContactRequestContextStatus.StaleView;
 
@@ -92,18 +33,20 @@ public sealed class ContactServiceOpaqueFacadeTests
         var committed = Xpo1Codec.Decode(committedBytes.Span, request);
         Assert.Equal(Xpo1Status.Committed, committed.Status);
         Assert.Equal(ContactServiceMutationOutcome.DurablyCommitted, committed.MutationOutcome);
+        await PublicationAuthorizations.VerifyCommittedAsync(committed);
 
         var replayBytes = await fixture.Facade.DispatchAsync(
             ContactServiceFacadeOperation.PublishDcr, request);
         var replay = Xpo1Codec.Decode(replayBytes.Span, request);
         Assert.Equal(Xpo1Status.ExactReplay, replay.Status);
         Assert.Equal(ContactServiceMutationOutcome.DurablyCommitted, replay.MutationOutcome);
+        await PublicationAuthorizations.VerifyCommittedAsync(replay);
     }
 
     [Fact]
     public async Task ResolveUsesPublishedRouteClosureWithoutExternalLocatorLookup()
     {
-        using var fixture = new Fixture();
+        using var fixture = new Fixture(PublicationAuthorizations);
         var publish = Xpu();
         var publication = await fixture.Facade.DispatchAsync(
             ContactServiceFacadeOperation.PublishDcr, publish);
@@ -124,7 +67,7 @@ public sealed class ContactServiceOpaqueFacadeTests
     [Fact]
     public async Task PublishedClosureCommitsOneTimeInviteAndSuccessExactReplays()
     {
-        using var fixture = new Fixture();
+        using var fixture = new Fixture(PublicationAuthorizations);
         var publish = Xpu(usageLimit: 1);
         var publication = await fixture.Facade.DispatchAsync(
             ContactServiceFacadeOperation.PublishDcr, publish);
@@ -157,7 +100,7 @@ public sealed class ContactServiceOpaqueFacadeTests
     [Fact]
     public async Task MissingPreKeyInventoryReturnsClosedCanonicalStatus()
     {
-        using var fixture = new Fixture();
+        using var fixture = new Fixture(PublicationAuthorizations);
         var request = Xpk();
         var response = await fixture.Facade.DispatchAsync(
             ContactServiceFacadeOperation.ClaimPreKey, request);
@@ -168,7 +111,7 @@ public sealed class ContactServiceOpaqueFacadeTests
     [Fact]
     public async Task RemoteShapedAuthoritiesAreDelegatedAndReceiptsStayCanonicallySorted()
     {
-        using var fixture = new InjectedFixture();
+        using var fixture = new InjectedFixture(PublicationAuthorizations);
         var request = Xpu();
 
         var response = await fixture.Facade.DispatchAsync(
@@ -178,6 +121,7 @@ public sealed class ContactServiceOpaqueFacadeTests
         Assert.Equal(Xpo1Status.Committed, decoded.Status);
         Assert.Equal(1, fixture.FirstAuthority.IssueCount);
         Assert.Equal(1, fixture.SecondAuthority.IssueCount);
+        await PublicationAuthorizations.VerifyCommittedAsync(decoded);
         var receipts = decoded.Field(19).Span;
         Assert.Equal(193, receipts.Length);
         Assert.True(receipts.Slice(1, 32).SequenceCompareTo(receipts.Slice(97, 32)) < 0);
@@ -186,7 +130,7 @@ public sealed class ContactServiceOpaqueFacadeTests
     [Fact]
     public async Task CrossReplicaReceiptSubstitutionFailsClosedWithoutReceiptEmission()
     {
-        using var fixture = new InjectedFixture(
+        using var fixture = new InjectedFixture(PublicationAuthorizations,
             secondBehavior: ReceiptAuthorityBehavior.SubstituteFirstReplica);
         var request = Xpu();
 
@@ -202,7 +146,7 @@ public sealed class ContactServiceOpaqueFacadeTests
     [Fact]
     public async Task InvalidSignatureSizeFailsClosedWithoutReceiptEmission()
     {
-        using var fixture = new InjectedFixture(
+        using var fixture = new InjectedFixture(PublicationAuthorizations,
             secondBehavior: ReceiptAuthorityBehavior.InvalidSignatureSize);
         var request = Xpu();
 
@@ -217,7 +161,7 @@ public sealed class ContactServiceOpaqueFacadeTests
     [Fact]
     public async Task PartialAuthorityFailureNeverEmitsTheSuccessfulPartialReceipt()
     {
-        using var fixture = new InjectedFixture(
+        using var fixture = new InjectedFixture(PublicationAuthorizations,
             secondBehavior: ReceiptAuthorityBehavior.Unavailable);
         var request = Xpu();
 
@@ -234,15 +178,23 @@ public sealed class ContactServiceOpaqueFacadeTests
     [Fact]
     public async Task ReceiptIssuanceHonorsCallerCancellationWithoutReturningAResponse()
     {
-        using var fixture = new InjectedFixture(
+        using var fixture = new InjectedFixture(PublicationAuthorizations,
             secondBehavior: ReceiptAuthorityBehavior.WaitForCancellation);
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
-            await fixture.Facade.DispatchAsync(
-                ContactServiceFacadeOperation.PublishDcr,
-                Xpu(),
-                cancellation.Token));
+        using var cancellation = new CancellationTokenSource();
+        var pending = fixture.Facade.DispatchAsync(
+            ContactServiceFacadeOperation.PublishDcr, Xpu(), cancellation.Token).AsTask();
+        try
+        {
+            await Task.WhenAny(pending, fixture.SecondAuthority.ReceiptEntered)
+                .WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.True(fixture.SecondAuthority.ReceiptEntered.IsCompletedSuccessfully,
+                "The cancellation scenario must reach the second receipt authority.");
+        }
+        finally
+        {
+            cancellation.Cancel();
+        }
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await pending);
         Assert.Equal(1, fixture.FirstAuthority.IssueCount);
         Assert.Equal(1, fixture.SecondAuthority.IssueCount);
     }
@@ -303,6 +255,7 @@ public sealed class ContactServiceOpaqueFacadeTests
             Assert.Equal(Xpo1Status.Committed, second.Status);
             Assert.Equal(ContactServiceMutationOutcome.DurablyCommitted, second.MutationOutcome);
             Assert.False(second.Field(19).IsEmpty);
+            await PublicationAuthorizations.VerifyCommittedAsync(second);
         }
         finally
         {
@@ -333,6 +286,7 @@ public sealed class ContactServiceOpaqueFacadeTests
             Assert.Equal(Xpo1Status.ExactReplay, replay.Status);
             Assert.Equal(ContactServiceMutationOutcome.DurablyCommitted, replay.MutationOutcome);
             Assert.False(replay.Field(19).IsEmpty);
+            await PublicationAuthorizations.VerifyCommittedAsync(replay);
         }
         finally
         {
@@ -341,14 +295,19 @@ public sealed class ContactServiceOpaqueFacadeTests
     }
 
     [Fact]
-    public async Task SameAuthorizationChangedExactBodyPermanentlyLatchesConflict()
+    public async Task SameAuthorizationDifferentValidWitnessSetPermanentlyLatchesConflict()
     {
-        using var fixture = new Fixture();
+        using var fixture = new Fixture(PublicationAuthorizations);
         var original = Xpu();
-        var changed = PublicationAuthorizations.CreateEncodedRequest(
-            operationMarker: 44,
-            authorizationMarker: 8,
-            ciphertextMarker: 45);
+        var changed = PublicationAuthorizations.AlternateRequest.CanonicalBytes.ToArray();
+        var originalAuthorization = await PublicationAuthorizations.Verifier.VerifyAsync(
+            PublicationAuthorizations.Request, default);
+        var alternateAuthorization = await PublicationAuthorizations.Verifier.VerifyAsync(
+            PublicationAuthorizations.AlternateRequest, default);
+        Assert.Equal(originalAuthorization.AuthorizationId.ToArray(), alternateAuthorization.AuthorizationId.ToArray());
+        Assert.Equal(PublicationAuthorizations.Request.AuthorizedBodyHash.ToArray(),
+            PublicationAuthorizations.AlternateRequest.AuthorizedBodyHash.ToArray());
+        Assert.NotEqual(original, changed);
 
         Assert.Equal(Xpo1Status.Committed, Xpo1Codec.Decode((await fixture.Facade.DispatchAsync(
             ContactServiceFacadeOperation.PublishDcr, original)).Span, original).Status);
@@ -361,7 +320,7 @@ public sealed class ContactServiceOpaqueFacadeTests
     [Fact]
     public async Task ConcurrentExactAuthorizationIsConsumedOnceAndOnlyExactReplaysFollow()
     {
-        using var fixture = new Fixture();
+        using var fixture = new Fixture(PublicationAuthorizations);
         var request = Xpu();
 
         var responses = await Task.WhenAll(Enumerable.Range(0, 16).Select(async _ =>
@@ -372,12 +331,14 @@ public sealed class ContactServiceOpaqueFacadeTests
         Assert.Equal(15, responses.Count(static item => item.Status == Xpo1Status.ExactReplay));
         Assert.All(responses, static item =>
             Assert.Equal(ContactServiceMutationOutcome.DurablyCommitted, item.MutationOutcome));
+        foreach (var response in responses)
+            await PublicationAuthorizations.VerifyCommittedAsync(response);
     }
 
     [Fact]
     public async Task PartialReplicaCommitStaysReservedWithoutReceiptsThenReconciles()
     {
-        using var fixture = new PartialReplicaFixture();
+        using var fixture = new PartialReplicaFixture(PublicationAuthorizations);
         var request = Xpu();
 
         var partial = Xpo1Codec.Decode((await fixture.Facade.DispatchAsync(
@@ -392,43 +353,38 @@ public sealed class ContactServiceOpaqueFacadeTests
         Assert.Equal(ContactServiceMutationOutcome.DurablyCommitted, recovered.MutationOutcome);
         Assert.Equal(1, fixture.FirstAuthority.IssueCount);
         Assert.Equal(1, fixture.SecondAuthority.IssueCount);
+        await PublicationAuthorizations.VerifyCommittedAsync(recovered);
     }
 
-    private static byte[] Xpu(uint usageLimit = 0) =>
-        PublicationAuthorizations.CreateEncodedRequest(usageLimit);
-
-    private static byte[] Xiq(byte operationByte = 13) => Xiq1Codec.Encode(
-        Network(), B(32, operationByte), B(32, 3), B(32, 4), 195, 240,
-        B(32, 5), 0, Xiq1AntiSpamTokenType.None, [],
-        ContactServicePaddingClass.Bytes256);
-
-    private static byte[] Xpk() => Xpk1Codec.Encode(
-        B(16, 1), B(32, 14), B(32, 3), B(32, 4), 195, 240,
-        B(32, 15), B(32, 16), B(32, 17), B(32, 18), B(32, 19));
-
-    private static byte[] Record(string magic, IReadOnlyList<(ushort Tag, byte[] Value)> fields)
+    private byte[] Xpu(uint usageLimit = 0)
     {
-        var result = new byte[12 + fields.Sum(static item => 8 + item.Value.Length)];
-        Encoding.ASCII.GetBytes(magic).CopyTo(result, 0);
-        BinaryPrimitives.WriteUInt16BigEndian(result.AsSpan(4), 1);
-        BinaryPrimitives.WriteUInt16BigEndian(result.AsSpan(6), 0x0201);
-        BinaryPrimitives.WriteUInt16BigEndian(result.AsSpan(8), checked((ushort)fields.Count));
-        var offset = 12;
-        foreach (var field in fields)
-        {
-            BinaryPrimitives.WriteUInt16BigEndian(result.AsSpan(offset), field.Tag);
-            BinaryPrimitives.WriteUInt32BigEndian(result.AsSpan(offset + 4), checked((uint)field.Value.Length));
-            offset += 8;
-            field.Value.CopyTo(result, offset);
-            offset += field.Value.Length;
-        }
-        return result;
+        var request = PublicationAuthorizations.Request;
+        // Keep the unsupported positive invite scenario visibly failing: a
+        // reusable publication must not masquerade as a one-time invitation.
+        Assert.True(request.UsageLimit == usageLimit,
+            "This scenario requires a signed current DID2 one-time publication producer; reusable genesis is not sufficient.");
+        return request.CanonicalBytes.ToArray();
+    }
+
+    private byte[] Xiq(byte operationByte = 13)
+    {
+        var request = PublicationAuthorizations.Request;
+        return Xiq1Codec.Encode(request.NetworkId.Span, B(32, operationByte),
+            request.ViewHash.Span, request.PlacementHash.Span,
+            request.IssuedAtUnixSeconds, request.ExpiresAtUnixSeconds,
+            request.LocatorHash.Span, 0, Xiq1AntiSpamTokenType.None, [],
+            ContactServicePaddingClass.Bytes256);
+    }
+
+    private byte[] Xpk()
+    {
+        var placement = PublicationAuthorizations.ClaimPlacement;
+        return Xpk1Codec.Encode(placement.NetworkId.Span, B(32, 14),
+            placement.ViewHash.Span, placement.PlacementHash.Span, 1_100, 1_120,
+            placement.ShardKey.Span, B(32, 16), B(32, 17), B(32, 18), B(32, 19));
     }
 
     private static byte[] B(int length, byte value) => Enumerable.Repeat(value, length).ToArray();
-    private static byte[] Network() => Enumerable.Range(1, 16)
-        .Select(static value => checked((byte)value)).ToArray();
-    private static byte[] U32(uint value) { var bytes = new byte[4]; BinaryPrimitives.WriteUInt32BigEndian(bytes, value); return bytes; }
     private static byte[] U64(ulong value) { var bytes = new byte[8]; BinaryPrimitives.WriteUInt64BigEndian(bytes, value); return bytes; }
 
     private static void AssertResolveClaimReceipts(Xis1Result result, Xiq1Request request)
@@ -490,7 +446,7 @@ public sealed class ContactServiceOpaqueFacadeTests
             new IdentityPreKeyReplica(preKeyId),
             authority);
 
-    private static ContactServiceOpaqueFacade CreatePathFacade(
+    private ContactServiceOpaqueFacade CreatePathFacade(
         string directory,
         IContactPublicationAuthorizationSagaFaults? faults = null)
     {
@@ -501,10 +457,10 @@ public sealed class ContactServiceOpaqueFacadeTests
             Path.Combine(directory, "resolver-b.state"),
             Path.Combine(directory, "prekey-a.state"),
             Path.Combine(directory, "prekey-b.state"),
-            [new(B(32, 21)), new(B(32, 22))],
-            new StaticFixtureContextVerifier(),
-            PublicationAuthorizations,
-            new FixedClock(DateTimeOffset.FromUnixTimeSeconds(200)),
+            PublicationAuthorizations.CreateReceiptAuthorities(),
+            new StaticFixtureContextVerifier(PublicationAuthorizations),
+            PublicationAuthorizations.Verifier,
+            new FixedClock(DateTimeOffset.FromUnixTimeSeconds(1100)),
             security,
             durability,
             authorizationSagaFaults: faults);
@@ -521,7 +477,7 @@ public sealed class ContactServiceOpaqueFacadeTests
         }
     }
 
-    private static ContactServiceOpaqueFacade CreateIdentityFacade(
+    private ContactServiceOpaqueFacade CreateIdentityFacade(
         IReadOnlyList<ContactServiceReplicaBinding> bindings)
     {
         var directory = Path.Combine(
@@ -533,10 +489,10 @@ public sealed class ContactServiceOpaqueFacadeTests
         {
             return new ContactServiceOpaqueFacade(
                 bindings,
-                new StaticFixtureContextVerifier(),
-                PublicationAuthorizations,
+                new StaticFixtureContextVerifier(PublicationAuthorizations),
+                PublicationAuthorizations.Verifier,
                 saga,
-                new FixedClock(DateTimeOffset.FromUnixTimeSeconds(200)));
+                new FixedClock(DateTimeOffset.FromUnixTimeSeconds(1100)));
         }
         catch
         {
@@ -589,7 +545,9 @@ public sealed class ContactServiceOpaqueFacadeTests
         ReceiptAuthorityBehavior behavior = ReceiptAuthorityBehavior.Valid)
         : IContactServiceReplicaReceiptAuthority
     {
+        private readonly TaskCompletionSource receiptEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal int IssueCount { get; private set; }
+        internal Task ReceiptEntered => receiptEntered.Task;
         public ReadOnlyMemory<byte> ReplicaId => identity.ReplicaId;
 
         public async ValueTask<ContactServiceReplicaReceipt> IssueAsync(
@@ -597,6 +555,7 @@ public sealed class ContactServiceOpaqueFacadeTests
             CancellationToken cancellationToken)
         {
             IssueCount++;
+            receiptEntered.TrySetResult();
             switch (behavior)
             {
                 case ReceiptAuthorityBehavior.Unavailable:
@@ -649,13 +608,15 @@ public sealed class ContactServiceOpaqueFacadeTests
         private readonly LocalContactServiceReplicaReceiptAuthority secondLocal;
 
         internal InjectedFixture(
+            CurrentContactPublicationFixture publicationAuthorizations,
             ReceiptAuthorityBehavior secondBehavior = ReceiptAuthorityBehavior.Valid)
         {
-            var clock = new FixedClock(DateTimeOffset.FromUnixTimeSeconds(200));
+            var clock = new FixedClock(DateTimeOffset.FromUnixTimeSeconds(1100));
             var security = new TestStorageSecurity();
             var durability = new MailboxDurabilityBarrier();
-            firstLocal = new LocalContactServiceReplicaReceiptAuthority(B(32, 31));
-            secondLocal = new LocalContactServiceReplicaReceiptAuthority(B(32, 32));
+            var authorities = publicationAuthorizations.CreateReceiptAuthorities();
+            firstLocal = authorities[0];
+            secondLocal = authorities[1];
             FirstAuthority = new RecordingReceiptAuthority(firstLocal, firstLocal);
             SecondAuthority = new RecordingReceiptAuthority(
                 secondLocal,
@@ -699,8 +660,8 @@ public sealed class ContactServiceOpaqueFacadeTests
                     new ContactPreKeyStoreReplica(firstId.Span, firstPreKeyStore),
                     FirstAuthority)
             ],
-            new StaticFixtureContextVerifier(),
-            PublicationAuthorizations,
+            new StaticFixtureContextVerifier(publicationAuthorizations),
+            publicationAuthorizations.Verifier,
             authorizationSaga,
             clock);
         }
@@ -737,13 +698,14 @@ public sealed class ContactServiceOpaqueFacadeTests
         private readonly LocalContactServiceReplicaReceiptAuthority firstLocal;
         private readonly LocalContactServiceReplicaReceiptAuthority secondLocal;
 
-        internal PartialReplicaFixture()
+        internal PartialReplicaFixture(CurrentContactPublicationFixture publicationAuthorizations)
         {
-            var clock = new FixedClock(DateTimeOffset.FromUnixTimeSeconds(200));
+            var clock = new FixedClock(DateTimeOffset.FromUnixTimeSeconds(1100));
             var security = new TestStorageSecurity();
             var durability = new MailboxDurabilityBarrier();
-            firstLocal = new LocalContactServiceReplicaReceiptAuthority(B(32, 51));
-            secondLocal = new LocalContactServiceReplicaReceiptAuthority(B(32, 52));
+            var authorities = publicationAuthorizations.CreateReceiptAuthorities();
+            firstLocal = authorities[0];
+            secondLocal = authorities[1];
             FirstAuthority = new RecordingReceiptAuthority(firstLocal, firstLocal);
             SecondAuthority = new RecordingReceiptAuthority(secondLocal, secondLocal);
             firstResolverStore = new ContactResolverOpaqueStore(
@@ -773,8 +735,8 @@ public sealed class ContactServiceOpaqueFacadeTests
                     new ContactPreKeyStoreReplica(secondId.Span, secondPreKeyStore),
                     SecondAuthority)
             ],
-            new StaticFixtureContextVerifier(),
-            PublicationAuthorizations,
+            new StaticFixtureContextVerifier(publicationAuthorizations),
+            publicationAuthorizations.Verifier,
             authorizationSaga,
             clock);
         }
@@ -906,19 +868,19 @@ public sealed class ContactServiceOpaqueFacadeTests
         private readonly string directory = Path.Combine(
             Path.GetTempPath(), "xnode-contact-facade-" + Guid.NewGuid().ToString("N"));
 
-        internal Fixture()
+        internal Fixture(CurrentContactPublicationFixture publicationAuthorizations)
         {
-            Context = new StaticFixtureContextVerifier();
-            Clock = new FixedClock(DateTimeOffset.FromUnixTimeSeconds(200));
+            Context = new StaticFixtureContextVerifier(publicationAuthorizations);
+            Clock = new FixedClock(DateTimeOffset.FromUnixTimeSeconds(1100));
             var security = new TestStorageSecurity();
             Facade = new ContactServiceOpaqueFacade(
                 Path.Combine(directory, "resolver-a.state"),
                 Path.Combine(directory, "resolver-b.state"),
                 Path.Combine(directory, "prekey-a.state"),
                 Path.Combine(directory, "prekey-b.state"),
-                [new(B(32, 21)), new(B(32, 22))],
+                publicationAuthorizations.CreateReceiptAuthorities(),
                 Context,
-                PublicationAuthorizations,
+                publicationAuthorizations.Verifier,
                 Clock,
                 security,
                 new MailboxDurabilityBarrier());
@@ -938,17 +900,31 @@ public sealed class ContactServiceOpaqueFacadeTests
         }
     }
 
-    // Static view/placement acceptance is deliberately test-only. Production
-    // activation requires verified XNV continuity and PMT2 derivation.
-    private sealed class StaticFixtureContextVerifier : IContactRequestContextVerifier
+    // Only the explicit stale-view fault is injected. Normal acceptance checks
+    // exact tuples from signed current PublishInvite/ClaimPreKey placements.
+    private sealed class StaticFixtureContextVerifier(CurrentContactPublicationFixture inputs)
+        : IContactRequestContextVerifier
     {
+        private readonly ExactContactRequestContextVerifier publication = new(inputs.Placement);
+        private readonly ExactContactRequestContextVerifier claim = new(inputs.ClaimPlacement);
         internal ContactRequestContextStatus Status { get; set; } = ContactRequestContextStatus.Accepted;
+
         public ValueTask<ContactRequestContextResult> VerifyAsync(
-            ReadOnlyMemory<byte> networkId,
-            ReadOnlyMemory<byte> viewHash,
-            ReadOnlyMemory<byte> placementHash,
-            CancellationToken cancellationToken) => ValueTask.FromResult(
-                new ContactRequestContextResult(Status, B(32, 3)));
+            ReadOnlyMemory<byte> networkId, ReadOnlyMemory<byte> viewHash,
+            ReadOnlyMemory<byte> placementHash, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (Status != ContactRequestContextStatus.Accepted)
+                return ValueTask.FromResult(new ContactRequestContextResult(Status, inputs.Placement.ViewHash));
+            var verifier = placementHash.Span.SequenceEqual(inputs.ClaimPlacement.PlacementHash.Span)
+                ? claim : publication;
+            return verifier.VerifyAsync(networkId, viewHash, placementHash, cancellationToken);
+        }
+    }
+
+    private sealed class FixedClock(DateTimeOffset now) : IClock
+    {
+        public DateTimeOffset UtcNow { get; set; } = now;
     }
 
     private sealed class TestStorageSecurity : IMailboxStorageSecurity

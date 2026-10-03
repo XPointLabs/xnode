@@ -126,3 +126,73 @@ and missing producer/consumer under the unified plan.
 - S00 is still open: 13 node cases, fresh Registry classification/isolated DB,
   current XPP fixtures and workspace governance drift remain to be completed.
 - Release/physical E2E and the S01 admission/lifecycle decisions remain open.
+
+## Checkpoint 2 — current facade inputs, unsafe fixture removed
+
+Input xnode HEAD: `232de89e6fbf37bf9546b94aa73b43e00283c46e`; workspace HEAD:
+`93f14532f2c1c57433d541d76cb5b65745591e1b`. Other source inputs above are unchanged.
+The checkpoint-1 tables and its remaining-work list above are historical results.
+
+All 15 `ContactServiceOpaqueFacadeTests` moved from Unit to Integration, retaining
+their assertions and durable/fault scenarios. `CurrentContactPublicationFixture`
+owns one class-scoped signed DID2 ceremony and disposes its test-owned keys.
+Production `VerifiedContactPublicationAuthorizationVerifier` authenticates each
+publication; normal context acceptance matches exact signed placement tuples.
+The stale-view fault remains an explicitly injected test result, not authority.
+Receipt keys are selected from the signed publication placement. Successful
+publication/replay, reconciliation and restarted-saga results additionally pass
+`DeepIdV2PublicationCommitVerifier`, including both current replica signatures.
+
+Removed the unused 373-line `Xpa1AuthorizationTestFixture` (uninitialized-object
+and unsafe private-field authority construction), the unused historical base64
+route and manual legacy record writer. Removal is recoverable from Git. No
+failed scenario was dropped or skipped. The exact-request conflict now uses
+two genuinely signed witness sets for one body/authorization, as in checkpoint 1.
+
+Cancellation waits for the actual receipt callback before cancelling the caller;
+it no longer depends on a two-second timer. Focused facade runtime fell from
+3 seconds to 811 milliseconds in these runs; this is a harness observation,
+not a product performance SLO.
+
+Commands (from xnode):
+
+```powershell
+dotnet test tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj -c Release `
+  -p:DeepProtocolSourceCutover=true --filter "FullyQualifiedName~ContactServiceOpaqueFacadeTests" `
+  --logger trx --results-directory artifacts/s00/facade-verified-receipts --verbosity quiet
+
+dotnet test XNode.slnx -c Release -p:DeepProtocolSourceCutover=true `
+  --logger trx --results-directory artifacts/s00/checkpoint-2 --verbosity quiet
+```
+
+Both commands exited **1**. Focused: **14 passed / 1 failed / 0 skipped**.
+Fresh full source run: **853 passed / 1 failed / 0 skipped** out of 854, with
+no build warnings. Moving cases between assemblies did not reduce test count.
+
+| Assembly | Pass / fail | Checkpoint-2 TRX SHA-256 |
+| --- | --- | --- |
+| ProfileGenerator | 107 / 0 | `8821f26c6a5c216102806a30ba47b2398aa6dbc5dbfbd8f211b7b9ccb944b57b` |
+| Unit | 280 / 0 | `835cd477ab6afc21db6ebfc5c366d7fc59d697235069db3825a74f37bcbfa9f9` |
+| Integration | 466 / 1 | `c59e220c3ed85efd7add3e502e482991f30c8fcefa5a5de038bd5f30d2465fbd` |
+
+The 12 previously failing reusable-publication scenarios now reach and pass
+their intended runtime branches. The remaining case is still
+`PublishedClosureCommitsOneTimeInviteAndSuccessExactReplays`. Its prerequisite
+assertion explicitly rejects a reusable fixture where a one-time publication is
+required. No one-time publication, consumption or receipt is claimed by this run.
+Source inspection independently confirms the gap:
+
+- `DeepIdV2PublicationAuthorityAuthor` emits publication kind 1 / usage limit 0.
+- `Xpa1PublicationAuthorizationVerifier.VerifyAsync` rejects nonzero usage and
+  non-genesis requests with `UnsupportedPublicationKind` before admission.
+- The current codec's ability to parse kind 2 does not supply a signed current
+  invite author/lineage/verifier. Do not bypass this check or reintroduce V1.
+
+Classification is now a missing current producer/consumer prerequisite with
+the positive scenario retained, not the old V1 bounds exception. Close the
+current invitation contract and implement its actual author/consumer before
+making that scenario green. S00 remains open for that prerequisite, signed
+XPP/unit-fixture audit, fresh Registry/isolated DB classification and root drift.
+Host UTC here is a persistence test clock, not protected-time admission evidence.
+No Program/Release graph, socket/TLS, production deployment or physical E2E was
+qualified by this fixture repair.
