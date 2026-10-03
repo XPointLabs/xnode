@@ -71,14 +71,19 @@ public sealed class ReplicatedMailboxStore
             TimeSpan.FromMilliseconds(1),
             cancellationToken).ConfigureAwait(false);
 
+    internal Task<MailboxPutResult> PutPeerCurrentAsync(EncryptedMailboxBlob blob,
+        MailboxCurrentOperationLease lease, CancellationToken token) =>
+        PutAsync(blob, TimeSpan.FromMilliseconds(1), token, lease);
+
     private async Task<MailboxPutResult> PutAsync(
         EncryptedMailboxBlob blob,
         TimeSpan? minimumTtlOverride,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, MailboxCurrentOperationLease? lease = null)
     {
+        var now = await ReadTimeAsync(lease, cancellationToken).ConfigureAwait(false);
         if (!EncryptedMailboxBlobValidator.TryValidate(
                 blob,
-                _clock.UtcNow,
+                now,
                 _options,
                 out _,
                 out var validationError,
@@ -91,6 +96,7 @@ public sealed class ReplicatedMailboxStore
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            if (lease is not null) _ = await lease.CheckAsync(cancellationToken).ConfigureAwait(false);
             EnsureStoredBlobCount();
             var mailboxDirectory = Path.Combine(_rootDirectory, blob.MailboxId);
             var finalPath = Path.Combine(mailboxDirectory, $"{blob.BlobId}.json");
@@ -117,14 +123,16 @@ public sealed class ReplicatedMailboxStore
                         "mailbox-blob-id-conflict");
                 }
 
+                if (lease is not null) _ = await lease.CheckAsync(cancellationToken).ConfigureAwait(false);
                 _storageSecurity.SecureFile(finalPath);
                 _durability.FlushFileAndParentDirectory(finalPath);
+                if (lease is not null) _ = await lease.CheckAsync(cancellationToken).ConfigureAwait(false);
                 return new MailboxPutResult(MailboxPutDisposition.Duplicate);
             }
 
             if (_storedBlobCount >= _options.MaxStoredBlobs)
             {
-                await PurgeExpiredUnderGateAsync(cancellationToken).ConfigureAwait(false);
+                await PurgeExpiredUnderGateAsync(cancellationToken, lease).ConfigureAwait(false);
                 if (_storedBlobCount >= _options.MaxStoredBlobs)
                 {
                     return new MailboxPutResult(MailboxPutDisposition.Rejected, "mailbox-capacity-exhausted");
@@ -145,13 +153,16 @@ public sealed class ReplicatedMailboxStore
                 {
                     await JsonSerializer.SerializeAsync(stream, blob, JsonOptions, cancellationToken)
                         .ConfigureAwait(false);
+                    if (lease is not null) _ = await lease.CheckAsync(cancellationToken).ConfigureAwait(false);
                     stream.Flush(flushToDisk: true);
                 }
 
+                if (lease is not null) _ = await lease.CheckAsync(cancellationToken).ConfigureAwait(false);
                 _durability.ReplaceFile(temporaryPath, finalPath);
                 _storedBlobCount++;
                 _storageSecurity.SecureFile(finalPath);
                 _durability.FlushFileAndParentDirectory(finalPath);
+                if (lease is not null) _ = await lease.CheckAsync(cancellationToken).ConfigureAwait(false);
             }
             finally
             {
@@ -231,7 +242,14 @@ public sealed class ReplicatedMailboxStore
     public async Task<EncryptedMailboxBlob?> ReadExactAsync(
         string mailboxId,
         string blobId,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        await ReadExactCoreAsync(mailboxId, blobId, cancellationToken).ConfigureAwait(false);
+
+    internal Task<EncryptedMailboxBlob?> ReadExactCurrentAsync(string mailboxId, string blobId,
+        MailboxCurrentOperationLease lease, CancellationToken token) => ReadExactCoreAsync(mailboxId, blobId, token, lease);
+
+    private async Task<EncryptedMailboxBlob?> ReadExactCoreAsync(string mailboxId, string blobId,
+        CancellationToken cancellationToken, MailboxCurrentOperationLease? lease = null)
     {
         if (!EncryptedMailboxBlobValidator.IsCanonicalId(mailboxId)
             || !EncryptedMailboxBlobValidator.IsCanonicalId(blobId))
@@ -245,7 +263,7 @@ public sealed class ReplicatedMailboxStore
             return await ReadExactUnderGateAsync(
                 mailboxId,
                 blobId,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken, lease).ConfigureAwait(false);
         }
         finally
         {
@@ -256,7 +274,15 @@ public sealed class ReplicatedMailboxStore
     public async Task<bool> DeleteExactAsync(
         string mailboxId,
         string blobId,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        await DeleteExactCoreAsync(mailboxId, blobId, cancellationToken).ConfigureAwait(false);
+
+    internal Task<bool> DeleteExactCurrentAsync(string mailboxId, string blobId,
+        MailboxCurrentOperationLease lease, CancellationToken token) =>
+        DeleteExactCoreAsync(mailboxId, blobId, token, lease);
+
+    private async Task<bool> DeleteExactCoreAsync(string mailboxId, string blobId,
+        CancellationToken cancellationToken, MailboxCurrentOperationLease? lease = null)
     {
         if (!EncryptedMailboxBlobValidator.IsCanonicalId(mailboxId)
             || !EncryptedMailboxBlobValidator.IsCanonicalId(blobId))
@@ -267,16 +293,19 @@ public sealed class ReplicatedMailboxStore
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            if (lease is not null) _ = await lease.CheckAsync(cancellationToken).ConfigureAwait(false);
             var path = Path.Combine(_rootDirectory, mailboxId, $"{blobId}.json");
             if (!File.Exists(path))
             {
                 _durability.FlushParentDirectory(path);
+                if (lease is not null) _ = await lease.CheckAsync(cancellationToken).ConfigureAwait(false);
                 return false;
             }
 
             EnsureStoredBlobCount();
             _durability.DeleteFile(path);
             _storedBlobCount = Math.Max(0, _storedBlobCount - 1);
+            if (lease is not null) _ = await lease.CheckAsync(cancellationToken).ConfigureAwait(false);
             return true;
         }
         finally
@@ -298,7 +327,8 @@ public sealed class ReplicatedMailboxStore
         }
     }
 
-    private async Task<int> PurgeExpiredUnderGateAsync(CancellationToken cancellationToken)
+    private async Task<int> PurgeExpiredUnderGateAsync(CancellationToken cancellationToken,
+        MailboxCurrentOperationLease? lease = null)
     {
         if (!Directory.Exists(_rootDirectory))
         {
@@ -309,7 +339,7 @@ public sealed class ReplicatedMailboxStore
         var removed = 0;
         EnsureRecoveryScanBound();
         EnsureStoredBlobCount();
-        var nowUnixMs = _clock.UtcNow.ToUnixTimeMilliseconds();
+        var nowUnixMs = (await ReadTimeAsync(lease, cancellationToken).ConfigureAwait(false)).ToUnixTimeMilliseconds();
         foreach (var path in Directory.EnumerateFiles(_rootDirectory, "*.json", SearchOption.AllDirectories))
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -344,7 +374,9 @@ public sealed class ReplicatedMailboxStore
                 continue;
             }
 
+            if (lease is not null) _ = await lease.CheckAsync(cancellationToken).ConfigureAwait(false);
             _durability.DeleteFile(path);
+            if (lease is not null) _ = await lease.CheckAsync(cancellationToken).ConfigureAwait(false);
             removed++;
         }
 
@@ -367,6 +399,9 @@ public sealed class ReplicatedMailboxStore
             }
         }
     }
+
+    private async ValueTask<DateTimeOffset> ReadTimeAsync(MailboxCurrentOperationLease? lease, CancellationToken token) =>
+        lease is null ? _clock.UtcNow : DateTimeOffset.FromUnixTimeSeconds(checked((long)await lease.CheckAsync(token).ConfigureAwait(false)));
 
     private bool IsStoredBlobValid(EncryptedMailboxBlob blob, long nowUnixMs)
     {
@@ -396,33 +431,36 @@ public sealed class ReplicatedMailboxStore
     private async Task<EncryptedMailboxBlob?> ReadExactUnderGateAsync(
         string mailboxId,
         string blobId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, MailboxCurrentOperationLease? lease = null)
     {
+        if (lease is not null) _ = await lease.CheckAsync(cancellationToken).ConfigureAwait(false);
         var path = Path.Combine(_rootDirectory, mailboxId, $"{blobId}.json");
         if (!File.Exists(path))
         {
             return null;
         }
 
+        EncryptedMailboxBlob? blob;
         try
         {
             await using var stream = File.OpenRead(path);
-            var blob = await JsonSerializer.DeserializeAsync<EncryptedMailboxBlob>(
+            blob = await JsonSerializer.DeserializeAsync<EncryptedMailboxBlob>(
                 stream,
                 JsonOptions,
                 cancellationToken).ConfigureAwait(false);
-            return blob is not null
-                && string.Equals(blob.MailboxId, mailboxId, StringComparison.Ordinal)
-                && string.Equals(blob.BlobId, blobId, StringComparison.Ordinal)
-                && IsStoredBlobValid(blob, _clock.UtcNow.ToUnixTimeMilliseconds())
-                    ? blob
-                    : null;
         }
         catch (Exception exception) when (
             exception is IOException or JsonException or UnauthorizedAccessException)
         {
             return null;
         }
+        // An authority/floor I/O failure is not an absent blob. Keep this
+        // asynchronous check outside the storage-corruption catch.
+        var now = await ReadTimeAsync(lease, cancellationToken).ConfigureAwait(false);
+        return blob is not null
+            && string.Equals(blob.MailboxId, mailboxId, StringComparison.Ordinal)
+            && string.Equals(blob.BlobId, blobId, StringComparison.Ordinal)
+            && IsStoredBlobValid(blob, now.ToUnixTimeMilliseconds()) ? blob : null;
     }
 
     private void EnsureRecoveryScanBound()

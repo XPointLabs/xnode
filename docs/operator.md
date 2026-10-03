@@ -10,17 +10,25 @@ before reservation and across the callback/result boundary. Holder/body rejectio
 does not advance the replay time floor. Expiry, cancellation or unavailable
 authority after reservation retains exact Pending custody.
 
-This internal owner has no activation flag and is not registered by Program.
-Its scoped request currently supports admission/execution ownership and terminal
-outcomes, not mailbox storage or peer receipts. Do not enable the retired provider
-as a bridge. Current endpoint/DI composition, matching node signing custody,
-rotated distinct ID/key evidence and grant-bound peer quorum remain required.
+The same protected operation now also guards `CurrentMailboxReplicaReceiver`:
+current grant-bound peer verification, native replay, blob mutation/read-back,
+tombstone and descriptor-key receipt. Restoring its peer replay journal no
+longer collects custody using host UTC. Both selected proofs must bind the
+actual current host; no retired proof verifier is used on this path.
+
+These internal owners have no activation flag and are not registered by Program.
+Do not enable the retired provider as a bridge. Current endpoint/DI composition,
+client Store/Retrieve/ACK adapter, rotated distinct ID/key evidence and two-store
+peer quorum remain required. Local receipt evidence is not activated HTTP or
+physical delivery evidence.
 The trusted monotonic clock must be the same protected owner used by the actual
 network source when composing this candidate. No host-UTC fallback is accepted.
 The sole contracts remain
 [DR-0081](../../docs/survival-program/decisions/DR-0081-did2-mailbox-selection-grant-clean-break.md)
 and [DR-0083](../../docs/survival-program/decisions/DR-0083-current-mailbox-grant-revocation.md).
 See the [native connected checkpoint](testing/s02-current-mailbox-admission-2026-10-03.md).
+The [current peer checkpoint](testing/s03-current-peer-native-2026-10-03.md)
+records durable Store/read/tombstone/reopen and callback-expiry tests.
 
 ## Mailbox ingress operation binding
 

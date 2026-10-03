@@ -18,7 +18,6 @@ public sealed class DurableMailboxPeerReplayJournal : IMailboxPeerReplayJournal,
     private readonly ReplicatedMailboxOptions _options;
     private readonly IMailboxStorageSecurity _security;
     private readonly IMailboxDurabilityBarrier _durability;
-    private readonly IClock _clock;
     private readonly FileStream _lease;
     private readonly Dictionary<string, int> _partitionCounts = new(StringComparer.Ordinal);
     private readonly PriorityQueue<string, ulong> _collectionQueue = new();
@@ -37,7 +36,6 @@ public sealed class DurableMailboxPeerReplayJournal : IMailboxPeerReplayJournal,
         _options = options;
         _security = security ?? new MailboxStorageSecurity();
         _durability = durability ?? new MailboxDurabilityBarrier();
-        _clock = clock ?? new SystemClock();
         _directory = Path.Combine(dataDirectory, options.PeerReplayDirectoryName);
         _security.SecureDirectory(_directory);
         var leasePath = Path.Combine(_directory, ".lease");
@@ -63,9 +61,8 @@ public sealed class DurableMailboxPeerReplayJournal : IMailboxPeerReplayJournal,
             _security.SecureFile(leasePath);
             PurgeTemporaryFiles();
             LoadAndValidateIndex();
-            _ = CollectExpired(
-                checked((ulong)_clock.UtcNow.ToUnixTimeSeconds()),
-                _options.MaxPeerReplayGcBatch);
+            // Restore is not time/admission authority. Collection runs only
+            // with the verified operation's time; host UTC cannot erase custody.
         }
         catch
         {

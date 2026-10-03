@@ -174,20 +174,29 @@ public sealed class MailboxPeerMutationStore : IDisposable
 
     public async Task<MailboxPeerMutationResult> ApplyAsync(
         VerifiedMailboxPeerWireRequestV2 verified,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        await ApplyCoreAsync(verified, cancellationToken).ConfigureAwait(false);
+
+    internal Task<MailboxPeerMutationResult> ApplyCurrentAsync(VerifiedMailboxPeerWireRequestV2 verified,
+        MailboxCurrentOperationLease lease, CancellationToken token) => ApplyCoreAsync(verified, token, lease);
+
+    private async Task<MailboxPeerMutationResult> ApplyCoreAsync(VerifiedMailboxPeerWireRequestV2 verified,
+        CancellationToken cancellationToken, MailboxCurrentOperationLease? lease = null)
     {
         ArgumentNullException.ThrowIfNull(verified);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            await CheckCurrentAsync(lease, cancellationToken).ConfigureAwait(false);
             _ = await CollectExpiredUnderGateAsync(
                 verified.ReplayClaim.ReservedAtUnixSeconds,
                 _options.MaxPeerMutationGcBatch,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken, lease).ConfigureAwait(false);
+            await CheckCurrentAsync(lease, cancellationToken).ConfigureAwait(false);
             return verified.Request.Operation == MailboxPeerReplicationOperation.Store
-                ? await StoreUnderGateAsync(verified, cancellationToken).ConfigureAwait(false)
-                : await TombstoneUnderGateAsync(verified, cancellationToken).ConfigureAwait(false);
+                ? await StoreUnderGateAsync(verified, cancellationToken, lease).ConfigureAwait(false)
+                : await TombstoneUnderGateAsync(verified, cancellationToken, lease).ConfigureAwait(false);
         }
         finally
         {
@@ -229,7 +238,7 @@ public sealed class MailboxPeerMutationStore : IDisposable
 
     private async Task<MailboxPeerMutationResult> StoreUnderGateAsync(
         VerifiedMailboxPeerWireRequestV2 verified,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, MailboxCurrentOperationLease? lease = null)
     {
         var request = verified.Request;
         var envelope = verified.Envelope
@@ -244,7 +253,8 @@ public sealed class MailboxPeerMutationStore : IDisposable
         {
             await EnsureCapacityUnderGateAsync(
                 verified.ReplayClaim.ReservedAtUnixSeconds,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken, lease).ConfigureAwait(false);
+            await CheckCurrentAsync(lease, cancellationToken).ConfigureAwait(false);
             record = PersistedMutation.StorePending(verified, envelope);
             Write(path, record);
             _recordCount++;
@@ -284,7 +294,11 @@ public sealed class MailboxPeerMutationStore : IDisposable
             record.BlobId,
             expiresAtUnixMs,
             Convert.ToBase64String(request.Payload.Span));
-        var stored = await _blobStore.PutPeerAsync(blob, cancellationToken).ConfigureAwait(false);
+        await CheckCurrentAsync(lease, cancellationToken).ConfigureAwait(false);
+        var stored = lease is null
+            ? await _blobStore.PutPeerAsync(blob, cancellationToken).ConfigureAwait(false)
+            : await _blobStore.PutPeerCurrentAsync(blob, lease, cancellationToken).ConfigureAwait(false);
+        await CheckCurrentAsync(lease, cancellationToken).ConfigureAwait(false);
         if (stored.Disposition == MailboxPutDisposition.Rejected)
         {
             return new MailboxPeerMutationResult(
@@ -295,6 +309,7 @@ public sealed class MailboxPeerMutationStore : IDisposable
         if (record.State == "pending")
         {
             Write(path, record with { State = "completed" });
+            await CheckCurrentAsync(lease, cancellationToken).ConfigureAwait(false);
         }
 
         return new MailboxPeerMutationResult(
@@ -305,7 +320,7 @@ public sealed class MailboxPeerMutationStore : IDisposable
 
     private async Task<MailboxPeerMutationResult> TombstoneUnderGateAsync(
         VerifiedMailboxPeerWireRequestV2 verified,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, MailboxCurrentOperationLease? lease = null)
     {
         var request = verified.Request;
         var path = StorePath(
@@ -332,20 +347,23 @@ public sealed class MailboxPeerMutationStore : IDisposable
 
         if (record.State == "completed")
         {
+            await CheckCurrentAsync(lease, cancellationToken).ConfigureAwait(false);
             record = record.BeginTombstone(verified);
             Write(path, record);
             _collectionQueue.Enqueue(path, record.RetainUntilUnixSeconds);
             _faults?.Inject(MailboxPeerMutationFaultPoint.TombstoneReserved);
         }
 
-        _ = await _blobStore.DeleteExactAsync(
-            record.MailboxId,
-            record.BlobId,
-            cancellationToken).ConfigureAwait(false);
+        await CheckCurrentAsync(lease, cancellationToken).ConfigureAwait(false);
+        _ = lease is null
+            ? await _blobStore.DeleteExactAsync(record.MailboxId, record.BlobId, cancellationToken).ConfigureAwait(false)
+            : await _blobStore.DeleteExactCurrentAsync(record.MailboxId, record.BlobId, lease, cancellationToken).ConfigureAwait(false);
         _faults?.Inject(MailboxPeerMutationFaultPoint.TombstoneBlobDeleted);
+        await CheckCurrentAsync(lease, cancellationToken).ConfigureAwait(false);
         if (record.State == "tombstone-pending")
         {
             Write(path, record with { State = "tombstoned" });
+            await CheckCurrentAsync(lease, cancellationToken).ConfigureAwait(false);
         }
 
         return new MailboxPeerMutationResult(MailboxReplicaDisposition.Tombstone);
@@ -353,7 +371,7 @@ public sealed class MailboxPeerMutationStore : IDisposable
 
     private async Task EnsureCapacityUnderGateAsync(
         ulong nowUnixSeconds,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, MailboxCurrentOperationLease? lease = null)
     {
         if (_recordCount < _options.MaxPeerMutationRecords)
         {
@@ -363,7 +381,7 @@ public sealed class MailboxPeerMutationStore : IDisposable
         _ = await CollectExpiredUnderGateAsync(
             nowUnixSeconds,
             _options.MaxPeerMutationGcBatch,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken, lease).ConfigureAwait(false);
         if (_recordCount >= _options.MaxPeerMutationRecords)
         {
             throw new MailboxPeerMutationCapacityException();
@@ -373,7 +391,7 @@ public sealed class MailboxPeerMutationStore : IDisposable
     private async Task<int> CollectExpiredUnderGateAsync(
         ulong nowUnixSeconds,
         int maximumRecords,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, MailboxCurrentOperationLease? lease = null)
     {
         ValidateBatch(maximumRecords);
         var removed = 0;
@@ -396,10 +414,11 @@ public sealed class MailboxPeerMutationStore : IDisposable
                 continue;
             }
 
-            _ = await _blobStore.DeleteExactAsync(
-                record.MailboxId,
-                record.BlobId,
-                cancellationToken).ConfigureAwait(false);
+            await CheckCurrentAsync(lease, cancellationToken).ConfigureAwait(false);
+            _ = lease is null
+                ? await _blobStore.DeleteExactAsync(record.MailboxId, record.BlobId, cancellationToken).ConfigureAwait(false)
+                : await _blobStore.DeleteExactCurrentAsync(record.MailboxId, record.BlobId, lease, cancellationToken).ConfigureAwait(false);
+            await CheckCurrentAsync(lease, cancellationToken).ConfigureAwait(false);
             _durability.DeleteFile(path);
             _recordCount--;
             removed++;
@@ -407,6 +426,9 @@ public sealed class MailboxPeerMutationStore : IDisposable
 
         return removed;
     }
+
+    private static async ValueTask CheckCurrentAsync(MailboxCurrentOperationLease? lease, CancellationToken token)
+    { if (lease is not null) _ = await lease.CheckAsync(token).ConfigureAwait(false); }
 
     private void LoadAndValidateIndex()
     {

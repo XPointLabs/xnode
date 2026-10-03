@@ -206,7 +206,7 @@ public sealed class CurrentMailboxAdmissionTests
         { callback(); return inner.ReadPublicationAuthorityAsync(token); }
     }
 
-    private sealed class Fixture : IAsyncDisposable
+    internal sealed class Fixture : IAsyncDisposable
     {
         internal DeepIdV2PublicationAuthorityFixture Signed = null!;
         private Custody depositFiles = null!, retrieveFiles = null!;
@@ -218,6 +218,7 @@ public sealed class CurrentMailboxAdmissionTests
         private MailboxClientCanonicalOutcomeStore outcomes = null!;
         internal MailboxAuthenticatedCapabilityRuntime Runtime = null!;
         internal CurrentMailboxAdmission Admission = null!;
+        internal string DataRoot => depositFiles.Data;
 
         internal static async Task<Fixture> CreateAsync(MailboxAuthenticatedOperation operation,
             MailboxCapabilityDomain? missing = null)
