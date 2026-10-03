@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.ComponentModel;
 using System.Security.Cryptography;
 using Deep.Protocol.ContactV2;
 using Deep.Protocol.DeepExtension.PrivacyRouting;
@@ -57,7 +58,7 @@ internal sealed class DeepIdV2PreKeyClaimRuntime(
         {
             return Failure(request, Xpc1V2Status.Conflict, Xpc1V2MutationOutcome.None, 0, [conflict.EvidenceHash]);
         }
-        catch (IOException)
+        catch (Exception exception) when (exception is IOException or Win32Exception)
         {
             return Failure(request, Xpc1V2Status.OutcomeUnknown, Xpc1V2MutationOutcome.OutcomeUnknown, 1, []);
         }
@@ -187,7 +188,7 @@ internal sealed class DeepIdV2PreKeyClaimRuntime(
                 return localCompletion;
             }
             catch (DeepIdV2ClaimConflictException) { throw; }
-            catch (Exception exception) when (exception is IOException or InvalidDataException or
+            catch (Exception exception) when (exception is IOException or Win32Exception or InvalidDataException or
                 CryptographicException or FormatException or InvalidOperationException or OperationCanceledException)
             {
                 throw new IOException("DID2 claim reservation/completion outcome requires exact-operation reconciliation.", exception);

@@ -100,6 +100,7 @@ internal static class ContactReplicaHttpEndpoint
             or UnauthorizedAccessException
             or InvalidOperationException
             or IOException
+            or System.ComponentModel.Win32Exception
             or CryptographicException
             or Deep.Protocol.DeepExtension.PrivacyRouting.OnionBoundaryException
             or ContactServiceReceiptAuthorityException)

@@ -154,76 +154,6 @@ public sealed class ContactPreKeyOpaqueStoreTests
     }
 
     [Fact]
-    public void OneTimeClaimAndExactReplaySurviveRestart()
-    {
-        using var fixture = new StoreFixture();
-        var inventory = Inventory("restart", fixture.Clock, lastResortLimit: 2);
-        var request = ClaimRequest(inventory, "restart/claim", fixture.Clock);
-        ContactPreKeyClaimResult claimed;
-
-        using (var store = fixture.Open())
-        {
-            Assert.Equal(
-                ContactPreKeyInventoryDisposition.Installed,
-                store.InstallVerifiedInventory(inventory).Disposition);
-            claimed = store.Claim(request);
-            Assert.Equal(ContactPreKeyClaimDisposition.Claimed, claimed.Disposition);
-            Assert.False(ContactPreKeyOpaqueValue.IsZero32(claimed.OneTimePreKeyId));
-            Assert.Equal<ulong>(1, claimed.ClaimCommitGeneration);
-            Assert.Equal<ushort>(0, claimed.LastResortUseCounter);
-            Assert.Equal(inventory.ExactXpi1.ToArray(), claimed.ExactXpi1.ToArray());
-            Assert.Equal(inventory.Xpi1Hash.ToArray(), claimed.Xpi1Hash.ToArray());
-            Assert.Equal(inventory.InventoryEpoch, claimed.InventoryEpoch);
-            Assert.Equal<ushort>(0, claimed.InventoryIndex);
-            Assert.Equal(160, claimed.InclusionProof.Length);
-            Assert.Equal(inventory.ReplicaNodeIds.Select(static value => value.ToArray()),
-                claimed.ReplicaNodeIds.Select(static value => value.ToArray()));
-        }
-
-        using (var store = fixture.Open())
-        {
-            var replay = store.Claim(request);
-            Assert.Equal(ContactPreKeyClaimDisposition.ExactReplay, replay.Disposition);
-            Assert.Equal(claimed.OneTimePreKeyId.ToArray(), replay.OneTimePreKeyId.ToArray());
-            Assert.Equal(claimed.ExactDpk2.ToArray(), replay.ExactDpk2.ToArray());
-            Assert.Equal(claimed.ClaimCommitGeneration, replay.ClaimCommitGeneration);
-            Assert.Equal(claimed.ExactXpi1.ToArray(), replay.ExactXpi1.ToArray());
-            Assert.Equal(claimed.InclusionProof.ToArray(), replay.InclusionProof.ToArray());
-        }
-    }
-
-    [Fact]
-    public void SameOperationChangedRequestConflictsAndCannotConsumeAnotherPreKey()
-    {
-        using var fixture = new StoreFixture();
-        var inventory = Inventory("operation-conflict", fixture.Clock);
-        using var store = fixture.Open();
-        Assert.Equal(
-            ContactPreKeyInventoryDisposition.Installed,
-            store.InstallVerifiedInventory(inventory).Disposition);
-        var firstRequest = ClaimRequest(inventory, "operation-conflict/one", fixture.Clock);
-        var first = store.Claim(firstRequest);
-        Assert.Equal(ContactPreKeyClaimDisposition.Claimed, first.Disposition);
-
-        var changed = new OpaquePreKeyClaimRequest(
-            inventory.NetworkId,
-            inventory.ServiceCapability,
-            inventory.ResponderDeviceId,
-            inventory.SupportedSuite,
-            firstRequest.OperationId,
-            Hash("changed request hash"),
-            Hash("operation-conflict/dcb"),
-            Hash("stale/different-xps"),
-            firstRequest.RequestExpiresAtUnixSeconds);
-        Assert.Equal(ContactPreKeyClaimDisposition.Conflict, store.Claim(changed).Disposition);
-
-        var second = store.Claim(ClaimRequest(inventory, "operation-conflict/two", fixture.Clock));
-        Assert.Equal(ContactPreKeyClaimDisposition.Claimed, second.Disposition);
-        Assert.NotEqual(first.OneTimePreKeyId.ToArray(), second.OneTimePreKeyId.ToArray());
-        Assert.Equal<ulong>(2, second.ClaimCommitGeneration);
-    }
-
-    [Fact]
     public void StaleBundleAndExpiryAreExplicitAndDoNotConsumeInventory()
     {
         using var fixture = new StoreFixture();
@@ -255,43 +185,6 @@ public sealed class ContactPreKeyOpaqueStoreTests
         Assert.Equal(
             ContactPreKeyClaimDisposition.Claimed,
             store.Claim(ClaimRequest(inventory, "stale/fresh", fixture.Clock)).Disposition);
-    }
-
-    [Fact]
-    public void ExactBundleHashesCannotBeReusedForAnotherNetworkDeviceOrSuite()
-    {
-        using var fixture = new StoreFixture();
-        var inventory = Inventory("selector-binding", fixture.Clock);
-        using var store = fixture.Open();
-        store.InstallVerifiedInventory(inventory);
-
-        OpaquePreKeyClaimRequest Changed(
-            ReadOnlySpan<byte> network,
-            ReadOnlySpan<byte> device,
-            ushort suite,
-            string label) => new(
-                network,
-                inventory.ServiceCapability,
-                device,
-                suite,
-                Hash(label + "/operation"),
-                Hash(label + "/request"),
-                Hash(label + "/dcb"),
-                inventory.ExactXps1Hash,
-                checked((ulong)fixture.Clock.UtcNow.AddMinutes(5).ToUnixTimeSeconds()));
-
-        Assert.Equal(ContactPreKeyClaimDisposition.Conflict,
-            store.Claim(Changed(Hash("wrong-network").AsSpan(0, 16),
-                inventory.ResponderDeviceId, inventory.SupportedSuite, "network")).Disposition);
-        Assert.Equal(ContactPreKeyClaimDisposition.Conflict,
-            store.Claim(Changed(inventory.NetworkId, Hash("wrong-device"),
-                inventory.SupportedSuite, "device")).Disposition);
-        Assert.Equal(ContactPreKeyClaimDisposition.Conflict,
-            store.Claim(Changed(inventory.NetworkId, inventory.ResponderDeviceId,
-                checked((ushort)(inventory.SupportedSuite + 1)), "suite")).Disposition);
-
-        Assert.Equal(ContactPreKeyClaimDisposition.Claimed,
-            store.Claim(ClaimRequest(inventory, "selector-binding/valid", fixture.Clock)).Disposition);
     }
 
     [Fact]

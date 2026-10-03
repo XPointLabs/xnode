@@ -138,6 +138,15 @@ These diagnostics retain outcome-unknown behavior; they do not permit a retry,
 receipt, fallback or successful publication. The native DID2 focused runtime
 batch passes 37/37; production/device evidence is a separate requirement.
 
+The DID2 prekey claim runtime classifies native Windows replacement errors as
+I/O uncertainty. A claim whose reservation/completion cannot be confirmed returns
+`OutcomeUnknown`, without releasing a prekey. The authenticated peer endpoint
+returns a bodyless, unsigned HTTP 503 for these errors. After storage readiness
+is restored, reconcile the exact original operation; do not substitute a new
+operation or assume that the failed response means no write occurred. This is
+error containment, not a diagnosis of intermittent Windows access-denied errors,
+an automatic retry, or permission to weaken storage ACLs.
+
 Malformed external authority responses and frames keep ONION readiness closed,
 but do not terminate its bounded idle acquisition loop, including at startup.
 No rejected response or retained stale binding is served; recovery requires a

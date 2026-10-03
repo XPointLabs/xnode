@@ -364,3 +364,103 @@ external/device/production gate ran.
 | Full Unit | `679d05a4e3b68b96082e7392bfb3a43296212f44a0abf0431f303992e055da79` |
 | Full Integration | `9348fcc05b117452d7afcc1852a8ce38a51c9b0ad84b76d736e2fa63b06ab556` |
 | Post-full lineage selection, Windows replace failure | `3128e3aadb01b2aa80179b38a01d7bda2c28c50f97780b6fb761148921eeff22` |
+
+## Checkpoint 5 — current claim bindings and native I/O uncertainty
+
+Inputs: xnode `e076f46d3e8940dfb9cf591b39a1b540e5bdcc01`, Protocol
+`4af284766b1d9fdfb2a2e3285d248e4d30ca02e5`, workspace
+`fbf9cd925e61db43bf1730bcf2ca00343f161487`. This is S00 source evidence,
+not activation, a new protocol generation, or release qualification.
+
+Three unsafe V1-capability tests were removed only after transferring their
+business assertions to the existing signed DID2 runtime harness:
+
+| Removed opaque-store scenario | Current signed replacement |
+| --- | --- |
+| `OneTimeClaimAndExactReplaySurviveRestart` | `BothAnonymousExitsCoordinateDistinctClaimsAndReplayAfterRestart`, with exact member/manifest, counter, Merkle proof, selected replica signatures and whole-wire replay |
+| `SameOperationChangedRequestConflictsAndCannotConsumeAnotherPreKey` | Four `ChangedRequestForSameOperation...` cases: ephemeral, bundle, issued-at and expiry changes; unchanged operation ID, changed request hash, stable nonzero conflict evidence and state hashes across both exits/reopen; original replay and next key/generation retained |
+| `ExactBundleHashesCannotBeReusedForAnotherNetworkDeviceOrSuite` | Five `SignedInventoryCannotAuthorizeAnotherRequestScope...` cases: network, device, service, wire suite and requested suite; reject before peer calls/claim state, retain inventory, then valid request obtains the first key |
+
+Current malformed/unauthorized scope rejection is not the retired opaque
+store's generic conflict disposition. No fabricated verified capability or
+weakened verifier was introduced. Remaining unsafe fixture, quota, retention
+and recovery scenarios are still open; their coverage was not deleted.
+
+The new eight-case native-error regression first failed **0 pass / 8 fail**:
+`Win32Exception` escaped both claim error handling and the peer endpoint.
+The actual durability barrier can throw this type from native replacement,
+independently of the intermittent failure's undiagnosed cause. The runtime
+now includes it in existing I/O uncertainty handling; the peer endpoint
+returns a bodyless, unsigned 503. No generic exception swallowing, retry,
+permission changes or filesystem barrier replacement was added.
+
+The deterministic test wraps the real barrier and throws native error 5 or
+32 at completion, on either replica, before or after real replacement.
+Reservation writes remain real. All eight cases now return `OutcomeUnknown`
+without an offering; after reopen, exact reconciliation obtains the original
+first key/generation, whole-wire replay is stable and a distinct next operation
+gets the second key/generation. Peer failures assert empty unsigned 503.
+This in-process authenticated HTTP harness is **not** socket/TLS/SPKI,
+ONION, actual Windows lock diagnosis, or physical device evidence.
+
+```powershell
+dotnet test tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj -c Release -p:DeepProtocolSourceCutover=true --filter FullyQualifiedName~NativeCompletionWriteFailure --logger trx --results-directory artifacts/s00/native-claim-errors-after --verbosity quiet
+dotnet test tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj -c Release -p:DeepProtocolSourceCutover=true --filter 'FullyQualifiedName~DeepIdV2PreKeyClaimRuntimeTests|FullyQualifiedName~DeepIdV2ClaimJournalTests|FullyQualifiedName~DeepIdV2InventoryLineageTests' --logger trx --results-directory artifacts/s00/native-claim-errors-focused --verbosity quiet
+dotnet test XNode.slnx -c Release -p:DeepProtocolSourceCutover=true --logger trx --results-directory artifacts/s00/native-claim-errors-full --verbosity quiet
+```
+
+Initial binding selection: **9/9**. Expanded pre-fix selection: **33 pass /
+1 fail** (34): native access denied during last-resort exact reconciliation.
+Pre-native-regression full suite: **862 pass / 1 invite fail** (863).
+Native regression after fix: **8/8**. Combined post-fix selection:
+**40 pass / 2 fail** (42). One is native access denied in
+`TwoReplicaJournals_CommitTheSameVerifiedTupleAndReplayAfterRestart(lastResort=true)`
+during reservation. The other is the concurrent exhaustion test's verifier
+rejecting a non-success result as outside selected placement; its underlying
+cause is not proven by that TRX. Neither is dismissed or counted as fixed.
+
+Final full suite: **870 pass / 1 fail / 0 skips** (871), exit 1:
+ProfileGenerator 107/107, Unit 272/272, Integration 491 pass / 1 fail.
+Build warnings: 0. The sole full failure remains the current one-time-invite
+producer prerequisite (B8). All new cases passed in this full run, but that
+does not close the preceding selection failures or storage nondeterminism.
+Overlapping selections are not additive unique coverage.
+
+Mandatory local DevOps checks also ran on current sources:
+
+```powershell
+# Separate process: COMPOSE_PROJECT_NAME=deep-s00-claim-errors-20261003,
+# managed URLs explicitly local, fresh per-run artifact directory.
+../deep-devops/scripts/test-env.ps1 -Suite smoke -BackendMode external -ManagedExternalProfile backend-external -RequireRouterNoMock -RunArtifactDirectory '<absolute fresh child of deep-devops/artifacts>'
+../deep-devops/scripts/multi-node-rehearsal.ps1
+```
+
+External smoke exit 0: fixture validation and 10 runner/contract tests pass;
+runtime gate has no failed hard/soft checks, Xray running/non-mocked and secret
+scan passes. This smoke did **not** run physical business E2E. Multi-node
+rehearsal exit 0: three real Xray processes, Registry count 3, no reconciliation
+issues; all privacy contact endpoints return 503 without verified authority.
+It does **not** prove current grant-bound peer mutation or successful contact
+delivery. Docker builds also emitted three existing `InvalidDefaultArgInFrom`
+warnings for external Node service images, not .NET compile warnings.
+Only isolated temporary projects/volumes were cleaned; the existing `deep-dev`
+stack, production, devices, production secrets and registered node keys were
+not changed. Existing scripts generated isolated local test secrets.
+
+| Raw evidence (ignored; machine paths not committed) | SHA-256 |
+| --- | --- |
+| Initial binding selection | `d475b45644ddd52523feb39ef7d05408e75211028034d64a56283dcb1e0ef07a` |
+| Expanded pre-fix selection | `1ba005de56557ddc8fab779109792bf6550e05c8b660e9a32908882377e97a79` |
+| Native regression before fix | `16e860310b3e941a97dc800a4bec4e19b6cea1f3963f57085ca89e3ae3492e6d` |
+| Native regression after fix | `45edcf5732486c376692467da507e51e1b12fe24253994ef593cb7ff055be1c9` |
+| Post-fix combined selection | `931578bcdf579b778c82aa5867a0f76d45b8713755bee8ed96a19e8032504810` |
+| Final full ProfileGenerator | `844e589dbe38da33c0a8e84351c5c1cb81a5d05c668fcc8ee64d97cd2c9c7b67` |
+| Final full Unit | `b30a6b74f899f078d867ac6a6b179ded282edec0b76b963f1cee26360f096e79` |
+| Final full Integration | `91d117726e5b1a6dfdbd38ee3067fc4323a26d8c4c4d551d73ad2f3c2fffc1c2` |
+| External smoke runtime gate | `aa1f6377a70fd6b79294907bf987ce9c3653020737478c4b55facf7273ab1b5c` |
+| Multi-node topology rehearsal | `b1f4e50140bcba9b5ec8a64d1ec3a92652311a149451f890769dbf0d352d584c` |
+
+S00 remains open: unsafe fixtures, B8 current one-time publication closure,
+Windows availability, root machine-set and actual Protocol package/current
+mailbox consumer. S01/S02 admission, shipping composition and physical full
+contact/message/files/groups acceptance remain unqualified.

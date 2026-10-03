@@ -125,6 +125,8 @@ public sealed class DeepIdV2PreKeyClaimRuntimeTests
             harness.Claims[0].ReceiveTerminalAsync(first.CanonicalBytes, default).AsTask(),
             harness.Claims[1].ReceiveTerminalAsync(second.CanonicalBytes, default).AsTask());
         var a = harness.Verify(first, results[0]); var b = harness.Verify(second, results[1]);
+        AssertOneTimeSelection(harness, a);
+        AssertOneTimeSelection(harness, b);
         Assert.NotEqual(a.Field(17).ToArray(), b.Field(17).ToArray());
         Assert.Equal(new ulong[] { 1, 2 }, new[] { U64(a.Field(24).Span), U64(b.Field(24).Span) }.Order());
         Assert.True(harness.HttpCalls >= 7);
@@ -158,18 +160,161 @@ public sealed class DeepIdV2PreKeyClaimRuntimeTests
         Assert.Equal(harness.Signed.Publication.OneTimeMembers[1].OneTimePrekeyId.ToArray(), nextResult.Field(17).ToArray());
     }
 
-    [Fact]
-    public async Task ChangedRequestForSameOperation_ReturnsConflictWithoutAnotherReservation()
+    [Theory]
+    [InlineData("ephemeral")]
+    [InlineData("bundle")]
+    [InlineData("issued")]
+    [InlineData("expiry")]
+    public async Task ChangedRequestForSameOperation_ReturnsConflictWithoutAnotherReservation(string mutation)
     {
         using var harness = await Harness.CreateAsync();
         var request = harness.Request();
         var original = await harness.Claims[0].ReceiveTerminalAsync(request.CanonicalBytes, default);
-        var changed = harness.Request(ephemeral: 0xb4);
-        var conflict = DeepIdV2PreKeyClaimResultCodec.Decode((await harness.Claims[1].ReceiveTerminalAsync(
-            changed.CanonicalBytes, default)).Span, changed.CanonicalBytes.Span);
-        Assert.Equal(Xpc1V2Status.Conflict, conflict.Status);
-        Assert.Equal(32, conflict.Field(16).Length);
+        var accepted = harness.Verify(request, original);
+        AssertOneTimeSelection(harness, accepted);
+        Assert.Equal(1UL, U64(accepted.Field(24).Span));
+        var changed = ChangeRequest(request, mutation);
+        Assert.Equal(request.Field(2).ToArray(), changed.Field(2).ToArray());
+        Assert.NotEqual(request.RequestHash.ToArray(), changed.RequestHash.ToArray());
+        var before = ClaimSnapshotHashes(harness.Root);
+        byte[]? conflictWire = null;
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            var wire = await harness.Claims[1 - attempt].ReceiveTerminalAsync(changed.CanonicalBytes, default);
+            var conflict = DeepIdV2PreKeyClaimResultCodec.Decode(wire.Span, changed.CanonicalBytes.Span);
+            Assert.Equal(Xpc1V2Status.Conflict, conflict.Status);
+            Assert.Equal(Xpc1V2MutationOutcome.None, conflict.MutationOutcome);
+            Assert.Equal(32, conflict.Field(16).Length);
+            Assert.NotEqual(new byte[32], conflict.Field(16).ToArray());
+            if (conflictWire is not null) Assert.Equal(conflictWire, wire.ToArray());
+            conflictWire = wire.ToArray();
+            Assert.Equal(before, ClaimSnapshotHashes(harness.Root));
+            harness.Reopen();
+        }
         Assert.Equal(original.ToArray(), (await harness.Claims[0].ReceiveTerminalAsync(request.CanonicalBytes, default)).ToArray());
+        Assert.Equal(before, ClaimSnapshotHashes(harness.Root));
+        var next = harness.Request(0xb1);
+        var second = harness.Verify(next, await harness.Claims[1].ReceiveTerminalAsync(next.CanonicalBytes, default));
+        AssertOneTimeSelection(harness, second);
+        Assert.Equal(2UL, U64(second.Field(24).Span));
+        Assert.NotEqual(accepted.Field(17).ToArray(), second.Field(17).ToArray());
+        Assert.Equal(harness.Signed.Publication.OneTimeMembers[1].OneTimePrekeyId.ToArray(), second.Field(17).ToArray());
+    }
+
+    [Theory]
+    [InlineData("network")]
+    [InlineData("device")]
+    [InlineData("service")]
+    [InlineData("suite")]
+    [InlineData("requested-suite")]
+    public async Task SignedInventoryCannotAuthorizeAnotherRequestScope_ValidRequestStillClaimsFirstKey(string mutation)
+    {
+        using var harness = await Harness.CreateAsync();
+        var request = harness.Request();
+        var before = InventorySnapshotHashes(harness.Root);
+        var hostile = mutation is "suite" or "requested-suite" ? request.CanonicalBytes.ToArray() : ChangeRequest(request, mutation).CanonicalBytes.ToArray();
+        if (mutation is "suite" or "requested-suite")
+        {
+            if (mutation == "suite")
+                BinaryPrimitives.WriteUInt16BigEndian(hostile.AsSpan(6), 0x0201);
+            else
+            {
+                // Exact fixed XPK1 field20, independently asserted before mutation.
+                Assert.Equal(20, BinaryPrimitives.ReadUInt16BigEndian(hostile.AsSpan(348)));
+                Assert.Equal(2U, BinaryPrimitives.ReadUInt32BigEndian(hostile.AsSpan(352)));
+                BinaryPrimitives.WriteUInt16BigEndian(hostile.AsSpan(356), 0x0302);
+            }
+            await Assert.ThrowsAnyAsync<FormatException>(async () =>
+                await harness.Claims[0].ReceiveTerminalAsync(hostile, default));
+        }
+        else
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(async () =>
+                await harness.Claims[0].ReceiveTerminalAsync(hostile, default));
+        Assert.Equal(0, harness.HttpCalls);
+        Assert.Empty(ClaimSnapshotHashes(harness.Root));
+        Assert.Equal(before, InventorySnapshotHashes(harness.Root));
+        Assert.Empty(Directory.GetFiles(harness.Root, "fork.marker", SearchOption.AllDirectories));
+        Assert.Empty(Directory.GetFiles(harness.Root, "fault.marker", SearchOption.AllDirectories));
+        harness.Reopen();
+        var claimed = harness.Verify(request, await harness.Claims[1].ReceiveTerminalAsync(request.CanonicalBytes, default));
+        AssertOneTimeSelection(harness, claimed);
+        Assert.Equal(1UL, U64(claimed.Field(24).Span));
+        Assert.Equal(harness.Signed.Publication.OneTimeMembers[0].OneTimePrekeyId.ToArray(), claimed.Field(17).ToArray());
+    }
+
+    private static string[] InventorySnapshotHashes(string root) =>
+        Directory.GetFiles(root, "active.state", SearchOption.AllDirectories).Order()
+            .Select(path => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path)))).ToArray();
+
+    private static ParsedXpk1V2 ChangeRequest(ParsedXpk1V2 request, string mutation)
+    {
+        static byte[] Changed() => Enumerable.Repeat((byte)0xfb, 32).ToArray();
+        if (mutation is not ("network" or "device" or "service" or "ephemeral" or "bundle" or "issued" or "expiry"))
+            throw new ArgumentOutOfRangeException(nameof(mutation));
+        return DeepIdV2PreKeyClaimRequestCodec.Decode(DeepIdV2PreKeyClaimRequestCodec.Encode(
+            mutation == "network" ? Changed().AsSpan(0, 16) : request.Field(1).Span,
+            request.Field(2).Span, request.Field(3).Span, request.Field(4).Span,
+            mutation == "issued" ? U64(request.Field(5).Span) + 1 : U64(request.Field(5).Span),
+            mutation == "expiry" ? U64(request.Field(6).Span) - 1 : U64(request.Field(6).Span),
+            request.Field(16).Span, mutation == "bundle" ? Changed() : request.Field(17).Span,
+            mutation == "service" ? Changed() : request.Field(18).Span,
+            mutation == "device" ? Changed() : request.Field(19).Span,
+            mutation == "ephemeral" ? Changed() : request.Field(21).Span));
+    }
+
+    private static void AssertOneTimeSelection(Harness harness, ParsedXpc1V2 result)
+    {
+        Assert.Equal(Xpc1V2MutationOutcome.DurablyCommitted, result.MutationOutcome);
+        var index = BinaryPrimitives.ReadUInt16BigEndian(result.Field(27).Span);
+        Assert.InRange((int)index, 0, harness.Signed.Publication.OneTimeMembers.Count - 1);
+        var member = harness.Signed.Publication.OneTimeMembers[index];
+        Assert.Equal(member.CanonicalBytes.ToArray(), result.Field(16).ToArray());
+        Assert.Equal(member.OneTimePrekeyId.ToArray(), result.Field(17).ToArray());
+        Assert.Equal(harness.Signed.Publication.Manifest.CanonicalBytes.ToArray(), result.Field(26).ToArray());
+        Assert.Equal(0, BinaryPrimitives.ReadUInt16BigEndian(result.Field(23).Span));
+        Assert.Equal(160, result.Field(28).Length);
+        // Harness.Verify already verifies both actual selected replica signatures;
+        // the result codec executes Merkle membership and exact request binding.
+    }
+
+    [Theory]
+    [InlineData(5, false, false)]
+    [InlineData(5, false, true)]
+    [InlineData(5, true, false)]
+    [InlineData(5, true, true)]
+    [InlineData(32, false, false)]
+    [InlineData(32, false, true)]
+    [InlineData(32, true, false)]
+    [InlineData(32, true, true)]
+    public async Task NativeCompletionWriteFailure_ReturnsUnknown_ExactReconciliationKeepsFirstKey(
+        int error, bool peer, bool afterReplace)
+    {
+        using var harness = await Harness.CreateAsync();
+        var barrier = new NativeCompletionFailure(harness.Nodes[peer ? 1 : 0].DataDirectory, error, afterReplace);
+        harness.Durability = barrier;
+        harness.Reopen();
+        var request = harness.Request();
+        var unknown = DeepIdV2PreKeyClaimResultCodec.Decode((await harness.Claims[0].ReceiveTerminalAsync(
+            request.CanonicalBytes, default)).Span, request.CanonicalBytes.Span);
+        Assert.Equal(1, barrier.Failures);
+        Assert.Equal(peer ? 1 : 0, harness.UnavailableResponses);
+        Assert.Equal(Xpc1V2Status.OutcomeUnknown, unknown.Status);
+        Assert.Equal(Xpc1V2MutationOutcome.OutcomeUnknown, unknown.MutationOutcome);
+        Assert.Empty(unknown.Field(16).ToArray());
+        Assert.Equal(2, ClaimSnapshotHashes(harness.Root).Length);
+        harness.Reopen();
+        var completed = await harness.Claims[1].ReceiveTerminalAsync(request.CanonicalBytes, default);
+        var recovered = harness.Verify(request, completed);
+        AssertOneTimeSelection(harness, recovered);
+        Assert.Equal(1UL, U64(recovered.Field(24).Span));
+        Assert.Equal(harness.Signed.Publication.OneTimeMembers[0].OneTimePrekeyId.ToArray(), recovered.Field(17).ToArray());
+        harness.Reopen();
+        Assert.Equal(completed.ToArray(), (await harness.Claims[0].ReceiveTerminalAsync(request.CanonicalBytes, default)).ToArray());
+        var next = harness.Request(0xb1);
+        var second = harness.Verify(next, await harness.Claims[1].ReceiveTerminalAsync(next.CanonicalBytes, default));
+        Assert.Equal(2UL, U64(second.Field(24).Span));
+        Assert.Equal(harness.Signed.Publication.OneTimeMembers[1].OneTimePrekeyId.ToArray(), second.Field(17).ToArray());
+        Assert.Equal(1, barrier.Failures);
     }
 
     [Fact]
@@ -320,6 +465,8 @@ public sealed class DeepIdV2PreKeyClaimRuntimeTests
         internal ContactReplicaRpcOperation? LoseNextResponse { get; set; }
         internal bool ExpireAfterPrepare { get; set; }
         internal int HttpCalls { get; private set; }
+        internal int UnavailableResponses { get; private set; }
+        internal IMailboxDurabilityBarrier Durability { get; set; } = new MailboxDurabilityBarrier();
 
         internal static async Task<Harness> CreateAsync(ushort lastResortReuseLimit = 1)
         {
@@ -363,7 +510,7 @@ public sealed class DeepIdV2PreKeyClaimRuntimeTests
                 var peer = new HttpContactReplicaPeerClient(Nodes[i], privacy[i], options, clock,
                     _ => new Handler((request, token) => HttpAsync(1 - nodeIndex, request, token)));
                 var candidates = new DeepIdV2PublicationCandidateAuthority(Signed, Signed);
-                var security = new MailboxStorageSecurity(); var durability = new MailboxDurabilityBarrier();
+                var security = new MailboxStorageSecurity(); var durability = Durability;
                 Claims[i] = new(Nodes[i], Signed, candidates, peer, Signed, clock, security, durability);
                 Receivers[i] = new(Nodes[i], Signed, security, durability,
                     new(Nodes[i], candidates, Signed, Signed, security, durability), Claims[i]);
@@ -402,6 +549,12 @@ public sealed class DeepIdV2PreKeyClaimRuntimeTests
             var result = await ContactReplicaHttpEndpoint.HandleCoreAsync(context, true, options,
                 replays[nodeIndex], Receivers[nodeIndex], Nodes[nodeIndex], clock, 7443, token);
             await result.ExecuteAsync(context);
+            if (context.Response.StatusCode == StatusCodes.Status503ServiceUnavailable)
+            {
+                UnavailableResponses++;
+                Assert.Equal(0, context.Response.Body.Length);
+                Assert.False(context.Response.Headers.ContainsKey(ContactReplicaPeerAuthenticator.SignatureHeader));
+            }
             if (command.Operation == ContactReplicaRpcOperation.PrepareDid2PreKeyClaim && ExpireAfterPrepare)
             { ExpireAfterPrepare = false; Signed.Sample = Signed.Freshness.FreshnessDeadlineMonotonicSeconds; }
             if (LoseNextResponse == command.Operation)
@@ -428,6 +581,28 @@ public sealed class DeepIdV2PreKeyClaimRuntimeTests
     }
 
     private sealed class FixedClock : IClock { public DateTimeOffset UtcNow => DateTimeOffset.FromUnixTimeSeconds(1_100); }
+    // Deterministic native error classification, not a diagnosis of the observed
+    // intermittent Windows lock. No retry, ACL change or write suppression.
+    private sealed class NativeCompletionFailure(string replicaDirectory, int error, bool afterReplace) : IMailboxDurabilityBarrier
+    {
+        private readonly MailboxDurabilityBarrier inner = new();
+        private int writes;
+        internal int Failures { get; private set; }
+        public void FlushFileAndParentDirectory(string path) => inner.FlushFileAndParentDirectory(path);
+        public void FlushParentDirectory(string path) => inner.FlushParentDirectory(path);
+        public void ReplaceFile(string temporaryPath, string finalPath)
+        {
+            var prefix = Path.GetFullPath(replicaDirectory) + Path.DirectorySeparatorChar;
+            if (Path.GetFileName(finalPath) == "claims.state" &&
+                Path.GetFullPath(finalPath).StartsWith(prefix, StringComparison.Ordinal) && ++writes == 2)
+            {
+                if (afterReplace) inner.ReplaceFile(temporaryPath, finalPath);
+                Failures++;
+                throw new System.ComponentModel.Win32Exception(error);
+            }
+            inner.ReplaceFile(temporaryPath, finalPath);
+        }
+    }
     private sealed class Handler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token) => handler(request, token);
