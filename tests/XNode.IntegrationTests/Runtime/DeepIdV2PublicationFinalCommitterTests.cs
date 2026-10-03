@@ -134,6 +134,35 @@ public sealed class DeepIdV2PublicationFinalCommitterTests
         fixture.Publication.CanonicalBytes.Span, fixture.Placement.ViewHash.Span,
         fixture.Publisher.CanonicalBytes.Span, fixture.Dca, xps ?? fixture.Xps);
 
+    [Fact]
+    public async Task CompleteStagedInventory_SignedManifestWithInvalidMemberSignature_CannotActivateAfterReopen()
+    {
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync(corruptFirstPreKeyBundleSignature: true);
+        var root = TemporaryRoot();
+        try
+        {
+            var local = fixture.Placement.ReplicaIds[0];
+            var receiver = Receiver(fixture, root, local.Span);
+            var peer = RouterId.FromHex(Convert.ToHexString(fixture.Placement.ReplicaIds[1].Span));
+            var fragments = Fragments(fixture);
+            foreach (var fragment in fragments)
+                await receiver.ReceiveAsync(Command(fixture, fragment,
+                    ContactReplicaRpcOperation.StageDid2PreKeyPublication), peer, default);
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                var proofReads = fixture.ProofReads;
+                var rejected = await Assert.ThrowsAsync<ApplicationCoreFormatException>(async () =>
+                    await receiver.ReceiveAsync(Command(fixture, fragments[^1],
+                        ContactReplicaRpcOperation.CommitDid2PreKeyPublication), peer, default));
+                Assert.Contains("DPK2 DID2 responder signatures are invalid", rejected.Message, StringComparison.Ordinal);
+                Assert.True(fixture.ProofReads > proofReads);
+                Assert.False(Directory.Exists(Path.Combine(root, "did2-prekey-commits")));
+                receiver = Receiver(fixture, root, local.Span);
+            }
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
     private static DeepIdV2ReplicaStageReceiver Receiver(DeepIdV2PublicationAuthorityFixture fixture,
         string root, ReadOnlySpan<byte> local)
     {

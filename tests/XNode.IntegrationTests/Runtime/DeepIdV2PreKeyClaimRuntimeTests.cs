@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Net;
 using System.Net.Http.Headers;
+using Deep.Protocol.ApplicationCore;
 using Deep.Protocol.ContactV2;
 using Deep.Protocol.XPointNetworkV1;
 using Microsoft.AspNetCore.Http;
@@ -158,6 +159,69 @@ public sealed class DeepIdV2PreKeyClaimRuntimeTests
         var nextResult = harness.Verify(next, await harness.Claims[0].ReceiveTerminalAsync(next.CanonicalBytes, default));
         Assert.Equal(2UL, U64(nextResult.Field(24).Span));
         Assert.Equal(harness.Signed.Publication.OneTimeMembers[1].OneTimePrekeyId.ToArray(), nextResult.Field(17).ToArray());
+    }
+
+    [Theory]
+    [InlineData((byte)ContactReplicaRpcOperation.PrepareDid2PreKeyClaim)]
+    [InlineData((byte)ContactReplicaRpcOperation.CompleteDid2PreKeyClaim)]
+    public async Task AuthenticatedPeerWithAnotherReplicasClaimSignature_CannotReleaseKey_ExactRetryRecovers(byte operation)
+    {
+        using var harness = await Harness.CreateAsync();
+        var request = harness.Request();
+        harness.SubstituteNextSignature = (ContactReplicaRpcOperation)operation;
+        var wire = await harness.Claims[0].ReceiveTerminalAsync(request.CanonicalBytes, default);
+        var unknown = DeepIdV2PreKeyClaimResultCodec.Decode(wire.Span, request.CanonicalBytes.Span);
+        Assert.Equal(Xpc1V2Status.OutcomeUnknown, unknown.Status);
+        Assert.Equal(Xpc1V2MutationOutcome.OutcomeUnknown, unknown.MutationOutcome);
+        Assert.Empty(unknown.Field(16).ToArray());
+        Assert.Equal(1, harness.AuthenticatedRewrittenResponses);
+        Assert.Equal(0, harness.UnavailableResponses);
+        Assert.Equal(2, ClaimSnapshotHashes(harness.Root).Length);
+        harness.Reopen();
+
+        var next = harness.Request(0xb1);
+        var before = ClaimSnapshotHashes(harness.Root);
+        var blocked = DeepIdV2PreKeyClaimResultCodec.Decode((await harness.Claims[1].ReceiveTerminalAsync(
+            next.CanonicalBytes, default)).Span, next.CanonicalBytes.Span);
+        Assert.Equal(Xpc1V2Status.OutcomeUnknown, blocked.Status);
+        Assert.Empty(blocked.Field(16).ToArray());
+        Assert.Equal(before, ClaimSnapshotHashes(harness.Root));
+
+        var recoveredWire = await harness.Claims[1].ReceiveTerminalAsync(request.CanonicalBytes, default);
+        var recovered = harness.Verify(request, recoveredWire);
+        AssertOneTimeSelection(harness, recovered);
+        Assert.Equal(1UL, U64(recovered.Field(24).Span));
+        Assert.Equal(harness.Signed.Publication.OneTimeMembers[0].OneTimePrekeyId.ToArray(), recovered.Field(17).ToArray());
+        harness.Reopen();
+        Assert.Equal(recoveredWire.ToArray(), (await harness.Claims[0].ReceiveTerminalAsync(request.CanonicalBytes, default)).ToArray());
+        var second = harness.Verify(next, await harness.Claims[1].ReceiveTerminalAsync(next.CanonicalBytes, default));
+        AssertOneTimeSelection(harness, second);
+        Assert.Equal(2UL, U64(second.Field(24).Span));
+        Assert.Equal(harness.Signed.Publication.OneTimeMembers[1].OneTimePrekeyId.ToArray(), second.Field(17).ToArray());
+    }
+
+    [Fact]
+    public async Task AuthenticatedPeerWithDuplicatedPublicationSigner_IsRejectedBeforeClaimReservation()
+    {
+        using var harness = await Harness.CreateAsync();
+        var request = harness.Request();
+        var before = ClaimSnapshotHashes(harness.Root);
+        Assert.Empty(before);
+        harness.DuplicateNextInventoryReceipt = true;
+        var rejected = await Assert.ThrowsAsync<ApplicationCoreFormatException>(async () =>
+            await harness.Claims[0].ReceiveTerminalAsync(request.CanonicalBytes, default));
+        Assert.Contains("both selected replicas", rejected.Message, StringComparison.Ordinal);
+        Assert.Equal(1, harness.AuthenticatedRewrittenResponses);
+        Assert.Equal(0, harness.UnavailableResponses);
+        Assert.Equal(before, ClaimSnapshotHashes(harness.Root));
+        harness.Reopen();
+        var wire = await harness.Claims[1].ReceiveTerminalAsync(request.CanonicalBytes, default);
+        var accepted = harness.Verify(request, wire);
+        AssertOneTimeSelection(harness, accepted);
+        Assert.Equal(1UL, U64(accepted.Field(24).Span));
+        Assert.Equal(harness.Signed.Publication.OneTimeMembers[0].OneTimePrekeyId.ToArray(), accepted.Field(17).ToArray());
+        harness.Reopen();
+        Assert.Equal(wire.ToArray(), (await harness.Claims[0].ReceiveTerminalAsync(request.CanonicalBytes, default)).ToArray());
     }
 
     [Theory]
@@ -463,6 +527,9 @@ public sealed class DeepIdV2PreKeyClaimRuntimeTests
         private readonly ContactServicePersistenceOptions options = new() { ReplicaTimeoutSeconds = 20 };
         private ContactReplicaReplayGuard[] replays = [];
         internal ContactReplicaRpcOperation? LoseNextResponse { get; set; }
+        internal ContactReplicaRpcOperation? SubstituteNextSignature { get; set; }
+        internal bool DuplicateNextInventoryReceipt { get; set; }
+        internal int AuthenticatedRewrittenResponses { get; private set; }
         internal bool ExpireAfterPrepare { get; set; }
         internal int HttpCalls { get; private set; }
         internal int UnavailableResponses { get; private set; }
@@ -546,8 +613,15 @@ public sealed class DeepIdV2PreKeyClaimRuntimeTests
             context.Request.ContentLength = body.Length; context.Request.Body = new MemoryStream(body);
             foreach (var header in request.Headers) context.Request.Headers[header.Key] = header.Value.ToArray();
             context.Response.Body = new MemoryStream();
+            var rewritten = false;
+            var receiver = new ResponseRewriter(Receivers[nodeIndex], (received, response) =>
+            {
+                var changed = RewritePeerResponse(received, response);
+                rewritten = !ReferenceEquals(changed, response);
+                return changed;
+            });
             var result = await ContactReplicaHttpEndpoint.HandleCoreAsync(context, true, options,
-                replays[nodeIndex], Receivers[nodeIndex], Nodes[nodeIndex], clock, 7443, token);
+                replays[nodeIndex], receiver, Nodes[nodeIndex], clock, 7443, token);
             await result.ExecuteAsync(context);
             if (context.Response.StatusCode == StatusCodes.Status503ServiceUnavailable)
             {
@@ -566,7 +640,72 @@ public sealed class DeepIdV2PreKeyClaimRuntimeTests
             foreach (var header in context.Response.Headers)
                 if (!header.Key.StartsWith("Content-", StringComparison.OrdinalIgnoreCase))
                     response.Headers.TryAddWithoutValidation(header.Key, header.Value.ToArray());
+            if (rewritten)
+            {
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+                Assert.True(ContactReplicaPeerAuthenticator.VerifyResponse(
+                    HttpContactReplicaPeerClient.ReadHeaders(response), Nodes[1 - nodeIndex].GetRouterId(),
+                    Nodes[nodeIndex].GetRouterId(), command.CorrelationId.Span,
+                    ((MemoryStream)context.Response.Body).ToArray(), clock.UtcNow));
+                AuthenticatedRewrittenResponses++;
+            }
             return response;
+        }
+
+        // Attack only inner proof bytes after the real receiver's durable effect.
+        // The normal endpoint then signs the outer RPC with the actual peer key.
+        // Neither placement nor a verified capability is fabricated here.
+        private ContactReplicaRpcResponse RewritePeerResponse(ContactReplicaRpcCommand command,
+            ContactReplicaRpcResponse response)
+        {
+            if (command.Operation == ContactReplicaRpcOperation.ReadDid2PreKeyInventoryCommit && DuplicateNextInventoryReceipt)
+            {
+                DuplicateNextInventoryReceipt = false;
+                var receipt = DeepIdV2PreKeyCommitReceiptCodec.Decode(response.Payload.Span);
+                var fields = Enumerable.Range(1, 6).Select(receipt.Field).ToArray();
+                fields[4] = Placement.ReplicaIds[0];
+                var key = Sodium.PublicKeyAuth.GenerateKeyPair(Signed.Node(fields[4].Span).Seed);
+                try
+                {
+                    var signature = Sodium.PublicKeyAuth.SignDetached(
+                        DeepIdV2PreKeyCommitReceiptCodec.CreateSignatureInput(fields), key.PrivateKey);
+                    var duplicate = DeepIdV2PreKeyCommitReceiptCodec.Decode(
+                        DeepIdV2PreKeyCommitReceiptCodec.Encode(fields, signature));
+                    Assert.True(Sodium.PublicKeyAuth.VerifyDetached(signature, duplicate.SignatureInput.ToArray(),
+                        Placement.VerifiedPlacement.Network.ResolveNodeIdentityPublicKey(fields[4]).ToArray()));
+                    return response with { Payload = duplicate.CanonicalBytes };
+                }
+                finally { System.Security.Cryptography.CryptographicOperations.ZeroMemory(key.PrivateKey); }
+            }
+            if (command.Operation != SubstituteNextSignature) return response;
+            SubstituteNextSignature = null;
+            if (command.Operation == ContactReplicaRpcOperation.PrepareDid2PreKeyClaim)
+            {
+                var prepare = DeepIdV2ClaimPeerPayloadCodec.DecodePrepare(command.Payload.Span);
+                var input = DeepIdV2PreKeyClaimCommitment.CreateReplicaSignatureInput(
+                    prepare.Proposal.Request.CanonicalBytes.Span, prepare.Proposal.Offering.CanonicalBytes.Span,
+                    prepare.Proposal.Manifest.CanonicalBytes.Span, prepare.Proposal.Generation, prepare.Proposal.Counter);
+                var wrongSignature = prepare.CoordinatorSignature;
+                Assert.True(Sodium.PublicKeyAuth.VerifyDetached(wrongSignature.ToArray(), input,
+                    Placement.VerifiedPlacement.Network.ResolveNodeIdentityPublicKey(Placement.ReplicaIds[0]).ToArray()));
+                Assert.False(Sodium.PublicKeyAuth.VerifyDetached(wrongSignature.ToArray(), input,
+                    Placement.VerifiedPlacement.Network.ResolveNodeIdentityPublicKey(Placement.ReplicaIds[1]).ToArray()));
+                return response with { Payload = wrongSignature };
+            }
+            var complete = DeepIdV2ClaimPeerPayloadCodec.DecodeComplete(command.Payload.Span);
+            var parsed = DeepIdV2PreKeyClaimResultCodec.Decode(response.Payload.Span, complete.Request.CanonicalBytes.Span);
+            var payload = Enumerable.Range(16, 13).Select(parsed.Field).ToArray();
+            var rows = payload[9].ToArray();
+            var coordinatorFirst = rows.AsSpan(1, 32).SequenceEqual(Placement.ReplicaIds[0].Span);
+            rows.AsSpan(coordinatorFirst ? 33 : 129, 64).CopyTo(rows.AsSpan(coordinatorFirst ? 129 : 33, 64));
+            payload[9] = rows;
+            var wire = DeepIdV2PreKeyClaimResultCodec.Encode(complete.Request.CanonicalBytes.Span,
+                parsed.Status, parsed.MutationOutcome, U64(parsed.Field(6).Span),
+                BinaryPrimitives.ReadUInt32BigEndian(parsed.Field(7).Span), payload);
+            var substituted = DeepIdV2PreKeyClaimResultCodec.Decode(wire, complete.Request.CanonicalBytes.Span);
+            Assert.Throws<ApplicationCoreFormatException>(() => DeepIdV2PreKeyClaimReplicaSignatureVerifier.Verify(
+                complete.Request, substituted, Placement.VerifiedPlacement));
+            return response with { Payload = wire };
         }
 
         private static PrivacyRoutingConfiguration Privacy(RouterId local, RouterId peer) => new(true,
@@ -581,6 +720,13 @@ public sealed class DeepIdV2PreKeyClaimRuntimeTests
     }
 
     private sealed class FixedClock : IClock { public DateTimeOffset UtcNow => DateTimeOffset.FromUnixTimeSeconds(1_100); }
+    private sealed class ResponseRewriter(IContactReplicaCommandReceiver inner,
+        Func<ContactReplicaRpcCommand, ContactReplicaRpcResponse, ContactReplicaRpcResponse> rewrite) : IContactReplicaCommandReceiver
+    {
+        public async ValueTask<ContactReplicaRpcResponse> ReceiveAsync(ContactReplicaRpcCommand command,
+            RouterId authenticatedSender, CancellationToken cancellationToken) =>
+            rewrite(command, await inner.ReceiveAsync(command, authenticatedSender, cancellationToken));
+    }
     // Deterministic native error classification, not a diagnosis of the observed
     // intermittent Windows lock. No retry, ACL change or write suppression.
     private sealed class NativeCompletionFailure(string replicaDirectory, int error, bool afterReplace) : IMailboxDurabilityBarrier

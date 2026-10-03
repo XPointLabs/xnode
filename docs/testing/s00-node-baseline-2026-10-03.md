@@ -464,3 +464,70 @@ S00 remains open: unsafe fixtures, B8 current one-time publication closure,
 Windows availability, root machine-set and actual Protocol package/current
 mailbox consumer. S01/S02 admission, shipping composition and physical full
 contact/message/files/groups acceptance remain unqualified.
+
+## Checkpoint 6 — current signed prekey negative paths, no legacy response fixture
+
+Inputs: xnode `ace4f95692625e54718bf74939061392374cbe22`, Protocol
+`4af284766b1d9fdfb2a2e3285d248e4d30ca02e5`, workspace
+`86ca61379d3db990a3665df6b02bacf699708f8c`. Test-only changes; no runtime,
+wire, authority policy, production or device state changed.
+
+Removed `ContactPreKeyXpc1ResponseTests` and its fabricated-capability fixture
+only after transferring all scenario assertions:
+
+| Removed scenario | Current signed replacement |
+| --- | --- |
+| Two-replica success/restart replay | `BothAnonymousExits_UseOneCoordinatorAndDistinctDurableKeys_ThenRestartReplay`: exact offering/manifest, Merkle proof, both selected signatures and stable whole-wire replay |
+| Three request-binding substitutions | `SignedInventoryCannotAuthorizeAnotherRequestScope_ValidRequestStillClaimsFirstKey`: network/device/service cases, reject before peer/state mutation and valid recovery |
+| Receipt signer substitution after claim | Two `AuthenticatedPeerWithAnotherReplicasClaimSignature...` cases: prepare and complete; actual remote reservation/completion, incorrect inner signer, valid outer RPC authentication, Unknown without a key, blocked new operation, reopen/exact reconciliation and original first key/generation |
+| XIC1 replica set substitution | `AuthenticatedPeerWithDuplicatedPublicationSigner...`: real selected peer returns an actual valid signature from the coordinator, not a second distinct signer; rejection now correctly precedes reservation, no claim snapshots, valid retry obtains key 0/generation 1 |
+| Malformed DPK2 | `CompleteStagedInventory_SignedManifestWithInvalidMemberSignature...`: parsable bad bundle signature committed by a correctly signed manifest; real complete staging/current proof reaches the member-signature rejection before activation, including reopen |
+| Public verification/custody boundary | `DeepIdV2PreKeyVerifierContractTests` checks current typed recipient/placement/time inputs and private claim capability; retained opaque-store installation-plan boundary moved intact to `ContactPreKeyOpaqueStoreTests` |
+
+The inner proof attacks are injected **after** the real receiver returns and
+**before** the normal endpoint signs the outer RPC. The tests independently
+verify that outer authentication; transport rejection cannot stand in for the
+intended inner-signature branch. No fake verified capability, no-op filesystem
+security, AcceptAll authority or legacy success codec is used in these replacements.
+In-process HTTP is not actual socket/TLS/SPKI, ONION or physical device evidence.
+Other unsafe opaque-store fixtures remain open; their coverage is not deleted.
+
+```powershell
+dotnet test tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj -c Release -p:DeepProtocolSourceCutover=true --filter 'FullyQualifiedName~AuthenticatedPeerWith|FullyQualifiedName~SignedManifestWithInvalidMemberSignature' --logger 'trx;LogFileName=s00-current-prekey-negative.trx' --results-directory artifacts/s00-current-prekey-negative
+dotnet test XNode.slnx -c Release -p:DeepProtocolSourceCutover=true --logger trx --results-directory artifacts/s00/current-prekey-proof-full --verbosity quiet
+dotnet build XNode.slnx -c Release -p:DeepProtocolSourceCutover=true -p:ShouldUnsetParentConfigurationAndPlatform=false --no-restore -warnaserror --verbosity minimal
+```
+
+Focused **4/4**; full **868 pass / 1 fail / 0 skips** (869), exit 1:
+ProfileGenerator 107/107, Unit 266/266, Integration 495 pass / 1 B8 fail.
+Count decreases by two: eight old cases removed, four signed integration cases
+and two separated boundary cases added. This is mapped replacement, not removal
+of an unexplained failure. All replacements passed in the full run. B8 still
+requires the signed current one-time publication producer; no assertion bypass.
+Earlier Windows native storage/selection failures remain unresolved despite
+this full run not reproducing them.
+
+The additional solution build uses the explicit parent-configuration property:
+without it MSBuild builds the two out-of-solution Protocol references in Debug
+despite `-c Release`. That mixed source graph is not a Release qualification.
+The explicit source-only build preserves Release on those references; production
+package/current consumer graph remains a separate open gate.
+Explicit build: exit 0, zero warnings and zero errors.
+
+Mandatory managed-external smoke ran with a fresh isolated project
+`deep-s00-prekey-proof-20261003`, explicitly local URLs and fresh artifact directory:
+`../deep-devops/scripts/test-env.ps1 -Suite smoke -BackendMode external -ManagedExternalProfile backend-external -RequireRouterNoMock -RunArtifactDirectory '<absolute fresh child of deep-devops/artifacts>'`.
+Exit 0; fixture validation, ten runner/contract tests, non-mocked Xray runtime
+and secret scan pass. It does not exercise successful physical messaging.
+Only that temporary project's containers/volumes were cleaned; existing six
+`deep-dev` containers, production and devices preserved. Three existing external
+Node Dockerfile `InvalidDefaultArgInFrom` warnings remain outside .NET compilation.
+No multi-node rerun: production path/peer/transport sources unchanged.
+
+| Raw evidence (ignored; machine paths not committed) | SHA-256 |
+| --- | --- |
+| Four focused negative cases | `68e4b294c437b1b0383ce15bbb4df93360f913d06940e3398088cc7db0826e15` |
+| Full ProfileGenerator | `d13655976cc37078e54d0e19cec977012ef5bb1522f3395d88862bf79a06697f` |
+| Full Unit | `eadb5fb8b0bbf9f90ed83053c0e94439a92992d06fb74deaf0df2be80c2c64b0` |
+| Full Integration | `31e69e8832e83392fd12eca82682a1af0938d7bd7e0296b9c7fd2813af6f7227` |
+| External smoke runtime gate | `0a34ee8db4ef9ddbcaa44976e419f5ac19017100e8b7c41d27d4a618acedebf6` |

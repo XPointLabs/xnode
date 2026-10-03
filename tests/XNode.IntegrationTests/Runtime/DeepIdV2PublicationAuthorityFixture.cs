@@ -83,15 +83,15 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
     internal static async Task<DeepIdV2PublicationAuthorityFixture> CreateAsync(byte serviceMarker = 0x35,
         bool authorContactPublication = false, byte networkCommitmentMarker = 0, byte rootMarker = 0x20,
         bool authorRouteSuccessor = false, ushort lastResortReuseLimit = 1,
-        bool authorInventoryRotation = false)
+        bool authorInventoryRotation = false, bool corruptFirstPreKeyBundleSignature = false)
     {
         var fixture = new DeepIdV2PublicationAuthorityFixture(serviceMarker);
-        try { await fixture.AuthorAsync(authorContactPublication, networkCommitmentMarker, rootMarker, authorRouteSuccessor, lastResortReuseLimit, authorInventoryRotation); return fixture; }
+        try { await fixture.AuthorAsync(authorContactPublication, networkCommitmentMarker, rootMarker, authorRouteSuccessor, lastResortReuseLimit, authorInventoryRotation, corruptFirstPreKeyBundleSignature); return fixture; }
         catch { fixture.Dispose(); throw; }
     }
 
     private async Task AuthorAsync(bool authorContactPublication, byte networkCommitmentMarker, byte rootMarker, bool authorRouteSuccessor,
-        ushort lastResortReuseLimit, bool authorInventoryRotation)
+        ushort lastResortReuseLimit, bool authorInventoryRotation, bool corruptFirstPreKeyBundleSignature)
     {
         using var root = new TestSigner(rootMarker);
         using var w1 = new TestSigner(0x30);
@@ -235,6 +235,11 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
                 var bundle = PublicKeyAuth.SignDetached(
                     DeepIdV2Dpk2Codec.GetPrekeyBundleSignatureInput(Record(x, ml, new byte[64])),
                     key.PrivateKey);
+                // A parsed but unauthenticated hostile member. The subsequently
+                // signed manifest commits its exact hash, so rejection must reach
+                // member verification rather than an aggregate-hash mismatch.
+                if (corruptFirstPreKeyBundleSignature && marker == 0x10 && epoch == 1)
+                    bundle[0] ^= 1;
                 return DeepIdV2Dpk2Codec.Decode(DeepIdV2Dpk2Codec.Encode(Record(x, ml, bundle)));
             }
             ParsedXpp1V2 Inventory(ulong epoch, byte[] predecessor, byte operation, byte variant = 0)

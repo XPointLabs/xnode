@@ -14,6 +14,20 @@ public sealed class ContactPreKeyOpaqueStoreTests
     private static readonly DateTimeOffset Start = new(2026, 9, 7, 8, 0, 0, TimeSpan.Zero);
 
     [Fact]
+    public void RetainedOpaqueStoreRequiresVerifiedInstallationPlan_NotPublicCapabilityConstruction()
+    {
+        var capability = typeof(VerifiedOpaquePreKeyInventory);
+        Assert.False(capability.IsPublic);
+        Assert.Empty(capability.GetConstructors());
+        Func<VerifiedPreKeyInventoryInstallationPlan, IReadOnlyList<ReadOnlyMemory<byte>>,
+            VerifiedOpaquePreKeyInventory> projection = VerifiedOpaquePreKeyInventory.FromInstallationPlan;
+        Func<ContactPreKeyOpaqueStore, VerifiedOpaquePreKeyInventory, ContactPreKeyInventoryResult>
+            install = static (store, inventory) => store.InstallVerifiedInventory(inventory);
+        Assert.NotNull(install);
+        Assert.Throws<ArgumentNullException>(() => projection(null!, []));
+    }
+
+    [Fact]
     public void BoundedPublicationStagesCanonicalReceiptsAndResumesReadyCommitAfterRestart()
     {
         using var fixture = new StoreFixture();
