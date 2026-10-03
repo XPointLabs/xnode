@@ -108,6 +108,9 @@ public sealed class NativeMailboxExitDispatcher
             return Failure(MailboxHttpFailure.PayloadTooLarge);
         }
 
+        // Capture once before dependency callbacks. Parse only after the existing
+        // ingress budget, but before issuer authorization or durable replay reserve.
+        var capturedRequest = canonicalMau2.ToArray();
         var clock = _services.GetRequiredService<IClock>();
         var limiter = _services.GetRequiredService<MailboxClientIngressLimiter>();
         if (!limiter.TryEnter(
@@ -125,11 +128,18 @@ public sealed class NativeMailboxExitDispatcher
             MailboxAuthenticatedRuntimeReservation? authenticated = null;
             try
             {
+                // This structural check is not issuer/holder/selected-exit authority.
+                if (MailboxAuthenticatedClientRequestCodec.Decode(capturedRequest)
+                        .Binding.Operation != operation)
+                {
+                    return Failure(MailboxHttpFailure.MalformedCanonicalBody);
+                }
+
                 var runtime = _services.GetRequiredService<
                     MailboxAuthenticatedCapabilityRuntime>();
                 try
                 {
-                    authenticated = runtime.Verify(canonicalMau2);
+                    authenticated = runtime.Verify(capturedRequest);
                 }
                 catch (MailboxAuthenticatedCapabilityException exception)
                 {

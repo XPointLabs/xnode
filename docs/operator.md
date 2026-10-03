@@ -1,5 +1,19 @@
 # Operator Guide
 
+## Mailbox ingress operation binding
+
+The native Store/Retrieve/ACK dispatcher captures the bounded exact MAU3 bytes
+and, within the existing ingress rate/concurrency budget, checks the canonical
+inner operation against the outer ONION operation before resolving issuer
+authority or reserving durable replay. Malformed or
+cross-operation input returns the existing empty-body 400 response. Dependency
+callbacks cannot replace the captured request with different caller-buffer bytes.
+This structural check grants no issuer, holder, selected-exit or mutation authority;
+the remaining checks and fail-closed readiness are unchanged. It is not activation
+of the current mailbox composition required by
+[DR-0081](../../docs/survival-program/decisions/DR-0081-did2-mailbox-selection-grant-clean-break.md).
+See the [ingress regression checkpoint](testing/s00-mailbox-ingress-binding-2026-10-03.md).
+
 ## Current DID2 mailbox issuer input
 
 The independent node network boundary now retains and validates the public
