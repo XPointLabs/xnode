@@ -19,6 +19,104 @@ namespace XNode.IntegrationTests.Runtime;
 public sealed class DeepIdV2PreKeyClaimRuntimeTests
 {
     [Fact]
+    public async Task ConcurrentExhaustionHonorsSignedLastResortLimitAndExactReplayAfterRestart()
+    {
+        using var harness = await Harness.CreateAsync(lastResortReuseLimit: 2);
+        var requests = Enumerable.Range(0, harness.Signed.Publication.OneTimeMembers.Count)
+            .Select(index => harness.Request(checked((byte)(0x10 + index)))).ToArray();
+        var wires = await Task.WhenAll(requests.Select((request, index) =>
+            harness.Claims[index % 2].ReceiveTerminalAsync(request.CanonicalBytes, default).AsTask()));
+        var claims = requests.Select((request, index) => harness.Verify(request, wires[index])).ToArray();
+        Assert.Equal(requests.Length, claims.Select(result => Convert.ToHexString(result.Field(17).Span)).Distinct().Count());
+        Assert.All(claims, result =>
+        {
+            Assert.NotEqual(new byte[32], result.Field(17).ToArray());
+            Assert.Equal((ushort)0, BinaryPrimitives.ReadUInt16BigEndian(result.Field(23).Span));
+            Assert.Equal(160, result.Field(28).Length);
+        });
+        Assert.Equal(Enumerable.Range(1, requests.Length).Select(value => (ulong)value),
+            claims.Select(result => U64(result.Field(24).Span)).Order());
+
+        var fallbackRequests = new[] { harness.Request(0xd0), harness.Request(0xd1) };
+        var fallbackWires = new ReadOnlyMemory<byte>[2];
+        for (var index = 0; index < 2; index++)
+        {
+            fallbackWires[index] = await harness.Claims[index].ReceiveTerminalAsync(fallbackRequests[index].CanonicalBytes, default);
+            var fallback = harness.Verify(fallbackRequests[index], fallbackWires[index]);
+            Assert.Equal(harness.Signed.Publication.LastResortMember.CanonicalBytes.ToArray(), fallback.Field(16).ToArray());
+            Assert.Equal(harness.Signed.Publication.Manifest.CanonicalBytes.ToArray(), fallback.Field(26).ToArray());
+            Assert.Equal(new byte[32], fallback.Field(17).ToArray());
+            Assert.Equal(checked((ushort)(index + 1)), BinaryPrimitives.ReadUInt16BigEndian(fallback.Field(23).Span));
+            Assert.Equal((ulong)(requests.Length + index + 1), U64(fallback.Field(24).Span));
+            Assert.Equal(ushort.MaxValue, BinaryPrimitives.ReadUInt16BigEndian(fallback.Field(27).Span));
+            Assert.Empty(fallback.Field(28).ToArray());
+        }
+        var exhaustedRequest = harness.Request(0xd2);
+        var before = ClaimSnapshotHashes(harness.Root);
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            var refused = DeepIdV2PreKeyClaimResultCodec.Decode((await harness.Claims[attempt].ReceiveTerminalAsync(
+                exhaustedRequest.CanonicalBytes, default)).Span, exhaustedRequest.CanonicalBytes.Span);
+            Assert.Equal(Xpc1V2Status.PreKeysUnavailable, refused.Status);
+            Assert.Equal(Xpc1V2MutationOutcome.None, refused.MutationOutcome);
+            Assert.Empty(refused.Field(16).ToArray());
+            Assert.Equal(before, ClaimSnapshotHashes(harness.Root));
+            harness.Reopen();
+        }
+        for (var index = 0; index < 2; index++)
+            Assert.Equal(fallbackWires[index].ToArray(), (await harness.Claims[1 - index].ReceiveTerminalAsync(
+                fallbackRequests[index].CanonicalBytes, default)).ToArray());
+        Assert.Equal(wires[0].ToArray(), (await harness.Claims[1].ReceiveTerminalAsync(
+            requests[0].CanonicalBytes, default)).ToArray());
+        Assert.Equal(before, ClaimSnapshotHashes(harness.Root));
+    }
+
+    private static string[] ClaimSnapshotHashes(string root) =>
+        Directory.GetFiles(root, "claims.state", SearchOption.AllDirectories).Order()
+            .Select(path => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path)))).ToArray();
+
+    [Theory]
+    [InlineData((byte)ContactReplicaRpcOperation.PrepareDid2PreKeyClaim)]
+    [InlineData((byte)ContactReplicaRpcOperation.CompleteDid2PreKeyClaim)]
+    public async Task LostLastResortResponseBlocksNewOperationUntilExactReconciliation(byte lostOperation)
+    {
+        using var harness = await Harness.CreateAsync();
+        for (var index = 0; index < harness.Signed.Publication.OneTimeMembers.Count; index++)
+        {
+            var request = harness.Request(checked((byte)(0x10 + index)));
+            _ = harness.Verify(request, await harness.Claims[index % 2].ReceiveTerminalAsync(request.CanonicalBytes, default));
+        }
+        var pending = harness.Request(0xd0);
+        harness.LoseNextResponse = (ContactReplicaRpcOperation)lostOperation;
+        var lost = DeepIdV2PreKeyClaimResultCodec.Decode((await harness.Claims[0].ReceiveTerminalAsync(
+            pending.CanonicalBytes, default)).Span, pending.CanonicalBytes.Span);
+        Assert.Equal(Xpc1V2Status.OutcomeUnknown, lost.Status);
+        Assert.Equal(Xpc1V2MutationOutcome.OutcomeUnknown, lost.MutationOutcome);
+        harness.Reopen();
+        var next = harness.Request(0xd1);
+        var before = ClaimSnapshotHashes(harness.Root);
+        var blocked = DeepIdV2PreKeyClaimResultCodec.Decode((await harness.Claims[1].ReceiveTerminalAsync(
+            next.CanonicalBytes, default)).Span, next.CanonicalBytes.Span);
+        Assert.Equal(Xpc1V2Status.OutcomeUnknown, blocked.Status);
+        Assert.Equal(Xpc1V2MutationOutcome.OutcomeUnknown, blocked.MutationOutcome);
+        Assert.Equal(before, ClaimSnapshotHashes(harness.Root));
+
+        var resumedWire = await harness.Claims[1].ReceiveTerminalAsync(pending.CanonicalBytes, default);
+        var resumed = harness.Verify(pending, resumedWire);
+        Assert.Equal(1, BinaryPrimitives.ReadUInt16BigEndian(resumed.Field(23).Span));
+        Assert.Equal(33UL, U64(resumed.Field(24).Span));
+        Assert.Equal(harness.Signed.Publication.LastResortMember.CanonicalBytes.ToArray(), resumed.Field(16).ToArray());
+        harness.Reopen();
+        Assert.Equal(resumedWire.ToArray(), (await harness.Claims[0].ReceiveTerminalAsync(pending.CanonicalBytes, default)).ToArray());
+        var completed = ClaimSnapshotHashes(harness.Root);
+        var refused = DeepIdV2PreKeyClaimResultCodec.Decode((await harness.Claims[0].ReceiveTerminalAsync(
+            next.CanonicalBytes, default)).Span, next.CanonicalBytes.Span);
+        Assert.Equal(Xpc1V2Status.PreKeysUnavailable, refused.Status);
+        Assert.Equal(Xpc1V2MutationOutcome.None, refused.MutationOutcome);
+        Assert.Equal(completed, ClaimSnapshotHashes(harness.Root));
+    }
+
+    [Fact]
     public async Task BothAnonymousExits_UseOneCoordinatorAndDistinctDurableKeys_ThenRestartReplay()
     {
         using var harness = await Harness.CreateAsync();
@@ -223,12 +321,12 @@ public sealed class DeepIdV2PreKeyClaimRuntimeTests
         internal bool ExpireAfterPrepare { get; set; }
         internal int HttpCalls { get; private set; }
 
-        internal static async Task<Harness> CreateAsync()
+        internal static async Task<Harness> CreateAsync(ushort lastResortReuseLimit = 1)
         {
             var harness = new Harness();
             try
             {
-                harness.Signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+                harness.Signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync(lastResortReuseLimit: lastResortReuseLimit);
                 harness.Placement = await harness.Signed.MintPreKeyClaimAsync(DeepIdV2PublicationAuthorityFixture.Service, default);
                 harness.Nodes = harness.Placement.ReplicaIds.Select((id, i) => new RouterNodeOptions
                 {

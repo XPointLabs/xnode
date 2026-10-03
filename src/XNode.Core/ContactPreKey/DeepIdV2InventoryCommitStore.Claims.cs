@@ -53,6 +53,10 @@ internal sealed partial class DeepIdV2InventoryCommitStore
             var counter = offering.Kind == Dpk2PrekeyKind.OneTime ? (ushort)0 : checked((ushort)(1 +
                 reservations.Count(item => U64(item.Manifest.Field(5).Span) == generation &&
                     item.Offering.Kind == Dpk2PrekeyKind.LastResort)));
+            // This refusal is provably before reservation/signing/peer mutation.
+            // Pending prior operations were handled above and must stay unknown.
+            if (offering.Kind == Dpk2PrekeyKind.LastResort && counter > offering.ReuseLimit)
+                throw new DeepIdV2PreKeysUnavailableException();
             var next = new ClaimReservation(request, offering, inventory.Manifest,
                 reservations.Length == 0 ? 1UL : checked(reservations[^1].Generation + 1), counter);
             _ = ReserveClaimProposalCore(request, offering, next.Manifest, next.Generation,
@@ -452,6 +456,10 @@ internal sealed class DeepIdV2ClaimConflictException : InvalidOperationException
     }
     internal ReadOnlyMemory<byte> EvidenceHash => evidence.ToArray();
 }
+
+/// <summary>Coordinator-only pre-reservation refusal; never a successful claim.</summary>
+internal sealed class DeepIdV2PreKeysUnavailableException()
+    : InvalidOperationException("DID2 signed prekey reuse limit is exhausted.");
 
 /// <summary>Local reservation read-back, never a two-replica claim receipt.</summary>
 internal sealed class DeepIdV2LocalClaimReservation(bool exactReplay, byte[] tuple)

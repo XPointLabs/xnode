@@ -151,8 +151,19 @@ internal sealed class DeepIdV2PreKeyClaimRuntime(
             DeepIdV2ClaimProposal proposal;
             try
             {
-                proposal = store.PrepareNextClaim(request, now.TrustedLowerUnixSeconds,
-                    now.TrustedUpperUnixSeconds, Sign);
+                try
+                {
+                    proposal = store.PrepareNextClaim(request, now.TrustedLowerUnixSeconds,
+                        now.TrustedUpperUnixSeconds, Sign);
+                }
+                catch (DeepIdV2PreKeysUnavailableException)
+                {
+                    // Only the local pre-write selection can prove no mutation.
+                    // Do not classify peer loss or a pending operation this way.
+                    _ = await EnsureFreshAsync(context, cancellationToken).ConfigureAwait(false);
+                    return Failure(request, Xpc1V2Status.PreKeysUnavailable,
+                        Xpc1V2MutationOutcome.None, 0, []);
+                }
                 var localSignature = Sign(SigningInput(proposal));
                 var remoteSignature = await SendAsync(current, ContactReplicaRpcOperation.PrepareDid2PreKeyClaim,
                     DeepIdV2ClaimPeerPayloadCodec.EncodePrepare(proposal, context.Receipt, remoteReceipt, localSignature),

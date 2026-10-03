@@ -196,3 +196,86 @@ XPP/unit-fixture audit, fresh Registry/isolated DB classification and root drift
 Host UTC here is a persistence test clock, not protected-time admission evidence.
 No Program/Release graph, socket/TLS, production deployment or physical E2E was
 qualified by this fixture repair.
+
+## Checkpoint 3 — current signed prekey exhaustion and recovery
+
+The new actual DID2 claim scenario reproduces a product defect rather than a
+V1 fixture exception: after 32 unique one-time claims and two signed permitted
+last-resort claims, a fresh request returns `OutcomeUnknown` instead of the
+existing `PreKeysUnavailable` / `None` result. The focused regression failed
+at that exact status assertion before the fix (exit 1).
+
+The local coordinator now emits a typed refusal only when selection proves
+the signed last-resort limit exhausted **before** reservation/signing/peer
+mutation. The runtime catches it only around that local selection, rechecks
+current authority and returns the existing empty refusal. Pending reservations
+are checked first; arbitrary errors, uncertain writes, peer loss and callbacks
+cannot use this refusal to claim no mutation. No wire, configuration, public
+Protocol API, state generation or signing key changed. Production candidate
+activation remains disabled; [operator behavior](../operator.md) documents it.
+
+The fixture authors matching signed XPS1/DPK2 reuse limits with the real current
+device key, not reflection/uninitialized authority. The production final
+committer verifies the complete DID2 public inventory; both selected stores
+commit XIC1 before claims. Actual HTTP peer client/endpoint authentication and
+the current claim codec/signature verifier execute through an in-process
+handler. This proves neither actual socket TLS nor current-recipient DCR/DPH2
+handshake, KEM decapsulation, shipping Release composition or physical devices.
+The public KEM descriptors remain test-only bytes, not an exchange claim.
+
+### Legacy scenario transfer
+
+| Removed V1-capability Unit duplicate | Current signed replacement and preserved invariant |
+| --- | --- |
+| `ConcurrentOperationsNeverReceiveTheSameOneTimePreKey` | `ConcurrentExhaustionHonorsSignedLastResortLimitAndExactReplayAfterRestart`: all 32 concurrent anonymous-exit operations, distinct nonzero keys, counters zero, complete generations 1–32, current Merkle paths and both signatures |
+| `ExhaustionUsesLastResortOnlyWithinSignedCounterLimit` | Same scenario: signed limit 2, counters 1/2, zero one-time IDs, refusal on next operation, identical durable claim snapshot hashes before/after refusal and reopen |
+| `LastResortClaimPersistsCanonicalXpi1SentinelAcrossRestart` | Same scenario plus last-resort loss/recovery theory: exact embedded V2 manifest, index 0xffff, empty proof, exact whole-result replay after restart; limit-1 and limit-2 inventories |
+
+The new prepare/complete response-loss theory reserves the final last-resort
+key, loses the authenticated response, reopens and requires a new operation to
+stay `OutcomeUnknown` without another reservation. Only original exact-operation
+reconciliation completes generation 33/counter 1. Exact replay is retained;
+after completion the new operation is correctly refused without mutation.
+This exercises both peer prepare and peer complete loss boundaries.
+
+Three old test cases were removed after their business assertions moved into
+one new Fact and two new Theory cases. Counts are not a proof of semantic
+equivalence; the table above is the mapping. The remaining unsafe inventory
+fixture and rotation/quota/retention/XPC legacy scenarios are still open, not
+silently accepted as current signed evidence. No scenario skip was introduced.
+
+### Commands and evidence
+
+```powershell
+dotnet test tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj -c Release -p:DeepProtocolSourceCutover=true --filter FullyQualifiedName~DeepIdV2PreKeyClaimRuntimeTests --logger trx --results-directory artifacts/s00/current-prekey-after-fix --verbosity quiet
+dotnet test tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj -c Release -p:DeepProtocolSourceCutover=true --filter 'FullyQualifiedName~DeepIdV2PreKeyClaimRuntimeTests|FullyQualifiedName~DeepIdV2ClaimJournalTests|FullyQualifiedName~DeepIdV2PublicationFinalCommitterTests|FullyQualifiedName~DeepIdV2PublicationCandidateAuthorityTests' --logger trx --results-directory artifacts/s00/current-prekey-recovery --verbosity quiet
+dotnet test tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj -c Release -p:DeepProtocolSourceCutover=true --filter FullyQualifiedName~CrashAtCompletion_ReconcilesOnlyTheSameReservedTuple --logger trx --results-directory artifacts/s00/current-prekey-crash-isolated --verbosity quiet
+dotnet test XNode.slnx -c Release -p:DeepProtocolSourceCutover=true --logger trx --results-directory artifacts/s00/prekey-checkpoint-3-final --verbosity quiet
+```
+
+Initial runtime selection after the fix: 12/12, exit 0. Extended selection:
+24 pass / 1 fail / 0 skip, exit 1. The extra failure is Windows native
+`MoveFileEx` returning access denied in `CrashAtCompletion...afterReplace=true`
+**during prerequisite reservation, before the injected crash**. Its cause is
+unverified; it is not discarded as a test pass or fixed by this change. The
+isolated crash theory passed 2/2 (exit 0), and both subsequent full runs passed
+that case; filesystem nondeterminism remains an investigation item.
+
+Before removal of migrated duplicates, full source: 856 pass / 1 fail / 0 skips
+out of 857. Final full source: **853 pass / 1 fail / 0 skips out of 854**, exit 1,
+no build warnings. ProfileGenerator 107/107, Unit 277/277, Integration 469 pass /
+1 fail. The sole final failure is still the explicit signed one-time-invite
+producer prerequisite from checkpoint 2; no invitation success is claimed.
+All three new prekey cases passed in the final full run. Repetitions/subsets
+are not additive unique coverage. Live external smoke/multi-node/device gates
+were not run or qualified by this local business slice.
+
+| Raw TRX (ignored, machine paths not committed) | SHA-256 |
+| --- | --- |
+| Regression before fix | `1f11140e572da0965437a349648f312d393409678c9e4a2ced37a7a851939c93` |
+| Runtime selection after fix | `688d1f22be061695f8039d6073df4238ec52e79d996357d7fd0393dd99abba8b` |
+| Extended selection including Windows failure | `886fb084ac6ccd548a6d74bcba5a2b66ed7b520b2f0fa91243f40b4d2d7f990e` |
+| Isolated crash theory | `45dbba9cde0cac5696f986e71b21f8f4143405baff7d97dd936149d590971ec9` |
+| Final ProfileGenerator | `3f567e3f97fc95a7b14bd530a3207f3651f719ba1a3a9505ff9b8f68f05bcba2` |
+| Final Unit | `5b8bc213a23d240ed3c23dcdb4c4d9130fb6dea26a4ccfc80950e668696116d8` |
+| Final Integration | `0fd10311292f7b96bd868fb0b373375bba27b4b47940c0d70e694b00a04a804d` |

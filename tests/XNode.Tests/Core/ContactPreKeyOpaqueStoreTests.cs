@@ -224,50 +224,6 @@ public sealed class ContactPreKeyOpaqueStoreTests
     }
 
     [Fact]
-    public async Task ConcurrentOperationsNeverReceiveTheSameOneTimePreKey()
-    {
-        using var fixture = new StoreFixture();
-        var inventory = Inventory("unique", fixture.Clock);
-        using var store = fixture.Open();
-        store.InstallVerifiedInventory(inventory);
-        var tasks = Enumerable.Range(0, ContactPreKeyStoreOptions.MinimumOneTimeOfferings)
-            .Select(index => Task.Run(() =>
-                store.Claim(ClaimRequest(inventory, "unique/" + index, fixture.Clock))))
-            .ToArray();
-        var results = await Task.WhenAll(tasks);
-        Assert.All(results, result => Assert.Equal(ContactPreKeyClaimDisposition.Claimed, result.Disposition));
-        Assert.All(results, result => Assert.Equal<ushort>(0, result.LastResortUseCounter));
-        Assert.Equal(
-            ContactPreKeyStoreOptions.MinimumOneTimeOfferings,
-            results.Select(result => Convert.ToHexString(result.OneTimePreKeyId)).Distinct().Count());
-    }
-
-    [Fact]
-    public void ExhaustionUsesLastResortOnlyWithinSignedCounterLimit()
-    {
-        using var fixture = new StoreFixture();
-        var inventory = Inventory("last-resort", fixture.Clock, lastResortLimit: 2);
-        using var store = fixture.Open();
-        store.InstallVerifiedInventory(inventory);
-        for (var index = 0; index < ContactPreKeyStoreOptions.MinimumOneTimeOfferings; index++)
-        {
-            Assert.Equal(
-                ContactPreKeyClaimDisposition.Claimed,
-                store.Claim(ClaimRequest(inventory, "last-resort/one-time/" + index, fixture.Clock)).Disposition);
-        }
-
-        var firstFallback = store.Claim(ClaimRequest(inventory, "last-resort/fallback/1", fixture.Clock));
-        var secondFallback = store.Claim(ClaimRequest(inventory, "last-resort/fallback/2", fixture.Clock));
-        Assert.True(ContactPreKeyOpaqueValue.IsZero32(firstFallback.OneTimePreKeyId));
-        Assert.True(ContactPreKeyOpaqueValue.IsZero32(secondFallback.OneTimePreKeyId));
-        Assert.Equal<ushort>(1, firstFallback.LastResortUseCounter);
-        Assert.Equal<ushort>(2, secondFallback.LastResortUseCounter);
-        Assert.Equal(
-            ContactPreKeyClaimDisposition.PreKeysUnavailable,
-            store.Claim(ClaimRequest(inventory, "last-resort/exhausted", fixture.Clock)).Disposition);
-    }
-
-    [Fact]
     public void StaleBundleAndExpiryAreExplicitAndDoNotConsumeInventory()
     {
         using var fixture = new StoreFixture();
@@ -417,32 +373,6 @@ public sealed class ContactPreKeyOpaqueStoreTests
             Assert.Equal(ContactPreKeyClaimDisposition.ForkLatched,
                 store.Claim(ClaimRequest(first, "fork/op/claim", fixture.Clock)).Disposition);
         }
-    }
-
-    [Fact]
-    public void LastResortClaimPersistsCanonicalXpi1SentinelAcrossRestart()
-    {
-        using var fixture = new StoreFixture();
-        var inventory = Inventory("last-resort-restart", fixture.Clock, lastResortLimit: 1);
-        OpaquePreKeyClaimRequest? fallbackRequest = null;
-        using (var store = fixture.Open())
-        {
-            store.InstallVerifiedInventory(inventory);
-            for (var index = 0; index < ContactPreKeyStoreOptions.MinimumOneTimeOfferings; index++)
-            {
-                store.Claim(ClaimRequest(inventory, $"last-resort-restart/{index}", fixture.Clock));
-            }
-            fallbackRequest = ClaimRequest(inventory, "last-resort-restart/fallback", fixture.Clock);
-            var fallback = store.Claim(fallbackRequest);
-            Assert.Equal(ushort.MaxValue, fallback.InventoryIndex);
-            Assert.Empty(fallback.InclusionProof.ToArray());
-        }
-        using var restarted = fixture.Open();
-        var replay = restarted.Claim(fallbackRequest!);
-        Assert.Equal(ContactPreKeyClaimDisposition.ExactReplay, replay.Disposition);
-        Assert.Equal(ushort.MaxValue, replay.InventoryIndex);
-        Assert.Empty(replay.InclusionProof.ToArray());
-        Assert.Equal(inventory.ExactXpi1.ToArray(), replay.ExactXpi1.ToArray());
     }
 
     [Fact]

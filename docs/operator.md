@@ -342,6 +342,16 @@ authority and the two selected XIC1 receipts before reservation/completion.
 The coordinator releases success only after both durable completion read-backs;
 the forwarding replica additionally verifies both result signatures. Pending
 uncertainty blocks later selection until the exact operation reconciles.
+The coordinator now distinguishes a proven pre-reservation exhaustion of the
+signed last-resort reuse limit from uncertain custody: it returns the existing
+`PreKeysUnavailable` / `None` result with no offering or receipt payload only
+after rechecking current authority. This creates no reservation. A pending
+operation, lost prepare/complete response or uncertain write still returns
+`OutcomeUnknown` and requires retry of the original exact operation; timeout
+does not free its key or reuse counter. Existing completed results replay
+byte-identically even after the signed counter is exhausted, subject to the
+same current authority checks. No wire/version, configuration, durable-state
+generation or registered key changes; rebuild the matched candidate runtime.
 Completion divergence persistently fork-latches custody without deleting its
 journals. Unknown capability lookup creates no inventory directories.
 Global admission quotas, complete valid-backup rollback detection, expired

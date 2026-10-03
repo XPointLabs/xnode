@@ -78,14 +78,15 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
 
     internal static async Task<DeepIdV2PublicationAuthorityFixture> CreateAsync(byte serviceMarker = 0x35,
         bool authorContactPublication = false, byte networkCommitmentMarker = 0, byte rootMarker = 0x20,
-        bool authorRouteSuccessor = false)
+        bool authorRouteSuccessor = false, ushort lastResortReuseLimit = 1)
     {
         var fixture = new DeepIdV2PublicationAuthorityFixture(serviceMarker);
-        try { await fixture.AuthorAsync(authorContactPublication, networkCommitmentMarker, rootMarker, authorRouteSuccessor); return fixture; }
+        try { await fixture.AuthorAsync(authorContactPublication, networkCommitmentMarker, rootMarker, authorRouteSuccessor, lastResortReuseLimit); return fixture; }
         catch { fixture.Dispose(); throw; }
     }
 
-    private async Task AuthorAsync(bool authorContactPublication, byte networkCommitmentMarker, byte rootMarker, bool authorRouteSuccessor)
+    private async Task AuthorAsync(bool authorContactPublication, byte networkCommitmentMarker, byte rootMarker, bool authorRouteSuccessor,
+        ushort lastResortReuseLimit)
     {
         using var root = new TestSigner(rootMarker);
         using var w1 = new TestSigner(0x30);
@@ -200,7 +201,7 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
         {
             var dpd = Reference("DPD1", 1, device.Certificate.CanonicalHash.Span);
             ReadOnlyMemory<byte>[] xpsFields = [Network, service, id, dpd,
-                U64(1), new byte[32], U16(DeepIdV2Codec.Suite), U16(32), U16(1),
+                U64(1), new byte[32], U16(DeepIdV2Codec.Suite), U16(32), U16(lastResortReuseLimit),
                 U64(1_000), U64(1_400)];
             Xps = DeepIdV2PreKeyServiceCodec.Encode(xpsFields,
                 PublicKeyAuth.SignDetached(
@@ -218,7 +219,7 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
                     kind == Dpk2PrekeyKind.OneTime ? Bytes(32, marker) : [],
                     kind == Dpk2PrekeyKind.OneTime ? ScalarMult.Base(Bytes(32, marker)) : [],
                     Bytes(32, marker), Bytes(1184, marker), kind,
-                    kind == Dpk2PrekeyKind.OneTime ? (ushort)0 : (ushort)1, ml, bundle);
+                    kind == Dpk2PrekeyKind.OneTime ? (ushort)0 : lastResortReuseLimit, ml, bundle);
                 var placeholder = Record(new byte[64], new byte[64], new byte[64]);
                 var x = PublicKeyAuth.SignDetached(
                     DeepIdV2Dpk2Codec.GetX25519SignedPrekeySignatureInput(placeholder), key.PrivateKey);
