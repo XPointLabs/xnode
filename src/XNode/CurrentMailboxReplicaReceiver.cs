@@ -21,10 +21,11 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
     private CurrentMailboxAdmission Admission => admission;
     internal ReadOnlyMemory<byte> LocalNodeId => admission.LocalNodeId;
     internal ValueTask<T> WithClientRequestAsync<T>(ReadOnlyMemory<byte> exactRequest, MailboxAuthenticatedOperation operation,
-        Func<CurrentMailboxAdmission.Request, CancellationToken, ValueTask<T>> action, CancellationToken token)
+        Func<CurrentMailboxAdmission.Request, CancellationToken, ValueTask<T>> action, CancellationToken token,
+        XNode.Core.Mailbox.Client.MailboxClientOperationLedger? storeLedger = null)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
-        return admission.WithRequestAsync(exactRequest, operation, action, token);
+        return admission.WithRequestAsync(exactRequest, operation, action, token, storeLedger);
     }
 
     internal Task<bool> HasStoreCustodyAsync(CurrentMailboxAdmission.GrantScope scope,

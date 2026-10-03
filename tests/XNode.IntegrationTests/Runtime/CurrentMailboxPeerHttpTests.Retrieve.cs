@@ -75,8 +75,10 @@ public sealed partial class CurrentMailboxPeerHttpTests
         Assert.Single(f.Sender.MutationFiles); Assert.Empty(f.Recipient.MutationFiles);
         Assert.Equal(0, f.RemoteHost.Requests);
 
-        // A separate genuinely signed grant can progress while the first grant
-        // retains its exact Pending claim. No mutation JSON or cursor is forged.
+        // Exercise the native Retrieve guard independently of the new writer
+        // intent barrier. The internal explicit producer admits real signed
+        // peer requests; shipping client Store uses the durable ledger overload.
+        // No mutation JSON is forged and both grants remain authenticated.
         var grant = MailboxGrantRevocationStoreTests.Grant(f.Signed, f.Sender.Node.Host,
             MailboxCapabilityDomain.Deposit, 0x62);
         for (var index = 2; index <= 3; index++)
@@ -94,7 +96,8 @@ public sealed partial class CurrentMailboxPeerHttpTests
                     MailboxAuthenticatedCapabilityCodec.DecodeGrant(grant), binding, checked((ulong)index - 1),
                     Enumerable.Repeat((byte)0x57, 32).ToArray())
             });
-            Assert.Equal(MailboxPeerQuorumStatus.Durable, (await f.Coordinator.StoreClientAsync(client, f.Ledger!)).Status);
+            var peer = PeerForClient(f, client, checked((ulong)index));
+            Assert.Equal(MailboxPeerQuorumStatus.Durable, (await f.Coordinator.StoreClientAsync(client, peer)).Status);
         }
         var first = DecodePage((await f.Recipient.Receiver.RetrieveClientAsync(RetrieveFrame(f, maximum: 1))).ToArray(), f);
         Assert.Equal(2UL, Assert.Single(first.Items).Cursor); Assert.True(first.HasMore);
@@ -228,10 +231,11 @@ public sealed partial class CurrentMailboxPeerHttpTests
                 MailboxAuthenticatedCapabilityCodec.DecodeGrant(grant), binding, 1,
                 Enumerable.Repeat((byte)0x57, 32).ToArray())
         });
+        // Test the native quota below the independently checked intent barrier.
         // No native owner reopen: its cache/count must already reflect the
         // durable pending file, rather than accepting a second record over quota.
         await Assert.ThrowsAsync<MailboxPeerMutationCapacityException>(() => f.Coordinator.StoreClientAsync(
-            next, f.Ledger!).AsTask());
+            next, PeerForClient(f, next, 2)).AsTask());
         Assert.Single(f.Sender.MutationFiles); Assert.Empty(f.Recipient.MutationFiles); Assert.Equal(0, f.RemoteHost.Requests);
     }
 

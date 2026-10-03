@@ -36,12 +36,25 @@ quorum journal, public wire field, authority adapter or activation switch.
 The current internal Store producer now owns a durable random nonce and complete
 signed peer frame in the existing operation ledger before any peer effect.
 Reopening retains those exact bytes; known replay or existing mutation custody
-without its intent rejects instead of reminting. The local ledger is schema 5;
-older schemas 3/4 or malformed state reject without migration or automatic reset.
+without its intent rejects instead of reminting. The local ledger is schema 6;
+older schemas 3/4/5 or malformed state reject without migration or automatic reset.
 This is not another journal or a production data/key reset. Current reservations
 do not use host UTC for garbage collection; capacity remains backpressure until
 protected retention is composed. A pre-intent write failure can remain Pending;
 there is no claim of automatic reconciliation for that uncertainty.
+The current Store producer also retains the exact authenticated MQR3 in that
+same operation ledger. A new Store in the same epoch/mailbox/placement/membership
+cannot pass an unsettled earlier intent, even under a different signed grant or
+before a mutation file exists. Original retry can restore settlement from the
+native client outcome without another peer write. Saved quorum bytes are checked
+against the complete signed intent, independently current projection/issuer and
+descriptor identity keys before a later cursor is allocated. Expired former
+grants do not become current admission authority through this verification.
+Unsigned state, hostile receipts and unavailable history remain backpressure.
+This local prefix barrier is not yet the single-writer/path integration required
+by [DR-0086](../../docs/survival-program/decisions/DR-0086-current-mailbox-store-order.md).
+Program activation, retained projection history and signed expiry retirement
+remain gated. Current Store intents are not collected by host-UTC startup GC.
 Internal client Retrieve now reads the actual completed mutation/blob custody
 on either replica under that same current admission, without requiring the
 coordinator's client ledger. It persists the canonical MRP1 in the existing

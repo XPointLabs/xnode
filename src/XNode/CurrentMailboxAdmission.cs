@@ -20,7 +20,8 @@ internal sealed class CurrentMailboxAdmission(
 
     internal async ValueTask<T> WithRequestAsync<T>(ReadOnlyMemory<byte> exactRequest,
         MailboxAuthenticatedOperation operation,
-        Func<Request, CancellationToken, ValueTask<T>> action, CancellationToken token = default)
+        Func<Request, CancellationToken, ValueTask<T>> action, CancellationToken token = default,
+        MailboxClientOperationLedger? storeLedger = null)
     {
         ArgumentNullException.ThrowIfNull(action);
         // The decoder bounds and owns request bytes before any external callback.
@@ -36,6 +37,13 @@ internal sealed class CurrentMailboxAdmission(
             MailboxAuthenticatedRuntimeReservation? reservation = null;
             try
             {
+                if (storeLedger is not null)
+                {
+                    runtime.RequireCurrentStoreHolder(owned, scope.Lease.RequireActive);
+                    await storeLedger.EnsureCurrentStorePrefixAsync(
+                        MailboxAuthenticatedRequestTranscript.DecodeStoreBody(decoded.Binding.CanonicalRequest.Span),
+                        scope.Host, scope.Lease, ct).ConfigureAwait(false);
+                }
                 var upper = await scope.Lease.CheckAsync(ct).ConfigureAwait(false);
                 var policy = new MailboxAuthenticatedVerificationPolicy
                 {

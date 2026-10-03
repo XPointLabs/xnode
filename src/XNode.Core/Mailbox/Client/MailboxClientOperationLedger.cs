@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
+using Deep.Protocol.XPointNetworkV1;
 
 namespace XNode.Core.Mailbox.Client;
 
@@ -94,7 +95,7 @@ internal sealed record MailboxClientLedgerOperation(
 
 public sealed partial class MailboxClientOperationLedger : IDisposable
 {
-    private const int SchemaVersion = 5;
+    private const int SchemaVersion = 6;
     private const long MaximumDocumentBytes = 768L * 1024 * 1024;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _directory;
@@ -203,15 +204,17 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
     internal Task<MailboxClientStoreReservation> ReserveCurrentStoreAsync(
         MailboxEncryptedEnvelope envelope, ReadOnlyMemory<byte> membershipCommitment,
         IReadOnlyList<ReadOnlyMemory<byte>> selectedReplicaIds, MailboxCurrentOperationLease lease,
-        Func<ulong, ulong, ReadOnlyMemory<byte>> author, CancellationToken token, bool requireExisting = false)
+        Func<ulong, ulong, ReadOnlyMemory<byte>> author, VerifiedMailboxHostAuthorityV2 host,
+        CancellationToken token, bool requireExisting = false)
     {
         ArgumentNullException.ThrowIfNull(envelope); ArgumentNullException.ThrowIfNull(lease);
         ArgumentNullException.ThrowIfNull(author); lease.RequireActive();
+        ArgumentNullException.ThrowIfNull(host);
         var binding = MailboxAuthenticatedRequestTranscript.ForStore(envelope);
         return ReserveStoreCoreAsync(envelope.Epoch, envelope.OperationId, binding.RequestDigest,
             envelope.MailboxId.Bytes, envelope.DeduplicationDigest, SHA256.HashData(binding.CanonicalRequest.Span),
             MailboxPlacementCommitment.Compute(envelope.PlacementId), membershipCommitment,
-            selectedReplicaIds, envelope.ExpiresAtUnixSeconds, token, lease, author, requireExisting);
+            selectedReplicaIds, envelope.ExpiresAtUnixSeconds, token, lease, author, requireExisting, host);
     }
 
     private async Task<MailboxClientStoreReservation> ReserveStoreCoreAsync(
@@ -220,11 +223,13 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
         ReadOnlyMemory<byte> placementCommitment, ReadOnlyMemory<byte> membershipCommitment,
         IReadOnlyList<ReadOnlyMemory<byte>> expectedReplicaIds, ulong expiresAtUnixSeconds,
         CancellationToken cancellationToken, MailboxCurrentOperationLease? lease = null,
-        Func<ulong, ulong, ReadOnlyMemory<byte>>? author = null, bool requireExisting = false)
+        Func<ulong, ulong, ReadOnlyMemory<byte>>? author = null, bool requireExisting = false,
+        VerifiedMailboxHostAuthorityV2? host = null)
     {
         ThrowIfDisposed();
         var operationKey = BuildOperationKey(epoch, mailboxId.Span, operationId.Span);
         var mailboxKey = BuildMailboxKey(epoch, mailboxId.Span);
+        var mailboxHex = ToLowerHex(mailboxId.Span, 32, nameof(mailboxId));
         var requestKey = ToLowerHex(requestDigest.Span, 32, nameof(requestDigest));
         var envelopeKey = ToLowerHex(envelopeDigest.Span, 32, nameof(envelopeDigest));
         var blobKey = ToLowerHex(blobDigest.Span, 32, nameof(blobDigest));
@@ -276,6 +281,15 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
 
             if (requireExisting)
                 throw new InvalidDataException("Known current Store replay has lost its exact peer intent.");
+
+            if (lease is not null)
+            {
+                // Across independently signed grants, not merely a MAU3 counter.
+                // An intent can exist before any local mutation, so the mutation
+                // index alone cannot establish a completed Store prefix.
+                await RequireCurrentStorePrefixAsync(document, epoch, mailboxHex, placementKey, membershipKey,
+                    host!, lease, cancellationToken).ConfigureAwait(false);
+            }
 
             if (LedgerEntryCost(document) >= _maxEntries)
             {
@@ -713,6 +727,18 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
         var hasReceipt = IsCanonicalBase64(
             operation.Receipt,
             MailboxReceiptV2Limits.MaximumQuorumLength);
+        if (operation.PeerRequest.Length != 0)
+        {
+            if (!dispositionEmpty || hasAcceptedAt || operation.CoordinatorSequence != 0 ||
+                !rawCompletionEmpty || operation.Error.Length != 0 ||
+                operation.State == "reserved" && !rawReceiptEmpty ||
+                operation.State == "durable" && !IsCanonicalBase64(operation.Receipt, MailboxReceiptV3Limits.MaximumQuorumLength) ||
+                operation.State is not ("reserved" or "durable"))
+                throw new InvalidDataException("Current Store settlement state is inconsistent.");
+            if (operation.State == "durable")
+                _ = MailboxReceiptV3Codec.DecodeDurableQuorum(Convert.FromBase64String(operation.Receipt));
+            return;
+        }
         switch (operation.State)
         {
             case "reserved":
@@ -771,7 +797,8 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
             .ToHashSet();
         var expired = document.Operations
             .Where(pair =>
-                pair.Value.ExpiresAtUnixSeconds <= nowUnixSeconds
+                pair.Value.PeerRequest.Length == 0
+                && pair.Value.ExpiresAtUnixSeconds <= nowUnixSeconds
                 && !ackTargets.Contains((
                     pair.Value.Epoch,
                     pair.Value.MailboxId,

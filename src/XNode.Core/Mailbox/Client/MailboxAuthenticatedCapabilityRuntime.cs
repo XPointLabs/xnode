@@ -280,6 +280,24 @@ public sealed class MailboxAuthenticatedCapabilityRuntime
 
     // Native current admission supplies only independently verified policy/time
     // inside its protected MGR1 lease. It does not use the legacy source or UTC.
+    internal void RequireCurrentStoreHolder(ReadOnlyMemory<byte> canonicalMau3, Action requireLease)
+    {
+        requireLease();
+        var request = MailboxAuthenticatedClientRequestCodec.Decode(canonicalMau3.Span);
+        var presentation = request.Presentation;
+        if (request.Binding.Operation != MailboxAuthenticatedOperation.Store ||
+            presentation.Operation != request.Binding.Operation ||
+            !presentation.OperationId.Span.SequenceEqual(request.Binding.OperationId.Span) ||
+            !presentation.RequestDigest.Span.SequenceEqual(request.Binding.RequestDigest.Span) ||
+            !_crypto.VerifyHolder(presentation.Grant.HolderPublicKey.Span,
+                MailboxAuthenticatedCapabilityCodec.GetPresentationSigningBytes(presentation), presentation.HolderSignature.Span))
+            throw new MailboxAuthenticatedCapabilityException(MailboxAuthenticatedCapabilityError.InvalidHolderSignature,
+                "Current Store preflight requires the exact authenticated holder request.");
+        // No capability or replay disposition is fabricated. The full current
+        // verifier still authenticates/reserves after the asynchronous prefix read.
+        requireLease();
+    }
+
     internal MailboxAuthenticatedRuntimeReservation VerifyCurrent(
         ReadOnlyMemory<byte> canonicalMau3, MailboxAuthenticatedVerificationPolicy policy,
         ulong trustedUpper, IMailboxCapabilityRevocationSource revocations, Action requireLease)

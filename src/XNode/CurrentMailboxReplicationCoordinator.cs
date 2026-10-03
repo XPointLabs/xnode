@@ -41,10 +41,14 @@ internal sealed partial class CurrentMailboxReplicationCoordinator(CurrentMailbo
                     await local.HasStoreCustodyAsync(request.Scope, envelope, ct).ConfigureAwait(false);
                 var intent = await ledger.ReserveCurrentStoreAsync(envelope, request.Scope.Host.MembershipCommitment,
                     request.Scope.Replicas.Select(replica => replica.NodeId).ToArray(), request.Scope.Lease,
-                    (cursor, upper) => local.AuthorStoreRequest(request.Scope, client.Binding.CanonicalRequest, cursor, upper), ct,
+                    (cursor, upper) => local.AuthorStoreRequest(request.Scope, client.Binding.CanonicalRequest, cursor, upper), request.Scope.Host, ct,
                     requireExisting: requireExisting).ConfigureAwait(false);
-                return await StoreAdmittedClientAsync(request, intent.CanonicalPeerRequest, ct).ConfigureAwait(false);
-            }, token);
+                var result = await StoreAdmittedClientAsync(request, intent.CanonicalPeerRequest, ct).ConfigureAwait(false);
+                if (result.Status == MailboxPeerQuorumStatus.Durable)
+                    await ledger.SaveCurrentStoreQuorumAsync(intent.OperationKey, result.CanonicalMqr3,
+                        request.Scope.Host, request.Scope.Lease, ct).ConfigureAwait(false);
+                return result;
+            }, token, storeLedger: ledger);
     }
 
     // An internal producer supplies its exact peer request. This is not a

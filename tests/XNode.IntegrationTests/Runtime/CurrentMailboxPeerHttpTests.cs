@@ -229,13 +229,14 @@ public sealed partial class CurrentMailboxPeerHttpTests
     [Theory]
     [InlineData(3)]
     [InlineData(4)]
+    [InlineData(5)]
     public async Task CurrentStoreRejectsIncompatibleIntentLedgerWithoutRepair(int schema)
     {
         await using var f = await Fixture.CreateAsync(); f.OpenLedger();
         var client = f.ClientStoreFrame(); f.RemoteHost.DropNext = true;
         _ = await f.Coordinator.StoreClientAsync(client, f.Ledger!);
         var path = f.LedgerFile; f.Ledger!.Dispose(); f.Ledger = null;
-        var old = File.ReadAllText(path).Replace("\"schemaVersion\":5", $"\"schemaVersion\":{schema}", StringComparison.Ordinal);
+        var old = File.ReadAllText(path).Replace("\"schemaVersion\":6", $"\"schemaVersion\":{schema}", StringComparison.Ordinal);
         File.WriteAllText(path, old); f.OpenLedger();
         await Assert.ThrowsAsync<InvalidDataException>(() => f.Coordinator.StoreClientAsync(client, f.Ledger!).AsTask());
         Assert.Equal(old, File.ReadAllText(path)); Assert.Equal(1, f.RemoteHost.Requests);
