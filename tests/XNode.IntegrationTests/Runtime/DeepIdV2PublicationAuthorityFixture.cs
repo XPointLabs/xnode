@@ -433,8 +433,11 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
         return ValueTask.FromResult(new OnionMonotonicReading(Boot, Sample));
     }
 
+    internal int PublicationReads { get; private set; }
+
     public ValueTask<DeepIdV2ContactStoreAuthority> ReadPublicationAuthorityAsync(CancellationToken cancellationToken)
     {
+        PublicationReads++;
         cancellationToken.ThrowIfCancellationRequested();
         if (RejectProof) throw new CryptographicException("Current test DID2 proof unavailable.");
         return ValueTask.FromResult(new DeepIdV2ContactStoreAuthority(NetworkContext,

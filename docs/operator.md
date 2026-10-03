@@ -27,7 +27,14 @@ These internal owners have no activation flag and are not registered by Program.
 Do not enable the retired provider as a bridge. Current Program/DI composition,
 client Store/Retrieve/ACK adapter and rotated distinct ID/key evidence remain
 required. Two-store loopback HTTP evidence is not deployed, onion or physical
-client delivery evidence; the outer canonical client outcome is not connected.
+client delivery evidence. Internal client Store now binds captured MAU3 to the
+exact peer request under the same native admission owner and persists final
+canonical MQR3 in the existing outcome store. Retry after advancing time/reopen
+returns those bytes; replay after tombstone does not rewrite the deleted blob.
+Loss of a peer response retains both client and peer Pending. There is no new
+quorum journal, public wire field, authority adapter or activation switch.
+The current internal peer-request producer, cursor ownership, Retrieve/ACK and
+guarded startup/recovery still need connection before the atomic Program cutover.
 The trusted monotonic clock must be the same protected owner used by the actual
 network source when composing this candidate. No host-UTC fallback is accepted.
 The sole contracts remain
@@ -38,6 +45,8 @@ The [current peer checkpoint](testing/s03-current-peer-native-2026-10-03.md)
 records durable Store/read/tombstone/reopen and callback-expiry tests.
 The [HTTP checkpoint](testing/s03-current-peer-http-2026-10-03.md) records actual
 pinned TLS/HTTP2, two-store quorum, lost-response and concurrent-retry evidence.
+The [client outcome checkpoint](testing/s03-client-outcome-2026-10-03.md) records
+same-owner composition, durable final Store outcome and completion-write recovery.
 The descriptor transport API owner is
 [DR-0085](../../docs/survival-program/decisions/DR-0085-current-mailbox-replica-transport-facts.md).
 

@@ -18,6 +18,13 @@ internal sealed class CurrentMailboxReplicaReceiver(CurrentMailboxAdmission admi
     private MailboxPeerMutationStore Mutations => mutations;
     private DurableMailboxPeerReplayJournal Replay => replay;
     private CurrentMailboxAdmission Admission => admission;
+    internal ReadOnlyMemory<byte> LocalNodeId => admission.LocalNodeId;
+    internal ValueTask<T> WithClientRequestAsync<T>(ReadOnlyMemory<byte> exactRequest, MailboxAuthenticatedOperation operation,
+        Func<CurrentMailboxAdmission.Request, CancellationToken, ValueTask<T>> action, CancellationToken token)
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
+        return admission.WithRequestAsync(exactRequest, operation, action, token);
+    }
 
     internal ValueTask<ReadOnlyMemory<byte>> ReceiveAsync(ReadOnlyMemory<byte> canonicalRequest,
         MailboxPeerReplicationOperation expectedOperation, CancellationToken token = default) =>
@@ -39,6 +46,8 @@ internal sealed class CurrentMailboxReplicaReceiver(CurrentMailboxAdmission admi
         if (localRole is not (MailboxPeerWireResponseReplicaV2.Sender or MailboxPeerWireResponseReplicaV2.Recipient))
             throw new ArgumentOutOfRangeException(nameof(localRole));
         ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
+        // Capture before the authority callback. The scoped overload below is
+        // also used by admitted client work without reacquiring native floors.
         var decoded = MailboxPeerWireV2Codec.Decode(canonicalRequest.Span);
         var owned = MailboxPeerWireV2Codec.Encode(decoded);
         var localProof = localRole == MailboxPeerWireResponseReplicaV2.Sender ? decoded.SenderMembershipProof : decoded.RecipientMembershipProof;
@@ -48,49 +57,79 @@ internal sealed class CurrentMailboxReplicaReceiver(CurrentMailboxAdmission admi
         var second = decoded.RecipientMembershipProof.CanonicalInclusionProof;
         if (first.Length != 342 || !Fixed(first.Span, second.Span))
             throw new CryptographicException("Current peer proofs must name one exact projection and grant.");
-        var exactGrant = first[38..].ToArray();
         var role = expectedOperation == MailboxPeerReplicationOperation.Store ? MailboxCapabilityDomain.Deposit : MailboxCapabilityDomain.Retrieve;
-        return await admission.WithGrantAsync(exactGrant, role, async (scope, ct) =>
-        {
-            if (!Fixed(first.Span[..38], scope.Host.ProjectionReference.Span))
-                throw new CryptographicException("Current peer projection differs from the signed host.");
-            var proofs = new CurrentProofs(scope, first.ToArray());
-            var upper = await scope.Lease.CheckAsync(ct).ConfigureAwait(false);
-            if (!proofs.VerifyStorageReplica(decoded.SenderMembershipProof, upper) ||
-                !proofs.VerifyStorageReplica(decoded.RecipientMembershipProof, upper) ||
-                !Fixed(crypto.GetPublicKey(seed), localProof.SigningPublicKey.Span))
-                throw new CryptographicException("Current peer descriptor keys or local signing custody differ.");
-            if (!crypto.Verify(decoded.SenderMembershipProof.SigningPublicKey.Span,
-                MailboxPeerWireV2Codec.GetSigningDigest(decoded), decoded.Signature.Span))
-                throw new CryptographicException("Current peer sender signature is invalid.");
+        return await admission.WithGrantAsync(first[38..].ToArray(), role,
+            (scope, ct) => WithAdmittedPeerAsync(owned, expectedOperation, localRole, scope, action, ct), token).ConfigureAwait(false);
+    }
 
-            BlindedPlacementId placement;
-            if (expectedOperation == MailboxPeerReplicationOperation.Store)
-                placement = MailboxAuthenticatedRequestTranscript.DecodeStoreBody(decoded.Payload.Span).PlacementId;
-            else if (!mutations.TryResolveTombstonePlacement(decoded, out placement))
-                throw new CryptographicException("Current peer tombstone has no matching durable target.");
-            if (!Fixed(MailboxPlacementCommitment.Compute(placement), scope.Grant.PlacementCommitment.Span) ||
-                decoded.Epoch != scope.Host.SelectionEpoch ||
-                !Fixed(decoded.MembershipCommitment.Span, scope.Host.MembershipCommitment.Span) ||
-                !Fixed(decoded.PlacementCommitment.Span, scope.Grant.PlacementCommitment.Span))
-                throw new CryptographicException("Current peer body/placement differs from its signed grant.");
-            upper = await scope.Lease.CheckAsync(ct).ConfigureAwait(false);
-            var policy = new MailboxPeerWireVerificationPolicyV2
-            {
-                ExpectedOperation = expectedOperation, Epoch = scope.Host.SelectionEpoch,
-                OperationId = decoded.OperationId, SenderRouterId = decoded.SenderRouterId,
-                RecipientRouterId = decoded.RecipientRouterId, MembershipCommitment = scope.Host.MembershipCommitment,
-                PlacementCommitment = scope.Grant.PlacementCommitment, PlacementId = placement,
-                NowUnixSeconds = upper, EpochExpiresAtUnixSeconds = scope.Authority.Network.MaximumRecordExpiryUnixSeconds
-            };
-            _ = MailboxPeerWireV2Codec.VerifyReplayCandidate(owned, policy, crypto, proofs);
-            RequireRate(decoded.SenderRouterId.Span, upper);
-            var verified = MailboxPeerWireV2Codec.VerifyAndReserve(owned, policy, crypto, proofs, replay);
-            _ = await scope.Lease.CheckAsync(ct).ConfigureAwait(false);
-            var result = await action(new PeerOperation(this, scope, verified, owned, localRole), ct).ConfigureAwait(false);
-            _ = await scope.Lease.CheckAsync(ct).ConfigureAwait(false);
-            return result;
-        }, token).ConfigureAwait(false);
+    internal async ValueTask<T> WithAdmittedPeerAsync<T>(ReadOnlyMemory<byte> canonicalRequest,
+        MailboxPeerReplicationOperation expectedOperation, MailboxPeerWireResponseReplicaV2 localRole,
+        CurrentMailboxAdmission.GrantScope scope,
+        Func<PeerOperation, CancellationToken, ValueTask<T>> action, CancellationToken token)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        scope.Lease.RequireActive();
+        if (!ReferenceEquals(scope.Owner, admission))
+            throw new CryptographicException("Current peer scope belongs to another native admission owner.");
+        if (localRole is not (MailboxPeerWireResponseReplicaV2.Sender or MailboxPeerWireResponseReplicaV2.Recipient))
+            throw new ArgumentOutOfRangeException(nameof(localRole));
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
+        var decoded = MailboxPeerWireV2Codec.Decode(canonicalRequest.Span);
+        var owned = MailboxPeerWireV2Codec.Encode(decoded);
+        var localProof = localRole == MailboxPeerWireResponseReplicaV2.Sender ? decoded.SenderMembershipProof : decoded.RecipientMembershipProof;
+        if (decoded.Operation != expectedOperation || !Fixed(localProof.ReplicaId.Span, admission.LocalNodeId.Span))
+            throw new CryptographicException("Current peer operation or local replica differs.");
+        var first = decoded.SenderMembershipProof.CanonicalInclusionProof;
+        var second = decoded.RecipientMembershipProof.CanonicalInclusionProof;
+        if (first.Length != 342 || !Fixed(first.Span, second.Span))
+            throw new CryptographicException("Current peer proofs must name one exact projection and grant.");
+        if (!Fixed(first.Span[38..], MailboxAuthenticatedCapabilityCodec.EncodeGrant(scope.Grant)) ||
+            scope.Grant.Domain != (expectedOperation == MailboxPeerReplicationOperation.Store ? MailboxCapabilityDomain.Deposit : MailboxCapabilityDomain.Retrieve))
+            throw new CryptographicException("Current peer grant differs from the admitted client scope.");
+        var ct = token;
+        if (!Fixed(first.Span[..38], scope.Host.ProjectionReference.Span))
+            throw new CryptographicException("Current peer projection differs from the signed host.");
+        var proofs = new CurrentProofs(scope, first.ToArray());
+        var upper = await scope.Lease.CheckAsync(ct).ConfigureAwait(false);
+        if (!proofs.VerifyStorageReplica(decoded.SenderMembershipProof, upper) ||
+            !proofs.VerifyStorageReplica(decoded.RecipientMembershipProof, upper) ||
+            !Fixed(crypto.GetPublicKey(seed), localProof.SigningPublicKey.Span))
+            throw new CryptographicException("Current peer descriptor keys or local signing custody differ.");
+        if (!crypto.Verify(decoded.SenderMembershipProof.SigningPublicKey.Span,
+            MailboxPeerWireV2Codec.GetSigningDigest(decoded), decoded.Signature.Span))
+            throw new CryptographicException("Current peer sender signature is invalid.");
+
+        BlindedPlacementId placement;
+        if (expectedOperation == MailboxPeerReplicationOperation.Store)
+            placement = MailboxAuthenticatedRequestTranscript.DecodeStoreBody(decoded.Payload.Span).PlacementId;
+        else if (!mutations.TryResolveTombstonePlacement(decoded, out placement))
+            throw new CryptographicException("Current peer tombstone has no matching durable target.");
+        if (!Fixed(MailboxPlacementCommitment.Compute(placement), scope.Grant.PlacementCommitment.Span) ||
+            decoded.Epoch != scope.Host.SelectionEpoch ||
+            !Fixed(decoded.MembershipCommitment.Span, scope.Host.MembershipCommitment.Span) ||
+            !Fixed(decoded.PlacementCommitment.Span, scope.Grant.PlacementCommitment.Span))
+            throw new CryptographicException("Current peer body/placement differs from its signed grant.");
+        upper = await scope.Lease.CheckAsync(ct).ConfigureAwait(false);
+        var policy = new MailboxPeerWireVerificationPolicyV2
+        {
+            ExpectedOperation = expectedOperation,
+            Epoch = scope.Host.SelectionEpoch,
+            OperationId = decoded.OperationId,
+            SenderRouterId = decoded.SenderRouterId,
+            RecipientRouterId = decoded.RecipientRouterId,
+            MembershipCommitment = scope.Host.MembershipCommitment,
+            PlacementCommitment = scope.Grant.PlacementCommitment,
+            PlacementId = placement,
+            NowUnixSeconds = upper,
+            EpochExpiresAtUnixSeconds = scope.Authority.Network.MaximumRecordExpiryUnixSeconds
+        };
+        _ = MailboxPeerWireV2Codec.VerifyReplayCandidate(owned, policy, crypto, proofs);
+        RequireRate(decoded.SenderRouterId.Span, upper);
+        var verified = MailboxPeerWireV2Codec.VerifyAndReserve(owned, policy, crypto, proofs, replay);
+        _ = await scope.Lease.CheckAsync(ct).ConfigureAwait(false);
+        var result = await action(new PeerOperation(this, scope, verified, owned, localRole), ct).ConfigureAwait(false);
+        _ = await scope.Lease.CheckAsync(ct).ConfigureAwait(false);
+        return result;
     }
 
     internal sealed class PeerOperation(CurrentMailboxReplicaReceiver owner, CurrentMailboxAdmission.GrantScope scope,
@@ -135,6 +174,12 @@ internal sealed class CurrentMailboxReplicaReceiver(CurrentMailboxAdmission admi
             _ = MailboxPeerWireV2Codec.VerifyDurableQuorumResponse(result, verified, owner.crypto);
             await EnsureCurrentAsync(token).ConfigureAwait(false);
             return result;
+        }
+        internal async ValueTask ValidateQuorumAsync(ReadOnlyMemory<byte> quorum, CancellationToken token)
+        {
+            await EnsureCurrentAsync(token).ConfigureAwait(false);
+            _ = MailboxPeerWireV2Codec.VerifyDurableQuorumResponse(quorum.Span, verified, owner.crypto);
+            await EnsureCurrentAsync(token).ConfigureAwait(false);
         }
     }
 

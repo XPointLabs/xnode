@@ -48,7 +48,7 @@ internal sealed class CurrentMailboxAdmission(
                 };
                 reservation = runtime.VerifyCurrent(owned, policy, upper,
                     new CheckedRevocation(grant, scope.Lease.RequireActive), scope.Lease.RequireActive);
-                var request = new Request(runtime, reservation, scope.Lease.CheckAsync, scope.Lease.RequireActive);
+                var request = new Request(runtime, reservation, scope, scope.Lease.CheckAsync, scope.Lease.RequireActive);
                 await request.EnsureCurrentAsync(ct).ConfigureAwait(false);
                 var result = await action(request, ct).ConfigureAwait(false);
                 await request.EnsureCurrentAsync(ct).ConfigureAwait(false);
@@ -129,7 +129,7 @@ internal sealed class CurrentMailboxAdmission(
 
                 try
                 {
-                    var scope = new GrantScope(authority, host, replicas, grant,
+                    var scope = new GrantScope(this, authority, host, replicas, grant,
                         new MailboxCurrentOperationLease(CheckAsync, RequireActive));
                     _ = await scope.Lease.CheckAsync(innerToken).ConfigureAwait(false);
                     var result = await action(scope, innerToken).ConfigureAwait(false);
@@ -140,14 +140,16 @@ internal sealed class CurrentMailboxAdmission(
             }, ct), token).ConfigureAwait(false);
     }
 
-    internal sealed record GrantScope(DeepIdV2ContactStoreAuthority Authority,
+    internal sealed record GrantScope(CurrentMailboxAdmission Owner, DeepIdV2ContactStoreAuthority Authority,
         VerifiedMailboxHostAuthorityV2 Host, IReadOnlyList<VerifiedMailboxReplicaV2> Replicas,
         MailboxAuthenticatedGrant Grant, MailboxCurrentOperationLease Lease);
 
     internal sealed class Request(MailboxAuthenticatedCapabilityRuntime runtime,
         MailboxAuthenticatedRuntimeReservation reservation,
+        GrantScope scope,
         Func<CancellationToken, ValueTask<ulong>> check, Action requireActive)
     {
+        internal GrantScope Scope { get { requireActive(); return scope; } }
         internal MailboxAuthenticatedReplayDisposition ReplayDisposition
         { get { requireActive(); return reservation.ReplayDisposition; } }
         internal MailboxClientCanonicalOutcome? RecoveredOutcome
@@ -169,6 +171,21 @@ internal sealed class CurrentMailboxAdmission(
         {
             await EnsureCurrentAsync(token).ConfigureAwait(false);
             var result = runtime.PersistTerminal(reservation, terminal);
+            await EnsureCurrentAsync(token).ConfigureAwait(false);
+            return result;
+        }
+        internal async ValueTask<MailboxClientCanonicalOutcome> PersistSuccessAsync(
+            ReadOnlyMemory<byte> exactOutcome, int maximumBytes, CancellationToken token = default)
+        {
+            await EnsureCurrentAsync(token).ConfigureAwait(false);
+            var result = runtime.PersistSuccess(reservation, exactOutcome, maximumBytes);
+            await EnsureCurrentAsync(token).ConfigureAwait(false);
+            return result;
+        }
+        internal async ValueTask<MailboxClientCanonicalOutcome> CompleteRecoveredAsync(CancellationToken token = default)
+        {
+            await EnsureCurrentAsync(token).ConfigureAwait(false);
+            var result = runtime.CompletePersistedOutcome(reservation);
             await EnsureCurrentAsync(token).ConfigureAwait(false);
             return result;
         }

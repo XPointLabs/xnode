@@ -61,7 +61,10 @@ public sealed class CurrentMailboxReplicaReceiverTests
         if (defect != "signature") request = f.Crypto.SignRequest(request, f.SenderSeed);
         var canonical = MailboxPeerWireV2Codec.Encode(request);
         var expected = defect == "operation" ? MailboxPeerReplicationOperation.Tombstone : MailboxPeerReplicationOperation.Store;
+        var authorityReads = f.Node.Signed.PublicationReads;
         Assert.NotNull(await Record.ExceptionAsync(() => f.Receiver.ReceiveAsync(canonical, expected).AsTask()));
+        if (defect is "operation" or "second-grant" or "p04")
+            Assert.Equal(authorityReads, f.Node.Signed.PublicationReads);
         Assert.Empty(f.ReplayFiles); Assert.Empty(f.MutationFiles);
         Assert.Null(await f.ReadBlobAsync());
     }

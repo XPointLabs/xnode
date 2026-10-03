@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
 using Deep.Protocol.XPointNetworkV1;
 using XNode.Core;
+using XNode.Core.Mailbox;
 using XNode.Core.Mailbox.Client;
 using static XNode.IntegrationTests.Runtime.MailboxGrantRevocationStoreTests;
 
@@ -220,6 +221,7 @@ public sealed class CurrentMailboxAdmissionTests
         internal CurrentMailboxAdmission Admission = null!;
         private bool ownsSigned;
         internal string DataRoot => depositFiles.Data;
+        internal int OutcomeCount => outcomes.Diagnostics.EntryCount;
 
         internal static async Task<Fixture> CreateAsync(MailboxAuthenticatedOperation operation,
             MailboxCapabilityDomain? missing = null, DeepIdV2PublicationAuthorityFixture? signed = null, int localReplicaIndex = 0)
@@ -238,10 +240,10 @@ public sealed class CurrentMailboxAdmissionTests
             f.Frame = Request(f.Host.SelectionEpoch, operation, f.ExactGrant);
             f.ReopenRuntime(); return f;
         }
-        internal void ReopenRuntime()
+        internal void ReopenRuntime(IMailboxDurabilityBarrier? replayDurability = null)
         {
             outcomes?.Dispose(); Replay?.Dispose();
-            Replay = new(depositFiles.Data); outcomes = new(depositFiles.Data);
+            Replay = new(depositFiles.Data, durability: replayDurability); outcomes = new(depositFiles.Data);
             Runtime = new(new RejectAllMailboxCapabilityAuthoritySource(), new RejectAllMailboxCapabilityRevocationPolicy(),
                 Replay, outcomes, new NoUtcClock());
             Admission = new(Signed, Signed, Node, Deposit, Retrieve, Runtime);
