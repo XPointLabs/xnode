@@ -279,3 +279,88 @@ were not run or qualified by this local business slice.
 | Final ProfileGenerator | `3f567e3f97fc95a7b14bd530a3207f3651f719ba1a3a9505ff9b8f68f05bcba2` |
 | Final Unit | `5b8bc213a23d240ed3c23dcdb4c4d9130fb6dea26a4ccfc80950e668696116d8` |
 | Final Integration | `0fd10311292f7b96bd868fb0b373375bba27b4b47940c0d70e694b00a04a804d` |
+
+## Checkpoint 4 — signed inventory lineage instead of V1 capabilities
+
+Input xnode HEAD: `72fdc050027ccb4b025d7368e8e9eb375b8851d6`; workspace HEAD:
+`0d60817aafdcc41b37677138c1b7440f463215cb`. Protocol input is unchanged.
+This checkpoint changes test authoring/coverage only, not runtime behavior,
+wire, public APIs, configuration, retention or production activation.
+
+The fixture now authors public signed XPI1/DPK2/XPP1 successors for epochs
+1–14 while its real device key is owned, then zeroes that key as before.
+Each successor binds the exact domain-separated predecessor hash. One-time
+IDs are canonical and sorted, and the complete Merkle root is re-signed.
+No private-key export, retained authoring delegate, reflection or fabricated
+verified capability was added. KEM descriptors remain test-only public bytes;
+no KEM exchange or decapsulation is claimed.
+
+Six new `DeepIdV2InventoryLineageTests` cases stage bounded candidates through
+the actual journal and invoke the final committer's current-proof, device,
+complete-inventory and selected-placement verification on both replicas:
+
+- all 14 signed epochs commit, their XIC1 pair verifies, and current exact
+  publication/manifest/receipt survive reopening;
+- both retained epochs (13 and 14) return their exact original receipts without
+  changing active-state hashes after the full rotation;
+- signed skipped-epoch/wrong-predecessor candidates reject with cryptographic
+  `InvalidLineage`, do not mutate/fork the service, and a valid successor still
+  commits afterwards;
+- authorized same-epoch and same-operation conflicts preserve active state,
+  persist a fork marker and reject reopening/original-operation retries;
+- an invalid device signature at the same epoch rejects with cryptographic
+  `VerificationFailed` before service mutation or a fork marker.
+
+| Removed V1-capability Unit scenario | Current signed replacement |
+| --- | --- |
+| `SuccessorRequiresMonotonicEpochAndExactXpi1Predecessor` | Valid succession through epoch 14, retained replay and both `SignedButUnacceptedLineage...` cases |
+| `SameEpochOrPublicationOperationWithChangedInventoryForkLatches` | Both `AuthorizedInventoryConflict...` cases, plus unauthenticated same-epoch rejection |
+
+The old wrong-predecessor assertion latched a service fork using an unsafe V1
+capability. It is not imported into DID2: the current normative owner
+`CONTACT-RESOLVER-V1` section 3.3.1 and current lineage verifier require the
+exact accepted predecessor, and distinguish an unaccepted bad chain from an
+authorized same-epoch/operation conflict. No verifier was weakened to perform
+this transfer. Current forks remain durable and fail closed.
+
+The CAS tests use independent test-owned staging journals per attempt to reach
+the independently authorized service store. They do **not** exercise the
+terminal's earlier same-operation fragment conflict guard, socket/TLS or a
+physical endpoint. Existing terminal/peer commit tests passed in the combined
+selection. Separate node-ID/receipt-key support, older-epoch claim settlement,
+full service renewal/retention and shipping device composition remain open.
+The remaining V1 fixture/quota/recovery scenarios were not silently deleted.
+
+```powershell
+dotnet test tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj -c Release -p:DeepProtocolSourceCutover=true --filter 'FullyQualifiedName~DeepIdV2InventoryLineageTests|FullyQualifiedName~DeepIdV2PublicationFinalCommitterTests|FullyQualifiedName~DeepIdV2PublicationCandidateAuthorityTests|FullyQualifiedName~DeepIdV2PreKeyClaimRuntimeTests' --logger trx --results-directory artifacts/s00/rotation-focused --verbosity quiet
+dotnet test XNode.slnx -c Release -p:DeepProtocolSourceCutover=true --logger trx --results-directory artifacts/s00/rotation-checkpoint-4 --verbosity quiet
+dotnet test tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj -c Release -p:DeepProtocolSourceCutover=true --filter FullyQualifiedName~DeepIdV2InventoryLineageTests --logger trx --results-directory artifacts/s00/rotation-final --verbosity quiet
+```
+
+First new selection: 0 pass / 6 fail because the new harness incorrectly
+expected `Staged` from the final fragment instead of actual `CandidateReady`.
+Those failures occurred before the final committer and are **not** product
+regressions. The helper now asserts the exact phase-specific dispositions;
+the corrected selection passed 6/6. Combined selection: **25 pass / 0 fail**,
+exit 0. Final source full run: **857 pass / 1 fail / 0 skips** out of 858,
+exit 1; ProfileGenerator 107, Unit 275, Integration 475 pass / 1 fail.
+Build warnings: 0. The single full failure is the existing signed current
+one-time-invite prerequisite, not a lineage failure. The post-full cleanup-safe
+lineage selection had **5 pass / 1 fail / 0 skips**, exit 1: Windows native
+`MoveFileEx` returned access denied while committing the valid successor in
+the skipped-epoch case. This is a second observed atomic-replace failure,
+now during final inventory commit instead of claim reservation (checkpoint 3).
+Its cause remains unverified. Passing earlier selections/full run does not
+fix or qualify that storage behavior; the final selection is not green.
+Subsets are overlapping evidence, not additional unique tests. No
+external/device/production gate ran.
+
+| Raw TRX (ignored) | SHA-256 |
+| --- | --- |
+| Initial new harness failures | `9f68ef89d779dfbbba91a57949017e5ed77ff5c9e890f172b38f4f9465567bf1` |
+| Corrected lineage selection | `eada7b479409d17225d5fc6b735a645ba43073ee6d3a8a9b57d8a6ca91eb5d99` |
+| Combined current selection | `b628e0820adeeb4c5c28958b730e20ba63ae921e1e920bf632335937c4975760` |
+| Full ProfileGenerator | `0f546c759de99e736cb3bdd7d6424e34adb17e76b15fdc9aef1e4d2b9929d34d` |
+| Full Unit | `679d05a4e3b68b96082e7392bfb3a43296212f44a0abf0431f303992e055da79` |
+| Full Integration | `9348fcc05b117452d7afcc1852a8ce38a51c9b0ad84b76d736e2fa63b06ab556` |
+| Post-full lineage selection, Windows replace failure | `3128e3aadb01b2aa80179b38a01d7bda2c28c50f97780b6fb761148921eeff22` |

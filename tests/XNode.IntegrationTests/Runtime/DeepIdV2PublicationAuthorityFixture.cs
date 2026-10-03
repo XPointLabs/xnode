@@ -52,6 +52,10 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
     internal ReadOnlyMemory<byte> MailboxAuthority { get; private set; }
     internal ContactServicePlacementCapability Placement { get; private set; } = null!;
     internal ParsedXpp1V2 Publication { get; private set; } = null!;
+    // Public signed candidates only; no retained authoring key or verified-capability seam.
+    internal IReadOnlyList<ParsedXpp1V2> InventoryHistory { get; private set; } = [];
+    internal IReadOnlyDictionary<string, ParsedXpp1V2> RotationCandidates { get; private set; } =
+        new Dictionary<string, ParsedXpp1V2>();
     internal byte[] Dca { get; private set; } = [];
     internal byte[] Xps { get; private set; } = [];
     internal Xpu1Request ContactPublication { get; private set; } = null!;
@@ -78,15 +82,16 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
 
     internal static async Task<DeepIdV2PublicationAuthorityFixture> CreateAsync(byte serviceMarker = 0x35,
         bool authorContactPublication = false, byte networkCommitmentMarker = 0, byte rootMarker = 0x20,
-        bool authorRouteSuccessor = false, ushort lastResortReuseLimit = 1)
+        bool authorRouteSuccessor = false, ushort lastResortReuseLimit = 1,
+        bool authorInventoryRotation = false)
     {
         var fixture = new DeepIdV2PublicationAuthorityFixture(serviceMarker);
-        try { await fixture.AuthorAsync(authorContactPublication, networkCommitmentMarker, rootMarker, authorRouteSuccessor, lastResortReuseLimit); return fixture; }
+        try { await fixture.AuthorAsync(authorContactPublication, networkCommitmentMarker, rootMarker, authorRouteSuccessor, lastResortReuseLimit, authorInventoryRotation); return fixture; }
         catch { fixture.Dispose(); throw; }
     }
 
     private async Task AuthorAsync(bool authorContactPublication, byte networkCommitmentMarker, byte rootMarker, bool authorRouteSuccessor,
-        ushort lastResortReuseLimit)
+        ushort lastResortReuseLimit, bool authorInventoryRotation)
     {
         using var root = new TestSigner(rootMarker);
         using var w1 = new TestSigner(0x30);
@@ -208,17 +213,19 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
                     DeepIdV2PreKeyServiceCodec.CreateSignatureInput(xpsFields), key.PrivateKey));
             // This gate verifies the signatures/custody of public KEM descriptors.
             // No decapsulation/exchange is claimed by these test-only descriptors.
-            ParsedDpk2V2 Member(byte marker, Dpk2PrekeyKind kind)
+            ParsedDpk2V2 Member(byte marker, Dpk2PrekeyKind kind, ulong epoch, byte variant)
             {
+                var prekeyId = epoch == 1 && variant == 0 ? Bytes(32, marker) :
+                    Hash($"DID2 test inventory/{epoch}/{variant}/{marker}");
                 Dpk2Record Record(byte[] x, byte[] ml, byte[] bundle) => new(
                     Network, authorization.Record.DeepAccountId.Span, id,
                     device.Certificate.DeviceGeneration, dpd, directory.Head.Record.DirectoryGeneration,
-                    directory.Head.Record.RecordHash.Span, 1, 1, Bytes(32, 0x51),
+                    directory.Head.Record.RecordHash.Span, 1, epoch, Bytes(32, 0x51),
                     1, 1_000, 1_000, 1_400, device.Certificate.DeviceX25519PublicKey.Span,
                     Bytes(32, 0x71), ScalarMult.Base(Bytes(32, 0x81)), x,
-                    kind == Dpk2PrekeyKind.OneTime ? Bytes(32, marker) : [],
-                    kind == Dpk2PrekeyKind.OneTime ? ScalarMult.Base(Bytes(32, marker)) : [],
-                    Bytes(32, marker), Bytes(1184, marker), kind,
+                    kind == Dpk2PrekeyKind.OneTime ? prekeyId : [],
+                    kind == Dpk2PrekeyKind.OneTime ? ScalarMult.Base(prekeyId) : [],
+                    prekeyId, Bytes(1184, marker), kind,
                     kind == Dpk2PrekeyKind.OneTime ? (ushort)0 : lastResortReuseLimit, ml, bundle);
                 var placeholder = Record(new byte[64], new byte[64], new byte[64]);
                 var x = PublicKeyAuth.SignDetached(
@@ -230,19 +237,39 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
                     key.PrivateKey);
                 return DeepIdV2Dpk2Codec.Decode(DeepIdV2Dpk2Codec.Encode(Record(x, ml, bundle)));
             }
-            var members = Enumerable.Range(0, 32)
-                .Select(i => Member((byte)(0x10 + i), Dpk2PrekeyKind.OneTime)).ToArray();
-            var last = Member(0x90, Dpk2PrekeyKind.LastResort);
-            ReadOnlyMemory<byte>[] xpiFields = [Network, service, id, dpd, U64(1),
-                Reference("XPS1", 2, SHA256.HashData(Xps)), U64(1), new byte[32], U16(32),
-                InventoryRoot(members), last.ExactHash, directory.Head.Record.RecordHash,
-                Reference("DRS1", 1, identity.Revocations.Snapshot.CanonicalHash.Span),
-                U64(1_000), U64(1_400)];
-            var manifest = DeepIdV2PreKeyManifestCodec.Decode(DeepIdV2PreKeyManifestCodec.Encode(
-                xpiFields, PublicKeyAuth.SignDetached(
-                    DeepIdV2PreKeyManifestCodec.CreateSignatureInput(xpiFields), key.PrivateKey)));
-            Publication = DeepIdV2PreKeyPublicationCodec.Decode(DeepIdV2PreKeyPublicationCodec.Encode(
-                Network, Bytes(32, 0xd1), Placement.PlacementHash.Span, manifest, members, last));
+            ParsedXpp1V2 Inventory(ulong epoch, byte[] predecessor, byte operation, byte variant = 0)
+            {
+                var members = Enumerable.Range(0, 32)
+                    .Select(i => Member((byte)(0x10 + i), Dpk2PrekeyKind.OneTime, epoch, variant))
+                    .OrderBy(member => Convert.ToHexString(member.OneTimePrekeyId.Span), StringComparer.Ordinal).ToArray();
+                var last = Member(0x90, Dpk2PrekeyKind.LastResort, epoch, variant);
+                ReadOnlyMemory<byte>[] xpiFields = [Network, service, id, dpd, U64(1),
+                    Reference("XPS1", 2, SHA256.HashData(Xps)), U64(epoch), predecessor, U16(32),
+                    InventoryRoot(members), last.ExactHash, directory.Head.Record.RecordHash,
+                    Reference("DRS1", 1, identity.Revocations.Snapshot.CanonicalHash.Span),
+                    U64(1_000), U64(1_400)];
+                var manifest = DeepIdV2PreKeyManifestCodec.Decode(DeepIdV2PreKeyManifestCodec.Encode(
+                    xpiFields, PublicKeyAuth.SignDetached(
+                        DeepIdV2PreKeyManifestCodec.CreateSignatureInput(xpiFields), key.PrivateKey)));
+                return DeepIdV2PreKeyPublicationCodec.Decode(DeepIdV2PreKeyPublicationCodec.Encode(
+                    Network, Bytes(32, operation), Placement.PlacementHash.Span, manifest, members, last));
+            }
+            Publication = Inventory(1, new byte[32], 0xd1);
+            var inventoryHistory = new List<ParsedXpp1V2> { Publication };
+            if (authorInventoryRotation)
+            {
+                for (ulong epoch = 2; epoch <= 14; epoch++)
+                    inventoryHistory.Add(Inventory(epoch, inventoryHistory[^1].Manifest.ExactHash.ToArray(),
+                        checked((byte)(0xd0 + epoch))));
+                RotationCandidates = new Dictionary<string, ParsedXpp1V2>
+                {
+                    ["same-epoch"] = Inventory(1, new byte[32], 0xf0, variant: 1),
+                    ["same-operation"] = Inventory(2, Publication.Manifest.ExactHash.ToArray(), 0xd1),
+                    ["wrong-predecessor"] = Inventory(2, Hash("wrong DID2 inventory predecessor"), 0xf2),
+                    ["skipped-epoch"] = Inventory(3, Publication.Manifest.ExactHash.ToArray(), 0xf1)
+                };
+            }
+            InventoryHistory = inventoryHistory;
             if (authorContactPublication)
             {
                 var current = DeepIdV2CurrentContactAuthorizationVerifier.Verify(Freshness,
