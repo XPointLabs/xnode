@@ -61,6 +61,62 @@ public sealed partial class CurrentMailboxPeerHttpTests
         Assert.Equal(2, f.Sender.MutationFiles.Length); Assert.Equal(2, f.Recipient.MutationFiles.Length);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CurrentRetrieveCannotSkipLivePendingCustodyBelowCrossReplicaContinuation(bool reopen)
+    {
+        await using var f = await Fixture.CreateAsync(); f.OpenLedger();
+        var pending = f.ClientStoreFrame();
+        f.Sender.Fault.Action = point =>
+        { if (point == MailboxPeerMutationFaultPoint.StoreReserved) throw new IOException("Test-owned interruption after native Store reservation."); };
+        await Assert.ThrowsAsync<IOException>(() => f.Coordinator.StoreClientAsync(pending, f.Ledger!).AsTask());
+        f.Sender.Fault.Action = null;
+        Assert.Single(f.Sender.MutationFiles); Assert.Empty(f.Recipient.MutationFiles);
+        Assert.Equal(0, f.RemoteHost.Requests);
+
+        // A separate genuinely signed grant can progress while the first grant
+        // retains its exact Pending claim. No mutation JSON or cursor is forged.
+        var grant = MailboxGrantRevocationStoreTests.Grant(f.Signed, f.Sender.Node.Host,
+            MailboxCapabilityDomain.Deposit, 0x62);
+        for (var index = 2; index <= 3; index++)
+        {
+            var body = MailboxAuthenticatedRequestTranscript.DecodeStoreBody(f.Recipient.Envelope) with
+            {
+                OperationId = Enumerable.Repeat(checked((byte)(0x80 + index)), 16).ToArray(),
+                DeduplicationDigest = Enumerable.Repeat(checked((byte)(0x90 + index)), 32).ToArray()
+            };
+            var binding = MailboxAuthenticatedRequestTranscript.ForStore(body);
+            var client = MailboxAuthenticatedClientRequestCodec.Encode(new()
+            {
+                Binding = binding,
+                Presentation = new SodiumMailboxCapabilityCrypto().SignPresentation(
+                    MailboxAuthenticatedCapabilityCodec.DecodeGrant(grant), binding, checked((ulong)index - 1),
+                    Enumerable.Repeat((byte)0x57, 32).ToArray())
+            });
+            Assert.Equal(MailboxPeerQuorumStatus.Durable, (await f.Coordinator.StoreClientAsync(client, f.Ledger!)).Status);
+        }
+        var first = DecodePage((await f.Recipient.Receiver.RetrieveClientAsync(RetrieveFrame(f, maximum: 1))).ToArray(), f);
+        Assert.Equal(2UL, Assert.Single(first.Items).Cursor); Assert.True(first.HasMore);
+        if (reopen) f.Reopen();
+        var continuation = RetrieveFrame(f, operation: 0x72, after: first.NextCursor,
+            maximum: 1, continuation: first.ContinuationToken);
+        var outcomes = f.Sender.Node.OutcomeCount;
+        await Assert.ThrowsAsync<InvalidDataException>(() => f.Sender.Receiver.RetrieveClientAsync(continuation).AsTask());
+        Assert.Equal(outcomes, f.Sender.Node.OutcomeCount);
+        Assert.Equal(3, f.Sender.MutationFiles.Length); Assert.Equal(2, f.Recipient.MutationFiles.Length);
+        Assert.Equal(2, f.RemoteHost.Requests);
+
+        // Resume the actual original intent, then the unchanged admitted read.
+        Assert.Equal(MailboxPeerQuorumStatus.Durable, (await f.Coordinator.StoreClientAsync(pending, f.Ledger!)).Status);
+        var next = DecodePage((await f.Sender.Receiver.RetrieveClientAsync(continuation)).ToArray(), f);
+        Assert.Equal(3UL, Assert.Single(next.Items).Cursor); Assert.False(next.HasMore);
+        var fresh = DecodePage((await f.Sender.Receiver.RetrieveClientAsync(
+            RetrieveFrame(f, counter: 2, operation: 0x73))).ToArray(), f);
+        Assert.Equal(new ulong[] { 1, 2, 3 }, fresh.Items.Select(item => item.Cursor));
+        Assert.Equal(3, f.RemoteHost.Requests);
+    }
+
     [Fact]
     public async Task CurrentRetrieveWrongHolderRejectsBeforeReservation()
     {

@@ -36,7 +36,7 @@ public sealed partial class MailboxPeerMutationStore
             {
                 foreach (var pair in index)
                 {
-                    if (pair.Key <= request.AfterCursor || pair.Key > highWater) continue;
+                    if (pair.Key > highWater) break;
                     var upper = await lease.CheckAsync(token).ConfigureAwait(false);
                     var path = pair.Value.Single(); var record = Read(path);
                     if (record.Cursor != pair.Key || RetrieveScope(record) != scope ||
@@ -45,6 +45,12 @@ public sealed partial class MailboxPeerMutationStore
                     if (record.ExpiresAtUnixSeconds <= upper || record.State is "tombstone-pending" or "tombstoned") continue;
                     if (record.State != "completed")
                         throw new InvalidDataException("Current retrieve has unresolved native Store custody.");
+                    // A continuation issued by the other replica may already
+                    // be beyond a locally reserved Store. Do not silently skip
+                    // that live Pending custody: it can complete below the
+                    // snapshot cursor. Consumed completed records need no blob
+                    // reread, but their native state must be checked first.
+                    if (pair.Key <= request.AfterCursor) continue;
                     var blob = await _blobStore.ReadExactCurrentAsync(record.MailboxId, record.BlobId, lease, token).ConfigureAwait(false)
                         ?? throw new InvalidDataException("Current retrieve blob is unavailable.");
                     _faults?.Inject(MailboxPeerMutationFaultPoint.RetrieveBlobRead);

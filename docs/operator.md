@@ -25,7 +25,7 @@ fallback. Endpoint errors are bounded empty-body responses without private logs.
 
 These internal owners have no activation flag and are not registered by Program.
 Do not enable the retired provider as a bridge. Current Program/DI composition,
-public client Store/Retrieve/ACK composition and rotated distinct ID/key evidence remain
+public client Store/Retrieve/ACK composition and distinct ID/key evidence remain
 required. Two-store loopback HTTP evidence is not deployed, onion or physical
 client delivery evidence. Internal client Store now binds captured MAU3 to the
 exact peer request under the same native admission owner and persists final
@@ -49,6 +49,10 @@ outcome owner before releasing it. The existing neutral continuation grammar
 is signed/verified with selected descriptor keys and protected time; pagination
 can continue on the other replica. Missing/corrupt blobs, unresolved Store and
 ambiguous cursors fail closed rather than silently omitting retained messages.
+An actual continuation from the other replica also rejects live Pending Store
+custody below its consumed cursor. Exact Store completion permits read retry,
+but only a fresh snapshot can include a late lower-cursor message; this local
+guard is not shared cursor ownership or a no-loss snapshot guarantee.
 Native mutation counts include a file that persisted before its flush reported
 failure, even without reopening the owner. This is local candidate evidence,
 not an activated public endpoint or global cursor-order guarantee.
@@ -87,6 +91,8 @@ records both-replica reads, bounded cross-replica pagination, native custody
 failure checks and the remaining ordering/activation boundaries.
 The [current ACK checkpoint](testing/s03-current-ack-2026-10-04.md) records
 either-replica ACK, exact batch/quorum recovery, capacity and crash boundaries.
+The [pending-prefix regression](testing/s03-pending-prefix-2026-10-04.md) records
+the live/reopened cross-replica continuation defect, fix and its ordering limits.
 The descriptor transport API owner is
 [DR-0085](../../docs/survival-program/decisions/DR-0085-current-mailbox-replica-transport-facts.md).
 
