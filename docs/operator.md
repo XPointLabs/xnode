@@ -42,9 +42,20 @@ This is not another journal or a production data/key reset. Current reservations
 do not use host UTC for garbage collection; capacity remains backpressure until
 protected retention is composed. A pre-intent write failure can remain Pending;
 there is no claim of automatic reconciliation for that uncertainty.
+Internal client Retrieve now reads the actual completed mutation/blob custody
+on either replica under that same current admission, without requiring the
+coordinator's client ledger. It persists the canonical MRP1 in the existing
+outcome owner before releasing it. The existing neutral continuation grammar
+is signed/verified with selected descriptor keys and protected time; pagination
+can continue on the other replica. Missing/corrupt blobs, unresolved Store and
+ambiguous cursors fail closed rather than silently omitting retained messages.
+Native mutation counts include a file that persisted before its flush reported
+failure, even without reopening the owner. This is local candidate evidence,
+not an activated public endpoint or global cursor-order guarantee.
 The cursor is still per-coordinator, not globally ordered across the two exits.
-Cross-coordinator cursor ownership, actual replica Retrieve/ACK and guarded
-startup/recovery need connection before the atomic Program cutover.
+Cross-coordinator cursor ownership, late completion below a snapshot boundary,
+client ACK and guarded startup/recovery need connection before the atomic
+Program cutover. Retained-route/old-epoch Retrieve remains unfinished.
 The trusted monotonic clock must be the same protected owner used by the actual
 network source when composing this candidate. No host-UTC fallback is accepted.
 The sole contracts remain
@@ -59,6 +70,9 @@ The [client outcome checkpoint](testing/s03-client-outcome-2026-10-03.md) record
 same-owner composition, durable final Store outcome and completion-write recovery.
 The [server intent checkpoint](testing/s03-server-intent-2026-10-04.md) records
 actual producer custody, crash/capacity/hostile-input boundaries and final gates.
+The [current Retrieve checkpoint](testing/s03-current-retrieve-2026-10-04.md)
+records both-replica reads, bounded cross-replica pagination, native custody
+failure checks and the remaining ordering/activation boundaries.
 The descriptor transport API owner is
 [DR-0085](../../docs/survival-program/decisions/DR-0085-current-mailbox-replica-transport-facts.md).
 

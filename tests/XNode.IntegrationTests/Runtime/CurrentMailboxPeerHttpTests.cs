@@ -23,7 +23,7 @@ namespace XNode.IntegrationTests.Runtime;
 
 /// <summary>Real local TLS/H2 and two independent native stores under actual
 /// signed test-owned network/grants/floors. Not Program/ONION or device evidence.</summary>
-public sealed class CurrentMailboxPeerHttpTests
+public sealed partial class CurrentMailboxPeerHttpTests
 {
     [Fact]
     public async Task WrongHolderCannotWriteServerIntentOrReserveNativeReplay()

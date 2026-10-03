@@ -443,6 +443,9 @@ public sealed class ReplicatedMailboxStore
         EncryptedMailboxBlob? blob;
         try
         {
+            // Bound hostile native JSON before deserialization. Base64 can be
+            // JSON-escaped; allow its worst-case spelling plus fixed metadata.
+            if (new FileInfo(path).Length > checked((long)_options.MaxBlobBytes * 8 + 1024)) return null;
             await using var stream = File.OpenRead(path);
             blob = await JsonSerializer.DeserializeAsync<EncryptedMailboxBlob>(
                 stream,

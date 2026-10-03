@@ -7,13 +7,8 @@ namespace XNode.Core.Mailbox.Client;
 
 public sealed partial class MailboxClientStoreAdapter
 {
-    private const int ContinuationSigningLength = 168;
-    private const int ContinuationTokenLength = ContinuationSigningLength + 64;
-    private const byte RetrieveContinuationPurpose = 1;
-    private const byte AckPagePurpose = 2;
-    private const byte CanonicalContinuationPurposes =
-        RetrieveContinuationPurpose | AckPagePurpose;
-    private static ReadOnlySpan<byte> ContinuationMagic => "XCT1"u8;
+    private const byte RetrieveContinuationPurpose = MailboxContinuationToken.RetrievePurpose;
+    private const byte AckPagePurpose = MailboxContinuationToken.AckPurpose;
     private int _activeDeliveryOperations;
 
     public async Task<MailboxClientRetrieveResult> RetrieveVerifiedAsync(
@@ -1022,24 +1017,9 @@ public sealed partial class MailboxClientStoreAdapter
             throw new InvalidOperationException("Continuation token window is exhausted.");
         }
 
-        var token = new byte[ContinuationTokenLength];
-        ContinuationMagic.CopyTo(token);
-        token[4] = 1;
-        // MRP1 exposes one opaque token which is intentionally authorized for exactly two
-        // domain-separated uses: continuing MBR2 and acknowledging that exact page via MBA2.
-        token[5] = CanonicalContinuationPurposes;
-        BinaryPrimitives.WriteUInt16BigEndian(token.AsSpan(6, 2), maximumItems);
-        BinaryPrimitives.WriteUInt64BigEndian(token.AsSpan(8, 8), epoch);
-        BinaryPrimitives.WriteUInt64BigEndian(token.AsSpan(16, 8), cursor);
-        BinaryPrimitives.WriteUInt64BigEndian(token.AsSpan(24, 8), expiresAt);
-        BinaryPrimitives.WriteUInt64BigEndian(token.AsSpan(32, 8), snapshotHighWater);
-        mailboxId.CopyTo(token.AsSpan(40, 32));
-        placementCommitment.CopyTo(token.AsSpan(72, 32));
-        membershipCommitment.CopyTo(token.AsSpan(104, 32));
-        pageAcknowledgementDigest.CopyTo(token.AsSpan(136, 32));
-        _crypto.SignLocal(token.AsSpan(0, ContinuationSigningLength))
-            .CopyTo(token, ContinuationSigningLength);
-        return token;
+        return MailboxContinuationToken.Create(epoch, cursor, snapshotHighWater, maximumItems,
+            expiresAt, mailboxId, placementCommitment, membershipCommitment,
+            pageAcknowledgementDigest, _crypto.SignLocal);
     }
 
     private bool TryReadContinuationToken(
@@ -1054,48 +1034,15 @@ public sealed partial class MailboxClientStoreAdapter
         out ContinuationAuthority authority)
     {
         authority = default;
-        if (token.Length != ContinuationTokenLength
-            || !token[..4].SequenceEqual(ContinuationMagic)
-            || token[4] != 1
-            || token[5] != CanonicalContinuationPurposes
-            || requiredPurpose is not (
-                RetrieveContinuationPurpose or AckPagePurpose)
-            || (token[5] & requiredPurpose) != requiredPurpose
-            || BinaryPrimitives.ReadUInt16BigEndian(token.Slice(6, 2))
-                is 0 or > MailboxClientLimits.MaximumPageItems
-            || BinaryPrimitives.ReadUInt64BigEndian(token.Slice(8, 8)) != epoch
-            || BinaryPrimitives.ReadUInt64BigEndian(token.Slice(16, 8)) != cursor
-            || BinaryPrimitives.ReadUInt64BigEndian(token.Slice(24, 8)) <= NowUnixSeconds()
-            || BinaryPrimitives.ReadUInt64BigEndian(token.Slice(32, 8)) < cursor
-            || !FixedEquals(token.Slice(40, 32), mailboxId)
-            || !FixedEquals(token.Slice(72, 32), placementCommitment)
-            || !FixedEquals(token.Slice(104, 32), membershipCommitment))
+        bool Verify(ReadOnlySpan<byte> statement, ReadOnlySpan<byte> signature)
         {
+            foreach (var replicaId in expectedReplicaIds)
+                if (_crypto.VerifyReplica(replicaId.Span, statement, signature)) return true;
             return false;
         }
-
-        var signatureValid = false;
-        foreach (var replicaId in expectedReplicaIds)
-        {
-            if (_crypto.VerifyReplica(
-                    replicaId.Span,
-                    token[..ContinuationSigningLength],
-                    token[ContinuationSigningLength..]))
-            {
-                signatureValid = true;
-                break;
-            }
-        }
-
-        if (!signatureValid)
-        {
-            return false;
-        }
-
-        authority = new(
-            BinaryPrimitives.ReadUInt64BigEndian(token.Slice(32, 8)),
-            BinaryPrimitives.ReadUInt16BigEndian(token.Slice(6, 2)),
-            token.Slice(136, 32).ToArray());
+        if (!MailboxContinuationToken.TryRead(token, epoch, cursor, NowUnixSeconds(), mailboxId,
+                placementCommitment, membershipCommitment, requiredPurpose, Verify, out var window)) return false;
+        authority = new(window.SnapshotHighWater, window.MaximumItems, window.PageAcknowledgementDigest);
         return true;
     }
 

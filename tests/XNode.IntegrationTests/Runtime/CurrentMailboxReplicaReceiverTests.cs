@@ -123,14 +123,22 @@ public sealed class CurrentMailboxReplicaReceiverTests
         internal string[] MutationFiles => Directory.GetFiles(Path.Combine(Node.DataRoot, options.PeerMutationDirectoryName), "*.json");
         internal static async Task<Fixture> CreateAsync(DeepIdV2PublicationAuthorityFixture? signed = null, int localReplicaIndex = 0)
         {
-            var f = new Fixture { Node = await CurrentMailboxAdmissionTests.Fixture.CreateAsync(MailboxAuthenticatedOperation.Store,
-                signed: signed, localReplicaIndex: localReplicaIndex) };
+            var f = new Fixture
+            {
+                Node = await CurrentMailboxAdmissionTests.Fixture.CreateAsync(MailboxAuthenticatedOperation.Store,
+                signed: signed, localReplicaIndex: localReplicaIndex)
+            };
             f.SenderSeed = f.Node.Signed.Node(f.Node.Replicas[1].NodeId.Span).Seed;
             f.Envelope = MailboxClientCodec.EncodeEncryptedEnvelope(new()
             {
-                Epoch = f.Node.Host.SelectionEpoch, MailboxId = f.mailbox, PlacementId = f.placement,
-                OperationId = Bytes(16, 0x58), DeduplicationDigest = Bytes(32, 0x59),
-                CreatedAtUnixSeconds = 1_090, ExpiresAtUnixSeconds = 1_150, Ciphertext = Bytes(64, 0x60)
+                Epoch = f.Node.Host.SelectionEpoch,
+                MailboxId = f.mailbox,
+                PlacementId = f.placement,
+                OperationId = Bytes(16, 0x58),
+                DeduplicationDigest = Bytes(32, 0x59),
+                CreatedAtUnixSeconds = 1_090,
+                ExpiresAtUnixSeconds = 1_150,
+                Ciphertext = Bytes(64, 0x60)
             });
             f.Reopen(); return f;
         }
@@ -141,30 +149,42 @@ public sealed class CurrentMailboxReplicaReceiverTests
             var proof = Proof(operation == MailboxPeerReplicationOperation.Store ? MailboxCapabilityDomain.Deposit : MailboxCapabilityDomain.Retrieve);
             MailboxReplicaMembershipProof Membership(int index) => new()
             {
-                ReplicaId = Node.Replicas[index].NodeId, SigningPublicKey = Node.Replicas[index].SigningPublicKey,
-                Epoch = Node.Host.SelectionEpoch, MembershipCommitment = Node.Host.MembershipCommitment,
+                ReplicaId = Node.Replicas[index].NodeId,
+                SigningPublicKey = Node.Replicas[index].SigningPublicKey,
+                Epoch = Node.Host.SelectionEpoch,
+                MembershipCommitment = Node.Host.MembershipCommitment,
                 CanonicalInclusionProof = proof
             };
             var payload = operation == MailboxPeerReplicationOperation.Store ? Envelope : Bytes(32, 0x59);
             var unsigned = new MailboxPeerWireRequestV2
             {
-                Operation = operation, Epoch = Node.Host.SelectionEpoch, OperationId = Bytes(16, operation == MailboxPeerReplicationOperation.Store ? (byte)0x58 : (byte)0x62),
-                SenderRouterId = Node.Replicas[1].NodeId, RecipientRouterId = Node.Node,
+                Operation = operation,
+                Epoch = Node.Host.SelectionEpoch,
+                OperationId = Bytes(16, operation == MailboxPeerReplicationOperation.Store ? (byte)0x58 : (byte)0x62),
+                SenderRouterId = Node.Replicas[1].NodeId,
+                RecipientRouterId = Node.Node,
                 MembershipCommitment = Node.Host.MembershipCommitment,
-                PlacementCommitment = MailboxPlacementCommitment.Compute(placement), BlindedMailboxId = mailbox.Bytes,
-                Cursor = 1, CreatedAtUnixSeconds = 1_100, ExpiresAtUnixSeconds = 1_150,
+                PlacementCommitment = MailboxPlacementCommitment.Compute(placement),
+                BlindedMailboxId = mailbox.Bytes,
+                Cursor = 1,
+                CreatedAtUnixSeconds = 1_100,
+                ExpiresAtUnixSeconds = 1_150,
                 ReplayNonce = Bytes(32, operation == MailboxPeerReplicationOperation.Store ? (byte)0x63 : (byte)0x64),
-                Payload = payload, PayloadDigest = SHA256.HashData(payload), SenderMembershipProof = Membership(1),
-                RecipientMembershipProof = Membership(0), Signature = new byte[64]
+                Payload = payload,
+                PayloadDigest = SHA256.HashData(payload),
+                SenderMembershipProof = Membership(1),
+                RecipientMembershipProof = Membership(0),
+                Signature = new byte[64]
             };
             return MailboxPeerWireV2Codec.Encode(Crypto.SignRequest(unsigned, SenderSeed));
         }
-        internal void Reopen()
+        internal void Reopen(IMailboxDurabilityBarrier? mutationDurability = null, int? maximumMutations = null)
         {
             Receiver?.Dispose(); mutations?.Dispose(); replay?.Dispose();
+            if (maximumMutations is not null) options.MaxPeerMutationRecords = maximumMutations.Value;
             var clock = new NoUtcClock();
             blobs = new(Node.DataRoot, options, clock);
-            mutations = new(Node.DataRoot, options, blobs, clock, faults: Fault);
+            mutations = new(Node.DataRoot, options, blobs, clock, durability: mutationDurability, faults: Fault);
             replay = new(Node.DataRoot, options, clock);
             Receiver = new(Node.Admission, mutations, replay, Node.Signed.Node(Node.Node).Seed);
         }

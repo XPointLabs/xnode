@@ -13,7 +13,8 @@ public enum MailboxPeerMutationFaultPoint
 {
     StoreReserved,
     TombstoneReserved,
-    TombstoneBlobDeleted
+    TombstoneBlobDeleted,
+    RetrieveBlobRead
 }
 
 public interface IMailboxPeerMutationFaultInjector
@@ -26,7 +27,7 @@ public interface IMailboxPeerMutationFaultInjector
 /// avoiding a two-file transactional gap. Records carry protocol retirement metadata and are
 /// collected only after their replay/live-state retention boundary.
 /// </summary>
-public sealed class MailboxPeerMutationStore : IDisposable
+public sealed partial class MailboxPeerMutationStore : IDisposable
 {
     private const int SchemaVersion = 3;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -276,8 +277,6 @@ public sealed class MailboxPeerMutationStore : IDisposable
             await CheckCurrentAsync(lease, cancellationToken).ConfigureAwait(false);
             record = PersistedMutation.StorePending(verified, envelope);
             Write(path, record);
-            _recordCount++;
-            _collectionQueue.Enqueue(path, record.RetainUntilUnixSeconds);
             _faults?.Inject(MailboxPeerMutationFaultPoint.StoreReserved);
         }
         else
@@ -369,7 +368,6 @@ public sealed class MailboxPeerMutationStore : IDisposable
             await CheckCurrentAsync(lease, cancellationToken).ConfigureAwait(false);
             record = record.BeginTombstone(verified);
             Write(path, record);
-            _collectionQueue.Enqueue(path, record.RetainUntilUnixSeconds);
             _faults?.Inject(MailboxPeerMutationFaultPoint.TombstoneReserved);
         }
 
@@ -439,7 +437,7 @@ public sealed class MailboxPeerMutationStore : IDisposable
                 : await _blobStore.DeleteExactCurrentAsync(record.MailboxId, record.BlobId, lease, cancellationToken).ConfigureAwait(false);
             await CheckCurrentAsync(lease, cancellationToken).ConfigureAwait(false);
             _durability.DeleteFile(path);
-            _recordCount--;
+            RemoveRetrieveIndex(path);
             removed++;
         }
 
@@ -470,8 +468,7 @@ public sealed class MailboxPeerMutationStore : IDisposable
                 throw new InvalidDataException("A PRQ2 mutation record filename is inconsistent.");
             }
 
-            _recordCount++;
-            _collectionQueue.Enqueue(path, record.RetainUntilUnixSeconds);
+            IndexForRetrieve(path, record);
         }
     }
 
@@ -525,9 +522,15 @@ public sealed class MailboxPeerMutationStore : IDisposable
         }
         finally
         {
-            if (File.Exists(temporaryPath))
+            try
             {
-                File.Delete(temporaryPath);
+                if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+            }
+            finally
+            {
+                // A replace may already be durable even if its final flush reports
+                // failure. Reflect the actual file even when temp cleanup fails.
+                if (File.Exists(finalPath)) IndexForRetrieve(finalPath, Read(finalPath));
             }
         }
     }

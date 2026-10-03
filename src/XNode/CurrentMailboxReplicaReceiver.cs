@@ -8,7 +8,7 @@ namespace XNode;
 
 /// <summary>Current DR-0081 peer proof -> native replay -> guarded durable
 /// mutation -> descriptor-key receipt. No P04, raw policy/time, or UTC fallback.</summary>
-internal sealed class CurrentMailboxReplicaReceiver(CurrentMailboxAdmission admission,
+internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmission admission,
     MailboxPeerMutationStore mutations, DurableMailboxPeerReplayJournal replay,
     ReadOnlyMemory<byte> localSigningSeed) : IDisposable
 {
