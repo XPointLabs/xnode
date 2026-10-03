@@ -32,6 +32,16 @@ preserves the original result deadline. Existing observer, proof/network floor,
 V2 staging and candidate environment guards still apply.
 This opt-in composition is not production activation or device delivery evidence.
 
+The acquisition consumer now follows
+[DR-0081](../../docs/survival-program/decisions/DR-0081-did2-mailbox-selection-grant-clean-break.md)
+and accepts only the current bounded XMC2 result paired to the exact XMG1.
+Old result magic/length, malformed records, foreign operation bindings,
+compressed/truncated/trailing HTTP bodies and foreign media types reject.
+Protocol independently verifies the enclosed route/selector/issuer authority;
+HTTP parsing alone does not authorize a grant. Rebuild Registry/node/client
+and provision the matching signed successors together. Node mailbox admission,
+peer mutation and physical delivery remain separate activation gates.
+
 ## Private DID2 coordination backend candidate
 
 Coordination consumers must rebuild/repin with Registry and clients under

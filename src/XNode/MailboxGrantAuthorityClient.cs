@@ -24,7 +24,7 @@ internal sealed record MailboxGrantReplicaEvidence(
 
 /// <summary>
 /// Authenticated internal authority boundary. Implementations journal the exact
-/// XMG1 operation before authoring XMC1 and keep the mailbox issuer private key
+/// XMG1 operation before authoring XMC2 and keep the mailbox issuer private key
 /// outside XNode. This is not a public Registry endpoint.
 /// </summary>
 internal interface IMailboxGrantAuthorityClient
@@ -147,7 +147,7 @@ internal sealed class HttpsMailboxGrantAuthorityClient
                     ResponseMediaType, StringComparison.Ordinal)
                 || response.Content.Headers.ContentEncoding.Count != 0
                 || response.Content.Headers.ContentLength is not long length
-                || length is not (206 or 478))
+                || length is not (206 or 510))
                 throw new ContactServiceUnavailableException(
                     "The mailbox grant authority returned no exact authenticated result.");
             var exact = await HttpPrivacyPeerClient.ReadExactlyBoundedAsync(
@@ -155,8 +155,10 @@ internal sealed class HttpsMailboxGrantAuthorityClient
                 checked((int)length),
                 cancellationToken).ConfigureAwait(false);
             var decoded = ContactCodec.Decode(
-                DeepProtocolIdentifiers.Magic.XMC1,
+                DeepProtocolIdentifiers.Magic.XMC2,
                 exact);
+            ContactCodec.ValidateMailboxGrantResultBinding(
+                ContactCodec.Decode(DeepProtocolIdentifiers.Magic.XMG1, request.ExactXmg1.Span), decoded);
             return decoded.CanonicalBytes.ToArray();
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -170,6 +172,7 @@ internal sealed class HttpsMailboxGrantAuthorityClient
         catch (Exception exception) when (exception is HttpRequestException
             or IOException
             or CryptographicException
+            or ContactFormatException
             or JsonException
             or InvalidDataException)
         {

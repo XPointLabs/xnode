@@ -463,7 +463,7 @@ internal sealed class ProductionContactServiceOpaqueDispatcher :
                         replicaEvidence),
                     cancellationToken)
                 .ConfigureAwait(false);
-            var response = ContactCodec.Decode(ProtocolMagic.XMC1, exactResponse.Span);
+            var response = ContactCodec.Decode(ProtocolMagic.XMC2, exactResponse.Span);
             ContactCodec.ValidateMailboxGrantResultBinding(request, response);
             if (resultCode == MailboxGrantAcquisitionResultCode.Success)
                 ContactCodec.ValidateMailboxGrantResultRouteBinding(response, exactRoute!);

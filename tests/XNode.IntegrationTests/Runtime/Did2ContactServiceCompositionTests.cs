@@ -1,4 +1,6 @@
 using System.Net;
+using System.Net.Http.Headers;
+using System.Text.Json;
 using System.Buffers.Binary;
 using System.Security.Cryptography;
 using Deep.Protocol.ContactV1;
@@ -6,6 +8,7 @@ using Deep.Protocol.ContactV2;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
 using Deep.Protocol.DeepExtension.PrivacyRouting;
 using Deep.Protocol.XPointNetworkV1;
+using Deep.Protocol.Registry;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Routing;
@@ -144,8 +147,10 @@ public sealed class Did2ContactServiceCompositionTests
         else Assert.Empty(endpoints);
     }
 
-    [Fact]
-    public async Task TwoSelectedStoresPublishResolveAndResumeExactAfterLostPeerResponse()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task TwoSelectedStoresPublishResolveAndResumeExactAfterLostPeerResponse(bool grantHttp)
     {
         using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync(authorContactPublication: true);
         var placementSource = new VerifiedContactServicePlacementAuthoritySource(fixture, fixture);
@@ -162,7 +167,7 @@ public sealed class Did2ContactServiceCompositionTests
             var options = new ContactServicePersistenceOptions { RuntimeActivation = true, MapReplicaEndpoint = true };
             var peers = new Dictionary<RouterId, ServiceProvider>();
             var state = new PeerState();
-            var providers = nodes.Select(node => Compose(node, nodes, fixture, options, peers, state)).ToArray();
+            var providers = nodes.Select(node => Compose(node, nodes, fixture, options, peers, state, grantHttp)).ToArray();
             try
             {
                 for (var i = 0; i < nodes.Length; i++) peers.Add(nodes[i].GetRouterId(), providers[i]);
@@ -179,7 +184,7 @@ public sealed class Did2ContactServiceCompositionTests
                 // directories, not just retry with an in-memory saga/receipt.
                 foreach (var provider in providers) await provider.DisposeAsync();
                 peers.Clear();
-                providers = nodes.Select(node => Compose(node, nodes, fixture, options, peers, state)).ToArray();
+                providers = nodes.Select(node => Compose(node, nodes, fixture, options, peers, state, grantHttp)).ToArray();
                 for (var i = 0; i < nodes.Length; i++) peers.Add(nodes[i].GetRouterId(), providers[i]);
                 dispatcher = providers[0].GetRequiredService<IContactServiceOpaqueDispatcher>();
                 var exact = await dispatcher.DispatchAsync(ContactServiceOperation.PublishDcr, publication.CanonicalBytes, default);
@@ -197,12 +202,17 @@ public sealed class Did2ContactServiceCompositionTests
                 var deposit = await DeepIdV2MailboxGrantRequestAuthor.AuthorDepositAsync(fixture.ContactRoute,
                     publication.LocatorHash, holder);
                 state.LoseNextGrant = true;
-                await Assert.ThrowsAsync<IOException>(() => dispatcher.DispatchAsync(ContactServiceOperation.AcquireMailboxGrant,
+                var uncertainGrant = await Assert.ThrowsAsync<IOException>(() => dispatcher.DispatchAsync(ContactServiceOperation.AcquireMailboxGrant,
                     deposit.ExactXmg1, default).AsTask());
+                if (grantHttp) Assert.IsType<ContactServiceUnavailableException>(uncertainGrant.InnerException);
                 fixture.Sample++;
                 var depositResult = await dispatcher.DispatchAsync(ContactServiceOperation.AcquireMailboxGrant, deposit.ExactXmg1, default);
                 var granted = await DeepIdV2MailboxGrantResultVerifier.VerifySuccessAsync(fixture.ContactRoute,
                     deposit, depositResult, fixture.MailboxAuthority);
+                Assert.Equal(510, depositResult.Length);
+                var parsedResult = ContactCodec.Decode(DeepProtocolIdentifiers.Magic.XMC2, depositResult.Span);
+                var parsedGrant = MailboxAuthenticatedCapabilityCodec.DecodeGrant(parsedResult.Field(8).Span);
+                Assert.Equal(fixture.ContactRoute.Route.Selection.Field(3).ToArray(), parsedGrant.SelectionInput.ToArray());
                 Assert.Equal(MailboxCapabilityDomain.Deposit, granted.Domain);
                 Assert.Equal(1, state.GrantSignatures);
                 using var ownerHolder = new GrantSigner(0x52);
@@ -277,9 +287,73 @@ public sealed class Did2ContactServiceCompositionTests
         Assert.True(options.Validate(true, true, true));
     }
 
+    [Theory]
+    [InlineData("current-failure")]
+    [InlineData("old-magic")]
+    [InlineData("old-size")]
+    [InlineData("foreign-operation")]
+    [InlineData("malformed")]
+    [InlineData("compressed")]
+    [InlineData("foreign-media-type")]
+    [InlineData("http-error")]
+    [InlineData("unknown-length")]
+    [InlineData("truncated")]
+    [InlineData("trailing")]
+    public async Task GrantHttpAcceptsOnlyCurrentBoundedRequestPairedResults(string mode)
+    {
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync(authorContactPublication: true);
+        using var holder = new GrantSigner(0x51);
+        var owned = await DeepIdV2MailboxGrantRequestAuthor.AuthorDepositAsync(fixture.ContactRoute,
+            fixture.ContactPublication.LocatorHash, holder);
+        var request = ContactCodec.Decode(DeepProtocolIdentifiers.Magic.XMG1, owned.ExactXmg1.Span);
+        var expiry = BinaryPrimitives.ReadUInt64BigEndian(request.Field(10).Span);
+        var response = MailboxGrantResultAuthor.AuthorFailure(request, MailboxGrantAcquisitionResultCode.Unavailable,
+            BinaryPrimitives.ReadUInt64BigEndian(request.Field(9).Span), expiry).CanonicalBytes.ToArray();
+        if (mode == "old-magic") "XMC1"u8.CopyTo(response);
+        if (mode == "foreign-operation") response[request.Field(1).Length + 12 + 8 + 8] ^= 1;
+        if (mode == "malformed") response[12 + 2] = 1; // Reserved tagged-field bytes.
+        if (mode == "old-size") response = new byte[478];
+        if (mode == "truncated") response = response[..^1];
+        if (mode == "trailing") response = [.. response, 1];
+        var content = new ObservedGrantContent(response, mode == "unknown-length");
+        content.Headers.ContentType = new(mode == "foreign-media-type" ? "application/octet-stream"
+            : HttpsMailboxGrantAuthorityClient.ResponseMediaType);
+        if (mode != "unknown-length") content.Headers.ContentLength = mode == "old-size" ? 478 : 206;
+        if (mode == "compressed") content.Headers.ContentEncoding.Add("gzip");
+        using var client = new HttpClient(new GrantResponseHandler(content,
+            mode == "http-error" ? HttpStatusCode.Forbidden : HttpStatusCode.OK));
+        var nodeId = fixture.Placement.ReplicaIds[0];
+        var node = new RouterNodeOptions { RouterId = Convert.ToHexStringLower(nodeId.Span),
+            Ed25519PrivateKey = Convert.ToHexStringLower(fixture.Node(nodeId.Span).Seed) };
+        var authority = new HttpsMailboxGrantAuthorityClient(client, node, new("https://issuer.example/"), new SystemClock());
+        var input = new MailboxGrantAuthorityRequest(owned.ExactXmg1, MailboxGrantAcquisitionResultCode.Unavailable,
+            default, 0, 0, expiry, [new(nodeId, new byte[64]), new(fixture.Placement.ReplicaIds[1], new byte[64])]);
+        if (mode == "current-failure")
+            Assert.Equal(response, (await authority.AuthorizeAsync(input, default)).ToArray());
+        else
+            await Assert.ThrowsAsync<ContactServiceUnavailableException>(() => authority.AuthorizeAsync(input, default).AsTask());
+        if (mode is "old-size" or "compressed" or "foreign-media-type" or "http-error" or "unknown-length")
+            Assert.Equal(0, content.Reads);
+    }
+
+    private sealed class GrantResponseHandler(HttpContent content, HttpStatusCode status) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage message, CancellationToken ct)
+        { ct.ThrowIfCancellationRequested(); return Task.FromResult(new HttpResponseMessage(status) { Content = content }); }
+    }
+
+    private sealed class ObservedGrantContent(byte[] exact, bool unknownLength) : HttpContent
+    {
+        internal int Reads;
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context)
+        { Reads++; return stream.WriteAsync(exact).AsTask(); }
+        protected override bool TryComputeLength(out long length)
+        { length = exact.Length; return !unknownLength; }
+    }
+
     private static ServiceProvider Compose(RouterNodeOptions node, RouterNodeOptions[] nodes,
         DeepIdV2PublicationAuthorityFixture fixture, ContactServicePersistenceOptions options,
-        Dictionary<RouterId, ServiceProvider> providers, PeerState state)
+        Dictionary<RouterId, ServiceProvider> providers, PeerState state, bool grantHttp)
     {
         var services = new ServiceCollection(); services.AddLogging();
         services.AddSingleton(node); services.AddSingleton<IOnionMonotonicClock>(fixture);
@@ -293,7 +367,14 @@ public sealed class Did2ContactServiceCompositionTests
             Privacy(nodes), options, new SystemClock(), peer => new Handler(peer, providers, state)));
         services.AddDid2ContactResolver(new() { Enabled = true, MailboxGrantEnabled = true, MailboxGrantAuthorityOrigin = "https://issuer.example/" });
         services.RemoveAll<IMailboxGrantAuthorityClient>();
-        services.AddSingleton<IMailboxGrantAuthorityClient>(new VerifiedGrantIssuer(fixture, state));
+        var issuer = new VerifiedGrantIssuer(fixture, state);
+        if (grantHttp)
+        {
+            services.AddSingleton(_ => new HttpClient(new GrantAuthorityHandler(issuer)));
+            services.AddSingleton<IMailboxGrantAuthorityClient>(provider => new HttpsMailboxGrantAuthorityClient(
+                provider.GetRequiredService<HttpClient>(), node, new("https://issuer.example/"), new SystemClock()));
+        }
+        else services.AddSingleton<IMailboxGrantAuthorityClient>(issuer);
         services.AddSingleton<IContactServiceOpaqueDispatcher, DeepIdV2ContactOnionDispatcher>();
         return services.BuildServiceProvider();
     }
@@ -336,6 +417,42 @@ public sealed class Did2ContactServiceCompositionTests
             return exact.ToArray();
         }
     }
+    // Exercises the actual private HTTP client and exact signed JSON transcript.
+    // The handler is an in-process authority fixture, not TLS/socket evidence.
+    private sealed class GrantAuthorityHandler(VerifiedGrantIssuer issuer) : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage message, CancellationToken ct)
+        {
+            Assert.Equal(HttpMethod.Post, message.Method);
+            Assert.Equal("https://issuer.example" + HttpsMailboxGrantAuthorityClient.EndpointPath, message.RequestUri!.AbsoluteUri);
+            Assert.Equal(HttpsMailboxGrantAuthorityClient.RequestMediaType, message.Content!.Headers.ContentType!.MediaType);
+            Assert.Equal(HttpsMailboxGrantAuthorityClient.ResponseMediaType, Assert.Single(message.Headers.Accept).MediaType);
+            using var document = JsonDocument.Parse(await message.Content.ReadAsByteArrayAsync(ct));
+            var json = document.RootElement;
+            var request = new MailboxGrantAuthorityRequest(
+                Decode(json.GetProperty("exactXmg1")), (MailboxGrantAcquisitionResultCode)json.GetProperty("resultCode").GetUInt16(),
+                Decode(json.GetProperty("exactRouteClosure")), json.GetProperty("routeDisposition").GetUInt16(),
+                json.GetProperty("routeEffectiveExpiresAtUnixSeconds").GetUInt64(), json.GetProperty("resultExpiresAtUnixSeconds").GetUInt64(),
+                json.GetProperty("replicaEvidence").EnumerateArray().Select(item => new MailboxGrantReplicaEvidence(
+                    Convert.FromHexString(item.GetProperty("replicaId").GetString()!), Decode(item.GetProperty("signature")))).ToArray());
+            var nodeId = Convert.FromHexString(json.GetProperty("nodeId").GetString()!);
+            var signing = MailboxGrantAuthorityAuthentication.GetSigningBytes(request.ExactXmg1.Span, request.ResultCode,
+                request.ExactRouteClosure.Span, request.ResultExpiresAtUnixSeconds, nodeId,
+                json.GetProperty("issuedAtUnixSeconds").GetUInt64(), Decode(json.GetProperty("nonce")));
+            Assert.True(PublicKeyAuth.VerifyDetached(Decode(json.GetProperty("signature")), signing, nodeId));
+            var exact = await issuer.AuthorizeAsync(request, ct);
+            var content = new ByteArrayContent(exact.ToArray());
+            content.Headers.ContentType = new MediaTypeHeaderValue(HttpsMailboxGrantAuthorityClient.ResponseMediaType);
+            content.Headers.ContentLength = exact.Length;
+            return new(HttpStatusCode.OK) { Content = content };
+        }
+        private static byte[] Decode(JsonElement field)
+        {
+            var value = field.GetString()!.Replace('-', '+').Replace('_', '/');
+            return Convert.FromBase64String(value.PadRight((value.Length + 3) / 4 * 4, '='));
+        }
+    }
+
     private sealed class GrantSigner : IDisposable, IReachabilityMailboxHolderSigner, IMailboxGrantIssuerSigner
     {
         private readonly KeyPair key;
