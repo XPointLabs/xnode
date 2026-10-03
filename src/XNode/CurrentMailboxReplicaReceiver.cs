@@ -69,6 +69,8 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
             throw new CryptographicException("Current peer producer belongs to another native admission owner.");
         var local = scope.Replicas.Single(replica => Fixed(replica.NodeId.Span, admission.LocalNodeId.Span));
         var remote = scope.Replicas.Single(replica => !Fixed(replica.NodeId.Span, local.NodeId.Span));
+        if (operation == MailboxPeerReplicationOperation.Store && !Fixed(local.NodeId.Span, scope.Replicas[0].NodeId.Span))
+            throw new CryptographicException("Store intent must be authored by the authenticated PMS2 writer.");
         if (!Fixed(crypto.GetPublicKey(seed), local.SigningPublicKey.Span))
             throw new CryptographicException("Current Store producer signing custody differs from its descriptor.");
         var proof = new byte[342];
@@ -167,6 +169,9 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
         var ct = token;
         if (!Fixed(first.Span[..38], scope.Host.ProjectionReference.Span))
             throw new CryptographicException("Current peer projection differs from the signed host.");
+        if (expectedOperation == MailboxPeerReplicationOperation.Store &&
+            !Fixed(decoded.SenderRouterId.Span, scope.Replicas[0].NodeId.Span))
+            throw new CryptographicException("Peer Store sender must be the authenticated PMS2 writer.");
         var proofs = new CurrentProofs(scope, first.ToArray());
         var upper = await scope.Lease.CheckAsync(ct).ConfigureAwait(false);
         if (!proofs.VerifyStorageReplica(decoded.SenderMembershipProof, upper) ||

@@ -16,11 +16,39 @@ public sealed class CurrentMailboxAdmissionTests
     [InlineData(MailboxAuthenticatedOperation.Store)]
     [InlineData(MailboxAuthenticatedOperation.Retrieve)]
     [InlineData(MailboxAuthenticatedOperation.Ack)]
+    public async Task RankedSecondReplicaRejectsClientStoreBeforeReplayButAdmitsReads(MailboxAuthenticatedOperation operation)
+    {
+        await using var f = await Fixture.CreateAsync(operation, localReplicaIndex: 1);
+        var calls = 0;
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            f.ReopenRuntime();
+            var error = await Record.ExceptionAsync(() => f.Admission.WithRequestAsync(f.Frame, operation,
+                (_, _) => { calls++; return ValueTask.FromResult(1); }).AsTask());
+            if (operation == MailboxAuthenticatedOperation.Store)
+            {
+                Assert.IsType<CryptographicException>(error); Assert.Equal(0, calls);
+                Assert.Equal(0, f.Replay.Diagnostics.ScopeCount);
+                Assert.Equal(0UL, f.Replay.Diagnostics.AcceptedTimeHighWatermarkUnixSeconds);
+                Assert.Equal(0, f.OutcomeCount);
+            }
+            else
+            {
+                Assert.Null(error); Assert.Equal(attempt + 1, calls);
+                Assert.Equal(1, f.Replay.Diagnostics.PendingCount);
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData(MailboxAuthenticatedOperation.Store)]
+    [InlineData(MailboxAuthenticatedOperation.Retrieve)]
+    [InlineData(MailboxAuthenticatedOperation.Ack)]
     public async Task SignedAdmissionAndExactTerminalReplaySurviveNativeReopen(MailboxAuthenticatedOperation operation)
     {
         await using var fixture = await Fixture.CreateAsync(operation);
-        // This ceremony is generation zero: its author requires ID == identity
-        // key. A genuinely rotated descriptor must separately qualify S02/S03.
+        // This genesis fixture has ID == identity key. A genuine distinct-ID/key
+        // lineage must separately qualify S02/S03; do not invent key rotation.
         Assert.Equal(fixture.Node, fixture.Replicas[0].SigningPublicKey.ToArray());
         var first = await fixture.Admission.WithRequestAsync(fixture.Frame, operation, async (request, token) =>
         {

@@ -12,6 +12,21 @@ namespace XNode.IntegrationTests.Runtime;
 public sealed class CurrentMailboxReplicaReceiverTests
 {
     [Fact]
+    public async Task CorrectlySignedNonWriterPeerStoreRejectsBeforeReplayAndMutationAfterReopen()
+    {
+        // Both proof keys and the peer signature are genuine. Only rank is wrong.
+        await using var f = await Fixture.CreateAsync(localReplicaIndex: 0);
+        var exact = f.Frame(MailboxPeerReplicationOperation.Store);
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            await Assert.ThrowsAsync<CryptographicException>(() => f.Receiver.ReceiveAsync(exact,
+                MailboxPeerReplicationOperation.Store).AsTask());
+            Assert.Empty(f.ReplayFiles); Assert.Empty(f.MutationFiles); Assert.Null(await f.ReadBlobAsync());
+            f.Reopen();
+        }
+    }
+
+    [Fact]
     public async Task StoreReadTombstoneAndExactReplaysUseNativeCurrentCustodyWithoutUtc()
     {
         await using var f = await Fixture.CreateAsync();
@@ -19,7 +34,7 @@ public sealed class CurrentMailboxReplicaReceiverTests
         var response = await f.Receiver.ReceiveAsync(store, MailboxPeerReplicationOperation.Store);
         var receipt = MailboxReceiptV2Codec.DecodeReplica(response.Span);
         Assert.Equal(MailboxReplicaDisposition.Stored, receipt.Disposition);
-        Assert.True(f.Crypto.Verify(f.Node.Replicas[0].SigningPublicKey.Span,
+        Assert.True(f.Crypto.Verify(f.Node.Replicas.Single(replica => replica.NodeId.Span.SequenceEqual(f.Node.Node)).SigningPublicKey.Span,
             MailboxReceiptV2Codec.GetReplicaSigningBytes(receipt), receipt.Signature.Span));
         Assert.Equal(f.Envelope, (await f.ReadBlobAsync())!);
         f.Reopen();
@@ -121,14 +136,14 @@ public sealed class CurrentMailboxReplicaReceiverTests
         private readonly BlindedPlacementId placement = new(Bytes(32, 0x55));
         internal string[] ReplayFiles => Directory.GetFiles(Path.Combine(Node.DataRoot, options.PeerReplayDirectoryName), "*.json");
         internal string[] MutationFiles => Directory.GetFiles(Path.Combine(Node.DataRoot, options.PeerMutationDirectoryName), "*.json");
-        internal static async Task<Fixture> CreateAsync(DeepIdV2PublicationAuthorityFixture? signed = null, int localReplicaIndex = 0)
+        internal static async Task<Fixture> CreateAsync(DeepIdV2PublicationAuthorityFixture? signed = null, int localReplicaIndex = 1)
         {
             var f = new Fixture
             {
                 Node = await CurrentMailboxAdmissionTests.Fixture.CreateAsync(MailboxAuthenticatedOperation.Store,
                 signed: signed, localReplicaIndex: localReplicaIndex)
             };
-            f.SenderSeed = f.Node.Signed.Node(f.Node.Replicas[1].NodeId.Span).Seed;
+            f.SenderSeed = f.Node.Signed.Node(f.Node.Replicas[1 - localReplicaIndex].NodeId.Span).Seed;
             f.Envelope = MailboxClientCodec.EncodeEncryptedEnvelope(new()
             {
                 Epoch = f.Node.Host.SelectionEpoch,
@@ -146,6 +161,8 @@ public sealed class CurrentMailboxReplicaReceiverTests
             [.. Node.Host.ProjectionReference.Span, .. Grant(Node.Signed, Node.Host, role, serial)];
         internal byte[] Frame(MailboxPeerReplicationOperation operation)
         {
+            var recipient = Node.Replicas.ToList().FindIndex(replica => replica.NodeId.Span.SequenceEqual(Node.Node));
+            var sender = 1 - recipient;
             var proof = Proof(operation == MailboxPeerReplicationOperation.Store ? MailboxCapabilityDomain.Deposit : MailboxCapabilityDomain.Retrieve);
             MailboxReplicaMembershipProof Membership(int index) => new()
             {
@@ -161,7 +178,7 @@ public sealed class CurrentMailboxReplicaReceiverTests
                 Operation = operation,
                 Epoch = Node.Host.SelectionEpoch,
                 OperationId = Bytes(16, operation == MailboxPeerReplicationOperation.Store ? (byte)0x58 : (byte)0x62),
-                SenderRouterId = Node.Replicas[1].NodeId,
+                SenderRouterId = Node.Replicas[sender].NodeId,
                 RecipientRouterId = Node.Node,
                 MembershipCommitment = Node.Host.MembershipCommitment,
                 PlacementCommitment = MailboxPlacementCommitment.Compute(placement),
@@ -172,8 +189,8 @@ public sealed class CurrentMailboxReplicaReceiverTests
                 ReplayNonce = Bytes(32, operation == MailboxPeerReplicationOperation.Store ? (byte)0x63 : (byte)0x64),
                 Payload = payload,
                 PayloadDigest = SHA256.HashData(payload),
-                SenderMembershipProof = Membership(1),
-                RecipientMembershipProof = Membership(0),
+                SenderMembershipProof = Membership(sender),
+                RecipientMembershipProof = Membership(recipient),
                 Signature = new byte[64]
             };
             return MailboxPeerWireV2Codec.Encode(Crypto.SignRequest(unsigned, SenderSeed));

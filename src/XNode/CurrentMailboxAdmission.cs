@@ -37,6 +37,8 @@ internal sealed class CurrentMailboxAdmission(
             MailboxAuthenticatedRuntimeReservation? reservation = null;
             try
             {
+                if (operation == MailboxAuthenticatedOperation.Store && !Fixed(scope.Replicas[0].NodeId.Span, node))
+                    throw new CryptographicException("Client Store requires the authenticated PMS2 writer.");
                 if (storeLedger is not null)
                 {
                     runtime.RequireCurrentStoreHolder(owned, scope.Lease.RequireActive);

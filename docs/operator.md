@@ -51,10 +51,15 @@ against the complete signed intent, independently current projection/issuer and
 descriptor identity keys before a later cursor is allocated. Expired former
 grants do not become current admission authority through this verification.
 Unsigned state, hostile receipts and unavailable history remain backpressure.
-This local prefix barrier is not yet the single-writer/path integration required
-by [DR-0086](../../docs/survival-program/decisions/DR-0086-current-mailbox-store-order.md).
-Program activation, retained projection history and signed expiry retirement
-remain gated. Current Store intents are not collected by host-UTC startup GC.
+The internal candidate now enforces the authenticated PMS2 writer under
+[DR-0086](../../docs/survival-program/decisions/DR-0086-current-mailbox-store-order.md):
+only the ranked first node admits client Store or authors Store intent, and both
+peer roles reject a different Store sender before native replay/mutation. The
+matching Shared client keeps Store's writer exit across primary/fallback attempts.
+Retrieve/ACK remain available on either replica; a node never reroutes a sealed
+client request. Program activation, startup/recovery, retained projection history
+and signed expiry retirement remain gated. Current Store intents are not collected
+by host-UTC startup GC. This is not physical delivery or release qualification.
 Internal client Retrieve now reads the actual completed mutation/blob custody
 on either replica under that same current admission, without requiring the
 coordinator's client ledger. It persists the canonical MRP1 in the existing

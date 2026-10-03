@@ -400,7 +400,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
         await using var f = await Fixture.CreateAsync();
         ReadOnlyMemory<byte>? reply = null;
         var error = await Record.ExceptionAsync(async () => reply = await new CurrentMailboxReplicaPeerClient().SendAsync(
-            f.Recipient.Node.Replicas[0].Transport, MailboxPeerReplicationOperation.Store,
+            f.Recipient.Node.Replicas.Single(replica => replica.NodeId.Span.SequenceEqual(f.Recipient.Node.Node)).Transport, MailboxPeerReplicationOperation.Store,
             f.Recipient.Frame(MailboxPeerReplicationOperation.Store), CancellationToken.None));
         Assert.True(error is null, $"Failure={error?.GetType().Name}; HTTP error={(error as HttpRequestException)?.HttpRequestError}; inner={error?.InnerException?.GetType().Name}.");
         Assert.NotNull(reply);
@@ -528,7 +528,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
     {
         await using var f = await Fixture.CreateAsync();
         var exact = f.Recipient.Frame(MailboxPeerReplicationOperation.Store);
-        using var client = new HttpClient(HttpPrivacyPeerClient.CreatePinnedHandler(f.Recipient.Node.Replicas[0].Transport));
+        using var client = new HttpClient(HttpPrivacyPeerClient.CreatePinnedHandler(f.Recipient.Node.Replicas.Single(replica => replica.NodeId.Span.SequenceEqual(f.Recipient.Node.Node)).Transport));
         foreach (var defect in new[] { "operation", "media" })
         {
             using var content = new ByteArrayContent(exact);
@@ -597,8 +597,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
                 // The next pin must remain distinct even in the intentionally wrong-current-pin case.
                 if (wrongPin) origins = origins.Select(origin => origin with { NextSpki = SHA256.HashData(origin.NextSpki.Span) }).ToArray();
                 f.Signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync(transportOrigins: origins);
-                f.Recipient = await Peer.CreateAsync(f.Signed, 0); f.Sender = await Peer.CreateAsync(f.Signed, 1);
-                f.RemoteHost = f.hosts.Single(host => host.Port == f.Recipient.Node.Replicas[0].Transport.Port);
+                f.Recipient = await Peer.CreateAsync(f.Signed, 1); f.Sender = await Peer.CreateAsync(f.Signed, 0);
                 f.Bind(); return f;
             }
             catch { await f.DisposeAsync(); throw; }
