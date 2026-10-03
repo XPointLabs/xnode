@@ -23,6 +23,30 @@ internal sealed class CurrentMailboxReplicationCoordinator(CurrentMailboxReplica
         local.WithPeerAsync<MailboxPeerQuorumResult>(exactRequest, operation, MailboxPeerWireResponseReplicaV2.Sender,
             (current, ct) => ReplicateAdmittedAsync(current, operation, ct), token);
 
+    internal ValueTask<MailboxPeerQuorumResult> StoreClientAsync(ReadOnlyMemory<byte> canonicalClientRequest,
+        MailboxClientOperationLedger ledger, CancellationToken token = default)
+    {
+        ArgumentNullException.ThrowIfNull(ledger);
+        var client = MailboxAuthenticatedClientRequestCodec.Decode(canonicalClientRequest.Span);
+        var ownedClient = MailboxAuthenticatedClientRequestCodec.Encode(client);
+        if (client.Binding.Operation != MailboxAuthenticatedOperation.Store)
+            throw new CryptographicException("Current Store requires its exact client operation.");
+        var envelope = MailboxAuthenticatedRequestTranscript.DecodeStoreBody(client.Binding.CanonicalRequest.Span);
+        return local.WithClientRequestAsync<MailboxPeerQuorumResult>(ownedClient, MailboxAuthenticatedOperation.Store,
+            async (request, ct) =>
+            {
+                // The native ledger owns the random nonce and the COMPLETE signed
+                // request before the first peer reservation/write. No remint on retry.
+                var requireExisting = request.ReplayDisposition != MailboxAuthenticatedReplayDisposition.NewReserved ||
+                    await local.HasStoreCustodyAsync(request.Scope, envelope, ct).ConfigureAwait(false);
+                var intent = await ledger.ReserveCurrentStoreAsync(envelope, request.Scope.Host.MembershipCommitment,
+                    request.Scope.Replicas.Select(replica => replica.NodeId).ToArray(), request.Scope.Lease,
+                    (cursor, upper) => local.AuthorStoreRequest(request.Scope, client.Binding.CanonicalRequest, cursor, upper), ct,
+                    requireExisting: requireExisting).ConfigureAwait(false);
+                return await StoreAdmittedClientAsync(request, intent.CanonicalPeerRequest, ct).ConfigureAwait(false);
+            }, token);
+    }
+
     // An internal producer supplies its exact peer request. This is not a
     // client wire extension or a raw authority adapter. Bind it to captured
     // MAU3 before either replay owner is touched, then use the SAME native scope.
@@ -43,30 +67,33 @@ internal sealed class CurrentMailboxReplicationCoordinator(CurrentMailboxReplica
             !first.Span[38..].SequenceEqual(exactGrant))
             throw new CryptographicException("Client Store and current peer request differ.");
         return local.WithClientRequestAsync<MailboxPeerQuorumResult>(ownedClient, MailboxAuthenticatedOperation.Store,
-            async (request, ct) =>
-            {
-                var recovered = request.RecoveredOutcome;
-                if (recovered is not null)
-                {
-                    if (recovered.Kind != MailboxClientCanonicalOutcomeKind.Success || recovered.Operation != MailboxAuthenticatedOperation.Store)
-                        throw new InvalidDataException("Client Store outcome is not a durable quorum.");
-                    await local.WithAdmittedPeerAsync(ownedPeer, MailboxPeerReplicationOperation.Store, MailboxPeerWireResponseReplicaV2.Sender,
-                        request.Scope, async (current, innerToken) =>
-                        { await current.ValidateQuorumAsync(recovered.CanonicalBytes, innerToken).ConfigureAwait(false); return 0; }, ct).ConfigureAwait(false);
-                    var completed = await request.CompleteRecoveredAsync(ct).ConfigureAwait(false);
-                    return new(MailboxPeerQuorumStatus.Durable, completed.CanonicalBytes, 2);
-                }
-                if (!await request.TryAcquireExecutionAsync(ct).ConfigureAwait(false))
-                    return new(MailboxPeerQuorumStatus.PartialFailure, ReadOnlyMemory<byte>.Empty, 0);
-                var maximum = MailboxWireHttpContract.Store.MaximumResponseBytes;
-                await request.ReserveOutcomeCapacityAsync(maximum, ct).ConfigureAwait(false);
-                var result = await local.WithAdmittedPeerAsync(ownedPeer, MailboxPeerReplicationOperation.Store,
-                    MailboxPeerWireResponseReplicaV2.Sender, request.Scope,
-                    (current, innerToken) => ReplicateAdmittedAsync(current, MailboxPeerReplicationOperation.Store, innerToken), ct).ConfigureAwait(false);
-                if (result.Status != MailboxPeerQuorumStatus.Durable) return result;
-                var persisted = await request.PersistSuccessAsync(result.CanonicalMqr3, maximum, ct).ConfigureAwait(false);
-                return new(MailboxPeerQuorumStatus.Durable, persisted.CanonicalBytes, 2);
-            }, token);
+            (request, ct) => StoreAdmittedClientAsync(request, ownedPeer, ct), token);
+    }
+
+    private async ValueTask<MailboxPeerQuorumResult> StoreAdmittedClientAsync(CurrentMailboxAdmission.Request request,
+        ReadOnlyMemory<byte> ownedPeer, CancellationToken ct)
+    {
+        var recovered = request.RecoveredOutcome;
+        if (recovered is not null)
+        {
+            if (recovered.Kind != MailboxClientCanonicalOutcomeKind.Success || recovered.Operation != MailboxAuthenticatedOperation.Store)
+                throw new InvalidDataException("Client Store outcome is not a durable quorum.");
+            await local.WithAdmittedPeerAsync(ownedPeer, MailboxPeerReplicationOperation.Store, MailboxPeerWireResponseReplicaV2.Sender,
+                request.Scope, async (current, innerToken) =>
+                { await current.ValidateQuorumAsync(recovered.CanonicalBytes, innerToken).ConfigureAwait(false); return 0; }, ct).ConfigureAwait(false);
+            var completed = await request.CompleteRecoveredAsync(ct).ConfigureAwait(false);
+            return new(MailboxPeerQuorumStatus.Durable, completed.CanonicalBytes, 2);
+        }
+        if (!await request.TryAcquireExecutionAsync(ct).ConfigureAwait(false))
+            return new(MailboxPeerQuorumStatus.PartialFailure, ReadOnlyMemory<byte>.Empty, 0);
+        var maximum = MailboxWireHttpContract.Store.MaximumResponseBytes;
+        await request.ReserveOutcomeCapacityAsync(maximum, ct).ConfigureAwait(false);
+        var result = await local.WithAdmittedPeerAsync(ownedPeer, MailboxPeerReplicationOperation.Store,
+            MailboxPeerWireResponseReplicaV2.Sender, request.Scope,
+            (current, innerToken) => ReplicateAdmittedAsync(current, MailboxPeerReplicationOperation.Store, innerToken), ct).ConfigureAwait(false);
+        if (result.Status != MailboxPeerQuorumStatus.Durable) return result;
+        var persisted = await request.PersistSuccessAsync(result.CanonicalMqr3, maximum, ct).ConfigureAwait(false);
+        return new(MailboxPeerQuorumStatus.Durable, persisted.CanonicalBytes, 2);
     }
 
     private async ValueTask<MailboxPeerQuorumResult> ReplicateAdmittedAsync(CurrentMailboxReplicaReceiver.PeerOperation current,

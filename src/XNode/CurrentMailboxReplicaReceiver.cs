@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
 using Deep.Protocol.DeepExtension.PrivacyRouting;
+using Deep.Protocol.XPointNetworkV1;
 using XNode.Core.Mailbox;
 
 namespace XNode;
@@ -24,6 +25,61 @@ internal sealed class CurrentMailboxReplicaReceiver(CurrentMailboxAdmission admi
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
         return admission.WithRequestAsync(exactRequest, operation, action, token);
+    }
+
+    internal Task<bool> HasStoreCustodyAsync(CurrentMailboxAdmission.GrantScope scope,
+        MailboxEncryptedEnvelope envelope, CancellationToken token)
+    {
+        scope.Lease.RequireActive();
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
+        if (!ReferenceEquals(scope.Owner, admission))
+            throw new CryptographicException("Current Store lookup belongs to another native admission owner.");
+        return mutations.HasCurrentStoreCustodyAsync(envelope, scope.Lease, token);
+    }
+
+    internal ReadOnlyMemory<byte> AuthorStoreRequest(CurrentMailboxAdmission.GrantScope scope,
+        ReadOnlyMemory<byte> canonicalEnvelope, ulong cursor, ulong createdAt)
+    {
+        scope.Lease.RequireActive();
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
+        if (!ReferenceEquals(scope.Owner, admission))
+            throw new CryptographicException("Current Store producer belongs to another native admission owner.");
+        var envelope = MailboxAuthenticatedRequestTranscript.DecodeStoreBody(canonicalEnvelope.Span);
+        var local = scope.Replicas.Single(replica => Fixed(replica.NodeId.Span, admission.LocalNodeId.Span));
+        var remote = scope.Replicas.Single(replica => !Fixed(replica.NodeId.Span, local.NodeId.Span));
+        if (!Fixed(crypto.GetPublicKey(seed), local.SigningPublicKey.Span))
+            throw new CryptographicException("Current Store producer signing custody differs from its descriptor.");
+        var proof = new byte[342];
+        scope.Host.ProjectionReference.Span.CopyTo(proof);
+        MailboxAuthenticatedCapabilityCodec.EncodeGrant(scope.Grant).CopyTo(proof, 38);
+        MailboxReplicaMembershipProof Membership(VerifiedMailboxReplicaV2 replica) => new()
+        {
+            ReplicaId = replica.NodeId,
+            SigningPublicKey = replica.SigningPublicKey,
+            Epoch = scope.Host.SelectionEpoch,
+            MembershipCommitment = scope.Host.MembershipCommitment,
+            CanonicalInclusionProof = proof
+        };
+        return MailboxPeerWireV2Codec.Encode(crypto.SignRequest(new MailboxPeerWireRequestV2
+        {
+            Operation = MailboxPeerReplicationOperation.Store,
+            Epoch = envelope.Epoch,
+            OperationId = envelope.OperationId,
+            SenderRouterId = local.NodeId,
+            RecipientRouterId = remote.NodeId,
+            MembershipCommitment = scope.Host.MembershipCommitment,
+            PlacementCommitment = scope.Grant.PlacementCommitment,
+            BlindedMailboxId = envelope.MailboxId.Bytes,
+            Cursor = cursor,
+            CreatedAtUnixSeconds = createdAt,
+            ExpiresAtUnixSeconds = envelope.ExpiresAtUnixSeconds,
+            ReplayNonce = RandomNumberGenerator.GetBytes(32),
+            PayloadDigest = SHA256.HashData(canonicalEnvelope.Span),
+            Payload = canonicalEnvelope,
+            SenderMembershipProof = Membership(local),
+            RecipientMembershipProof = Membership(remote),
+            Signature = ReadOnlyMemory<byte>.Empty
+        }, seed));
     }
 
     internal ValueTask<ReadOnlyMemory<byte>> ReceiveAsync(ReadOnlyMemory<byte> canonicalRequest,

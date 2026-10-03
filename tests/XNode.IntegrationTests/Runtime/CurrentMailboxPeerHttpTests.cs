@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
 using Deep.Protocol.DeepExtension.PrivacyRouting;
 using Microsoft.AspNetCore.Builder;
@@ -14,6 +15,8 @@ using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using XNode.Core.Mailbox;
+using XNode.Core;
+using XNode.Core.Mailbox.Client;
 using Peer = XNode.IntegrationTests.Runtime.CurrentMailboxReplicaReceiverTests.Fixture;
 
 namespace XNode.IntegrationTests.Runtime;
@@ -22,6 +25,220 @@ namespace XNode.IntegrationTests.Runtime;
 /// signed test-owned network/grants/floors. Not Program/ONION or device evidence.</summary>
 public sealed class CurrentMailboxPeerHttpTests
 {
+    [Fact]
+    public async Task WrongHolderCannotWriteServerIntentOrReserveNativeReplay()
+    {
+        await using var f = await Fixture.CreateAsync(); f.OpenLedger();
+        var decoded = MailboxAuthenticatedClientRequestCodec.Decode(f.ClientStoreFrame());
+        var signature = decoded.Presentation.HolderSignature.ToArray(); signature[0] ^= 1;
+        var invalid = MailboxAuthenticatedClientRequestCodec.Encode(decoded with
+        { Presentation = decoded.Presentation with { HolderSignature = signature } });
+        Assert.NotNull(await Record.ExceptionAsync(() => f.Coordinator.StoreClientAsync(invalid, f.Ledger!).AsTask()));
+        Assert.False(File.Exists(f.LedgerFile)); Assert.Equal(0, f.Sender.Node.Replay.Diagnostics.PendingCount);
+        Assert.Empty(f.Sender.ReplayFiles); Assert.Empty(f.Sender.MutationFiles); Assert.Equal(0, f.RemoteHost.Requests);
+    }
+
+    [Fact]
+    public async Task ServerIntentCapacityBackpressureCannotCollectOrDispatchAnotherOperation()
+    {
+        await using var f = await Fixture.CreateAsync(); f.OpenLedger(maximumEntries: 1);
+        Assert.Equal(MailboxPeerQuorumStatus.Durable, (await f.Coordinator.StoreClientAsync(f.ClientStoreFrame(), f.Ledger!)).Status);
+        Assert.Equal(1, f.Sender.Node.Replay.Diagnostics.CompletedCount);
+        var body = MailboxAuthenticatedRequestTranscript.DecodeStoreBody(f.Recipient.Envelope) with
+        {
+            OperationId = Enumerable.Repeat((byte)0x68, 16).ToArray(),
+            DeduplicationDigest = Enumerable.Repeat((byte)0x69, 32).ToArray(),
+            Ciphertext = Enumerable.Repeat((byte)0x70, 64).ToArray()
+        };
+        f.Reopen();
+        await Assert.ThrowsAsync<MailboxClientLedgerCapacityException>(() => f.Coordinator.StoreClientAsync(
+            f.ClientStoreFrame(MailboxClientCodec.EncodeEncryptedEnvelope(body), 2), f.Ledger!).AsTask());
+        Assert.Single(f.ExactIntents); Assert.Single(f.Sender.MutationFiles); Assert.Single(f.Recipient.MutationFiles);
+        Assert.Equal(1, f.RemoteHost.Requests);
+        // Replay diagnostics count grant scopes, not individual outcomes: the
+        // second counter is now Pending; the first durable outcome still exists.
+        Assert.Equal(0, f.Sender.Node.Replay.Diagnostics.CompletedCount); Assert.Equal(1, f.Sender.Node.Replay.Diagnostics.PendingCount);
+        Assert.Equal(1, f.Sender.Node.OutcomeCount);
+    }
+
+    [Fact]
+    public async Task AuthorityLossAfterActualIntentWriteReleasesNoPeerMutationAndReopensExactly()
+    {
+        await using var f = await Fixture.CreateAsync();
+        f.OpenLedger(new IntentWriteCallback(() => f.Signed.RejectProof = true)); var client = f.ClientStoreFrame();
+        Assert.NotNull(await Record.ExceptionAsync(() => f.Coordinator.StoreClientAsync(client, f.Ledger!).AsTask()));
+        var exact = Assert.Single(f.ExactIntents);
+        Assert.Equal(0, f.RemoteHost.Requests); Assert.Empty(f.Sender.ReplayFiles); Assert.Empty(f.Sender.MutationFiles);
+        Assert.Equal(1, f.Sender.Node.Replay.Diagnostics.PendingCount);
+        f.Signed.RejectProof = false; f.Reopen(); f.Signed.Sample = 101;
+        Assert.Equal(MailboxPeerQuorumStatus.Durable, (await f.Coordinator.StoreClientAsync(client, f.Ledger!)).Status);
+        Assert.Equal(exact, Assert.Single(f.ExactIntents)); Assert.Equal(1, f.RemoteHost.Requests);
+    }
+
+    [Fact]
+    public async Task CorruptedSavedPeerSignatureCannotReserveNewReplayOrDispatch()
+    {
+        await using var f = await Fixture.CreateAsync(); f.OpenLedger(); var client = f.ClientStoreFrame();
+        f.RemoteHost.DropNext = true; _ = await f.Coordinator.StoreClientAsync(client, f.Ledger!);
+        var original = MailboxPeerWireV2Codec.Decode(Assert.Single(f.ExactIntents));
+        var signature = original.Signature.ToArray(); signature[0] ^= 1;
+        var broken = original with { Signature = signature };
+        var path = f.LedgerFile; f.Ledger!.Dispose(); f.Ledger = null;
+        var document = JsonNode.Parse(File.ReadAllBytes(path))!;
+        document["operations"]!.AsObject().Single().Value!["peerRequest"] = Convert.ToBase64String(MailboxPeerWireV2Codec.Encode(broken));
+        File.WriteAllText(path, document.ToJsonString()); var prior = File.ReadAllBytes(path); f.OpenLedger();
+        Assert.NotNull(await Record.ExceptionAsync(() => f.Coordinator.StoreClientAsync(client, f.Ledger!).AsTask()));
+        Assert.Equal(prior, File.ReadAllBytes(path)); Assert.Equal(1, f.RemoteHost.Requests);
+        Assert.Single(f.Sender.ReplayFiles); Assert.Single(f.Sender.MutationFiles); Assert.Single(f.Recipient.MutationFiles);
+        Assert.Equal((byte)MailboxPeerReplayRecordStatus.Pending, Status(f.Sender.ReplayFiles[0]));
+    }
+    [Fact]
+    public async Task ServerAuthoredStoreOwnsExactRandomNonceAcrossLostResponseAdvanceAndReopen()
+    {
+        await using var f = await Fixture.CreateAsync(); f.OpenLedger();
+        var client = f.ClientStoreFrame(); f.RemoteHost.DropNext = true;
+        var partial = await f.Coordinator.StoreClientAsync(client, f.Ledger!);
+        Assert.Equal(MailboxPeerQuorumStatus.PartialFailure, partial.Status);
+        var exact = Assert.Single(f.ExactIntents);
+        Assert.Equal(1UL, MailboxPeerWireV2Codec.Decode(exact).Cursor);
+        Assert.Equal(1, f.Sender.Node.Replay.Diagnostics.PendingCount);
+        f.Reopen(); f.Signed.Sample = 101;
+        var recovered = await f.Coordinator.StoreClientAsync(client, f.Ledger!);
+        Assert.Equal(MailboxPeerQuorumStatus.Durable, recovered.Status);
+        Assert.Equal(exact, Assert.Single(f.ExactIntents));
+        Assert.Equal(2, f.RemoteHost.Requests); Assert.Equal(2, f.PeerClient.ExactRequests.Count);
+        Assert.All(f.PeerClient.ExactRequests, request => Assert.Equal(exact, request));
+        f.Reopen(); f.Signed.Sample = 102;
+        Assert.Equal(recovered.CanonicalMqr3.ToArray(),
+            (await f.Coordinator.StoreClientAsync(client, f.Ledger!)).CanonicalMqr3.ToArray());
+        Assert.Equal(2, f.RemoteHost.Requests);
+        Assert.Single(f.Sender.MutationFiles); Assert.Single(f.Recipient.MutationFiles);
+    }
+
+    [Fact]
+    public async Task ServerAuthoredStoreReplayAfterTombstoneDoesNotRewriteOrRemint()
+    {
+        await using var f = await Fixture.CreateAsync(); f.OpenLedger();
+        var client = f.ClientStoreFrame();
+        var stored = await f.Coordinator.StoreClientAsync(client, f.Ledger!);
+        var exact = Assert.Single(f.ExactIntents);
+        // The fixed pre-producer fixture time is older than the actual Store.
+        // Author ACK against that real Store's creation/cursor lower bound.
+        var storedPeer = MailboxPeerWireV2Codec.Decode(exact);
+        var removal = MailboxPeerWireV2Codec.Decode(f.Recipient.Frame(MailboxPeerReplicationOperation.Tombstone)) with
+        { Cursor = storedPeer.Cursor, CreatedAtUnixSeconds = storedPeer.CreatedAtUnixSeconds };
+        var tombstone = MailboxPeerWireV2Codec.Encode(f.Recipient.Crypto.SignRequest(removal, f.Recipient.SenderSeed));
+        Assert.Equal(MailboxPeerQuorumStatus.Durable, (await f.Coordinator.ReplicateAsync(
+            tombstone, MailboxPeerReplicationOperation.Tombstone)).Status);
+        f.Reopen(); f.Signed.Sample = 101;
+        var historical = await f.Coordinator.StoreClientAsync(client, f.Ledger!);
+        Assert.Equal(stored.CanonicalMqr3.ToArray(), historical.CanonicalMqr3.ToArray());
+        Assert.Equal(exact, Assert.Single(f.ExactIntents)); Assert.Equal(2, f.RemoteHost.Requests);
+        Assert.Null(await f.Sender.ReadBlobAsync()); Assert.Null(await f.Recipient.ReadBlobAsync());
+    }
+
+    [Fact]
+    public async Task ServerAuthoredConcurrentExactRetriesUseOneCursorNonceAndRemoteWrite()
+    {
+        await using var f = await Fixture.CreateAsync(); f.OpenLedger();
+        var client = f.ClientStoreFrame();
+        var results = await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => f.Coordinator.StoreClientAsync(client, f.Ledger!).AsTask()));
+        Assert.All(results, result =>
+        {
+            Assert.Equal(MailboxPeerQuorumStatus.Durable, result.Status);
+            Assert.Equal(results[0].CanonicalMqr3.ToArray(), result.CanonicalMqr3.ToArray());
+        });
+        Assert.Single(f.ExactIntents); Assert.Equal(1, f.RemoteHost.Requests);
+        Assert.Equal(1, f.Sender.Node.Replay.Diagnostics.CompletedCount);
+    }
+
+    [Fact]
+    public async Task ServerAuthoredDistinctOperationsAllocateDurableCursorsAndDistinctNonces()
+    {
+        await using var f = await Fixture.CreateAsync(); f.OpenLedger();
+        Assert.Equal(MailboxPeerQuorumStatus.Durable, (await f.Coordinator.StoreClientAsync(f.ClientStoreFrame(), f.Ledger!)).Status);
+        var body = MailboxAuthenticatedRequestTranscript.DecodeStoreBody(f.Recipient.Envelope) with
+        {
+            OperationId = Enumerable.Repeat((byte)0x68, 16).ToArray(),
+            DeduplicationDigest = Enumerable.Repeat((byte)0x69, 32).ToArray(),
+            Ciphertext = Enumerable.Repeat((byte)0x70, 64).ToArray()
+        };
+        var client = f.ClientStoreFrame(MailboxClientCodec.EncodeEncryptedEnvelope(body), 2);
+        f.Reopen(); f.Signed.Sample = 101;
+        Assert.Equal(MailboxPeerQuorumStatus.Durable, (await f.Coordinator.StoreClientAsync(client, f.Ledger!)).Status);
+        var intents = f.ExactIntents.Select(bytes => MailboxPeerWireV2Codec.Decode(bytes)).OrderBy(frame => frame.Cursor).ToArray();
+        Assert.Equal(new ulong[] { 1, 2 }, intents.Select(frame => frame.Cursor));
+        Assert.False(intents[0].ReplayNonce.Span.SequenceEqual(intents[1].ReplayNonce.Span));
+        Assert.Equal(2, f.Sender.MutationFiles.Length); Assert.Equal(2, f.Recipient.MutationFiles.Length);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ServerIntentWriteFailureNeverDispatchesAndCannotRemintKnownReplay(bool beforeReplace)
+    {
+        await using var f = await Fixture.CreateAsync();
+        f.OpenLedger(new IntentWriteFault(beforeReplace)); var client = f.ClientStoreFrame();
+        Assert.IsType<IOException>(await Record.ExceptionAsync(() => f.Coordinator.StoreClientAsync(client, f.Ledger!).AsTask()));
+        Assert.Equal(0, f.RemoteHost.Requests); Assert.Empty(f.Sender.ReplayFiles); Assert.Empty(f.Sender.MutationFiles);
+        Assert.Equal(1, f.Sender.Node.Replay.Diagnostics.PendingCount);
+        var prior = f.ExactIntents;
+        f.Reopen(); f.Signed.Sample = 101;
+        if (beforeReplace)
+        {
+            Assert.Empty(prior);
+            await Assert.ThrowsAsync<InvalidDataException>(() => f.Coordinator.StoreClientAsync(client, f.Ledger!).AsTask());
+            Assert.Empty(f.ExactIntents); Assert.Equal(0, f.RemoteHost.Requests);
+            Assert.Equal(1, f.Sender.Node.Replay.Diagnostics.PendingCount);
+        }
+        else
+        {
+            Assert.Single(prior);
+            Assert.Equal(MailboxPeerQuorumStatus.Durable, (await f.Coordinator.StoreClientAsync(client, f.Ledger!)).Status);
+            Assert.Equal(Assert.Single(prior), Assert.Single(f.ExactIntents)); Assert.Equal(1, f.RemoteHost.Requests);
+        }
+    }
+
+    [Fact]
+    public async Task LostProducerIntentAfterCompletedStoreFailsWithoutRecreation()
+    {
+        await using var f = await Fixture.CreateAsync(); f.OpenLedger();
+        var client = f.ClientStoreFrame();
+        Assert.Equal(MailboxPeerQuorumStatus.Durable, (await f.Coordinator.StoreClientAsync(client, f.Ledger!)).Status);
+        var path = f.LedgerFile; f.Ledger!.Dispose(); f.Ledger = null; File.Delete(path);
+        f.Reopen(); f.OpenLedger();
+        await Assert.ThrowsAsync<InvalidDataException>(() => f.Coordinator.StoreClientAsync(client, f.Ledger!).AsTask());
+        Assert.False(File.Exists(path)); Assert.Equal(1, f.RemoteHost.Requests);
+        Assert.Equal(1, f.Sender.Node.Replay.Diagnostics.CompletedCount);
+    }
+
+    [Fact]
+    public async Task HigherClientCounterCannotRecreateLostIntentForExistingMutationCustody()
+    {
+        await using var f = await Fixture.CreateAsync(); f.OpenLedger();
+        Assert.Equal(MailboxPeerQuorumStatus.Durable, (await f.Coordinator.StoreClientAsync(f.ClientStoreFrame(), f.Ledger!)).Status);
+        var path = f.LedgerFile; f.Ledger!.Dispose(); f.Ledger = null; File.Delete(path);
+        f.Reopen(); f.OpenLedger();
+        await Assert.ThrowsAsync<InvalidDataException>(() => f.Coordinator.StoreClientAsync(f.ClientStoreFrame(counter: 2), f.Ledger!).AsTask());
+        Assert.False(File.Exists(path)); Assert.Equal(1, f.RemoteHost.Requests);
+        Assert.Single(f.Sender.ReplayFiles); Assert.Single(f.Sender.MutationFiles); Assert.Single(f.Recipient.MutationFiles);
+        Assert.Equal((byte)MailboxPeerReplayRecordStatus.Completed, Status(f.Sender.ReplayFiles[0]));
+        Assert.Equal(1, f.Sender.Node.OutcomeCount);
+    }
+
+    [Fact]
+    public async Task CurrentStoreRejectsIncompatibleIntentLedgerWithoutRepair()
+    {
+        await using var f = await Fixture.CreateAsync(); f.OpenLedger();
+        var client = f.ClientStoreFrame(); f.RemoteHost.DropNext = true;
+        _ = await f.Coordinator.StoreClientAsync(client, f.Ledger!);
+        var path = f.LedgerFile; f.Ledger!.Dispose(); f.Ledger = null;
+        var old = File.ReadAllText(path).Replace("\"schemaVersion\":4", "\"schemaVersion\":3", StringComparison.Ordinal);
+        File.WriteAllText(path, old); f.OpenLedger();
+        await Assert.ThrowsAsync<InvalidDataException>(() => f.Coordinator.StoreClientAsync(client, f.Ledger!).AsTask());
+        Assert.Equal(old, File.ReadAllText(path)); Assert.Equal(1, f.RemoteHost.Requests);
+        Assert.Equal(1, f.Sender.Node.Replay.Diagnostics.PendingCount);
+    }
     [Fact]
     public async Task PersistedClientQuorumRecoversAfterReplayCompletionWriteFailure()
     {
@@ -144,8 +361,11 @@ public sealed class CurrentMailboxPeerHttpTests
             {
                 var grant = MailboxGrantRevocationStoreTests.Grant(f.Signed, f.Sender.Node.Host, MailboxCapabilityDomain.Deposit, 0x61);
                 byte[] proof = [.. peer.SenderMembershipProof.CanonicalInclusionProof.Span[..38], .. grant];
-                peer = peer with { SenderMembershipProof = peer.SenderMembershipProof with { CanonicalInclusionProof = proof },
-                    RecipientMembershipProof = peer.RecipientMembershipProof with { CanonicalInclusionProof = proof } };
+                peer = peer with
+                {
+                    SenderMembershipProof = peer.SenderMembershipProof with { CanonicalInclusionProof = proof },
+                    RecipientMembershipProof = peer.RecipientMembershipProof with { CanonicalInclusionProof = proof }
+                };
             }
             encoded = MailboxPeerWireV2Codec.Encode(f.Sender.Crypto.SignRequest(peer, f.Signed.Node(f.Sender.Node.Node).Seed));
         }
@@ -331,6 +551,33 @@ public sealed class CurrentMailboxPeerHttpTests
         internal Peer Sender = null!, Recipient = null!;
         internal CurrentMailboxReplicationCoordinator Coordinator = null!;
         internal ObservedPeerClient PeerClient = new();
+        internal MailboxClientOperationLedger? Ledger;
+        private const string IntentDirectory = "mailbox-client-intent";
+        private int intentEntries = 100_000;
+        internal string LedgerFile => Path.Combine(Sender.Node.DataRoot, IntentDirectory, "operations.json");
+        internal byte[][] ExactIntents
+        {
+            get
+            {
+                if (!File.Exists(LedgerFile)) return [];
+                using var document = JsonDocument.Parse(File.ReadAllBytes(LedgerFile));
+                return document.RootElement.GetProperty("operations").EnumerateObject()
+                    .Select(item => Convert.FromBase64String(item.Value.GetProperty("peerRequest").GetString()!)).ToArray();
+            }
+        }
+        internal void OpenLedger(IMailboxDurabilityBarrier? durability = null, int? maximumEntries = null)
+        {
+            Ledger?.Dispose();
+            if (maximumEntries is not null) intentEntries = maximumEntries.Value;
+            Ledger = new(Sender.Node.DataRoot, new MailboxClientAdapterOptions
+            {
+                DirectoryName = IntentDirectory,
+                MaxOperationEntries = intentEntries,
+                MaxCursorAuthorities = Math.Min(4096, intentEntries),
+                MaxConcurrentSingleFlights = Math.Min(1024, intentEntries)
+            },
+                clock: new NoUtcIntentClock(), durability: durability);
+        }
         internal static async Task<Fixture> CreateAsync(bool wrongPin = false)
         {
             var f = new Fixture();
@@ -353,20 +600,53 @@ public sealed class CurrentMailboxPeerHttpTests
             RemoteHost.Endpoint = new(Recipient.Receiver, RemoteHost.Port);
             Coordinator = new(Sender.Receiver, PeerClient, new ReplicatedMailboxOptions { Enabled = true });
         }
-        internal byte[] ClientStoreFrame()
+        internal byte[] ClientStoreFrame(byte[]? envelope = null, ulong counter = 1)
         {
-            var binding = MailboxAuthenticatedRequestTranscript.ForStore(MailboxAuthenticatedRequestTranscript.DecodeStoreBody(Recipient.Envelope));
+            var binding = MailboxAuthenticatedRequestTranscript.ForStore(MailboxAuthenticatedRequestTranscript.DecodeStoreBody(envelope ?? Recipient.Envelope));
             var crypto = new SodiumMailboxCapabilityCrypto();
-            return MailboxAuthenticatedClientRequestCodec.Encode(new() { Binding = binding,
+            return MailboxAuthenticatedClientRequestCodec.Encode(new()
+            {
+                Binding = binding,
                 Presentation = crypto.SignPresentation(MailboxAuthenticatedCapabilityCodec.DecodeGrant(Sender.Node.ExactGrant),
-                    binding, 1, Enumerable.Repeat((byte)0x57, 32).ToArray()) });
+                    binding, counter, Enumerable.Repeat((byte)0x57, 32).ToArray())
+            });
         }
-        internal void Reopen() { Sender.Node.ReopenRuntime(); Recipient.Node.ReopenRuntime(); Sender.Reopen(); Recipient.Reopen(); Bind(); }
+        internal void Reopen()
+        {
+            var hadLedger = Ledger is not null; Ledger?.Dispose(); Ledger = null;
+            Sender.Node.ReopenRuntime(); Recipient.Node.ReopenRuntime(); Sender.Reopen(); Recipient.Reopen();
+            if (hadLedger) OpenLedger(); Bind();
+        }
         public async ValueTask DisposeAsync()
         {
             foreach (var host in hosts) await host.DisposeAsync();
+            Ledger?.Dispose();
             if (Sender is not null) await Sender.DisposeAsync(); if (Recipient is not null) await Recipient.DisposeAsync();
             Signed?.Dispose();
+        }
+    }
+
+    private sealed class NoUtcIntentClock : IClock
+    { public DateTimeOffset UtcNow => throw new InvalidOperationException("Current intent must not use host UTC."); }
+
+    private sealed class IntentWriteCallback(Action callback) : IMailboxDurabilityBarrier
+    {
+        private readonly MailboxDurabilityBarrier native = new();
+        public void FlushFileAndParentDirectory(string path) { native.FlushFileAndParentDirectory(path); callback(); }
+        public void FlushParentDirectory(string path) => native.FlushParentDirectory(path);
+        public void ReplaceFile(string temporaryPath, string finalPath) => native.ReplaceFile(temporaryPath, finalPath);
+    }
+
+    private sealed class IntentWriteFault(bool beforeReplace) : IMailboxDurabilityBarrier
+    {
+        private readonly MailboxDurabilityBarrier native = new();
+        public void FlushFileAndParentDirectory(string path)
+        { native.FlushFileAndParentDirectory(path); if (!beforeReplace) throw new IOException("Test-owned durable intent failure."); }
+        public void FlushParentDirectory(string path) => native.FlushParentDirectory(path);
+        public void ReplaceFile(string temporaryPath, string finalPath)
+        {
+            if (beforeReplace) throw new IOException("Test-owned intent replace failure.");
+            native.ReplaceFile(temporaryPath, finalPath);
         }
     }
 
@@ -387,11 +667,13 @@ public sealed class CurrentMailboxPeerHttpTests
     private sealed class ObservedPeerClient : ICurrentMailboxReplicaPeerClient
     {
         internal int Calls;
+        internal readonly List<byte[]> ExactRequests = [];
         internal string? Failure;
         public async ValueTask<ReadOnlyMemory<byte>?> SendAsync(VerifiedOnionNextHopTransport recipient,
             MailboxPeerReplicationOperation operation, ReadOnlyMemory<byte> exactRequest, CancellationToken token)
         {
             Calls++;
+            ExactRequests.Add(exactRequest.ToArray());
             try { return await new CurrentMailboxReplicaPeerClient().SendAsync(recipient, operation, exactRequest, token); }
             catch (Exception error)
             {

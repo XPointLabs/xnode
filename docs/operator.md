@@ -33,8 +33,18 @@ canonical MQR3 in the existing outcome store. Retry after advancing time/reopen
 returns those bytes; replay after tombstone does not rewrite the deleted blob.
 Loss of a peer response retains both client and peer Pending. There is no new
 quorum journal, public wire field, authority adapter or activation switch.
-The current internal peer-request producer, cursor ownership, Retrieve/ACK and
-guarded startup/recovery still need connection before the atomic Program cutover.
+The current internal Store producer now owns a durable random nonce and complete
+signed peer frame in the existing operation ledger before any peer effect.
+Reopening retains those exact bytes; known replay or existing mutation custody
+without its intent rejects instead of reminting. The local ledger is schema 4;
+older schema 3 or malformed state rejects without migration or automatic reset.
+This is not another journal or a production data/key reset. Current reservations
+do not use host UTC for garbage collection; capacity remains backpressure until
+protected retention is composed. A pre-intent write failure can remain Pending;
+there is no claim of automatic reconciliation for that uncertainty.
+The cursor is still per-coordinator, not globally ordered across the two exits.
+Cross-coordinator cursor ownership, actual replica Retrieve/ACK and guarded
+startup/recovery need connection before the atomic Program cutover.
 The trusted monotonic clock must be the same protected owner used by the actual
 network source when composing this candidate. No host-UTC fallback is accepted.
 The sole contracts remain
@@ -47,6 +57,8 @@ The [HTTP checkpoint](testing/s03-current-peer-http-2026-10-03.md) records actua
 pinned TLS/HTTP2, two-store quorum, lost-response and concurrent-retry evidence.
 The [client outcome checkpoint](testing/s03-client-outcome-2026-10-03.md) records
 same-owner composition, durable final Store outcome and completion-write recovery.
+The [server intent checkpoint](testing/s03-server-intent-2026-10-04.md) records
+actual producer custody, crash/capacity/hostile-input boundaries and final gates.
 The descriptor transport API owner is
 [DR-0085](../../docs/survival-program/decisions/DR-0085-current-mailbox-replica-transport-facts.md).
 

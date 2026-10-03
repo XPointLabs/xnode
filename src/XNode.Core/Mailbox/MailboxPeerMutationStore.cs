@@ -130,6 +130,25 @@ public sealed class MailboxPeerMutationStore : IDisposable
         }
     }
 
+    // A denial-only lookup: existing mutation custody requires its original
+    // producer intent. It never mints receipt, dispatch or placement authority.
+    internal async Task<bool> HasCurrentStoreCustodyAsync(MailboxEncryptedEnvelope envelope,
+        MailboxCurrentOperationLease lease, CancellationToken token)
+    {
+        await _gate.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            _ = await lease.CheckAsync(token).ConfigureAwait(false);
+            var path = StorePath(envelope.Epoch, envelope.MailboxId.Bytes.Span, envelope.DeduplicationDigest.Span);
+            var exists = File.Exists(path);
+            if (exists) _ = Read(path); // corrupt custody is not absence
+            _ = await lease.CheckAsync(token).ConfigureAwait(false);
+            return exists;
+        }
+        finally { _gate.Release(); }
+    }
+
     public bool TryResolveTombstonePlacement(
         MailboxPeerWireRequestV2 request,
         out BlindedPlacementId placementId)

@@ -36,7 +36,10 @@ public sealed record MailboxClientStoreReservation(
     ulong AcceptedAtUnixSeconds,
     string Error,
     MailboxClientCompletionReservation? Completion,
-    ReadOnlyMemory<byte> CachedReceipt);
+    ReadOnlyMemory<byte> CachedReceipt)
+{
+    internal ReadOnlyMemory<byte> CanonicalPeerRequest { get; init; }
+}
 
 internal sealed class MailboxClientLedgerDocument
 {
@@ -86,11 +89,13 @@ internal sealed record MailboxClientLedgerOperation(
     string Receipt,
     bool Tombstoned,
     ulong TombstonedAtUnixSeconds,
-    bool BlobCleaned);
+    bool BlobCleaned,
+    string PeerRequest);
 
 public sealed partial class MailboxClientOperationLedger : IDisposable
 {
-    private const int SchemaVersion = 3;
+    private const int SchemaVersion = 4;
+    private const long MaximumDocumentBytes = 768L * 1024 * 1024;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _directory;
     private readonly string _path;
@@ -180,7 +185,7 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
         }
     }
 
-    public async Task<MailboxClientStoreReservation> ReserveStoreAsync(
+    public Task<MailboxClientStoreReservation> ReserveStoreAsync(
         ulong epoch,
         ReadOnlyMemory<byte> operationId,
         ReadOnlyMemory<byte> requestDigest,
@@ -191,7 +196,31 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
         ReadOnlyMemory<byte> membershipCommitment,
         IReadOnlyList<ReadOnlyMemory<byte>> expectedReplicaIds,
         ulong expiresAtUnixSeconds,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken) => ReserveStoreCoreAsync(epoch, operationId, requestDigest,
+            mailboxId, envelopeDigest, blobDigest, placementCommitment, membershipCommitment,
+            expectedReplicaIds, expiresAtUnixSeconds, cancellationToken);
+
+    internal Task<MailboxClientStoreReservation> ReserveCurrentStoreAsync(
+        MailboxEncryptedEnvelope envelope, ReadOnlyMemory<byte> membershipCommitment,
+        IReadOnlyList<ReadOnlyMemory<byte>> selectedReplicaIds, MailboxCurrentOperationLease lease,
+        Func<ulong, ulong, ReadOnlyMemory<byte>> author, CancellationToken token, bool requireExisting = false)
+    {
+        ArgumentNullException.ThrowIfNull(envelope); ArgumentNullException.ThrowIfNull(lease);
+        ArgumentNullException.ThrowIfNull(author); lease.RequireActive();
+        var binding = MailboxAuthenticatedRequestTranscript.ForStore(envelope);
+        return ReserveStoreCoreAsync(envelope.Epoch, envelope.OperationId, binding.RequestDigest,
+            envelope.MailboxId.Bytes, envelope.DeduplicationDigest, SHA256.HashData(binding.CanonicalRequest.Span),
+            MailboxPlacementCommitment.Compute(envelope.PlacementId), membershipCommitment,
+            selectedReplicaIds, envelope.ExpiresAtUnixSeconds, token, lease, author, requireExisting);
+    }
+
+    private async Task<MailboxClientStoreReservation> ReserveStoreCoreAsync(
+        ulong epoch, ReadOnlyMemory<byte> operationId, ReadOnlyMemory<byte> requestDigest,
+        ReadOnlyMemory<byte> mailboxId, ReadOnlyMemory<byte> envelopeDigest, ReadOnlyMemory<byte> blobDigest,
+        ReadOnlyMemory<byte> placementCommitment, ReadOnlyMemory<byte> membershipCommitment,
+        IReadOnlyList<ReadOnlyMemory<byte>> expectedReplicaIds, ulong expiresAtUnixSeconds,
+        CancellationToken cancellationToken, MailboxCurrentOperationLease? lease = null,
+        Func<ulong, ulong, ReadOnlyMemory<byte>>? author = null, bool requireExisting = false)
     {
         ThrowIfDisposed();
         var operationKey = BuildOperationKey(epoch, mailboxId.Span, operationId.Span);
@@ -218,13 +247,23 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            if (lease is not null) _ = await lease.CheckAsync(cancellationToken).ConfigureAwait(false);
             var document = await LoadAsync(cancellationToken).ConfigureAwait(false);
-            var changed = RemoveExpiredAndCompact(document, NowUnixSeconds());
+            // Current requests never collect other operations using host UTC or
+            // their short-lived grant. Protected retention/GC is a separate owner.
+            var changed = lease is null && RemoveExpiredAndCompact(document, NowUnixSeconds());
             if (document.Operations.TryGetValue(operationKey, out var existing))
             {
                 if (!FixedHexEquals(existing.RequestDigest, requestKey))
                 {
                     throw new MailboxClientOperationConflictException();
+                }
+
+                if (lease is not null)
+                {
+                    if (string.IsNullOrEmpty(existing.PeerRequest))
+                        throw new InvalidDataException("Current Store intent has no exact peer request.");
+                    _ = await lease.CheckAsync(cancellationToken).ConfigureAwait(false);
                 }
 
                 if (changed)
@@ -234,6 +273,9 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
 
                 return ToReservation(operationKey, existing);
             }
+
+            if (requireExisting)
+                throw new InvalidDataException("Known current Store replay has lost its exact peer intent.");
 
             if (LedgerEntryCost(document) >= _maxEntries)
             {
@@ -281,9 +323,20 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
                 "",
                 false,
                 0,
-                false);
+                false,
+                "");
+            if (lease is not null)
+            {
+                var upper = await lease.CheckAsync(cancellationToken).ConfigureAwait(false);
+                var exactPeer = author!(cursor, upper);
+                var parsed = MailboxPeerWireV2Codec.Decode(exactPeer.Span);
+                var canonical = MailboxPeerWireV2Codec.Encode(parsed);
+                if (!canonical.AsSpan().SequenceEqual(exactPeer.Span))
+                    throw new InvalidDataException("Current Store producer is not canonical.");
+                operation = operation with { PeerRequest = Convert.ToBase64String(canonical) };
+            }
             document.Operations.Add(operationKey, operation);
-            await SaveAsync(document, cancellationToken).ConfigureAwait(false);
+            await SaveAsync(document, cancellationToken, lease).ConfigureAwait(false);
             return ToReservation(operationKey, operation);
         }
         finally
@@ -488,7 +541,7 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
                 new(StringComparer.Ordinal));
         }
 
-        if (new FileInfo(_path).Length > 768L * 1024 * 1024)
+        if (new FileInfo(_path).Length > MaximumDocumentBytes)
         {
             throw new InvalidDataException("Mailbox client operation ledger exceeds its bound.");
         }
@@ -561,6 +614,8 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
             _ = DecodeLowerHex(operation.BlobDigest, 32);
             _ = DecodeLowerHex(operation.PlacementCommitment, 32);
             _ = DecodeLowerHex(operation.MembershipCommitment, 32);
+            if (operation.PeerRequest is null)
+                throw new InvalidDataException("Mailbox exact peer request field is missing.");
             if (operation.ExpectedReplicaIds is null
                 || operation.ExpectedReplicaIds.Length is < 2 or > 9
                 || operation.ExpectedReplicaIds.Any(static replica => replica is null)
@@ -572,6 +627,8 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
             {
                 throw new InvalidDataException("Mailbox expected replica authority is invalid.");
             }
+            if (operation.PeerRequest.Length != 0)
+                ValidatePeerIntent(operation);
             if (!string.Equals(pair.Key, expectedKey, StringComparison.Ordinal)
                 || operation.Epoch == 0
                 || operation.Cursor == 0
@@ -759,8 +816,10 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
 
     private async Task SaveAsync(
         MailboxClientLedgerDocument document,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        MailboxCurrentOperationLease? lease = null)
     {
+        if (lease is not null) _ = await lease.CheckAsync(cancellationToken).ConfigureAwait(false);
         ValidateDocument(document);
         _security.SecureDirectory(_directory);
         var temporary = $"{_path}.{Guid.NewGuid():N}.tmp";
@@ -780,11 +839,15 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
                     JsonOptions,
                     cancellationToken).ConfigureAwait(false);
                 stream.Flush(flushToDisk: true);
+                if (stream.Length > MaximumDocumentBytes)
+                    throw new MailboxClientLedgerCapacityException();
             }
 
+            if (lease is not null) _ = await lease.CheckAsync(cancellationToken).ConfigureAwait(false);
             await ReplaceAtomicallyAsync(temporary, cancellationToken).ConfigureAwait(false);
             _security.SecureFile(_path);
             _durability.FlushFileAndParentDirectory(_path);
+            if (lease is not null) _ = await lease.CheckAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -804,7 +867,7 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
         {
             try
             {
-                File.Move(temporary, _path, overwrite: true);
+                _durability.ReplaceFile(temporary, _path);
                 return;
             }
             catch (Exception exception) when (
@@ -858,7 +921,31 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
                     Convert.FromBase64String(operation.SecondReplicaReceipt)),
             string.IsNullOrEmpty(operation.Receipt)
                 ? ReadOnlyMemory<byte>.Empty
-                : Convert.FromBase64String(operation.Receipt));
+                : Convert.FromBase64String(operation.Receipt))
+        { CanonicalPeerRequest = string.IsNullOrEmpty(operation.PeerRequest) ? ReadOnlyMemory<byte>.Empty : Convert.FromBase64String(operation.PeerRequest) };
+
+    private static void ValidatePeerIntent(MailboxClientLedgerOperation operation)
+    {
+        if (!IsCanonicalBase64(operation.PeerRequest, MailboxPeerWireV2Limits.MaximumRequestLength))
+            throw new InvalidDataException("Mailbox exact peer request is non-canonical or oversized.");
+        var peer = MailboxPeerWireV2Codec.Decode(Convert.FromBase64String(operation.PeerRequest));
+        var body = MailboxAuthenticatedRequestTranscript.DecodeStoreBody(peer.Payload.Span);
+        if (peer.Operation != MailboxPeerReplicationOperation.Store || peer.Epoch != operation.Epoch ||
+            peer.Cursor != operation.Cursor || peer.ExpiresAtUnixSeconds != operation.ExpiresAtUnixSeconds ||
+            !FixedHexEquals(peer.OperationId.Span, operation.OperationId) ||
+            !FixedHexEquals(peer.BlindedMailboxId.Span, operation.MailboxId) ||
+            !FixedHexEquals(peer.PayloadDigest.Span, operation.BlobDigest) ||
+            !FixedHexEquals(peer.MembershipCommitment.Span, operation.MembershipCommitment) ||
+            !FixedHexEquals(peer.PlacementCommitment.Span, operation.PlacementCommitment) ||
+            !FixedHexEquals(body.DeduplicationDigest.Span, operation.EnvelopeDigest) ||
+            !FixedHexEquals(MailboxAuthenticatedRequestTranscript.ForStore(body).RequestDigest.Span, operation.RequestDigest) ||
+            !operation.ExpectedReplicaIds.Contains(Convert.ToHexString(peer.SenderRouterId.Span).ToLowerInvariant(), StringComparer.Ordinal) ||
+            !operation.ExpectedReplicaIds.Contains(Convert.ToHexString(peer.RecipientRouterId.Span).ToLowerInvariant(), StringComparer.Ordinal))
+            throw new InvalidDataException("Mailbox exact peer request differs from its durable operation.");
+    }
+
+    private static bool FixedHexEquals(ReadOnlySpan<byte> bytes, string hex) =>
+        CryptographicOperations.FixedTimeEquals(bytes, Convert.FromHexString(hex));
 
     public static string BuildOperationKey(
         ulong epoch,
@@ -919,7 +1006,7 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
 
     private static bool IsCanonicalBase64(string value, int maximumBytes = int.MaxValue)
     {
-        if (string.IsNullOrEmpty(value))
+        if (string.IsNullOrEmpty(value) || value.Length > ((long)maximumBytes + 2) / 3 * 4)
         {
             return false;
         }
