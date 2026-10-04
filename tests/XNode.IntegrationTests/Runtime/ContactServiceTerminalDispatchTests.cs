@@ -139,13 +139,7 @@ public sealed class ContactServiceTerminalDispatchTests
         RecordingMailbox mailbox,
         IContactServiceOpaqueDispatcher contact)
     {
-        var routed = new RoutedNativeMailboxExitDispatcher(
-            new MailboxAuthorityForwardingConfiguration(
-                authority: null,
-                allowedExitRouterIds: new HashSet<XNode.Core.RouterId>()),
-            mailbox,
-            new UnusedForwarding());
-        return new PrivacyTerminalExitDispatcher(routed, contact);
+        return new PrivacyTerminalExitDispatcher(mailbox, contact);
     }
 
     private static string FindRepositoryRoot()
@@ -198,15 +192,14 @@ public sealed class ContactServiceTerminalDispatchTests
         }
     }
 
-    private sealed class RecordingMailbox : ILocalNativeMailboxExitDispatcher
+    private sealed class RecordingMailbox : INativeMailboxExitDispatcher
     {
         public int Calls { get; private set; }
         public NativeMailboxDispatchResult Result { get; init; } =
             NativeMailboxDispatchResult.RejectedBeforeForward();
 
         public Task<NativeMailboxDispatchResult> DispatchAsync(
-            OnionOperation privacyOperation,
-            ReadOnlyMemory<byte> canonicalMau2,
+            VerifiedCanonicalOnionRequest request,
             CancellationToken cancellationToken)
         {
             Calls++;
@@ -214,11 +207,4 @@ public sealed class ContactServiceTerminalDispatchTests
         }
     }
 
-    private sealed class UnusedForwarding : IMailboxAuthorityForwardingClient
-    {
-        public Task<NativeMailboxDispatchResult> ForwardAsync(
-            OnionOperation operation,
-            ReadOnlyMemory<byte> canonicalMau2,
-            CancellationToken cancellationToken) => throw new InvalidOperationException();
-    }
 }

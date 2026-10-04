@@ -507,7 +507,6 @@ public sealed class PrivacyRoutingRuntimeTests
         Assert.Equal(0, effects.PeerCalls);
         Assert.Equal(0, effects.ContactCalls);
         Assert.Equal(0, effects.MailboxCalls);
-        Assert.Equal(0, effects.AuthorityForwardingCalls);
     }
 
     [Fact]
@@ -534,7 +533,6 @@ public sealed class PrivacyRoutingRuntimeTests
         Assert.Equal(0, effects.PeerCalls);
         Assert.Equal(0, effects.ContactCalls);
         Assert.Equal(0, effects.MailboxCalls);
-        Assert.Equal(0, effects.AuthorityForwardingCalls);
     }
 
     [Fact]
@@ -550,7 +548,6 @@ public sealed class PrivacyRoutingRuntimeTests
         Assert.Equal(0, effects.PeerCalls);
         Assert.Equal(0, effects.ContactCalls);
         Assert.Equal(0, effects.MailboxCalls);
-        Assert.Equal(0, effects.AuthorityForwardingCalls);
     }
 
     [Theory]
@@ -594,7 +591,6 @@ public sealed class PrivacyRoutingRuntimeTests
         Assert.Equal(0, effects.PeerCalls);
         Assert.Equal(0, effects.ContactCalls);
         Assert.Equal(0, effects.MailboxCalls);
-        Assert.Equal(0, effects.AuthorityForwardingCalls);
     }
 
     [Theory]
@@ -657,13 +653,7 @@ public sealed class PrivacyRoutingRuntimeTests
 
     private static PrivacyTerminalExitDispatcher Terminal(Effects effects, ILogger<PrivacyTerminalExitDispatcher>? logger = null)
     {
-        var routedMailbox = new RoutedNativeMailboxExitDispatcher(
-            new MailboxAuthorityForwardingConfiguration(
-                authority: null,
-                allowedExitRouterIds: new HashSet<RouterId>()),
-            effects,
-            effects);
-        return new PrivacyTerminalExitDispatcher(routedMailbox, effects,
+        return new PrivacyTerminalExitDispatcher(effects, effects,
             new GroupControlOnionTerminalAdapter(new UnavailableGroupControlTerminalDispatcher()), null, logger);
     }
 
@@ -711,14 +701,12 @@ public sealed class PrivacyRoutingRuntimeTests
 
     private sealed class Effects :
         IPrivacyPeerClient,
-        ILocalNativeMailboxExitDispatcher,
-        IMailboxAuthorityForwardingClient,
+        INativeMailboxExitDispatcher,
         IContactServiceOpaqueDispatcher
     {
         internal Exception? ContactFailure { get; init; }
         public int PeerCalls { get; private set; }
         public int MailboxCalls { get; private set; }
-        public int AuthorityForwardingCalls { get; private set; }
         public int ContactCalls { get; private set; }
 
         public Task<PrivacyForwardResult> ForwardAsync(
@@ -730,21 +718,11 @@ public sealed class PrivacyRoutingRuntimeTests
             return Task.FromResult(PrivacyForwardResult.Rejected);
         }
 
-        Task<NativeMailboxDispatchResult> ILocalNativeMailboxExitDispatcher.DispatchAsync(
-            OnionOperation privacyOperation,
-            ReadOnlyMemory<byte> canonicalMau2,
+        Task<NativeMailboxDispatchResult> INativeMailboxExitDispatcher.DispatchAsync(
+            VerifiedCanonicalOnionRequest request,
             CancellationToken cancellationToken)
         {
             MailboxCalls++;
-            return Task.FromResult(NativeMailboxDispatchResult.RejectedBeforeForward());
-        }
-
-        Task<NativeMailboxDispatchResult> IMailboxAuthorityForwardingClient.ForwardAsync(
-            OnionOperation operation,
-            ReadOnlyMemory<byte> canonicalMau2,
-            CancellationToken cancellationToken)
-        {
-            AuthorityForwardingCalls++;
             return Task.FromResult(NativeMailboxDispatchResult.RejectedBeforeForward());
         }
 

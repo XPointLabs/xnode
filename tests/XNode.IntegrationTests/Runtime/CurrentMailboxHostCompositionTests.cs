@@ -16,6 +16,23 @@ namespace XNode.IntegrationTests.Runtime;
 
 public sealed class CurrentMailboxHostCompositionTests
 {
+    [Theory]
+    [InlineData("MailboxAuthorityForwardingOptions")]
+    [InlineData("MailboxAuthorityForwardingConfiguration")]
+    [InlineData("MailboxAuthorityForwardingHttpContract")]
+    [InlineData("IMailboxAuthorityForwardingClient")]
+    [InlineData("MailboxAuthorityForwardingClient")]
+    [InlineData("MailboxAuthorityForwardingAuthenticationHeaders")]
+    [InlineData("MailboxAuthorityForwardingAuthenticator")]
+    [InlineData("MailboxAuthorityForwardingReplayGuard")]
+    [InlineData("MailboxAuthorityForwardingHttpEndpoint")]
+    [InlineData("MailboxAuthorityForwardingIngressLimiter")]
+    [InlineData("RoutedNativeMailboxExitDispatcher")]
+    public void RetiredAuthorityForwardingSurfaceIsAbsentFromActualNodeAssembly(string type)
+    {
+        Assert.Null(typeof(Program).Assembly.GetType("XNode." + type, throwOnError: false));
+    }
+
     [Fact]
     public void DisabledCompositionDoesNotRegisterOwnersOrCreateCustody()
     {

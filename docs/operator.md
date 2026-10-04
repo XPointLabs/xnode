@@ -37,6 +37,11 @@ mailbox without the actual current receiver/coordinator stays unready. This hook
 does not qualify global historical data recovery. See the custody configuration
 below; retained-route, signed retirement and object-horizon gates remain required.
 The dedicated peer listener no longer permits retired authority-forwarding paths.
+The retired forwarding client, HTTP handler, authentication/replay/configuration
+types and routed dispatcher have also been removed from the node assembly.
+Do not configure an authority-forwarding node or relay raw client requests to a
+second admission server: the selected exit admits through the current native
+owner. The retired configuration section still rejects, even when empty.
 Current binary replication remains HTTPS-only on its exact configured listener;
 API/public client mailbox URLs are not an alternate admission path. The
 [Program pipeline checkpoint](testing/s02-current-program-2026-10-04.md#actual-program-peer-pipeline-follow-up)
