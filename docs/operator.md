@@ -1087,9 +1087,37 @@ calls enrollment.
 
 A successful command is only an initial local enrollment. Issuer-authored signed
 successors and their distributor must maintain current role freshness; enrollment
-does not lengthen the MGR1 interval or close the S05 renewal gate. The supported
-issuer/distributor and production provisioning remain unfinished. See
+does not lengthen the MGR1 interval or close the S05 renewal gate. Registry's
+candidate now authors and distributes retained signed successors; configured
+production provisioning and connected issuer-to-node-to-client qualification
+remain unfinished. See
 [operation custody](mailbox-operation-custody.md) for the retained-data contract.
+
+### Bounded current revocation refresh
+
+The existing configured DID2 proof-source graph also registers a background
+consumer of the signed control transport in
+[CONTACT-RESOLVER §3.8](../../docs/architecture/CONTACT-RESOLVER-V1.md#38-current-mailbox-grant-revocation).
+It uses the existing strict Registry HTTPS client: no redirect, decompression,
+TLS bypass or direct shipping-client fallback. Fixture-owned source graphs do
+not enable this worker. Existing production source restrictions are unchanged.
+
+Both protected role floors must restore before a remote read. Refresh verifies
+a fresh signed target under the actual complete current host, then installs one
+verified successor at a time through the same native owner and read-back. A
+30-second flight commits at most 64 steps per role; unfinished history resumes
+from its durable floor next time. Expired intermediates provide no admission.
+Missing protection, gaps, source changes and invalid signatures cannot trigger
+enrollment, floor reset, pruning or key generation. A network failure leaves the
+worker running with bounded backoff; successful attempts delay 15–17 seconds,
+failures 10–62 seconds. Stop cancels the attempt and delay.
+
+This is locally tested HTTP-consumer/native integration, not a configured live
+Registry-to-node or physical client result. The configured node authority reader
+currently reacquires a nonce-bound directory proof on source checks; observational
+readiness and the source-acquisition budget still need closure in the same
+delivery vertical. See the
+[exact scope and receipts](testing/s05-mgr1-lifecycle-2026-10-04.md).
 
 Retired ContactAuthority, GroupControlAuthority, MailboxPeerAuthority,
 MailboxClient, MailboxClientAdapter, MailboxClientProductionAuthority and

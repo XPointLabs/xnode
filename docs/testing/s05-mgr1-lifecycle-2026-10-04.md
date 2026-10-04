@@ -298,3 +298,86 @@ freeze and implement bounded signed retained control distribution plus actual
 node refresh/readiness, then remaining S01 retention/settlement and connected text.
 Do not append MGR1 to the eight-chain NCP2 or use its health as authority.
 S05/full release acceptance remains open: stages0/14 and physical matrix0/4.
+
+## Bounded control transport and native refresh — 2026-10-05
+
+DR-0083/CONTACT-RESOLVER §3.8 and their
+closed machine inputs now freeze the raw read-only HTTP transport; MGR1 signed
+bytes/domains, golden vectors and eight-chain NCP2 are unchanged. The primary
+Protocol registry and generated source hashes are repinned, without activation.
+
+The enabled Registry composition returns one actual retained signed record
+under the independently current observed host. Numeric history and highest
+signed `latest` never return an unsigned reservation; reads acquire no proof,
+nonce or signature. The production XNode consumer checks exact request/scope,
+bounded media/length/EOF and endpoint identity. Native refresh restores both
+role floors before HTTP, verifies a fresh target, then commits exact sequential
+history with native read-back, a 30-second budget and 64 steps per role. Restart
+resumes beyond that budget; expired intermediates cannot admit an operation.
+Both workers explicitly catch InvalidDataException (not an IOException).
+The node worker also keeps running after an actual HttpRequestException;
+the added hosted-worker test checks unchanged floors and cancellable backoff.
+
+Node's first new focused run was **4/8/0**, terminal1: eight negative HTTP
+cases correctly threw InvalidDataException but the harness incorrectly expected
+IOException. Exact exception assertions were corrected, not rejection behavior.
+The subsequent **129/0/0** passed before two additional generation bounds and
+the network-failure fix. Current selected **133/0/0**, terminal0, covers those
+changes, 70 sequential deposit successors across a native reopen, both roles,
+missing-floor rejection before HTTP, bad signatures and nine framing failures.
+Its HttpMessageHandler supplies genuine signed fixture records, not a live
+Registry or TLS connection. Current unfiltered XNode is **1279/0/0**, terminal0:
+integration900, profile107, unit272. Integration900 took29m11s. All production
+and test sources remain included; warnings-as-errors is enabled. Older full
+results do not qualify this source.
+
+Registry's initial HTTP extension failed **0/1/0**, terminal1, because TestServer
+omits RawTarget. A separate diagnostic **0/1/0** confirmed that fixture limitation.
+Test-only middleware supplies the normal canonical raw target; the product
+continues to reject missing or changed targets. Subsequent connected **1/0/0**
+and unfiltered Registry **346/0/7** are terminal0. Seven Linux-only socket cases
+remain NotExecuted on Windows. This is not real HTTPS/raw escaped-target evidence
+or configured external signer custody. The earlier unexplained route HTTP503
+and Windows native denial remain retained, not declared fixed.
+
+| Current receipt | SHA-256 |
+| --- | --- |
+| Protocol `artifacts/s05-mgr1-lifecycle/control-contract-current/nikit_SURFACE-LT_2026-10-05_02_17_32_net10.0.trx` — selected111/0/0, Debug | `ace100096743ad567b4b5478ccaaaa05ebbfc81a73b9cde575c1339453d98749` |
+| Node `artifacts/s05-mgr1-lifecycle/node-refresh-current/nikit_SURFACE-LT_2026-10-05_02_19_00_net10.0.trx` — selected133/0/0, Release | `eba354249d92ccf800ac64779ebdb9400d69f3e91e396d12c35d891ad56fc44f` |
+| Registry `artifacts/s00/s05-mgr1-control-full-27b557854b3146688706b6ded7882948/nikit_SURFACE-LT_2026-10-05_02_09_20_net10.0.trx` — full346/0/7 | `bb98fe940672dda469c15025f37d8479de47d7774a674c225c6b07067290d997` |
+| Node `artifacts/s05-mgr1-lifecycle/node-refresh-full/nikit_SURFACE-LT_2026-10-05_02_20_28_net10.0.trx` — integration900/0/0 | `5b446c7307f0f450239552034ec42e4ae096c16f7884b68012df7029e6fb7881` |
+| Node `artifacts/s05-mgr1-lifecycle/node-refresh-full/nikit_SURFACE-LT_2026-10-05_02_49_46_net10.0.trx` — profile107/0/0 | `873562855bf3c076622a7a36a0c3551e1f1422380f873efe8968d5a439733e98` |
+| Node `artifacts/s05-mgr1-lifecycle/node-refresh-full/nikit_SURFACE-LT_2026-10-05_02_50_13_net10.0.trx` — unit272/0/0 | `cbc1bb0dd9006b628e8da8c3171f235aeb389c262649452428db6beb5dc5cecf` |
+| Registry `artifacts/s00/s05-mgr1-control-final-9e03f77550c54029931ceb2a613e6fdd/nikit_SURFACE-LT_2026-10-05_02_52_27_net10.0.trx` — final full346/0/7 | `3800bdaad21cb52265b0ac590ff6b911d1523f65d1d0c3becac157e8dc870728` |
+| Registry `artifacts/s05-mgr1-lifecycle/linux-socket-current/_buildkitsandbox_2026-10-04_21_46_42_net10.0.trx` — Linux socket7/0/0 | `e0f7904a5d22cbb24f596efc3c8f0769d6af84a96306d4b1112f33d9410c8176` |
+| Node initial `artifacts/s05-mgr1-lifecycle/node-refresh-first/nikit_SURFACE-LT_2026-10-05_01_59_49_net10.0.trx` — 4/8/0 | `0752c0d8133a8cea7e630fce5eb5ae5030c09dae247cc3a757f04fa349cb0f15` |
+| Registry initial `artifacts/s00/s05-mgr1-control-focused-262404d7226d421aa0d893dfda2bd57b/nikit_SURFACE-LT_2026-10-05_02_03_03_net10.0.trx` — 0/1/0 | `3b7c9d4dab07935357a008c99f11a14a488f481898c3278041a8ec6db550166c` |
+| Registry diagnostic `artifacts/s00/s05-mgr1-control-raw-target-82faa063425741da9ff969cb11a4862b/nikit_SURFACE-LT_2026-10-05_02_04_47_net10.0.trx` — 0/1/0 | `a55c5fea5755430e88ae9c78dac550943096d8e458ea18a0006e08875a9affd0` |
+
+The Linux socket target initially failed compilation (CS2001): the linked
+XNode signed fixture was included after the socket-only source selection,
+although that target does not use it or copy the XNode context. The project now
+excludes only that unneeded link when MailboxSignerFocused=true. Actual MSBuild
+inventory retains44 default compile inputs, including the journal, connected
+lifecycle and signed fixture, and exactly one socket-target input. Linux7/0/0
+then passes against the actual adapter. The receipt is copied from the built
+test image using an ownership-checked non-running temporary container, then that
+helper is removed. This proves framing/cancellation, not external role custody.
+After that harness fix, sequential full Registry build has zero warnings/errors;
+final isolated PostgreSQL full346/0/7 is terminal0, including all fourteen provider
+cases. The Windows skips and separate Linux result are not a combined deployed gate.
+
+Strict Protocol registry, public documentation174 and governance-contract22
+checks pass. Isolated external real-Xray smoke and three-node rehearsal exit0;
+the latter still reports contact503 without verified authority. These transport
+regressions are not current MGR1 configured issuer/node or client acceptance.
+Their disposable resources were removed; the existing deep-dev stack is not
+modified. No production, device, key, Release or main changes were made.
+
+Remaining within this vertical: actual HTTPS producer-to-consumer qualification and configured node
+observational authority/readiness. The inspected configured source reacquires
+a nonce-bound directory proof on each check; it has not yet met observational
+readiness or the catch-up acquisition budget. Registry control GET itself is
+observational. PostgreSQL process-crash, independent deployment custody, remaining
+S01 settlement/retention and connected/physical text acceptance remain open.
+This checkpoint closes no additional stage or physical scenario.
