@@ -142,12 +142,89 @@ Selected source scan14 passed; receipts/checkpoint/NEXT are scanned separately
 before documentation commits. Artifacts stay untracked. No Docker/production/
 device changes, account resets, Releases or main merges occurred.
 
+## Registry durable reservation continuation, 2026-10-05
+
+Protocol product source: `666f0c4636e1ac988f7c003926d4bbeb7fd256d8`.
+Registry product source: `76ebecdbe2694c8376097eee6395c82f8f93e28e`.
+Node test-fixture source: `cfb607205a04f858ff9d3cf48e74e3d4a05ac956`;
+its native product remains `2791642a365e38621eb0a854fd9acf055b42f103`.
+Earlier receipts are not qualification of these new sources.
+
+The actual PostgreSQL provider now commits the exact unsigned reservation and
+cumulative ledger before calling the role signer. It resumes the same input
+after a signer outage, verifies the actual signed predecessor before a new
+callback, serializes competing writers through the explicit scope root, and
+requires a separate verified database winner read-back. A new revocation while
+pending is retained for the following generation without changing pending
+bytes. Missing roots/history, invalid winners, lost ledger entries and exhausted
+capacity reject without automatic repair, pruning or signing a replacement.
+Expired completion remains history; a fresh successor is still necessary.
+
+The operator DDL and restricted runtime privileges are in the sole Registry
+[runbook](../../../deep-registry-api/docs/DID2_PRIVATE_MAILBOX_GRANTS.md#current-revocation-issuer-journal).
+The journal uses the independently protected restore-authority database;
+joint rollback of that database is outside its local detection guarantee.
+There is no runtime DDL, new software signer, configuration/endpoint activation
+or node auto-enrollment. The Registry test project links the actual existing
+node DID2/network/PMA2 ceremony, excluding only native source/placement adapters
+from that test compilation. No replacement proof constructor was introduced.
+
+Terminal commands, run sequentially except the noted registry check:
+
+```powershell
+# deep-protocol
+dotnet test tests/Deep.Protocol.Tests/Deep.Protocol.Tests.csproj -c Release --filter 'FullyQualifiedName~MailboxGrantRevocationV1|FullyQualifiedName~DeepProtocolRegistryTests|FullyQualifiedName~XPointRegistryMachineParityTests' -warnaserror --logger trx --results-directory artifacts/s05-mgr1-lifecycle/registry-journal-final
+# deep-registry-api: unfiltered full solution, actual isolated PostgreSQL
+../deep-devops/scripts/test-registry-postgres.ps1 -Lane s05-mgr1-journal-final
+# xnode: full test source compilation, selected execution
+dotnet test tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj -c Release -p:DeepProtocolSourceCutover=true --filter 'FullyQualifiedName~MailboxGrantRevocationStoreTests|FullyQualifiedName~CurrentMailboxHostCompositionTests|FullyQualifiedName~CurrentMailboxEnrollmentCommandTests|FullyQualifiedName~CurrentMailboxAdmissionTests' -warnaserror --logger trx --results-directory artifacts/s05-mgr1-lifecycle/registry-fixture-final
+# unchanged Registry source: isolate the failing route class, not a full-gate replacement
+../deep-devops/scripts/test-registry-postgres.ps1 -Lane s05-route-replay-reproduction -Filter 'FullyQualifiedName~DeepIdV2RouteThresholdIssuerTests'
+dotnet build Deep.Registry.Api.slnx -c Release -p:DeepProtocolLocalCutover=true -p:DeepProtocolSourceCutover=true -warnaserror --verbosity minimal
+```
+
+Protocol selected **89/0/0**, terminal0. Node selected **117/0/0**, terminal0,
+including the original native fixture branch; no full Node/peer requalification.
+Registry unfiltered full **344/1/7**, terminal1, includes all **14/0/0** new
+provider cases. Both-role cases cover durable intent visible to another DB
+connection before signing, cold retry, historical completion followed by a
+fresh successor, exact winner write interruption/corruption, independent writers,
+wrong predecessor/removal, lost pending ledger, foreign issuer, both capacity
+limits and 70 retained generations read one record at a time.
+
+The full Registry failure is the existing crash-mode1 route issuer case's exact
+authenticated HTTP replay: expected200, actual503 at line228, before subsequent
+publication assertions. Its assertion and product source were not changed.
+Unchanged-source isolated repetition passes **3/0/0**, terminal0, but does not
+establish or fix the original cause. This is not a green full Registry gate.
+Seven skips remain actual Linux socket cases, not passing Windows evidence.
+The concurrent strict Protocol registry command caused one MSB3026 dependency
+copy retry warning during the full Registry build. The later sequential
+warnings-as-errors solution build is terminal0 with zero warnings/errors;
+it does not erase either the earlier warning or failed full test.
+
+| Receipt (relative to its repository) | SHA-256 |
+| --- | --- |
+| Protocol `artifacts/s05-mgr1-lifecycle/registry-journal-final/nikit_SURFACE-LT_2026-10-05_00_56_21_net10.0.trx` | `8cefec284cfe5e61e9e4266646da38c7248a3d0ec558afdaae9ecd3ae4c8bce1` |
+| Registry full `artifacts/s00/s05-mgr1-journal-final-6fd3a99007494038b17682ba8967c42e/nikit_SURFACE-LT_2026-10-05_00_57_58_net10.0.trx` | `59b869ebf3655d8fcde636605f20bdcbd0e8a61e64e8116d07b1bcf8626a135c` |
+| Registry isolated repeat `artifacts/s00/s05-route-replay-reproduction-aae1f416183f41069a516e558ec99373/nikit_SURFACE-LT_2026-10-05_01_00_56_net10.0.trx` | `784bca4bb5c04443b4ce900b9766e8e63c9a532728b35a6b4e940b3881657927` |
+| Node `artifacts/s05-mgr1-lifecycle/registry-fixture-final/nikit_SURFACE-LT_2026-10-05_00_59_29_net10.0.trx` | `d77e7bf52a2c89ce5d08c14d3294d1392a18fde248276ed0efd2b6225c9c8d1d` |
+
+Strict registry and documentation174 pass; selected source scan9 has zero
+findings. Receipts/docs are scanned separately before the documentation commit.
+Disposable PostgreSQL containers/tmpfs were removed by their ownership-checking
+wrapper. This is local provider integration, not PostgreSQL process restart,
+configured external custody, deployed refresh or device qualification. There
+were no production/device changes, new operational keys, Releases or main merges.
+
 ## Same delivery vertical, still open
 
-Actual Registry MGR1 durable signing intent/cumulative authoring, renewal and
-retained distribution; wiring the implemented native historical steps into
+Actual hosted Registry MGR1 current-context composition, renewal and retained
+distribution; wiring the implemented native historical steps into
 actual bounded node refresh/readiness and configured observer;
 matching deployed authority, full source/shipping gates and physical delivery.
+The durable provider above does not close this lifecycle. The full Registry
+HTTP503 and original native Windows denial remain unclassified.
 The inspected Registry distributor currently serves only the existing signed
 eight-chain network bundle. Its health or TLS success cannot supply MGR1 authority.
 Physical contacts/messages/attachments/groups remain 0/4; S05 and the release
