@@ -53,9 +53,14 @@ public sealed class CurrentContactPublicationFixture : IAsyncLifetime
 
     internal async Task VerifyCommittedAsync(Xpo1Result result)
     {
-        _ = await DeepIdV2PublicationCommitVerifier.VerifyCommittedAsync(
-            ceremony.ContactRoute, ceremony.ContactObject, ceremony.ContactOwnedRequest,
-            Request.CanonicalBytes, result.WireBytes);
+        if (oneTime)
+            _ = await DeepIdV2PublicationCommitVerifier.VerifyOneTimeCommittedAsync(
+                ceremony.ContactRoute, ceremony.OneTimeContactObject!, ceremony.ContactOwnedRequest,
+                Request.CanonicalBytes, result.WireBytes);
+        else
+            _ = await DeepIdV2PublicationCommitVerifier.VerifyCommittedAsync(
+                ceremony.ContactRoute, ceremony.ContactObject, ceremony.ContactOwnedRequest,
+                Request.CanonicalBytes, result.WireBytes);
     }
 
     public Task DisposeAsync()

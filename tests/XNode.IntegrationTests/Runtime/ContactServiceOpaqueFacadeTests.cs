@@ -76,7 +76,9 @@ public sealed class ContactServiceOpaqueFacadeTests : IClassFixture<CurrentConta
             Assert.Equal(1u, oneTime.Request.UsageLimit);
             var publication = await fixture.Facade.DispatchAsync(
                 ContactServiceFacadeOperation.PublishDcr, publish);
-            Assert.Equal(Xpo1Status.Committed, Xpo1Codec.Decode(publication.Span, publish).Status);
+            var published = Xpo1Codec.Decode(publication.Span, publish);
+            Assert.Equal(Xpo1Status.Committed, published.Status);
+            await oneTime.VerifyCommittedAsync(published);
             var resolve = Xiq(operationByte: 31, publication: oneTime);
 
             var first = await fixture.Facade.DispatchAsync(
