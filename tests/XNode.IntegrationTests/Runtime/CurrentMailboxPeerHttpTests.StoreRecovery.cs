@@ -63,8 +63,9 @@ public sealed partial class CurrentMailboxPeerHttpTests
 
         // Restore test-owned exact custody, not reconstruct it from the node.
         f.Ledger!.Dispose(); f.Ledger = null;
-        File.WriteAllBytes(f.LedgerFile, preserved); f.Reopen(); f.OpenLedger();
-        await f.Ledger!.InitializeAsync(); // the fixture's UTC clock throws
+        File.WriteAllBytes(f.LedgerFile, preserved); new MailboxStorageSecurity().SecureFile(f.LedgerFile);
+        f.Reopen(); f.OpenLedger();
+        await f.InitializeLedgerAsync(); // actual host/floor leases; fixture UTC throws
         if (state == "pending")
             Assert.Equal(MailboxPeerQuorumStatus.Durable, (await f.Coordinator.StoreClientAsync(original, f.Ledger!)).Status);
         Assert.Equal(MailboxPeerQuorumStatus.Durable, (await f.Coordinator.StoreClientAsync(DifferentGrantStore(f), f.Ledger!)).Status);
@@ -75,13 +76,13 @@ public sealed partial class CurrentMailboxPeerHttpTests
     public async Task CurrentLedgerInitializationDoesNotUseUtcOrRemoveStoreAndAckIntents()
     {
         await using var f = await Fixture.CreateAsync(); f.OpenLedger();
-        await f.Ledger!.InitializeAsync();
+        await f.InitializeLedgerAsync();
         Assert.Equal(MailboxPeerQuorumStatus.Durable, (await f.Coordinator.StoreClientAsync(f.ClientStoreFrame(), f.Ledger!)).Status);
         var page = DecodePage((await f.Recipient.Receiver.RetrieveClientAsync(RetrieveFrame(f))).ToArray(), f);
         var ack = AckFrame(f, page);
         AssertAck((await f.Coordinator.AcknowledgeClientAsync(ack, f.Ledger!)).Span, page, 0x74);
         var preserved = File.ReadAllBytes(f.LedgerFile); var http = f.AllHttpRequests;
-        f.Reopen(); await f.Ledger!.InitializeAsync();
+        f.Reopen(); await f.InitializeLedgerAsync();
         Assert.Equal(preserved, File.ReadAllBytes(f.LedgerFile));
         AssertAck((await f.Coordinator.AcknowledgeClientAsync(ack, f.Ledger!)).Span, page, 0x74);
         Assert.Equal(http, f.AllHttpRequests);
@@ -97,15 +98,19 @@ public sealed partial class CurrentMailboxPeerHttpTests
         AssertAck((await f.Coordinator.AcknowledgeClientAsync(AckFrame(f, page), f.Ledger!)).Span, page, 0x74);
         var ack = JsonNode.Parse(File.ReadAllBytes(f.LedgerFile))!["ackOperations"]!.ToJsonString();
         const ulong utc = 1_900_000_000;
-        f.OpenLedger(clock: new RecoveryUtcClock(utc));
+        var neutralDirectory = Path.Combine(f.Sender.Node.DataRoot, "neutral-collector");
+        Directory.CreateDirectory(neutralDirectory);
+        File.Copy(f.LedgerFile, Path.Combine(neutralDirectory, "operations.json"));
+        using var neutral = new XNode.Core.Mailbox.Client.MailboxClientOperationLedger(f.Sender.Node.DataRoot,
+            new() { DirectoryName = "neutral-collector" }, clock: new RecoveryUtcClock(utc));
         byte[] Bytes(byte value, int length = 32) => Enumerable.Repeat(value, length).ToArray();
         // Exercise only the neutral collector. These raw primitive inputs are
         // not a signed grant, current admission, or network durability evidence.
-        await f.Ledger!.ReserveStoreAsync(777, Bytes(0x99, 16), Bytes(0x98), Bytes(0x97),
+        await neutral.ReserveStoreAsync(777, Bytes(0x99, 16), Bytes(0x98), Bytes(0x97),
             Bytes(0x96), Bytes(0x95), Bytes(0x94), Bytes(0x93),
             new ReadOnlyMemory<byte>[] { Bytes(0x91), Bytes(0x92) }, utc + 600, default);
-        await f.Ledger.InitializeAsync();
-        Assert.Equal(ack, JsonNode.Parse(File.ReadAllBytes(f.LedgerFile))!["ackOperations"]!.ToJsonString());
+        await neutral.InitializeAsync();
+        Assert.Equal(ack, JsonNode.Parse(File.ReadAllBytes(Path.Combine(neutralDirectory, "operations.json")))!["ackOperations"]!.ToJsonString());
         Assert.Single(f.ExactIntents, bytes => bytes.Length != 0);
     }
 

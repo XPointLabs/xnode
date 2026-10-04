@@ -54,7 +54,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
                 f.Sender.Crypto.SignRequest(peer with { ReplayNonce = nonce }, f.Recipient.SenderSeed)));
         }
         item["receipt"] = defect == "unsigned-durable" ? "" : Convert.ToBase64String(quorum);
-        File.WriteAllText(f.LedgerFile, doc.ToJsonString()); f.Reopen();
+        await f.InstallTestOwnedDocumentAsync(System.Text.Encoding.UTF8.GetBytes(doc.ToJsonString())); f.Reopen();
         var before = File.ReadAllBytes(f.LedgerFile);
         Assert.NotNull(await Record.ExceptionAsync(() => f.Coordinator.StoreClientAsync(DifferentGrantStore(f), f.Ledger!).AsTask()));
         Assert.Equal(before, File.ReadAllBytes(f.LedgerFile)); Assert.Single(f.ExactIntents);

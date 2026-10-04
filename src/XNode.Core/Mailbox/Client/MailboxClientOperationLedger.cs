@@ -96,7 +96,7 @@ internal sealed record MailboxClientLedgerOperation(
 public sealed partial class MailboxClientOperationLedger : IDisposable
 {
     private const int SchemaVersion = 6;
-    private const long MaximumDocumentBytes = 768L * 1024 * 1024;
+    internal const long MaximumDocumentBytes = 768L * 1024 * 1024;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _directory;
     private readonly string _path;
@@ -105,6 +105,7 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
     private readonly IMailboxStorageSecurity _security;
     private readonly IMailboxDurabilityBarrier _durability;
     private readonly IClock _clock;
+    private readonly IMailboxOperationCustody? _currentCustody;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly FileStream _directoryLease;
     private readonly object _lifecycleGate = new();
@@ -117,6 +118,11 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
         IClock? clock = null,
         IMailboxStorageSecurity? security = null,
         IMailboxDurabilityBarrier? durability = null)
+        : this(dataDirectory, options, null, clock, security, durability) { }
+
+    internal MailboxClientOperationLedger(string dataDirectory, MailboxClientAdapterOptions options,
+        IMailboxOperationCustody? currentCustody, IClock? clock = null,
+        IMailboxStorageSecurity? security = null, IMailboxDurabilityBarrier? durability = null)
     {
         options.Validate();
         _directory = Path.Combine(dataDirectory, options.DirectoryName);
@@ -124,6 +130,7 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
         _maxEntries = options.MaxOperationEntries;
         _maxCursorAuthorities = options.MaxCursorAuthorities;
         _clock = clock ?? new SystemClock();
+        _currentCustody = currentCustody;
         _security = security ?? new MailboxStorageSecurity();
         _durability = durability ?? new MailboxDurabilityBarrier();
         _security.SecureDirectory(_directory);
@@ -148,6 +155,8 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
+        if (_currentCustody is not null)
+            throw new InvalidOperationException("Current operation custody requires live native host initialization.");
         _security.SecureDirectory(_directory);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -258,7 +267,7 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
         try
         {
             if (lease is not null) _ = await lease.CheckAsync(cancellationToken).ConfigureAwait(false);
-            var document = await LoadAsync(cancellationToken).ConfigureAwait(false);
+            var document = await LoadAsync(cancellationToken, lease).ConfigureAwait(false);
             // Current requests never collect other operations using host UTC or
             // their short-lived grant. Protected retention/GC is a separate owner.
             var changed = lease is null && RemoveExpiredAndCompact(document, NowUnixSeconds());
@@ -547,10 +556,28 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
         }
     }
 
-    private async Task<MailboxClientLedgerDocument> LoadAsync(CancellationToken cancellationToken)
+    private async Task<MailboxClientLedgerDocument> LoadAsync(CancellationToken cancellationToken,
+        MailboxCurrentOperationLease? lease = null)
     {
-        if (!File.Exists(_path))
+        if (_currentCustody is not null || lease is not null)
         {
+            if (_currentCustody is null || lease is null)
+                throw new InvalidOperationException("Current operation custody and live host lease are required together.");
+            await _currentCustody.VerifyAsync(_path, lease, ValidateFileAsync, cancellationToken).ConfigureAwait(false);
+        }
+        return await ReadDocumentAsync(_path, cancellationToken, allowMissing: _currentCustody is null,
+            authenticateSnapshot: _currentCustody is not null).ConfigureAwait(false);
+    }
+
+    private async Task ValidateFileAsync(string path, CancellationToken token) =>
+        _ = await ReadDocumentAsync(path, token, allowMissing: false).ConfigureAwait(false);
+
+    private async Task<MailboxClientLedgerDocument> ReadDocumentAsync(string path, CancellationToken cancellationToken,
+        bool allowMissing, bool authenticateSnapshot = false)
+    {
+        if (!File.Exists(path))
+        {
+            if (!allowMissing) throw new InvalidDataException("Current operation document is missing.");
             return new(
                 SchemaVersion,
                 0,
@@ -560,21 +587,36 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
                 new(StringComparer.Ordinal));
         }
 
-        if (new FileInfo(_path).Length > MaximumDocumentBytes)
+        if (new FileInfo(path).Length > MaximumDocumentBytes)
         {
             throw new InvalidDataException("Mailbox client operation ledger exceeds its bound.");
         }
 
         try
         {
-            await using var stream = File.OpenRead(_path);
+            await using var stream = File.OpenRead(path);
+            var length = stream.Length;
+            if (length is < 1 or > MaximumDocumentBytes)
+                throw new InvalidDataException("Mailbox client operation snapshot exceeds its bound.");
+            // Hash and parse the same opened snapshot, not a path verified before
+            // an external authority callback and reopened without authentication.
+            using var algorithm = authenticateSnapshot ? SHA256.Create() : null;
+            using var hashing = authenticateSnapshot ? new CryptoStream(stream, algorithm!, CryptoStreamMode.Read, leaveOpen: true) : null;
             var document = await JsonSerializer.DeserializeAsync<MailboxClientLedgerDocument>(
-                stream,
+                hashing ?? (Stream)stream,
                 JsonOptions,
                 cancellationToken).ConfigureAwait(false);
             if (document is null)
             {
                 throw new InvalidDataException("Mailbox client operation ledger is empty.");
+            }
+            if (authenticateSnapshot)
+            {
+                if (await hashing!.ReadAsync(new byte[1], cancellationToken).ConfigureAwait(false) != 0 ||
+                    stream.Length != length || stream.Position != length)
+                    throw new InvalidDataException("Mailbox operation snapshot changed while reading.");
+                _currentCustody!.RequireDocumentSnapshot(path, algorithm!.Hash ??
+                    throw new InvalidDataException("Mailbox operation snapshot hashing is incomplete."), length);
             }
 
             document.NextCursorByMailbox = new(
@@ -849,12 +891,15 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
     private async Task SaveAsync(
         MailboxClientLedgerDocument document,
         CancellationToken cancellationToken,
-        MailboxCurrentOperationLease? lease = null)
+        MailboxCurrentOperationLease? lease = null, bool enrolling = false)
     {
+        if ((_currentCustody is not null && lease is null) || (lease is not null && _currentCustody is null))
+            throw new InvalidOperationException("Current operation persistence requires protected custody and live host lease.");
         if (lease is not null) _ = await lease.CheckAsync(cancellationToken).ConfigureAwait(false);
         ValidateDocument(document);
         _security.SecureDirectory(_directory);
         var temporary = $"{_path}.{Guid.NewGuid():N}.tmp";
+        var preservePending = false;
         try
         {
             await using (var stream = new FileStream(
@@ -876,14 +921,23 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
             }
 
             if (lease is not null) _ = await lease.CheckAsync(cancellationToken).ConfigureAwait(false);
+            if (_currentCustody is not null && !enrolling)
+            {
+                // Prepare can fail after its durable native write. Preserve the
+                // exact file; only verified startup may collect it.
+                preservePending = true;
+                await _currentCustody.PrepareAsync(_path, temporary, lease!, cancellationToken).ConfigureAwait(false);
+            }
             await ReplaceAtomicallyAsync(temporary, cancellationToken).ConfigureAwait(false);
             _security.SecureFile(_path);
             _durability.FlushFileAndParentDirectory(_path);
             if (lease is not null) _ = await lease.CheckAsync(cancellationToken).ConfigureAwait(false);
+            if (_currentCustody is not null && !enrolling)
+                await _currentCustody.CommitAsync(_path, lease!, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
-            if (File.Exists(temporary))
+            if (!preservePending && File.Exists(temporary))
             {
                 File.Delete(temporary);
             }

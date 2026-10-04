@@ -46,6 +46,14 @@ This is not another journal or a production data/key reset. Current reservations
 do not use host UTC for garbage collection; capacity remains backpressure until
 protected retention is composed. A pre-intent write failure can remain Pending;
 there is no claim of automatic reconciliation for that uncertainty.
+The current operation document now has
+[independent protected custody](mailbox-operation-custody.md). Native startup
+uses current host/both role leases without a client grant. Missing data is not
+fresh provisioning; Store/ACK check custody before client replay. Only an
+authenticated pending replacement can recover exact bytes. Unknown pre-plan
+writes still cannot remint a known request. This does not activate Program/DI,
+whole-host readiness, retirement or deployed provisioning; the linked owner
+defines the consistent backup and local anti-rollback limits.
 The current Store producer also retains the exact authenticated MQR3 in that
 same operation ledger. A new Store in the same epoch/mailbox/placement/membership
 cannot pass an unsettled earlier intent, even under a different signed grant or

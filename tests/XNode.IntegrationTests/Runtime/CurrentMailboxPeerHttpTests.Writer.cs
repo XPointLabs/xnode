@@ -11,6 +11,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
     public async Task NonWriterClientAndSignedHttpPeerCannotReserveOrAllocateCursor()
     {
         await using var f = await Fixture.CreateAsync(); f.OpenLedger(); f.OpenRecipientLedger();
+        var recipientPrior = File.ReadAllBytes(f.AckLedgerFile.Replace(f.Sender.Node.DataRoot, f.Recipient.Node.DataRoot, StringComparison.Ordinal));
         var client = f.ClientStoreFrame();
         var reversed = f.Sender.Frame(MailboxPeerReplicationOperation.Store);
         var target = f.Sender.Node.Replicas.Single(replica => replica.NodeId.Span.SequenceEqual(f.Sender.Node.Node)).Transport;
@@ -21,7 +22,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
             Assert.Equal(0, f.Recipient.Node.Replay.Diagnostics.ScopeCount);
             Assert.Equal(0UL, f.Recipient.Node.Replay.Diagnostics.AcceptedTimeHighWatermarkUnixSeconds);
             Assert.Equal(0, f.Recipient.Node.OutcomeCount);
-            Assert.False(File.Exists(f.AckLedgerFile));
+            Assert.Equal(recipientPrior, File.ReadAllBytes(f.AckLedgerFile));
             Assert.Null(await new CurrentMailboxReplicaPeerClient().SendAsync(
                 target, MailboxPeerReplicationOperation.Store, reversed, default));
             Assert.Equal((int)HttpStatusCode.Forbidden, f.RemoteHost.LastStatus);

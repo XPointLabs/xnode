@@ -80,6 +80,6 @@ internal sealed partial class CurrentMailboxReplicationCoordinator
                 var canonical = MailboxAggregateAckCodec.EncodeMqr3(new()
                 { Epoch = body.Epoch, OperationId = body.OperationId, TombstoneQuorums = quorums });
                 return (await request.PersistSuccessAsync(canonical, maximum, ct).ConfigureAwait(false)).CanonicalBytes;
-            }, token);
+            }, token, ledger);
     }
 }

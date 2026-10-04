@@ -120,17 +120,17 @@ public sealed partial class CurrentMailboxPeerHttpTests
         await Assert.ThrowsAsync<IOException>(() => f.Coordinator.AcknowledgeClientAsync(exact, f.AckLedger).AsTask());
         Assert.Equal(1, f.AllHttpRequests);
         Assert.All(f.Sender.MutationFiles.Concat(f.Recipient.MutationFiles), path => Assert.Equal("completed", JsonNode.Parse(File.ReadAllBytes(path))!["state"]!.GetValue<string>()));
-        var intents = AckIntents(f); Assert.Equal(beforeReplace ? 0 : 1, intents.Length); f.Reopen();
+        var intents = AckIntents(f); Assert.Equal(beforeReplace ? 0 : 1, intents.Length);
         if (beforeReplace)
         {
-            await Assert.ThrowsAsync<InvalidDataException>(() => f.Coordinator.AcknowledgeClientAsync(exact, f.AckLedger).AsTask());
-            Assert.Empty(AckIntents(f)); Assert.Equal(1, f.AllHttpRequests);
+            var pending = JsonNode.Parse(File.ReadAllBytes(Assert.Single(Directory.GetFiles(Path.GetDirectoryName(f.AckLedgerFile)!, "operations.json.*.tmp"))))!;
+            intents = pending["ackOperations"]!.AsObject().Single().Value!["items"]!.AsArray()
+                .Select(item => Convert.FromBase64String(item!["peerRequest"]!.GetValue<string>())).ToArray();
         }
-        else
-        {
-            AssertAck((await f.Coordinator.AcknowledgeClientAsync(exact, f.AckLedger)).Span, page, 0x74);
-            Assert.Equal(intents, AckIntents(f)); AssertTombstones(f, 1); Assert.Equal(2, f.AllHttpRequests);
-        }
+        f.Reopen();
+        AssertAck((await f.Coordinator.AcknowledgeClientAsync(exact, f.AckLedger)).Span, page, 0x74);
+        Assert.Equal(intents, AckIntents(f)); AssertTombstones(f, 1); Assert.Equal(2, f.AllHttpRequests);
+        Assert.Empty(Directory.GetFiles(Path.GetDirectoryName(f.AckLedgerFile)!, "operations.json.*.tmp"));
     }
 
     [Fact]
@@ -158,8 +158,9 @@ public sealed partial class CurrentMailboxPeerHttpTests
         var document = JsonNode.Parse(File.ReadAllBytes(f.AckLedgerFile))!;
         var item = document["ackOperations"]!.AsObject().First().Value!["items"]!.AsArray()[0]!;
         var bytes = Convert.FromBase64String(item["peerRequest"]!.GetValue<string>()); bytes[^1] ^= 1;
-        item["peerRequest"] = Convert.ToBase64String(bytes); File.WriteAllText(f.AckLedgerFile, document.ToJsonString());
-        var saved = File.ReadAllBytes(f.AckLedgerFile); f.OpenLedger();
+        item["peerRequest"] = Convert.ToBase64String(bytes); f.OpenLedger();
+        await f.InstallTestOwnedDocumentAsync(System.Text.Encoding.UTF8.GetBytes(document.ToJsonString()));
+        var saved = File.ReadAllBytes(f.AckLedgerFile);
         await Assert.ThrowsAsync<CryptographicException>(() => f.Coordinator.AcknowledgeClientAsync(exact, f.AckLedger).AsTask());
         Assert.Equal(saved, File.ReadAllBytes(f.AckLedgerFile)); Assert.Equal(2, f.AllHttpRequests); AssertTombstones(f, 1);
     }

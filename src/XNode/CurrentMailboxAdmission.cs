@@ -41,11 +41,15 @@ internal sealed class CurrentMailboxAdmission(
                     throw new CryptographicException("Client Store requires the authenticated PMS2 writer.");
                 if (storeLedger is not null)
                 {
-                    ArgumentNullException.ThrowIfNull(storeMutations);
-                    runtime.RequireCurrentStoreHolder(owned, scope.Lease.RequireActive);
-                    await storeLedger.EnsureCurrentStorePrefixAsync(
-                        MailboxAuthenticatedRequestTranscript.DecodeStoreBody(decoded.Binding.CanonicalRequest.Span),
-                        scope.Host, scope.Lease, storeMutations, ct).ConfigureAwait(false);
+                    runtime.RequireCurrentHolder(owned, scope.Lease.RequireActive);
+                    await storeLedger.InitializeCurrentAsync(node, scope.Host, scope.Lease, ct).ConfigureAwait(false);
+                    if (operation == MailboxAuthenticatedOperation.Store)
+                    {
+                        ArgumentNullException.ThrowIfNull(storeMutations);
+                        await storeLedger.EnsureCurrentStorePrefixAsync(
+                            MailboxAuthenticatedRequestTranscript.DecodeStoreBody(decoded.Binding.CanonicalRequest.Span),
+                            scope.Host, scope.Lease, storeMutations, ct).ConfigureAwait(false);
+                    }
                 }
                 var upper = await scope.Lease.CheckAsync(ct).ConfigureAwait(false);
                 var policy = new MailboxAuthenticatedVerificationPolicy
@@ -76,12 +80,45 @@ internal sealed class CurrentMailboxAdmission(
         var grant = MailboxAuthenticatedCapabilityCodec.DecodeGrant(canonicalGrant.Span);
         var exactGrant = MailboxAuthenticatedCapabilityCodec.EncodeGrant(grant);
         if (grant.Domain != role) throw new CryptographicException("Current grant role differs from the operation.");
+        return await WithAuthorityAsync(exactGrant, grant, (scope, ct) => action(new GrantScope(this,
+            scope.Authority, scope.Host, scope.Replicas, grant, scope.Lease), ct), token).ConfigureAwait(false);
+    }
+
+    // Native startup/recovery needs independently current host authority, not a
+    // synthetic client grant. Both role owners are still held for the callback.
+    internal ValueTask<T> WithHostAsync<T>(Func<HostScope, CancellationToken, ValueTask<T>> action,
+        CancellationToken token = default)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        return WithAuthorityAsync(null, null, (scope, ct) => action(new HostScope(this,
+            scope.Authority, scope.Host, scope.Lease), ct), token);
+    }
+
+    internal ValueTask<bool> InitializeOperationsAsync(MailboxClientOperationLedger ledger, CancellationToken token = default) =>
+        WithHostAsync(async (scope, ct) =>
+        {
+            await ledger.InitializeCurrentAsync(node, scope.Host, scope.Lease, ct).ConfigureAwait(false);
+            return true;
+        }, token);
+
+    internal ValueTask<bool> EnrollNewOperationsAsync(MailboxClientOperationLedger ledger, CancellationToken token = default) =>
+        WithHostAsync(async (scope, ct) =>
+        {
+            await ledger.EnrollNewCurrentAsync(node, scope.Host, scope.Lease, ct).ConfigureAwait(false);
+            return true;
+        }, token);
+
+    private async ValueTask<T> WithAuthorityAsync<T>(byte[]? exactGrant, MailboxAuthenticatedGrant? grant,
+        Func<AuthorityScope, CancellationToken, ValueTask<T>> action, CancellationToken token)
+    {
         var authority = await source.ReadPublicationAuthorityAsync(token).ConfigureAwait(false);
         var host = await MailboxHostAuthorityV2Verifier.VerifyAsync(authority.Network, authority.Authority,
             authority.MailboxAuthority.ExactPma2, authority.TrustedTime, token).ConfigureAwait(false);
-        var replicas = await host.ResolveGrantReplicasAsync(exactGrant, token).ConfigureAwait(false);
+        _ = await host.ResolveReplicaAsync(node, token).ConfigureAwait(false);
+        IReadOnlyList<VerifiedMailboxReplicaV2> replicas = exactGrant is null ? [] :
+            await host.ResolveGrantReplicasAsync(exactGrant, token).ConfigureAwait(false);
         var protectedHistory = OnionNetworkProtectedHistoryCodec.Encode(authority.Network);
-        if (replicas.Count != 2 || !replicas.Any(replica => Fixed(replica.NodeId.Span, node)))
+        if (exactGrant is not null && (replicas.Count != 2 || !replicas.Any(replica => Fixed(replica.NodeId.Span, node))))
             throw new CryptographicException("The local node is not a selected mailbox replica.");
         byte[] policyReference = [.. "PMA2"u8, 0, 1, .. authority.MailboxAuthority.CoreHash.Span];
         deposit.RequireScope(node, host.NetworkId.Span, policyReference, MailboxCapabilityDomain.Deposit);
@@ -98,7 +135,7 @@ internal sealed class CurrentMailboxAdmission(
                     if (!Volatile.Read(ref active)) throw new InvalidOperationException("Current mailbox operation is closed.");
                     depositLease.RequireActive(); retrieveLease.RequireActive();
                 }
-                var roleLease = grant.Domain == MailboxCapabilityDomain.Deposit ? depositLease : retrieveLease;
+                var roleLease = grant?.Domain == MailboxCapabilityDomain.Deposit ? depositLease : retrieveLease;
                 async ValueTask<ulong> CheckAsync(CancellationToken checkToken)
                 {
                     RequireActive(); checkToken.ThrowIfCancellationRequested();
@@ -113,13 +150,15 @@ internal sealed class CurrentMailboxAdmission(
                     var currentHost = await MailboxHostAuthorityV2Verifier.VerifyAsync(current.Network, current.Authority,
                         current.MailboxAuthority.ExactPma2, current.TrustedTime, checkToken).ConfigureAwait(false);
                     RequireActive();
-                    await currentHost.EnsureGrantCurrentAsync(exactGrant, checkToken).ConfigureAwait(false);
+                    if (exactGrant is null) await currentHost.EnsureCurrentAsync(checkToken).ConfigureAwait(false);
+                    else await currentHost.EnsureGrantCurrentAsync(exactGrant, checkToken).ConfigureAwait(false);
                     RequireActive();
                     await depositLease.EnsureCurrentAsync(checkToken).ConfigureAwait(false);
                     RequireActive();
                     await retrieveLease.EnsureCurrentAsync(checkToken).ConfigureAwait(false);
                     RequireActive();
-                    await roleLease.EnsureGrantNotRevokedAsync(exactGrant, checkToken).ConfigureAwait(false);
+                    if (exactGrant is not null)
+                        await roleLease.EnsureGrantNotRevokedAsync(exactGrant, checkToken).ConfigureAwait(false);
                     RequireActive();
                     var reading = await clock.ReadAsync(checkToken).ConfigureAwait(false);
                     RequireActive(); checkToken.ThrowIfCancellationRequested();
@@ -130,17 +169,18 @@ internal sealed class CurrentMailboxAdmission(
                     var elapsed = checked(reading.SampleSeconds - freshness.MonotonicSample);
                     var lower = checked(freshness.TrustedLowerUnixSeconds + elapsed);
                     var upper = checked(freshness.TrustedUpperUnixSeconds + elapsed);
-                    if (lower < grant.NotBeforeUnixSeconds || upper >= grant.ExpiresAtUnixSeconds)
+                    if (grant is not null && (lower < grant.NotBeforeUnixSeconds || upper >= grant.ExpiresAtUnixSeconds))
                         throw new CryptographicException("Current mailbox grant does not cover the full trusted interval.");
                     // Recheck the same closed host after the final clock callback.
-                    await host.EnsureGrantCurrentAsync(exactGrant, checkToken).ConfigureAwait(false);
+                    if (exactGrant is null) await host.EnsureCurrentAsync(checkToken).ConfigureAwait(false);
+                    else await host.EnsureGrantCurrentAsync(exactGrant, checkToken).ConfigureAwait(false);
                     RequireActive(); checkToken.ThrowIfCancellationRequested();
                     return upper;
                 }
 
                 try
                 {
-                    var scope = new GrantScope(this, authority, host, replicas, grant,
+                    var scope = new AuthorityScope(authority, host, replicas,
                         new MailboxCurrentOperationLease(CheckAsync, RequireActive));
                     _ = await scope.Lease.CheckAsync(innerToken).ConfigureAwait(false);
                     var result = await action(scope, innerToken).ConfigureAwait(false);
@@ -154,6 +194,12 @@ internal sealed class CurrentMailboxAdmission(
     internal sealed record GrantScope(CurrentMailboxAdmission Owner, DeepIdV2ContactStoreAuthority Authority,
         VerifiedMailboxHostAuthorityV2 Host, IReadOnlyList<VerifiedMailboxReplicaV2> Replicas,
         MailboxAuthenticatedGrant Grant, MailboxCurrentOperationLease Lease);
+
+    internal sealed record HostScope(CurrentMailboxAdmission Owner, DeepIdV2ContactStoreAuthority Authority,
+        VerifiedMailboxHostAuthorityV2 Host, MailboxCurrentOperationLease Lease);
+    private sealed record AuthorityScope(DeepIdV2ContactStoreAuthority Authority,
+        VerifiedMailboxHostAuthorityV2 Host, IReadOnlyList<VerifiedMailboxReplicaV2> Replicas,
+        MailboxCurrentOperationLease Lease);
 
     internal sealed class Request(MailboxAuthenticatedCapabilityRuntime runtime,
         MailboxAuthenticatedRuntimeReservation reservation,

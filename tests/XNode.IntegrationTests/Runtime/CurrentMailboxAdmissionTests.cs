@@ -235,6 +235,40 @@ public sealed class CurrentMailboxAdmissionTests
         { callback(); return inner.ReadPublicationAuthorityAsync(token); }
     }
 
+    [Theory]
+    [InlineData(MailboxCapabilityDomain.Deposit)]
+    [InlineData(MailboxCapabilityDomain.Retrieve)]
+    public async Task HostOnlyStartupCannotInferMissingRoleFloor(MailboxCapabilityDomain missing)
+    {
+        await using var fixture = await Fixture.CreateAsync(MailboxAuthenticatedOperation.Store, missing);
+        var calls = 0;
+        Assert.NotNull(await Record.ExceptionAsync(() => fixture.Admission.WithHostAsync((_, _) =>
+        { calls++; return ValueTask.FromResult(1); }).AsTask()));
+        Assert.Equal(0, calls); Assert.Equal(0, fixture.Replay.Diagnostics.ScopeCount);
+    }
+
+    [Fact]
+    public async Task HostOnlyStartupHoldsActualRoleOwnersAndItsLeaseCannotEscape()
+    {
+        await using var fixture = await Fixture.CreateAsync(MailboxAuthenticatedOperation.Store);
+        XNode.Core.Mailbox.MailboxCurrentOperationLease? escaped = null;
+        Task? advance = null;
+        var next = Snapshot(fixture.Signed, generation: 2, prior: Snapshot(fixture.Signed), serials: [Bytes(16, 0x51)]);
+        await fixture.Admission.WithHostAsync(async (scope, token) =>
+        {
+            escaped = scope.Lease;
+            advance = fixture.Deposit.AdvanceAsync(scope.Host, next).AsTask();
+            Assert.False(advance.IsCompleted);
+            _ = await scope.Lease.CheckAsync(token);
+            Assert.False(advance.IsCompleted);
+            return 1;
+        });
+        await advance!.WaitAsync(TimeSpan.FromSeconds(5));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => escaped!.CheckAsync(default).AsTask());
+        Assert.Equal(0, fixture.Replay.Diagnostics.ScopeCount);
+        Assert.Equal(next, (await fixture.Deposit.ReadProtectedAsync()).ToArray());
+    }
+
     internal sealed class Fixture : IAsyncDisposable
     {
         internal DeepIdV2PublicationAuthorityFixture Signed = null!;
@@ -249,6 +283,8 @@ public sealed class CurrentMailboxAdmissionTests
         internal CurrentMailboxAdmission Admission = null!;
         private bool ownsSigned;
         internal string DataRoot => depositFiles.Data;
+        internal string OperationCustodyRoot => Path.Combine(depositFiles.Root, "operation-custody");
+        internal string ProtectionRoot => depositFiles.Keys;
         internal int OutcomeCount => outcomes.Diagnostics.EntryCount;
 
         internal static async Task<Fixture> CreateAsync(MailboxAuthenticatedOperation operation,

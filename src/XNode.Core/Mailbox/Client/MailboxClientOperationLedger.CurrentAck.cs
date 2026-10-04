@@ -18,7 +18,7 @@ public sealed partial class MailboxClientOperationLedger
         try
         {
             _ = await lease.CheckAsync(token).ConfigureAwait(false);
-            var document = await LoadAsync(token).ConfigureAwait(false);
+            var document = await LoadAsync(token, lease).ConfigureAwait(false);
             if (document.AckOperations.TryGetValue(key, out var existing))
             {
                 if (!FixedHexEquals(existing.RequestDigest, digest)) throw new MailboxClientOperationConflictException();
@@ -78,7 +78,7 @@ public sealed partial class MailboxClientOperationLedger
         try
         {
             _ = await lease.CheckAsync(token).ConfigureAwait(false);
-            var document = await LoadAsync(token).ConfigureAwait(false); var operation = GetAckOperation(document, key);
+            var document = await LoadAsync(token, lease).ConfigureAwait(false); var operation = GetAckOperation(document, key);
             var index = FindAckItem(operation, cursor); var item = operation.Items[index];
             if (string.IsNullOrEmpty(item.PeerRequest)) throw new InvalidDataException("Current ACK intent is missing.");
             var encoded = Convert.ToBase64String(quorum.Span);

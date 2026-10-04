@@ -18,7 +18,7 @@ public sealed partial class MailboxClientOperationLedger
         try
         {
             _ = await lease.CheckAsync(token).ConfigureAwait(false);
-            var document = await LoadAsync(token).ConfigureAwait(false);
+            var document = await LoadAsync(token, lease).ConfigureAwait(false);
             // Native effects can survive loss/rollback of the allocation file.
             // They are a rejection fence, never proof of two-node settlement or
             // permission to reconstruct an intent or advance a cursor.
@@ -57,7 +57,7 @@ public sealed partial class MailboxClientOperationLedger
         try
         {
             _ = await lease.CheckAsync(token).ConfigureAwait(false);
-            var document = await LoadAsync(token).ConfigureAwait(false);
+            var document = await LoadAsync(token, lease).ConfigureAwait(false);
             var operation = GetOperation(document, key);
             if (string.IsNullOrEmpty(operation.PeerRequest))
                 throw new InvalidDataException("Current Store has lost its exact intent.");
