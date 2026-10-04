@@ -573,7 +573,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
                     .Select(item => Convert.FromBase64String(item.Value.GetProperty("peerRequest").GetString()!)).ToArray();
             }
         }
-        internal void OpenLedger(IMailboxDurabilityBarrier? durability = null, int? maximumEntries = null)
+        internal void OpenLedger(IMailboxDurabilityBarrier? durability = null, int? maximumEntries = null, IClock? clock = null)
         {
             Ledger?.Dispose();
             if (maximumEntries is not null) intentEntries = maximumEntries.Value;
@@ -584,7 +584,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
                 MaxCursorAuthorities = Math.Min(4096, intentEntries),
                 MaxConcurrentSingleFlights = Math.Min(1024, intentEntries)
             },
-                clock: new NoUtcIntentClock(), durability: durability);
+                clock: clock ?? new NoUtcIntentClock(), durability: durability);
         }
         internal static async Task<Fixture> CreateAsync(bool wrongPin = false)
         {

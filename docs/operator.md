@@ -60,6 +60,22 @@ Retrieve/ACK remain available on either replica; a node never reroutes a sealed
 client request. Program activation, startup/recovery, retained projection history
 and signed expiry retirement remain gated. Current Store intents are not collected
 by host-UTC startup GC. This is not physical delivery or release qualification.
+Ledger initialization now avoids host UTC entirely for current-only Store/ACK
+custody; the neutral collector cannot delete current ACK intents either. Before
+client Store replay for a new operation, the ledger checks every retained native
+mutation in the exact authenticated mailbox scope against its saved intent,
+cursor, nonce and body. An existing exact retry checks its own native cursor
+without allocating another one; unrelated damage cannot replace its intent or
+prevent that bounded reconciliation. Missing/rolled-back intent blocks new work
+even for a new grant/operation. Pending, completed, expired and tombstoned native
+records are not filtered out.
+Native mutation metadata is only a rejection fence, never quorum evidence or
+permission to reconstruct a missing intent. Restore exact coherent custody;
+do not delete independent records or initialize a new counter to clear unready.
+This scoped recovery check does not detect loss of an intent before any native
+mutation, nor qualify global startup/rollback protection or retained-route
+ordering. Those remain activation blockers. See the
+[recovery checkpoint](testing/s03-store-recovery-2026-10-04.md).
 Internal client Retrieve now reads the actual completed mutation/blob custody
 on either replica under that same current admission, without requiring the
 coordinator's client ledger. It persists the canonical MRP1 in the existing

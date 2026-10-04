@@ -25,7 +25,8 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
         XNode.Core.Mailbox.Client.MailboxClientOperationLedger? storeLedger = null)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
-        return admission.WithRequestAsync(exactRequest, operation, action, token, storeLedger);
+        return admission.WithRequestAsync(exactRequest, operation, action, token, storeLedger,
+            storeLedger is null ? null : mutations);
     }
 
     internal Task<bool> HasStoreCustodyAsync(CurrentMailboxAdmission.GrantScope scope,

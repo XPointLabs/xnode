@@ -21,7 +21,7 @@ internal sealed class CurrentMailboxAdmission(
     internal async ValueTask<T> WithRequestAsync<T>(ReadOnlyMemory<byte> exactRequest,
         MailboxAuthenticatedOperation operation,
         Func<Request, CancellationToken, ValueTask<T>> action, CancellationToken token = default,
-        MailboxClientOperationLedger? storeLedger = null)
+        MailboxClientOperationLedger? storeLedger = null, MailboxPeerMutationStore? storeMutations = null)
     {
         ArgumentNullException.ThrowIfNull(action);
         // The decoder bounds and owns request bytes before any external callback.
@@ -41,10 +41,11 @@ internal sealed class CurrentMailboxAdmission(
                     throw new CryptographicException("Client Store requires the authenticated PMS2 writer.");
                 if (storeLedger is not null)
                 {
+                    ArgumentNullException.ThrowIfNull(storeMutations);
                     runtime.RequireCurrentStoreHolder(owned, scope.Lease.RequireActive);
                     await storeLedger.EnsureCurrentStorePrefixAsync(
                         MailboxAuthenticatedRequestTranscript.DecodeStoreBody(decoded.Binding.CanonicalRequest.Span),
-                        scope.Host, scope.Lease, ct).ConfigureAwait(false);
+                        scope.Host, scope.Lease, storeMutations, ct).ConfigureAwait(false);
                 }
                 var upper = await scope.Lease.CheckAsync(ct).ConfigureAwait(false);
                 var policy = new MailboxAuthenticatedVerificationPolicy

@@ -6,7 +6,8 @@ namespace XNode.Core.Mailbox.Client;
 public sealed partial class MailboxClientOperationLedger
 {
     internal async Task EnsureCurrentStorePrefixAsync(MailboxEncryptedEnvelope envelope,
-        VerifiedMailboxHostAuthorityV2 host, MailboxCurrentOperationLease lease, CancellationToken token)
+        VerifiedMailboxHostAuthorityV2 host, MailboxCurrentOperationLease lease,
+        MailboxPeerMutationStore mutations, CancellationToken token)
     {
         ThrowIfDisposed(); lease.RequireActive();
         var key = BuildOperationKey(envelope.Epoch, envelope.MailboxId.Bytes.Span, envelope.OperationId.Span);
@@ -18,6 +19,11 @@ public sealed partial class MailboxClientOperationLedger
         {
             _ = await lease.CheckAsync(token).ConfigureAwait(false);
             var document = await LoadAsync(token).ConfigureAwait(false);
+            // Native effects can survive loss/rollback of the allocation file.
+            // They are a rejection fence, never proof of two-node settlement or
+            // permission to reconstruct an intent or advance a cursor.
+            await mutations.RequireCurrentStoreIntentCustodyAsync(envelope, host.MembershipCommitment,
+                document, lease, token).ConfigureAwait(false);
             if (!document.Operations.ContainsKey(key))
                 await RequireCurrentStorePrefixAsync(document, envelope.Epoch, mailbox, placement, membership, host, lease, token).ConfigureAwait(false);
         }

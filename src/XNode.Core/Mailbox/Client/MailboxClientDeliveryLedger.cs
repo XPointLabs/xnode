@@ -784,7 +784,8 @@ public sealed partial class MailboxClientOperationLedger
         ulong nowUnixSeconds)
     {
         var expired = document.AckOperations
-            .Where(pair => pair.Value.ExpiresAtUnixSeconds <= nowUnixSeconds)
+            .Where(pair => pair.Value.Items.All(item => item.PeerRequest.Length == 0)
+                && pair.Value.ExpiresAtUnixSeconds <= nowUnixSeconds)
             .Select(static pair => pair.Key)
             .ToArray();
         foreach (var key in expired)

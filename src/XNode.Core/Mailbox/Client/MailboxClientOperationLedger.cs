@@ -153,7 +153,12 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
         try
         {
             var document = await LoadAsync(cancellationToken).ConfigureAwait(false);
-            var changed = RemoveExpiredAndCompact(document, NowUnixSeconds());
+            // Current exact Store/ACK custody is not wall-clock collectible.
+            // Even reading UTC here breaks restart on the current-only lane;
+            // its retention/retirement owner must provide a protected fence.
+            var hasNeutralWork = document.Operations.Values.Any(operation => operation.PeerRequest.Length == 0)
+                || document.AckOperations.Values.Any(operation => operation.Items.Any(item => item.PeerRequest.Length == 0));
+            var changed = hasNeutralWork && RemoveExpiredAndCompact(document, NowUnixSeconds());
             if (changed)
             {
                 await SaveAsync(document, cancellationToken).ConfigureAwait(false);
