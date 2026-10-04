@@ -51,9 +51,9 @@ dotnet test tests/XNode.ProfileGenerator.Tests/XNode.ProfileGenerator.Tests.cspr
 ```
 
 Final focused **61/61**, terminal0, no skips. Actual host Release build,
-warnings-as-errors, terminal0 with zero warnings/errors. Full Node is still
-running at this checkpoint: terminal sub-suites profile107 and unit272 pass;
-integration is pending. Expected total1187 is not a pass claim. The previous
+warnings-as-errors, terminal0 with zero warnings/errors. Full Node **1187/1187**
+completed terminal0 without failures/skips: profile107, unit272, integration808.
+Integration took26m13s. The previous
 [contact matrix](s00-contact-descriptor-2026-10-04.md) completed Node1173 and
 Shared547; its full result is not transferred to this new Node source.
 
@@ -96,6 +96,12 @@ Sanitized ignored receipt hashes:
   `d4e982d420f671031fc413cdb2567d0d0947af9661837b3798e18995b3310f44`.
 - Approved-package profile107 `artifacts/s00-private-grant/approved-profile/nikit_SURFACE-LT_2026-10-04_13_24_25_net10.0.trx`:
   `e5559fb03799a29d618557bf66df79708aa83ee207e70499ae975becd926ed77`.
+- Default full profile107 `artifacts/s00-private-grant/full-current/nikit_SURFACE-LT_2026-10-04_13_15_42_net10.0.trx`:
+  `7413b1ef5e28842566553dcef13dd1af700929e1e29f372fc8e8285fa459abdd`.
+- Default full unit272 `artifacts/s00-private-grant/full-current/nikit_SURFACE-LT_2026-10-04_13_15_46_net10.0.trx`:
+  `a1277357cd282eed7d1077425c76134c8f5aba71f1eb9c46adc32747b9c5972b`.
+- Default full integration808 `artifacts/s00-private-grant/full-current/nikit_SURFACE-LT_2026-10-04_13_15_52_net10.0.trx`:
+  `560be28b4289d1015cca5f8d6cba608e2746c3eb7bca4e1a974f051a90b226b2`.
 
 Root documentation174 and CONTACT/crypto/ONION/governance ClassificationOnly
 pass; these consistency/classification gates are not release/package evidence.
@@ -105,10 +111,24 @@ member reference as a literal. DevOps now preserves quote information: unquoted
 compiler member references are non-literals only in source; quoted strings and
 JSON/environment/evidence values still reject. Matching source/quoted/member-
 shaped credential regressions and the existing archive/redaction/manifest tests
-pass24/24. No path or secret rule was excluded to obtain a pass. Final scoped
-source/docs/TRX/metadata scan passes18 selected files. Five edited docs pass
+pass24/24. No path or secret rule was excluded to obtain a pass. Initial scoped
+source/docs/TRX/metadata scan passed18 selected files; final scan including the
+three full TRX receipts and corrected dev harness passes22. Five edited docs pass
 strict UTF-8 and100 local links. Private operator inputs and global diagnostics
 are not part of these checks.
+
+DevOps full release-gate contract validation completed51/51, terminal0. Its
+generated positive/negative fixtures qualify the harness only, not this release.
+Full tracked/generated contract-artifact secret scan passed447 selected files.
+The dev-compose harness passes16/16 after correcting three test-only issues:
+quoted synthetic private-field canary is assembled through a local variable;
+package-source mapping compares the exact duplicate-sensitive member set, not
+XML child order; expected HTTPS production domains match the unchanged public
+template. No legacy consumer, package, credential, topology or scanner exemption
+was added. Actual production-readiness status exits1 with10 missing evidence
+blockers; that is expected incomplete-release evidence, not a harness failure.
+Contract summary SHA256: `9ad921870fd905162917747060d0b8e7a93d4ca7fc039e9c8b4114b2403cc74e`.
+Actual blocked status SHA256: `9f6274ee3b9901ee25d6c355f10859798f0b5080ea0339b0b971fc482548299f`.
 
 ## Next work, not a parallel plan
 
