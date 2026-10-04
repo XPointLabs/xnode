@@ -29,6 +29,17 @@ if (args.Length > 0 && args[0] == "did2-network-floor-audit")
     return;
 }
 
+if (args.Length > 0 && args[0] == "current-mailbox-enroll")
+{
+    try { await CurrentMailboxEnrollmentCommand.RunAsync(args); }
+    catch
+    {
+        Console.Error.WriteLine("Current mailbox enrollment rejected; preserve any partial custody for operator recovery. No automatic reset is permitted.");
+        Environment.ExitCode = 1;
+    }
+    return;
+}
+
 var builder = WebApplication.CreateBuilder(args);
 
 var nodeOptions = builder.Configuration.GetSection("Node").Get<RouterNodeOptions>() ?? new RouterNodeOptions();

@@ -24,6 +24,24 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
     private CurrentMailboxAdmission Admission => admission;
     internal ReadOnlyMemory<byte> LocalNodeId => admission.LocalNodeId;
 
+    internal ValueTask EnrollNewHostAsync(ReadOnlyMemory<byte> depositGenesis,
+        ReadOnlyMemory<byte> retrieveGenesis, CancellationToken token = default) =>
+        admission.EnrollNewHostAsync(this, depositGenesis, retrieveGenesis, token);
+
+    internal async ValueTask ValidateEnrollmentSigningCustodyAsync(CurrentMailboxAdmission owner,
+        VerifiedMailboxHostAuthorityV2 host, CancellationToken token)
+    {
+        if (!ReferenceEquals(owner, admission))
+            throw new InvalidOperationException("Enrollment must use the receiver's native admission owner.");
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
+        var local = await host.ResolveReplicaAsync(LocalNodeId, token).ConfigureAwait(false);
+        await host.EnsureCurrentAsync(token).ConfigureAwait(false);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
+        token.ThrowIfCancellationRequested();
+        if (!Fixed(crypto.GetPublicKey(seed), local.SigningPublicKey.Span))
+            throw new CryptographicException("Enrollment signing custody differs from the current descriptor.");
+    }
+
     // A real host recovery operation, not admission for a synthetic client
     // request. Both MGR owners remain held through key and exact-document checks.
     internal async ValueTask InitializeHostAsync(CancellationToken token = default)

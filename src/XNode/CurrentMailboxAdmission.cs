@@ -11,7 +11,7 @@ namespace XNode;
 /// <summary>Current-only native admission owner. Endpoint activation and peer
 /// quorum remain separate: neither copied replica facts nor a recovered outcome
 /// authorize a receipt outside this bounded, protected operation.</summary>
-internal sealed class CurrentMailboxAdmission(
+internal sealed partial class CurrentMailboxAdmission(
     IDeepIdV2ContactStoreAuthoritySource source, IOnionMonotonicClock clock, ReadOnlyMemory<byte> localNodeId,
     FileMailboxGrantRevocationStore deposit, FileMailboxGrantRevocationStore retrieve,
     MailboxAuthenticatedCapabilityRuntime runtime)

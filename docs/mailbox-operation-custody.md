@@ -46,6 +46,15 @@ rejects existing/interrupted protection before persisting the empty operation
 document and enrollment. `InitializeOperationsAsync` is the non-enrolling
 reader/recovery entry point.
 
+`current-mailbox-enroll` now connects explicit new-scope enrollment to the same
+configured source and native graph, without running listeners/hosted services.
+The command preflights both signed role genesis records, the actual descriptor
+key and genuinely new operation custody before the first protected write. The
+operation owner rejects every non-lock entry in a new protected scope, including
+unknown/partial records. Actual writers recheck; there is no multi-file atomic
+commit, restart enrollment or repair fallback. See the single operator procedure
+in [operator.md](operator.md#current-mailbox-host-composition-candidate).
+
 `CurrentMailboxHostRecovery` is registered by Program as the same singleton
 hosted service used by `/health/ready`. Startup and each readiness request call
 the actual receiver's host-only recovery: matching receiver/coordinator owner,
@@ -98,8 +107,8 @@ one side fails closed. Do not erase protection, re-enroll, regenerate a node ID
 or reconstruct operation data from blobs to clear an error. Preserve uncertain
 files for owner-approved recovery; diagnostics must not expose their contents.
 
-This covers the connected native request/peer handlers and the Program recovery
-hook, not complete current Program/DI or deployed provisioning. Recovery here
+This covers the connected native request/peer handlers, Program recovery hook
+and explicit new-scope command, not deployed provisioning/issuer renewal. Recovery here
 checks the protected operation owner; it does not independently qualify every
 historical blob/mutation, retained route or object horizon. Missing/malformed
 local operation data at the peer HTTP boundary yields a bodyless dependency

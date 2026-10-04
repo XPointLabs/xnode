@@ -1049,6 +1049,40 @@ nor repairs it. Node signing seed must match the current descriptor's key, not
 the node ID. Retain consistent backups of data, independent roots and key ring;
 local files cannot detect joint rollback of all three.
 
+For a genuinely new reviewed Development/UAT node scope, the explicit command
+uses the same configuration, current network/proof source and native owners as
+Program, without starting HTTP listeners or hosted services:
+
+```sh
+dotnet XNode.dll current-mailbox-enroll --deposit-mgr1-file /run/node-control/deposit.mgr1 --retrieve-mgr1-file /run/node-control/retrieve.mgr1
+```
+
+Inputs must be absolute, regular, unlinked files containing exact signed MGR1
+genesis records for the two configured roles. Existing node identity, matching
+descriptor signing custody, an independently observed current network closure
+and the separately provisioned restricted mailbox key ring are mandatory. The
+command does not create role signatures, keys, identity or a trust observation.
+Existing production source restrictions are unchanged; this is not production
+activation. Configuration comes from the normal appsettings/environment inputs;
+additional command-line switches and reset options reject.
+
+Before writing either protected role, the command validates both signed inputs,
+actual signing custody and that the operation document and its independent root
+are genuinely new. Unknown or interrupted protection rejects. Writers repeat
+their checks, then enroll both roles and the existing operation document and
+perform normal host recovery. There is a 30-second cooperative command budget.
+The operation is not a multi-file transaction: any failure can leave partial
+state that stays unready. Preserve it; do not rerun as recovery, erase records,
+or re-enroll an existing node. Public output contains only a closed success/error
+message, not exceptions, identifiers or private paths. Normal startup still never
+calls enrollment.
+
+A successful command is only an initial local enrollment. Issuer-authored signed
+successors and their distributor must maintain current role freshness; enrollment
+does not lengthen the MGR1 interval or close the S05 renewal gate. The supported
+issuer/distributor and production provisioning remain unfinished. See
+[operation custody](mailbox-operation-custody.md) for the retained-data contract.
+
 Retired ContactAuthority, GroupControlAuthority, MailboxPeerAuthority,
 MailboxClient, MailboxClientAdapter, MailboxClientProductionAuthority and
 MailboxAuthorityForwarding sections reject, including empty sections. There are

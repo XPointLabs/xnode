@@ -96,8 +96,17 @@ public sealed class CurrentMailboxHostCompositionTests
         Assert.Equal(count, services.Count);
     }
 
-    [Fact]
-    public async Task ActualFactoryOwnsBothRolesAndOperationsAcrossColdReopenWithoutReaderEnrollment()
+    [Theory]
+    [InlineData("valid")]
+    [InlineData("retrieve-role")]
+    [InlineData("retrieve-signature")]
+    [InlineData("existing-operation")]
+    [InlineData("interrupted-operation")]
+    [InlineData("interrupted-custody")]
+    [InlineData("unknown-custody")]
+    [InlineData("signing-key")]
+    [InlineData("cancelled")]
+    public async Task ActualFactoryOwnsBothRolesAndOperationsAcrossColdReopenWithoutReaderEnrollment(string scenario)
     {
         using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync(distinctNodeIdentities: true);
         var host = await Host(signed);
@@ -135,6 +144,7 @@ public sealed class CurrentMailboxHostCompositionTests
             using (var provision = provisionServices.BuildServiceProvider())
                 provision.GetRequiredService<IKeyManager>().CreateNewKey(DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddDays(90));
             foreach (var key in Directory.GetFiles(options.DataProtectionKeysDirectory)) security.SecureFile(key);
+            if (scenario == "signing-key") node.Ed25519PrivateKey = Convert.ToHexString(Enumerable.Repeat((byte)0x77, 32).ToArray());
             var keyHashes = Directory.GetFiles(options.DataProtectionKeysDirectory).ToDictionary(path => Path.GetFileName(path)!,
                 path => SHA256.HashData(File.ReadAllBytes(path)));
             await using (var first = Open())
@@ -143,11 +153,44 @@ public sealed class CurrentMailboxHostCompositionTests
                 first.GetRequiredService<CurrentMailboxReplicationCoordinator>().RequireReceiver(receiver);
                 Assert.NotNull(await Record.ExceptionAsync(() => receiver.InitializeHostAsync().AsTask()));
                 Assert.Empty(Directory.GetFiles(options.IndependentCustodyDirectory, "enrollment.bin", SearchOption.AllDirectories));
-                await first.GetRequiredKeyedService<FileMailboxGrantRevocationStore>(MailboxCapabilityDomain.Deposit)
-                    .EnrollAsync(host, Snapshot(signed));
-                await first.GetRequiredKeyedService<FileMailboxGrantRevocationStore>(MailboxCapabilityDomain.Retrieve)
-                    .EnrollAsync(host, Snapshot(signed, MailboxCapabilityDomain.Retrieve));
-                await first.GetRequiredService<CurrentMailboxAdmission>().EnrollNewOperationsAsync(first.GetRequiredService<MailboxClientOperationLedger>());
+                var deposit = Snapshot(signed);
+                var retrieve = Snapshot(signed, MailboxCapabilityDomain.Retrieve);
+                if (scenario == "retrieve-role") retrieve = deposit;
+                if (scenario == "retrieve-signature") retrieve[^1] ^= 1;
+                string? interrupted = null;
+                if (scenario is "existing-operation" or "interrupted-operation")
+                {
+                    interrupted = Path.Combine(node.DataDirectory, CurrentMailboxHostComposition.OperationDirectory,
+                        scenario == "existing-operation" ? "operations.json" : "operations.json." + new string('1', 32) + ".tmp");
+                    using (var file = new FileStream(interrupted, FileMode.CreateNew)) file.WriteByte(0x55);
+                    security.SecureFile(interrupted);
+                }
+                if (scenario is "interrupted-custody" or "unknown-custody")
+                {
+                    var scope = Convert.ToHexString(SHA256.HashData([.. nodeId.Span, .. host.NetworkId.Span]));
+                    interrupted = Path.Combine(options.IndependentCustodyDirectory, scope,
+                        scenario == "interrupted-custody" ? "checkpoint.bin" : "unknown.bin");
+                    using (var file = new FileStream(interrupted, FileMode.CreateNew)) file.WriteByte(0x55);
+                    security.SecureFile(interrupted);
+                }
+                using var cancellation = new CancellationTokenSource();
+                if (scenario == "cancelled") cancellation.Cancel();
+                if (scenario != "valid")
+                {
+                    Assert.NotNull(await Record.ExceptionAsync(() => receiver.EnrollNewHostAsync(deposit, retrieve, cancellation.Token).AsTask()));
+                    Assert.Empty(Directory.GetFiles(options.IndependentCustodyDirectory, "enrollment.bin", SearchOption.AllDirectories));
+                    Assert.Empty(Directory.GetFiles(options.IndependentCustodyDirectory, "floor.bin", SearchOption.AllDirectories));
+                    Assert.Equal(scenario == "interrupted-custody" ? 1 : 0,
+                        Directory.GetFiles(options.IndependentCustodyDirectory, "checkpoint.bin", SearchOption.AllDirectories).Length);
+                    if (interrupted is not null) Assert.Equal(new byte[] { 0x55 }, File.ReadAllBytes(interrupted));
+                    Assert.NotNull(await Record.ExceptionAsync(() => receiver.InitializeHostAsync().AsTask()));
+                    Assert.Equal(keyHashes.Count, Directory.GetFiles(options.DataProtectionKeysDirectory).Length);
+                    foreach (var key in Directory.GetFiles(options.DataProtectionKeysDirectory))
+                        Assert.Equal(keyHashes[Path.GetFileName(key)], SHA256.HashData(File.ReadAllBytes(key)));
+                    return;
+                }
+                await receiver.EnrollNewHostAsync(deposit, retrieve);
+                Assert.NotNull(await Record.ExceptionAsync(() => receiver.EnrollNewHostAsync(deposit, retrieve).AsTask()));
                 await receiver.InitializeHostAsync();
                 Assert.Equal(0, first.GetRequiredService<DurableMailboxCapabilityReplayJournal>().Diagnostics.ScopeCount);
             }

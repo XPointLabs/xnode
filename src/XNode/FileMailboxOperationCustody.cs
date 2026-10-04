@@ -81,8 +81,13 @@ internal sealed class FileMailboxOperationCustody : IMailboxOperationCustody, ID
     public void RequireNewScope(string operationFile)
     {
         RequirePath(operationFile);
-        if (File.Exists(enrollmentPath) || File.Exists(checkpointPath) || Directory.EnumerateFiles(directory, "*.tmp").Any())
-            throw new InvalidDataException("Mailbox operation custody is already enrolled or interrupted.");
+        RejectLinks(directory);
+        foreach (var entry in Directory.EnumerateFileSystemEntries(directory))
+        {
+            RejectLinks(entry);
+            if (Directory.Exists(entry) || Path.GetFileName(entry) != "writer.lock")
+                throw new InvalidDataException("Mailbox operation custody is already enrolled, interrupted or contains an unknown record.");
+        }
     }
 
     public void RequireDocumentSnapshot(string operationFile, ReadOnlySpan<byte> sha256, long length)

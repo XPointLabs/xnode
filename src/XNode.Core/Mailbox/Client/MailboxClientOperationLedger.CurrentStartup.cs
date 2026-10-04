@@ -4,6 +4,29 @@ namespace XNode.Core.Mailbox.Client;
 
 public sealed partial class MailboxClientOperationLedger
 {
+    internal async Task ValidateNewCurrentScopeAsync(ReadOnlyMemory<byte> localNode,
+        VerifiedMailboxHostAuthorityV2 host, CancellationToken token)
+    {
+        ThrowIfDisposed();
+        var custody = _currentCustody ?? throw new InvalidOperationException("Current operation custody is required.");
+        custody.RequireScope(localNode.Span, host.NetworkId.Span);
+        await _gate.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            await host.EnsureCurrentAsync(token).ConfigureAwait(false);
+            custody.RequireNewScope(_path);
+            RequireAbsentCurrentDocument();
+            token.ThrowIfCancellationRequested();
+        }
+        finally { _gate.Release(); }
+    }
+
+    private void RequireAbsentCurrentDocument()
+    {
+        if (File.Exists(_path) || Directory.Exists(_path) || Directory.EnumerateFiles(_directory, "*.tmp").Any())
+            throw new InvalidDataException("Only a genuinely new operation scope can be explicitly enrolled.");
+    }
+
     internal async Task EnrollNewCurrentAsync(ReadOnlyMemory<byte> localNode,
         VerifiedMailboxHostAuthorityV2 host, MailboxCurrentOperationLease lease, CancellationToken token)
     {
@@ -15,8 +38,7 @@ public sealed partial class MailboxClientOperationLedger
         {
             _ = await lease.CheckAsync(token).ConfigureAwait(false);
             custody.RequireNewScope(_path);
-            if (File.Exists(_path) || Directory.EnumerateFiles(_directory, "*.tmp").Any())
-                throw new InvalidDataException("Only a genuinely new operation scope can be explicitly enrolled.");
+            RequireAbsentCurrentDocument();
             var empty = new MailboxClientLedgerDocument(SchemaVersion, 0, 0,
                 new(StringComparer.Ordinal), new(StringComparer.Ordinal), new(StringComparer.Ordinal));
             // The actual empty document precedes protected enrollment. Readers

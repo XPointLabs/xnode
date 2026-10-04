@@ -75,6 +75,23 @@ internal sealed class FileMailboxGrantRevocationStore : IAsyncDisposable
             throw new CryptographicException("MGR1 native owner differs from the current node/network/policy/role.");
     }
 
+    // Preflight is not an enrollment capability: the writer repeats these
+    // checks under its own gate. Both roles must pass before either is written.
+    internal async ValueTask ValidateNewEnrollmentAsync(VerifiedMailboxHostAuthorityV2 host,
+        ReadOnlyMemory<byte> exactGenesis, CancellationToken token)
+    {
+        var owned = Capture(exactGenesis);
+        await gate.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            CheckAvailable();
+            if (ReadCore() is not null) throw new InvalidOperationException("The MGR1 scope is already enrolled.");
+            _ = await MailboxGrantRevocationV1Verifier.PlanGenesisAsync(host, owned, token).ConfigureAwait(false);
+            token.ThrowIfCancellationRequested();
+        }
+        finally { gate.Release(); }
+    }
+
     /// <summary>Explicit genuinely new-scope provisioning only; never a missing-floor recovery fallback.</summary>
     internal async ValueTask EnrollAsync(VerifiedMailboxHostAuthorityV2 host, ReadOnlyMemory<byte> exactGenesis,
         CancellationToken cancellationToken = default)
