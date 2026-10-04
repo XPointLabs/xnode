@@ -215,10 +215,13 @@ the Registry operator performs its explicit journal provisioning described in
 [the Registry runbook](../../deep-registry-api/docs/DID2_ROUTE_THRESHOLD_COORDINATION.md).
 No registered Ed25519/BLS key or node state reset is implied. An older backend
 response fails closed; there is no mixed-generation fallback.
-Publication envelopes also require the matched V3-only rebuild under
-[DR79](../../docs/survival-program/decisions/DR-0079-did2-publication-issuer-successor.md)
+Publication envelopes also require the matched V4-only rebuild under
+[DR89](../../docs/survival-program/decisions/DR-0089-did2-one-time-publication-coordination.md)
 and [publication journal provision](../../deep-registry-api/docs/DID2_PUBLICATION_COORDINATION.md).
-The full node signature covers the enclosed publisher-bound prior receipts.
+The full node signature covers the enclosed publisher-bound prior receipts and
+public locator. XPA admission accepts exact kind2/usage1 genesis as well as
+reusable genesis; it does not grant a one-time successor or bypass placement,
+witness, protected time or claim replay checks.
 This does not grant issuer/client evidence or export any resolver capability;
 old publication media/envelopes reject without forwarding. Node keys and floors
 are retained; matched artifacts and actual transport/device tests remain gates.

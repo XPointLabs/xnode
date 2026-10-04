@@ -42,6 +42,18 @@ jobs:
       Vless__MockProcess: "true"
       Vless__XrayExecutablePath: "mock"
     steps:
+      - name: Checkout matched publication specification inputs
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/deep-platform
+          ref: ${{ github.ref_name }}
+          token: ${{ secrets.XPOINTLABS_CI_TOKEN || github.token }}
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            docs/survival-program/releases/v3.0.0/specs/contact-publication-v4.registry.json
+            docs/survival-program/releases/v3.0.0/specs/contact-publication-v4.registry.schema.json
+            docs/survival-program/releases/v3.0.0/specs/contact-publication-v4.vectors.json
+            docs/survival-program/releases/v3.0.0/specs/contact-publication-v4.vectors.schema.json
       - uses: actions/checkout@v4
         with:
           path: xnode

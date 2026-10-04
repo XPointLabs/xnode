@@ -67,34 +67,41 @@ public sealed class ContactServiceOpaqueFacadeTests : IClassFixture<CurrentConta
     [Fact]
     public async Task PublishedClosureCommitsOneTimeInviteAndSuccessExactReplays()
     {
-        using var fixture = new Fixture(PublicationAuthorizations);
-        var publish = Xpu(usageLimit: 1);
-        var publication = await fixture.Facade.DispatchAsync(
-            ContactServiceFacadeOperation.PublishDcr, publish);
-        Assert.Equal(Xpo1Status.Committed, Xpo1Codec.Decode(publication.Span, publish).Status);
-        var resolve = Xiq(operationByte: 31);
+        var oneTime = new CurrentContactPublicationFixture(oneTime: true);
+        await oneTime.InitializeAsync();
+        try
+        {
+            using var fixture = new Fixture(oneTime);
+            var publish = oneTime.Request.CanonicalBytes.ToArray();
+            Assert.Equal(1u, oneTime.Request.UsageLimit);
+            var publication = await fixture.Facade.DispatchAsync(
+                ContactServiceFacadeOperation.PublishDcr, publish);
+            Assert.Equal(Xpo1Status.Committed, Xpo1Codec.Decode(publication.Span, publish).Status);
+            var resolve = Xiq(operationByte: 31, publication: oneTime);
 
-        var first = await fixture.Facade.DispatchAsync(
-            ContactServiceFacadeOperation.ResolveDcr, resolve);
-        var decoded = Xis1Codec.Decode(first.Span, resolve);
-        Assert.Equal(Xis1Status.Success, decoded.Status);
-        Assert.Equal(ContactServiceMutationOutcome.DurablyCommitted,
-            decoded.MutationOutcome);
-        AssertResolveClaimReceipts(decoded, Xiq1Codec.Decode(resolve));
+            var first = await fixture.Facade.DispatchAsync(
+                ContactServiceFacadeOperation.ResolveDcr, resolve);
+            var decoded = Xis1Codec.Decode(first.Span, resolve);
+            Assert.Equal(Xis1Status.Success, decoded.Status);
+            Assert.Equal(ContactServiceMutationOutcome.DurablyCommitted,
+                decoded.MutationOutcome);
+            AssertResolveClaimReceipts(decoded, Xiq1Codec.Decode(resolve));
 
-        fixture.Clock.UtcNow = fixture.Clock.UtcNow.AddSeconds(1);
-        var replay = await fixture.Facade.DispatchAsync(
-            ContactServiceFacadeOperation.ResolveDcr, resolve);
-        Assert.Equal(first.ToArray(), replay.ToArray());
-        Assert.Equal(Xis1Status.Success,
-            Xis1Codec.Decode(replay.Span, resolve).Status);
+            fixture.Clock.UtcNow = fixture.Clock.UtcNow.AddSeconds(1);
+            var replay = await fixture.Facade.DispatchAsync(
+                ContactServiceFacadeOperation.ResolveDcr, resolve);
+            Assert.Equal(first.ToArray(), replay.ToArray());
+            Assert.Equal(Xis1Status.Success,
+                Xis1Codec.Decode(replay.Span, resolve).Status);
 
-        var competing = Xiq(operationByte: 32);
-        var competingResponse = await fixture.Facade.DispatchAsync(
-            ContactServiceFacadeOperation.ResolveDcr, competing);
-        Assert.Equal(
-            Xis1Status.AlreadyClaimed,
-            Xis1Codec.Decode(competingResponse.Span, competing).Status);
+            var competing = Xiq(operationByte: 32, publication: oneTime);
+            var competingResponse = await fixture.Facade.DispatchAsync(
+                ContactServiceFacadeOperation.ResolveDcr, competing);
+            Assert.Equal(
+                Xis1Status.AlreadyClaimed,
+                Xis1Codec.Decode(competingResponse.Span, competing).Status);
+        }
+        finally { await oneTime.DisposeAsync(); }
     }
 
     [Fact]
@@ -356,19 +363,16 @@ public sealed class ContactServiceOpaqueFacadeTests : IClassFixture<CurrentConta
         await PublicationAuthorizations.VerifyCommittedAsync(recovered);
     }
 
-    private byte[] Xpu(uint usageLimit = 0)
+    private byte[] Xpu()
     {
         var request = PublicationAuthorizations.Request;
-        // Keep the unsupported positive invite scenario visibly failing: a
-        // reusable publication must not masquerade as a one-time invitation.
-        Assert.True(request.UsageLimit == usageLimit,
-            "This scenario requires a signed current DID2 one-time publication producer; reusable genesis is not sufficient.");
+        Assert.Equal(0u, request.UsageLimit);
         return request.CanonicalBytes.ToArray();
     }
 
-    private byte[] Xiq(byte operationByte = 13)
+    private byte[] Xiq(byte operationByte = 13, CurrentContactPublicationFixture? publication = null)
     {
-        var request = PublicationAuthorizations.Request;
+        var request = (publication ?? PublicationAuthorizations).Request;
         return Xiq1Codec.Encode(request.NetworkId.Span, B(32, operationByte),
             request.ViewHash.Span, request.PlacementHash.Span,
             request.IssuedAtUnixSeconds, request.ExpiresAtUnixSeconds,

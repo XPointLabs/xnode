@@ -32,7 +32,7 @@ public sealed class ContactCoordinationOnionDispatcherTests
                 route.Route.Route.CanonicalBytes.Span, route.Route.Successor.CanonicalBytes.Span,
                 fixture.Freshness.ExactAdh1.Span));
         var publicationBody = ContactPublicationAuthorityWireCodec.EncodeRequest(fixture.ContactOwnedRequest);
-        Assert.Equal(3, BinaryPrimitives.ReadUInt16BigEndian(publicationBody));
+        Assert.Equal(4, BinaryPrimitives.ReadUInt16BigEndian(publicationBody));
         var publicationResponse = ContactPublicationAuthorityWireCodec.EncodeResponse(fixture.ContactOwnedRequest,
             new(fixture.ContactOwnedRequest.NetworkId.Span, fixture.ContactOwnedRequest.RequestNonce.Span,
                 fixture.ContactPublication.CanonicalBytes.Span));

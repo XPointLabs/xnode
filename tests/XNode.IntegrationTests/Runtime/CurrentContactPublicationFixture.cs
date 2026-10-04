@@ -13,6 +13,9 @@ namespace XNode.IntegrationTests.Runtime;
 public sealed class CurrentContactPublicationFixture : IAsyncLifetime
 {
     private DeepIdV2PublicationAuthorityFixture ceremony = null!;
+    private readonly bool oneTime;
+    public CurrentContactPublicationFixture() { }
+    internal CurrentContactPublicationFixture(bool oneTime) { this.oneTime = oneTime; }
     internal Xpu1Request Request => ceremony.ContactPublication;
     internal Xpu1Request AlternateRequest => ceremony.AlternateContactPublication;
     internal ContactServicePlacementCapability Placement { get; private set; } = null!;
@@ -21,7 +24,7 @@ public sealed class CurrentContactPublicationFixture : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        ceremony = await DeepIdV2PublicationAuthorityFixture.CreateAsync(authorContactPublication: true);
+        ceremony = await DeepIdV2PublicationAuthorityFixture.CreateAsync(authorContactPublication: true, authorOneTimeObject: oneTime);
         try
         {
             Placement = Mint(ContactServiceRequestKind.PublishInvite, Request.LocatorHash);

@@ -93,8 +93,8 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
         IReadOnlyList<TransportOrigin>? transportOrigins = null, bool distinctNodeIdentities = false,
         bool authorOneTimeObject = false)
     {
-        if (authorOneTimeObject && (authorContactPublication || authorRouteSuccessor))
-            throw new ArgumentException("The local one-time object fixture is not a publication/successor fixture.");
+        if (authorOneTimeObject && authorRouteSuccessor)
+            throw new ArgumentException("One-time invitations do not support route successors.");
         var fixture = new DeepIdV2PublicationAuthorityFixture(serviceMarker, distinctNodeIdentities);
         try { await fixture.AuthorAsync(authorContactPublication, networkCommitmentMarker, rootMarker, authorRouteSuccessor, lastResortReuseLimit, authorInventoryRotation, corruptFirstPreKeyBundleSignature, transportOrigins, authorOneTimeObject); return fixture; }
         catch { fixture.Dispose(); throw; }
@@ -307,6 +307,15 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
                     ContactRoute = route;
                     OneTimeContactObject = await DeepIdV2ContactObjectAuthor.AuthorOneTimeGenesisAsync(
                         route, secrets, [DeepIdV2PreKeyServiceCodec.Decode(Xps)], "DID2 invitation QA");
+                    if (authorContactPublication)
+                    {
+                        var oneTimeRequest = await DeepIdV2PublicationAuthorityAuthor.AuthorOneTimeGenesisRequestAsync(
+                            route, OneTimeContactObject, secrets, Bytes(32, 0x47), Bytes(32, 0x48), Bytes(32, 0x49));
+                        var oneTimeAuthorization = await DeepIdV2PublicationAuthorityAuthor.AuthorThresholdAsync(
+                            route, oneTimeRequest.WireRequest, witnesses);
+                        ContactOwnedRequest = oneTimeRequest.WireRequest;
+                        ContactPublication = Xpu1Codec.Decode(oneTimeAuthorization.ExactXpu1.Span);
+                    }
                     return;
                 }
                 var resolverCapability = DeepIdV2Root.DerivePermanentIdV2(phrase).ResolverReadCapability.ToArray();
