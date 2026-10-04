@@ -239,9 +239,6 @@ app.Use(async (context, next) =>
     if (privacyPeerListenUri is not null
         && context.Connection.LocalPort == privacyPeerListenUri.Port
         && !context.Request.Path.Equals(PrivacyRoutingOptions.PeerFramePath)
-        && !MailboxAuthorityForwardingHttpContract.TryOperation(
-            context.Request.Path,
-            out _)
         && !(replicaEndpointActive
             && context.Request.Path.Equals(ContactReplicaHttpContract.Route))
         && !(groupControlServicePlan.MapReplicaEndpoint

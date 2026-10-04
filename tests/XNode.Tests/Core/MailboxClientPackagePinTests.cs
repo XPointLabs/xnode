@@ -72,12 +72,9 @@ public sealed class MailboxClientPackagePinTests
             packages.GetProperty("Deep.Protocol.MembershipRoutes")
                 .GetProperty("contentHash").GetString());
 
-        var operatorDocument = File.ReadAllText(Path.Combine(root, "docs", "operator.md"));
-        foreach (var expected in Expected)
-        {
-            Assert.Contains(expected.Key, operatorDocument, StringComparison.Ordinal);
-            Assert.Contains(expected.Value, operatorDocument, StringComparison.Ordinal);
-        }
+        // Exact package bytes, project pins, source mapping and lock hashes above
+        // are the evidence. Operator prose must not duplicate this retired pin or
+        // imply that it qualifies the current source-cutover/shipping generation.
     }
 
     private static string FindRepositoryRoot()

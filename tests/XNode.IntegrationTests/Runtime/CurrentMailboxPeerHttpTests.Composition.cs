@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using Deep.Protocol.ContactV1;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
@@ -15,15 +16,17 @@ namespace XNode.IntegrationTests.Runtime;
 
 public sealed partial class CurrentMailboxPeerHttpTests
 {
-    [Fact]
-    public async Task ActualRegisteredOwnersCompleteNativeStoreRetrieveAckAndColdExactRetryOverPinnedHttp()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ActualRegisteredOwnersCompleteNativeStoreRetrieveAckAndColdExactRetryOverPinnedHttp(bool actualProgram)
     {
         var hosts = new List<Host>();
         var owners = new List<RegisteredPeer>();
         DeepIdV2PublicationAuthorityFixture? signed = null;
         try
         {
-            for (var i = 0; i < 3; i++) hosts.Add(await Host.CreateAsync());
+            for (var i = 0; i < 3; i++) hosts.Add(actualProgram ? await Host.CreateProgramAsync() : await Host.CreateAsync());
             signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync(distinctNodeIdentities: true,
                 transportOrigins: hosts.Select(h => new DeepIdV2PublicationAuthorityFixture.TransportOrigin(
                     IPAddress.Loopback, checked((ushort)h.Port), h.Pin, SHA256.HashData(h.Pin))).ToArray());
@@ -45,6 +48,38 @@ public sealed partial class CurrentMailboxPeerHttpTests
                 await peer.Services.GetRequiredService<CurrentMailboxReplicaReceiver>().InitializeHostAsync();
                 http.Endpoint = peer.Services.GetRequiredService<CurrentMailboxPeerHttpEndpoint>();
             }
+            if (actualProgram)
+            {
+                var http = hosts.Single(h => h.Port == replicas[0].Transport.Port);
+                var proofReads = signed.ProofReads;
+                using var pinned = new HttpClient(HttpPrivacyPeerClient.CreatePinnedHandler(replicas[0].Transport))
+                { DefaultRequestVersion = HttpVersion.Version20, DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact };
+                var origin = "https://127.0.0.1:" + http.Port;
+                foreach (var retired in new[] { "/api/peer/mailbox-authority/v1/store", "/api/peer/mailbox-authority/v1/retrieve",
+                    "/api/peer/mailbox-authority/v1/acknowledge", "/api/client/mailbox/v2/store" })
+                {
+                    using var result = await pinned.PostAsync(origin + retired, new ByteArrayContent([]));
+                    Assert.Equal(HttpStatusCode.NotFound, result.StatusCode);
+                }
+                using (var result = await pinned.GetAsync(origin + MailboxWireHttpContract.PeerStoreRoute))
+                    Assert.Equal(HttpStatusCode.NotFound, result.StatusCode);
+                using (var invalid = new ByteArrayContent([1]))
+                using (var result = await pinned.PostAsync(origin + MailboxWireHttpContract.PeerStoreRoute, invalid))
+                    Assert.Equal(HttpStatusCode.UnsupportedMediaType, result.StatusCode);
+                using (var oversized = new ByteArrayContent(new byte[MailboxWireHttpContract.PeerStore.MaximumRequestBytes + 1]))
+                {
+                    oversized.Headers.ContentType = new MediaTypeHeaderValue(MailboxWireHttpContract.PeerStore.RequestContentType);
+                    using var result = await pinned.PostAsync(origin + MailboxWireHttpContract.PeerStoreRoute, oversized);
+                    Assert.Equal(HttpStatusCode.RequestEntityTooLarge, result.StatusCode);
+                }
+                using var api = new HttpClient();
+                using (var result = await api.PostAsync("http://127.0.0.1:" + http.ApiPort + MailboxWireHttpContract.PeerStoreRoute,
+                    new ByteArrayContent([])))
+                    Assert.Equal(HttpStatusCode.NotFound, result.StatusCode);
+                Assert.Equal(proofReads, signed.ProofReads);
+                Assert.Equal(3, hosts.Sum(h => h.Requests));
+            }
+            var rejectedRequests = hosts.Sum(h => h.Requests);
             var body = new MailboxEncryptedEnvelope
             {
                 Epoch = host.SelectionEpoch, MailboxId = new(Repeated(32, 0x54)), PlacementId = new(Repeated(32, 0x55)),
@@ -62,7 +97,8 @@ public sealed partial class CurrentMailboxPeerHttpTests
             {
                 var result = await ((ILocalNativeMailboxExitDispatcher)peer.Services.GetRequiredService<NativeMailboxExitDispatcher>())
                     .DispatchAsync(operation, request, default);
-                Assert.Equal(NativeMailboxDispatchCertainty.Completed, result.Certainty);
+                Assert.True(result.Certainty == NativeMailboxDispatchCertainty.Completed,
+                    $"{operation}: {result.Certainty}; peer requests={hosts.Sum(h => h.Requests)}; statuses={string.Join(',', hosts.Select(h => h.LastStatus))}; byte counts={string.Join(',', hosts.Select(h => h.LastBytes))}");
                 Assert.Equal(200, result.StatusCode);
                 return result.CanonicalBody.ToArray();
             }
@@ -91,7 +127,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
             var acknowledged = await Dispatch(owners[0], OnionOperation.Acknowledge, ack);
             AssertAck(acknowledged, page, 0x74);
             var requests = hosts.Sum(h => h.Requests);
-            Assert.Equal(2, requests);
+            Assert.Equal(2 + rejectedRequests, requests);
             foreach (var owner in owners)
             {
                 await owner.ReopenAsync();

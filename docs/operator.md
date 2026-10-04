@@ -36,6 +36,11 @@ host-only operation recovery at startup and afresh in `/health/ready`; an enable
 mailbox without the actual current receiver/coordinator stays unready. This hook
 does not qualify global historical data recovery. See the custody configuration
 below; retained-route, signed retirement and object-horizon gates remain required.
+The dedicated peer listener no longer permits retired authority-forwarding paths.
+Current binary replication remains HTTPS-only on its exact configured listener;
+API/public client mailbox URLs are not an alternate admission path. The
+[Program pipeline checkpoint](testing/s02-current-program-2026-10-04.md#actual-program-peer-pipeline-follow-up)
+records actual local Kestrel/TLS evidence and its fixture/provisioning limits.
 See the [native terminal checkpoint](testing/s02-native-terminal-2026-10-04.md)
 for the precise local three-hop/current two-store evidence, not device qualification.
 The matching

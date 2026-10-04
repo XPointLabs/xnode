@@ -23,7 +23,8 @@ using Peer = XNode.IntegrationTests.Runtime.CurrentMailboxReplicaReceiverTests.F
 namespace XNode.IntegrationTests.Runtime;
 
 /// <summary>Real local TLS/H2 and two independent native stores under actual
-/// signed test-owned network/grants/floors. Not Program/ONION or device evidence.</summary>
+/// signed test-owned network/grants/floors. The composition theory additionally
+/// exercises Program peer middleware; no ONION or device qualification.</summary>
 public sealed partial class CurrentMailboxPeerHttpTests
 {
     [Fact]
@@ -749,7 +750,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
         }
     }
 
-    private sealed class Host : IAsyncDisposable
+    private sealed partial class Host : IAsyncDisposable
     {
         private WebApplication app = null!;
         private X509Certificate2 certificate = null!;
@@ -760,20 +761,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
         internal Func<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>? AfterReceive;
         internal static async Task<Host> CreateAsync()
         {
-            var host = new Host(); using var key = RSA.Create(2048);
-            var request = new CertificateRequest("CN=localhost", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-            var san = new SubjectAlternativeNameBuilder(); san.AddIpAddress(IPAddress.Loopback); request.CertificateExtensions.Add(san.Build());
-            request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, true));
-            request.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment, true));
-            request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(new OidCollection { new("1.3.6.1.5.5.7.3.1") }, true));
-            using var issued = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddHours(1));
-            // Windows Schannel needs an imported key handle, not the ephemeral
-            // CertificateRequest key. DefaultKeySet deletes the imported test
-            // key with the certificate; no operator store/import is used.
-            var pfx = issued.Export(X509ContentType.Pfx);
-            try { host.certificate = X509CertificateLoader.LoadPkcs12(pfx, null, X509KeyStorageFlags.DefaultKeySet); }
-            finally { CryptographicOperations.ZeroMemory(pfx); }
-            host.Pin = SHA256.HashData(host.certificate.PublicKey.ExportSubjectPublicKeyInfo());
+            var host = CreateCertificate();
             var builder = WebApplication.CreateSlimBuilder(); builder.Logging.ClearProviders();
             builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, 0,
                 listen => { listen.Protocols = HttpProtocols.Http2; listen.UseHttps(host.certificate); }));
@@ -802,7 +790,46 @@ public sealed partial class CurrentMailboxPeerHttpTests
             host.Port = new Uri(host.app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single()).Port;
             return host;
         }
+
+        private static Host CreateCertificate(bool forProgram = false)
+        {
+            var host = new Host(); using var key = RSA.Create(2048);
+            var request = new CertificateRequest("CN=localhost", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+            var san = new SubjectAlternativeNameBuilder(); san.AddIpAddress(IPAddress.Loopback); request.CertificateExtensions.Add(san.Build());
+            request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, true));
+            request.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment, true));
+            request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(new OidCollection { new("1.3.6.1.5.5.7.3.1") }, true));
+            using var issued = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddHours(1));
+            // Windows Schannel needs an imported key handle, not the ephemeral
+            // CertificateRequest key. DefaultKeySet deletes the imported test
+            // key with the certificate; no operator store/import is used.
+            var pfx = issued.Export(X509ContentType.Pfx);
+            try
+            {
+                host.certificate = X509CertificateLoader.LoadPkcs12(pfx, null, X509KeyStorageFlags.DefaultKeySet);
+                if (forProgram)
+                {
+                    host.certificateRoot = Path.Combine(Path.GetTempPath(), "deep-program-peer-tls-" + Guid.NewGuid().ToString("N"));
+                    var security = new MailboxStorageSecurity(); security.SecureDirectory(host.certificateRoot);
+                    host.certificatePath = Path.Combine(host.certificateRoot, "peer.pfx");
+                    File.WriteAllBytes(host.certificatePath, pfx); security.SecureFile(host.certificatePath);
+                }
+            }
+            catch
+            {
+                host.certificate?.Dispose(); host.RemoveTestCertificate();
+                throw;
+            }
+            finally { CryptographicOperations.ZeroMemory(pfx); }
+            host.Pin = SHA256.HashData(host.certificate.PublicKey.ExportSubjectPublicKeyInfo());
+            return host;
+        }
         public async ValueTask DisposeAsync()
-        { if (app is not null) { await app.StopAsync(); await app.DisposeAsync(); } certificate?.Dispose(); }
+        {
+            if (program is not null) await program.DisposeAsync();
+            if (app is not null) { await app.StopAsync(); await app.DisposeAsync(); }
+            certificate?.Dispose();
+            RemoveTestCertificate();
+        }
     }
 }
