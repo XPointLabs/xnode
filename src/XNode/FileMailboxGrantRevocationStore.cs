@@ -78,31 +78,31 @@ internal sealed class FileMailboxGrantRevocationStore : IAsyncDisposable
     // Preflight is not an enrollment capability: the writer repeats these
     // checks under its own gate. Both roles must pass before either is written.
     internal async ValueTask ValidateNewEnrollmentAsync(VerifiedMailboxHostAuthorityV2 host,
-        ReadOnlyMemory<byte> exactGenesis, CancellationToken token)
+        ReadOnlyMemory<byte> exactInitialSnapshot, CancellationToken token)
     {
-        var owned = Capture(exactGenesis);
+        var owned = Capture(exactInitialSnapshot);
         await gate.WaitAsync(token).ConfigureAwait(false);
         try
         {
             CheckAvailable();
             if (ReadCore() is not null) throw new InvalidOperationException("The MGR1 scope is already enrolled.");
-            _ = await MailboxGrantRevocationV1Verifier.PlanGenesisAsync(host, owned, token).ConfigureAwait(false);
+            _ = await MailboxGrantRevocationV1Verifier.PlanInitialEnrollmentAsync(host, owned, token).ConfigureAwait(false);
             token.ThrowIfCancellationRequested();
         }
         finally { gate.Release(); }
     }
 
     /// <summary>Explicit genuinely new-scope provisioning only; never a missing-floor recovery fallback.</summary>
-    internal async ValueTask EnrollAsync(VerifiedMailboxHostAuthorityV2 host, ReadOnlyMemory<byte> exactGenesis,
+    internal async ValueTask EnrollAsync(VerifiedMailboxHostAuthorityV2 host, ReadOnlyMemory<byte> exactInitialSnapshot,
         CancellationToken cancellationToken = default)
     {
-        var owned = Capture(exactGenesis);
+        var owned = Capture(exactInitialSnapshot);
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             CheckAvailable();
             if (ReadCore() is not null) throw new InvalidOperationException("The MGR1 scope is already enrolled.");
-            var plan = await MailboxGrantRevocationV1Verifier.PlanGenesisAsync(host, owned, cancellationToken).ConfigureAwait(false);
+            var plan = await MailboxGrantRevocationV1Verifier.PlanInitialEnrollmentAsync(host, owned, cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
@@ -253,9 +253,12 @@ internal sealed class FileMailboxGrantRevocationStore : IAsyncDisposable
             if (initialized) throw new InvalidDataException("The initialized MGR1 custody disappeared.");
             return null;
         }
-        if (enrollment is null || anchor is null || floor is null || !Fixed(anchor, floor) ||
-            MailboxGrantRevocationV1Codec.Decode(enrollment).Generation != 1 ||
-            (MailboxGrantRevocationV1Codec.Decode(floor).Generation == 1 && !Fixed(enrollment, floor)))
+        if (enrollment is null || anchor is null || floor is null || !Fixed(anchor, floor))
+            throw new InvalidDataException("MGR1 protected enrollment/floor/anchor are missing, split or rolled back.");
+        var initialGeneration = MailboxGrantRevocationV1Codec.Decode(enrollment).Generation;
+        var floorGeneration = MailboxGrantRevocationV1Codec.Decode(floor).Generation;
+        if (floorGeneration < initialGeneration ||
+            (floorGeneration == initialGeneration && !Fixed(enrollment, floor)))
             throw new InvalidDataException("MGR1 protected enrollment/floor/anchor are missing, split or rolled back.");
         initialized = true;
         return floor;

@@ -1063,7 +1063,10 @@ dotnet XNode.dll current-mailbox-enroll --deposit-mgr1-file /run/node-control/de
 ```
 
 Inputs must be absolute, regular, unlinked files containing exact signed MGR1
-genesis records for the two configured roles. Existing node identity, matching
+fresh current snapshots for the two configured roles, including a later issuer
+generation when the shared genesis has expired. Initial pinning and existing-floor
+transitions follow [DR-0083](../../docs/survival-program/decisions/DR-0083-current-mailbox-grant-revocation.md).
+This does not permit skipping history or resetting an existing floor. Existing node identity, matching
 descriptor signing custody, an independently observed current network closure
 and the separately provisioned restricted mailbox key ring are mandatory. The
 command does not create role signatures, keys, identity or a trust observation.

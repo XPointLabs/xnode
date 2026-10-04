@@ -18,6 +18,72 @@ public sealed class MailboxGrantRevocationStoreTests
     [Theory]
     [InlineData(MailboxCapabilityDomain.Deposit)]
     [InlineData(MailboxCapabilityDomain.Retrieve)]
+    public async Task LateNewScopePinsCurrentTailAndKeepsInitialFloorAcrossColdAdvance(MailboxCapabilityDomain role)
+    {
+        using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var files = new Custody(signed, role); var host = await Host(signed);
+        var expired = Snapshot(signed, role, expires: 1_080);
+        var tail = Snapshot(signed, role, 2, expired, [Bytes(16, 0x51)]);
+        byte[] enrollment;
+        await using (var store = files.Open())
+        {
+            await Assert.ThrowsAsync<CryptographicException>(() => store.EnrollAsync(host, expired).AsTask());
+            Assert.False(File.Exists(files.Enrollment));
+            await store.EnrollAsync(host, tail);
+            enrollment = File.ReadAllBytes(files.Enrollment);
+            Assert.Equal(tail, (await store.ReadProtectedAsync()).ToArray());
+            await Assert.ThrowsAsync<InvalidOperationException>(() => store.EnrollAsync(host, tail).AsTask());
+        }
+        var successor = Snapshot(signed, role, 3, tail, [Bytes(16, 0x51), Bytes(16, 0x52)]);
+        await using (var store = files.Open())
+        {
+            await store.AdvanceAsync(host, successor);
+            Assert.Equal(enrollment, File.ReadAllBytes(files.Enrollment));
+            await Assert.ThrowsAsync<MailboxGrantRevocationFloorException>(() =>
+                store.AdvanceAsync(host, Snapshot(signed, role)).AsTask());
+            Assert.Equal(successor, (await store.ReadProtectedAsync()).ToArray());
+            await store.WithCurrentAsync(host, async (lease, token) =>
+            {
+                await Assert.ThrowsAsync<CryptographicException>(() =>
+                    lease.EnsureGrantNotRevokedAsync(Grant(signed, host, role, 0x51), token).AsTask());
+                await lease.EnsureGrantNotRevokedAsync(Grant(signed, host, role, 0x53), token);
+                return 1;
+            });
+        }
+        await using var reopened = files.Open();
+        Assert.Equal(successor, (await reopened.ReadProtectedAsync()).ToArray());
+        Assert.Equal(enrollment, File.ReadAllBytes(files.Enrollment));
+    }
+
+    [Theory]
+    [InlineData(MailboxCapabilityDomain.Deposit, false)]
+    [InlineData(MailboxCapabilityDomain.Retrieve, false)]
+    [InlineData(MailboxCapabilityDomain.Deposit, true)]
+    [InlineData(MailboxCapabilityDomain.Retrieve, true)]
+    public async Task LateEnrollmentRejectsProtectedFloorBelowOrDifferentAtInitialPinAcrossRestart(
+        MailboxCapabilityDomain role, bool sameGeneration)
+    {
+        using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var files = new Custody(signed, role); var host = await Host(signed);
+        var genesis = Snapshot(signed, role);
+        var initial = Snapshot(signed, role, 2, genesis, [Bytes(16, 0x51)]);
+        await using (var store = files.Open()) await store.EnrollAsync(host, initial);
+        // Independently authenticated native records simulate a stale/split restore,
+        // not a writer-authorized transition. The immutable enrollment must fence it.
+        var bad = sameGeneration ? Snapshot(signed, role, 2, genesis, [Bytes(16, 0x52)]) : genesis;
+        files.ReplaceProtectedFloorAndAnchor(bad);
+        await using var reopened = files.Open();
+        await Assert.ThrowsAsync<InvalidDataException>(() => reopened.ReadProtectedAsync().AsTask());
+        await Assert.ThrowsAsync<InvalidDataException>(() => reopened.EnrollAsync(host, initial).AsTask());
+        var callbacks = 0;
+        await Assert.ThrowsAsync<InvalidDataException>(() => reopened.WithCurrentAsync(host, (_, _) =>
+            { callbacks++; return ValueTask.FromResult(1); }).AsTask());
+        Assert.Equal(0, callbacks);
+    }
+
+    [Theory]
+    [InlineData(MailboxCapabilityDomain.Deposit)]
+    [InlineData(MailboxCapabilityDomain.Retrieve)]
     public async Task ExplicitEnrollmentRestartSuccessorAndRevokedGrantUseNativeProtectedReadBack(MailboxCapabilityDomain role)
     {
         using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync(); using var files = new Custody(signed, role);
@@ -301,6 +367,13 @@ public sealed class MailboxGrantRevocationStoreTests
         internal string Floor => Path.Combine(Scope, "floor.bin"); internal string Anchor => Path.Combine(Scope, "anchor.bin");
         internal string Enrollment => Path.Combine(Scope, "enrollment.bin"); internal string Fault => Path.Combine(Scope, "fault.bin");
         internal string PathFor(string part) => part == "floor" ? Floor : part == "anchor" ? Anchor : Enrollment;
+        internal void ReplaceProtectedFloorAndAnchor(byte[] exact)
+        {
+            var provider = DataProtectionProvider.Create(new DirectoryInfo(Keys), builder => builder.SetApplicationName("XPoint.XNode.MGR1.NativeTests.v1"));
+            var scope = Path.GetFileName(Scope);
+            File.WriteAllBytes(Floor, provider.CreateProtector("Deep.XNode.MGR1.Floor.v1", scope).Protect(exact));
+            File.WriteAllBytes(Anchor, provider.CreateProtector("Deep.XNode.MGR1.Anchor.v1", scope).Protect(exact));
+        }
         internal FileMailboxGrantRevocationStore Open(IMailboxDurabilityBarrier? barrier = null, string? custody = null)
         {
             var security = new MailboxStorageSecurity(); security.SecureDirectory(Keys); security.SecureDirectory(Data);

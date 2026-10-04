@@ -24,9 +24,9 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
     private CurrentMailboxAdmission Admission => admission;
     internal ReadOnlyMemory<byte> LocalNodeId => admission.LocalNodeId;
 
-    internal ValueTask EnrollNewHostAsync(ReadOnlyMemory<byte> depositGenesis,
-        ReadOnlyMemory<byte> retrieveGenesis, CancellationToken token = default) =>
-        admission.EnrollNewHostAsync(this, depositGenesis, retrieveGenesis, token);
+    internal ValueTask EnrollNewHostAsync(ReadOnlyMemory<byte> depositInitialSnapshot,
+        ReadOnlyMemory<byte> retrieveInitialSnapshot, CancellationToken token = default) =>
+        admission.EnrollNewHostAsync(this, depositInitialSnapshot, retrieveInitialSnapshot, token);
 
     internal async ValueTask ValidateEnrollmentSigningCustodyAsync(CurrentMailboxAdmission owner,
         VerifiedMailboxHostAuthorityV2 host, CancellationToken token)

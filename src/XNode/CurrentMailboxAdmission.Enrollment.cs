@@ -10,11 +10,11 @@ internal sealed partial class CurrentMailboxAdmission
     // Explicit operator command only. Ordinary startup/readiness never calls
     // this path. Partial writes are retained/unready, not retried or repaired.
     internal async ValueTask EnrollNewHostAsync(CurrentMailboxReplicaReceiver receiver,
-        ReadOnlyMemory<byte> depositGenesis, ReadOnlyMemory<byte> retrieveGenesis, CancellationToken token)
+        ReadOnlyMemory<byte> depositInitialSnapshot, ReadOnlyMemory<byte> retrieveInitialSnapshot, CancellationToken token)
     {
         // Own both bounded canonical inputs before source/clock callbacks.
-        var depositBytes = MailboxGrantRevocationV1Codec.Decode(depositGenesis.Span).CanonicalBytes.ToArray();
-        var retrieveBytes = MailboxGrantRevocationV1Codec.Decode(retrieveGenesis.Span).CanonicalBytes.ToArray();
+        var depositBytes = MailboxGrantRevocationV1Codec.Decode(depositInitialSnapshot.Span).CanonicalBytes.ToArray();
+        var retrieveBytes = MailboxGrantRevocationV1Codec.Decode(retrieveInitialSnapshot.Span).CanonicalBytes.ToArray();
         await enrollmentGate.WaitAsync(token).ConfigureAwait(false);
         try
         {

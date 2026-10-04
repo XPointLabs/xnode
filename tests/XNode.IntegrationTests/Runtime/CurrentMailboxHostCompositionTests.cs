@@ -115,6 +115,9 @@ public sealed class CurrentMailboxHostCompositionTests
 
     [Theory]
     [InlineData("valid")]
+    [InlineData("late-current-tail")]
+    [InlineData("late-retrieve-signature")]
+    [InlineData("late-retrieve-expiry")]
     [InlineData("retrieve-role")]
     [InlineData("retrieve-signature")]
     [InlineData("existing-operation")]
@@ -172,6 +175,15 @@ public sealed class CurrentMailboxHostCompositionTests
                 Assert.Empty(Directory.GetFiles(options.IndependentCustodyDirectory, "enrollment.bin", SearchOption.AllDirectories));
                 var deposit = Snapshot(signed);
                 var retrieve = Snapshot(signed, MailboxCapabilityDomain.Retrieve);
+                if (scenario.StartsWith("late-", StringComparison.Ordinal))
+                {
+                    var expiredDeposit = Snapshot(signed, expires: 1_080);
+                    var expiredRetrieve = Snapshot(signed, MailboxCapabilityDomain.Retrieve, expires: 1_080);
+                    deposit = Snapshot(signed, generation: 2, prior: expiredDeposit);
+                    retrieve = Snapshot(signed, MailboxCapabilityDomain.Retrieve, generation: 2, prior: expiredRetrieve);
+                    if (scenario == "late-retrieve-signature") retrieve[^1] ^= 1;
+                    if (scenario == "late-retrieve-expiry") retrieve = expiredRetrieve;
+                }
                 if (scenario == "retrieve-role") retrieve = deposit;
                 if (scenario == "retrieve-signature") retrieve[^1] ^= 1;
                 string? interrupted = null;
@@ -192,7 +204,7 @@ public sealed class CurrentMailboxHostCompositionTests
                 }
                 using var cancellation = new CancellationTokenSource();
                 if (scenario == "cancelled") cancellation.Cancel();
-                if (scenario != "valid")
+                if (scenario is not ("valid" or "late-current-tail"))
                 {
                     Assert.NotNull(await Record.ExceptionAsync(() => receiver.EnrollNewHostAsync(deposit, retrieve, cancellation.Token).AsTask()));
                     Assert.Empty(Directory.GetFiles(options.IndependentCustodyDirectory, "enrollment.bin", SearchOption.AllDirectories));
