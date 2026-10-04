@@ -161,6 +161,31 @@ internal sealed class FileDeepIdV2DirectoryProtectedHeadStore :
         finally { gate.Release(); }
     }
 
+    public async ValueTask<AccountDirectoryProtectedLkg> ReadRetainedAsync(
+        VerifiedXPointNetworkAuthority authority, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(authority);
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ThrowIfDisposed();
+            var records = ReadChain();
+            if (records.Count == 0)
+                throw new InvalidDataException("The observed DID2 head floor has not been initialized.");
+            ValidateChain(records, authority);
+            var latest = records[^1];
+            var anchor = ReadRecordIfExists(AnchorPath());
+            var indexed = ReadRecordIfExists(LatestPath());
+            if (anchor is null || indexed is null || !anchor.ExactlyMatches(latest) || !indexed.ExactlyMatches(latest))
+                throw new InvalidDataException("The observed DID2 floor needs acquisition-owner recovery.");
+            cancellationToken.ThrowIfCancellationRequested();
+            return latest.Revision == 0
+                ? DeepIdV2DirectoryBootstrapVerifier.RestoreGenesis(authority, latest.ExactAdh1, latest.CoreHash)
+                : AccountDirectoryProtectedLkgFactory.Restore(authority, latest.ExactAdh1, latest.CoreHash);
+        }
+        finally { gate.Release(); }
+    }
+
     public ValueTask CommitVerifiedAsync(
         AccountDirectoryProtectedLkg expected,
         VerifiedDeepIdV2DirectoryFreshness verified,

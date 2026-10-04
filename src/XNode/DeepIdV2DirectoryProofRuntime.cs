@@ -161,6 +161,9 @@ internal interface IDeepIdV2CurrentDirectoryProofSource
 {
     ValueTask<VerifiedDeepIdV2DirectoryFreshness> ReadCurrentAsync(
         ParsedDid2 did2, CancellationToken cancellationToken);
+
+    ValueTask ValidateObservedAsync(VerifiedDeepIdV2DirectoryFreshness freshness,
+        CancellationToken cancellationToken);
 }
 
 internal sealed class DeepIdV2DirectoryProofRuntime :
@@ -233,6 +236,10 @@ internal sealed class DeepIdV2DirectoryProofRuntime :
             configuration.DeploymentProfileId, supportedReader: 2,
             cancellationToken);
     }
+
+    public ValueTask ValidateObservedAsync(VerifiedDeepIdV2DirectoryFreshness freshness,
+        CancellationToken cancellationToken) => reader.ValidateObservedAsync(freshness,
+            configuration.Authority.ReadCurrent(), cancellationToken);
 
     internal ValueTask<AccountDirectoryProtectedLkg> RestoreHeadAsync(
         CancellationToken cancellationToken) =>

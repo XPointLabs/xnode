@@ -1113,10 +1113,18 @@ worker running with bounded backoff; successful attempts delay 15–17 seconds,
 failures 10–62 seconds. Stop cancels the attempt and delay.
 
 This is locally tested HTTP-consumer/native integration, not a configured live
-Registry-to-node or physical client result. The configured node authority reader
-currently reacquires a nonce-bound directory proof on source checks; observational
-readiness and the source-acquisition budget still need closure in the same
-delivery vertical. See the
+Registry-to-node or physical client result. The node's authority/admission reads
+now observe a previously acquired observer proof: they reverify the actual
+signed closure, PMA2, directory custody, independent network floor and monotonic
+interval without fetching a nonce or committing a successor. The existing ONION
+receive refresh acquires that observation; cold or failed acquisition does not
+let readiness bootstrap it. Missing directory index/anchor is unavailable on
+this read path, not permission to repair. Source/floor changes, clock rollback,
+expiry and host stop clear the observation; no TTL extension or enrollment is
+performed. A rejected unrelated publisher or cancelled observation request does
+not invalidate the independent healthy observer. Every later use still repeats
+the same source/floor/time checks. Configured live acquisition budgets and HTTPS producer-to-consumer
+qualification still need closure in the same delivery vertical. See the
 [exact scope and receipts](testing/s05-mgr1-lifecycle-2026-10-04.md).
 
 Retired ContactAuthority, GroupControlAuthority, MailboxPeerAuthority,

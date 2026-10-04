@@ -38,6 +38,9 @@ public sealed class DeepIdV2PublicationCandidateAuthorityTests
     {
         internal bool Called { get; private set; }
 
+        public ValueTask ValidateObservedAsync(VerifiedDeepIdV2DirectoryFreshness freshness,
+            CancellationToken cancellationToken) => throw new InvalidOperationException("No incomplete candidate observation.");
+
         public ValueTask<VerifiedDeepIdV2DirectoryFreshness> ReadCurrentAsync(
             ParsedDid2 did2, CancellationToken cancellationToken)
         {

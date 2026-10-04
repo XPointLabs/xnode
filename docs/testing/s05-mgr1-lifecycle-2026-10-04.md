@@ -381,3 +381,79 @@ readiness or the catch-up acquisition budget. Registry control GET itself is
 observational. PostgreSQL process-crash, independent deployment custody, remaining
 S01 settlement/retention and connected/physical text acceptance remain open.
 This checkpoint closes no additional stage or physical scenario.
+
+## Continuation: observational node authority (2026-10-05)
+
+One S05 dependency of the same contact/text vertical, not a new independent
+stage. `ReadPublicationAuthorityAsync` and account-independent pre-key placement
+now consume the observation acquired by the existing receive-network refresh.
+Each observation independently rechecks the actual signed file/bundle closure,
+PMA2, exact protected network history and instance/revision, retained directory
+head and the signed monotonic horizon. A retained head read cannot bootstrap or
+repair missing custody. The final source/floor/time fences remain; an observation
+cannot advance a floor, request a nonce or extend the proof deadline. Cold,
+changed, expired, failed or stopped source fails closed. Recipient-specific
+publication still acquires its own proof; no fixture trust or wire is introduced.
+
+Final focused selection **123/0/0**, terminal0, Release source-cutover and
+warnings-as-errors. Genuine signed proof plus actual protected directory custody
+checks current/expiry/boot/rollback/missing-index behavior without a fetch.
+Actual network file/floor integration with an in-memory genuine proof source
+checks 130 successive observations, one acquisition, no floor writes, source
+faults, same-horizon rollback, cancellation and stop. A rejected unrelated
+publisher and cancelled observation do not clear an independently healthy
+observer. The same actual network-file/floor source is also connected to native
+MGR admission/refresh, preserving all existing >64-step, expired admission and
+restart assertions:71 deposit generations and2 retrieve generations recover
+with one proof acquisition. The source fake is explicit: this is not
+a configured HTTPS proof acquisition, deployed producer-to-consumer or device
+result. Initial narrower selection23/0/0 was green; adding actual custody tests
+first had compile-only CS0122 (test tried an internal Protocol hash helper),
+corrected to the genuine signed predecessor hash, without changing Protocol.
+Review found shared observation invalidation on unrelated recipient rejection;
+the initial full run was intentionally terminated (exit1, no full receipt), not
+reported as a pass. The correction has an explicit regression. Connected fixture
+compilation first had CS0103 (missing namespace import); no tests executed in
+that failed build. Final123 includes actual existing receive refresh/start/stop
+and six signed in-process paths; no new independent slice was opened.
+
+Receipt: `artifacts/s05-mgr1-lifecycle/observational-connected-final/nikit_SURFACE-LT_2026-10-05_03_38_31_net10.0.trx`,
+SHA-256 `39f448db63e78c227e1d10f63fcc14ceae6b4ab07b3492cbcacac3f2bc3aa6e0`.
+Final immutable-source smoke and three-node rehearsal are terminal0, real Xray
+running/non-mocked. Smoke `failedHard`/`failedSoft` are empty; rehearsal still
+reports contact503 without authority, not successful delivery. Owned disposable
+resources were removed; deep-dev was not changed. Current full XNode is
+**1297/0/0**, terminal0: integration918 (29m42s), profile107 (22s), unit272 (40s).
+This is the current source-cutover matrix, not the previous1279 qualification.
+No production/device/key/Release/main change. S05 and the
+0/14 stage, 0/4 physical acceptance matrix remain open.
+
+Transport receipts: DevOps `artifacts/s05-mgr1-observation-smoke-final/runtime.gate.json`
+SHA-256 `80ead228cca4bfb007ad3ef6f8461c9251e92bb3f519a006ef852249e77d3cb0`,
+and `artifacts/rehearsals/multi-node/20261004T224225078Z-bfd18eefceae/test-results/multi-node-topology.json`
+SHA-256 `bc13cdd316b9292655e8d694807bbefe8d532f676348abd56480b0588ee97860`.
+Public documentation174 and CONTACT/program governance22 are terminal0; these
+are documentation/input-contract checks, not activation or package Release GO.
+
+Full Node receipts under `artifacts/s05-mgr1-lifecycle/observational-full-final/`:
+
+| Receipt | Pass/fail/skip | SHA-256 |
+| --- | --- | --- |
+| `nikit_SURFACE-LT_2026-10-05_03_40_34_net10.0.trx` | 918/0/0 | `c43fbc0491e0ee67661d4289fc497b7a66fea4d06af5f3e08c290ef1e8fcdb8b` |
+| `nikit_SURFACE-LT_2026-10-05_04_10_22_net10.0.trx` | 107/0/0 | `2cd1a00536f4c53d21d65bb497abd2d231d29b2002890e38786526773ba94cc9` |
+| `nikit_SURFACE-LT_2026-10-05_04_10_49_net10.0.trx` | 272/0/0 | `7c5946e50caecb7ae90d30b316632d14a74ce4a17347dcbf49365a2db418521f` |
+
+Linked Registry sequential Release source/local-cutover build is terminal0,
+zero warnings/errors. Approved isolated PostgreSQL default provider suite is
+**346/0/7**, terminal0 on the final fixture source; owned tmpfs container was
+removed. Windows skips remain Linux-specific, not converted to passes. Registry
+and Protocol product inputs for the separately recorded Linux socket7 are
+unchanged; that result remains adapter-only, not a deployed combined gate.
+Registry receipt: `artifacts/s00/s05-observation-final-5584bec9b3cb493d97f8e928b3fb5e08/nikit_SURFACE-LT_2026-10-05_04_12_34_net10.0.trx`,
+SHA-256 `2aefc8bf7737a7a1bad5d96a84c0d28508c020d21c1cb038568f40a66f4c96cb`.
+
+This closes the locally verified observational node dependency, not all S05.
+Configured live HTTPS proof acquisition and control producer→node consumer,
+issuer→node→client, remaining S01 lifecycle and physical text remain open.
+Earlier unexplained HTTP503/native-access failures are not classified by the
+green current runs. No Release/main/prod/key/device changes or new wire.

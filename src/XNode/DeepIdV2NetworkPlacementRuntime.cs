@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using Deep.Protocol.AccountDirectoryV1;
 using Deep.Protocol.ApplicationCore;
 using Deep.Protocol.ContactV1;
 using Deep.Protocol.DeepExtension.PrivacyRouting;
@@ -237,12 +238,23 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
     IDeepIdV2PreKeyClaimPlacementSource, IDeepIdV2ContactStoreAuthoritySource
 {
     private readonly SemaphoreSlim gate = new(1, 1);
+    private sealed record Observation(VerifiedDeepIdV2DirectoryFreshness Freshness,
+        VerifiedXPointNetworkAuthority Authority, DeepIdV2NetworkFloor Floor, OnionMonotonicReading Reading);
+    private Observation? observation;
+    private int stopped;
+
+    internal void StopObservations()
+    {
+        Volatile.Write(ref stopped, 1);
+        Volatile.Write(ref observation, null);
+    }
 
     public async ValueTask<DeepIdV2ContactStoreAuthority> ReadPublicationAuthorityAsync(CancellationToken cancellationToken)
     {
         var observer = artifacts.Observer ?? throw new InvalidOperationException(
             "DID2 publication needs the configured public observation credential.");
-        var current = await ReadNetworkAsync(observer, default, default, default, cancellationToken).ConfigureAwait(false);
+        var current = await ReadNetworkAsync(observer, default, default, default, cancellationToken,
+            observational: true).ConfigureAwait(false);
         return new(current.Network, current.Authority, current.Freshness, new OnionTrustedTimeAuthority(clock), current.MailboxAuthority);
     }
 
@@ -256,7 +268,7 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
         var observer = artifacts.Observer ?? throw new InvalidOperationException(
             "DID2 claim placement requires the configured public observation credential.");
         var (network, freshness, _, _) = await ReadNetworkAsync(observer, default, default, default,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken, observational: true).ConfigureAwait(false);
         var placement = ContactServicePlacementFactory.Create(network,
             ContactServiceRequestKind.ClaimPreKey, serviceCapability);
         return ContactServicePlacementCapability.FromNetcodec(placement,
@@ -304,16 +316,31 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
         Deep.Protocol.AccountDirectoryV1.VerifiedDeepIdV2DirectoryFreshness Freshness,
         VerifiedXPointNetworkAuthority Authority, VerifiedMailboxAuthorityV2 MailboxAuthority)> ReadNetworkAsync(
         ParsedDid2 did2, ReadOnlyMemory<byte> localOwnerId, ReadOnlyMemory<byte> localKey, ReadOnlyMemory<byte> nextInstalledKey,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool observational = false)
     {
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var observesConfiguredAccount = artifacts.Observer is { } configuredObserver &&
+            CryptographicOperations.FixedTimeEquals(configuredObserver.CanonicalBytes.Span, did2.CanonicalBytes.Span);
         try
         {
+            if (Volatile.Read(ref stopped) != 0)
+                throw new InvalidOperationException("The DID2 network source is stopped.");
+            var observed = observational ? Volatile.Read(ref observation) ??
+                throw new CryptographicException("No acquired DID2 network observation is available.") : null;
+            if (!observational && observesConfiguredAccount) Volatile.Write(ref observation, null);
             var previous = await floor.ReadAsync(cancellationToken).ConfigureAwait(false);
-            var freshness = await proofs.ReadCurrentAsync(did2, cancellationToken).ConfigureAwait(false);
+            if (observed is not null && !FileDeepIdV2NetworkFloorStore.Same(observed.Floor, previous))
+                throw new CryptographicException("The observed DID2 network floor changed.");
+            var freshness = observed?.Freshness ?? await proofs.ReadCurrentAsync(did2, cancellationToken).ConfigureAwait(false);
             if (freshness.CurrentCheckpoint is null)
                 throw new CryptographicException("DID2 network authority requires a current account checkpoint.");
             var authority = authoritySource.ReadCurrent();
+            if (observed is not null)
+            {
+                if (!SameAuthority(observed.Authority, authority))
+                    throw new CryptographicException("The observed DID2 authority changed.");
+                await proofs.ValidateObservedAsync(freshness, cancellationToken).ConfigureAwait(false);
+            }
             using var exact = artifacts.ReadCurrent();
             var time = new OnionTrustedTimeAuthority(clock);
             var network = previous is null
@@ -325,6 +352,10 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
             network.EnsureCurrent();
             var issuer = await VerifyMailboxAuthorityAsync(network, authority, freshness, exact,
                 cancellationToken).ConfigureAwait(false);
+            if (observed is not null && (!CryptographicOperations.FixedTimeEquals(
+                    observed.Reading.BootId.Span, issuer.Reading.BootId.Span) ||
+                    issuer.Reading.SampleSeconds < observed.Reading.SampleSeconds))
+                throw new CryptographicException("DID2 observation crossed a clock discontinuity.");
             if (!localOwnerId.IsEmpty)
             {
                 var local = OnionPathCandidateSnapshotFactory.Create(network).Candidates
@@ -336,7 +367,14 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
                     OnionLocalNodeKeyFactory.EnsureInstalledPublicKey(network, local[0].NodeId, nextInstalledKey);
                 }
             }
-            var committed = await floor.CommitVerifiedAsync(previous, network, cancellationToken).ConfigureAwait(false);
+            DeepIdV2NetworkFloor committed;
+            if (observed is not null)
+            {
+                if (!CryptographicOperations.FixedTimeEquals(OnionNetworkProtectedHistoryCodec.Encode(network), observed.Floor.History))
+                    throw new CryptographicException("Observation cannot advance the DID2 network floor.");
+                committed = observed.Floor;
+            }
+            else committed = await floor.CommitVerifiedAsync(previous, network, cancellationToken).ConfigureAwait(false);
             var retained = await floor.ReadAsync(cancellationToken).ConfigureAwait(false);
             if (!FileDeepIdV2NetworkFloorStore.Same(committed, retained))
                 throw new IOException("The DID2 network floor changed before capability release.");
@@ -359,10 +397,37 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
                 finalIssuer.Reading.SampleSeconds < issuer.Reading.SampleSeconds)
                 throw new CryptographicException("DID2 mailbox issuer changed or crossed a clock discontinuity before release.");
             cancellationToken.ThrowIfCancellationRequested();
+            if (observed is not null)
+                await proofs.ValidateObservedAsync(freshness, cancellationToken).ConfigureAwait(false);
+            if (Volatile.Read(ref stopped) != 0)
+                throw new InvalidOperationException("The DID2 network source stopped before capability release.");
+            if (!observational && observesConfiguredAccount)
+                Volatile.Write(ref observation, new(freshness, authority, committed, finalIssuer.Reading));
+            else if (observed is not null)
+                Volatile.Write(ref observation, observed with { Reading = finalIssuer.Reading });
             return (network, freshness, authority, finalIssuer.Policy);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Caller cancellation is not evidence that the observation changed.
+            // An acquisition has already cleared its own observer above.
+            throw;
+        }
+        catch
+        {
+            // A recipient-specific rejection must not invalidate the independent
+            // observer. Any changed floor/source is still rejected on its next
+            // read; failed observer refresh and failed observation do clear it.
+            if (observational || observesConfiguredAccount) Volatile.Write(ref observation, null);
+            throw;
         }
         finally { gate.Release(); }
     }
+
+    private static bool SameAuthority(VerifiedXPointNetworkAuthority left, VerifiedXPointNetworkAuthority right) =>
+        CryptographicOperations.FixedTimeEquals(left.AuthorityCoreReference.Span, right.AuthorityCoreReference.Span) &&
+        CryptographicOperations.FixedTimeEquals(left.Dts1PolicyCoreReference.Span, right.Dts1PolicyCoreReference.Span) &&
+        CryptographicOperations.FixedTimeEquals(left.TimeSourcePolicyHash.Span, right.TimeSourcePolicyHash.Span);
 
     private async ValueTask<(VerifiedMailboxAuthorityV2 Policy, OnionMonotonicReading Reading)>
         VerifyMailboxAuthorityAsync(VerifiedOnionNetworkContext network,
@@ -427,7 +492,7 @@ internal static class DeepIdV2NetworkPlacementHostComposition
 }
 
 internal sealed class DeepIdV2NetworkPlacementHostedService(
-    DeepIdV2NetworkClosureFileSource artifacts) : IHostedService
+    DeepIdV2NetworkClosureFileSource artifacts, DeepIdV2NetworkPlacementRuntime runtime) : IHostedService
 {
     public Task StartAsync(CancellationToken cancellationToken)
     {
@@ -436,6 +501,9 @@ internal sealed class DeepIdV2NetworkPlacementHostedService(
         return Task.CompletedTask;
     }
 
-    public Task StopAsync(CancellationToken cancellationToken) =>
-        Task.CompletedTask;
+    public Task StopAsync(CancellationToken cancellationToken)
+    {
+        runtime.StopObservations();
+        return Task.CompletedTask;
+    }
 }

@@ -2,8 +2,10 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
+using Deep.Protocol.DeepExtension.PrivacyRouting;
 using Deep.Protocol.XPointNetworkV1;
 using Microsoft.Extensions.Logging;
+using Sodium;
 using XNode.Core.Mailbox.Client;
 using static XNode.IntegrationTests.Runtime.MailboxGrantRevocationStoreTests;
 
@@ -11,8 +13,10 @@ namespace XNode.IntegrationTests.Runtime;
 
 public sealed class CurrentMailboxRevocationRefreshTests
 {
-    [Fact]
-    public async Task ActualHttpConsumerAndNativeRefreshResumeBeyondBudgetWithoutEnrollmentOrExpiredAdmission()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ActualHttpConsumerAndNativeRefreshResumeBeyondBudgetWithoutEnrollmentOrExpiredAdmission(bool observed)
     {
         await using var f = await CurrentMailboxAdmissionTests.Fixture.CreateAsync(MailboxAuthenticatedOperation.Retrieve);
         var old = (await f.Deposit.ReadProtectedAsync()).ToArray();
@@ -22,22 +26,41 @@ public sealed class CurrentMailboxRevocationRefreshTests
         snapshots[(MailboxCapabilityDomain.Retrieve, 2)] = Snapshot(f.Signed, MailboxCapabilityDomain.Retrieve, 2,
             (await f.Retrieve.ReadProtectedAsync()).ToArray(), expires: 1_140);
         f.Signed.Sample = 115; // Both initial floors expired; complete host remains current.
+        using var files = observed ? new DeepIdV2NetworkPlacementRuntimeTests.Assets(f.Signed) : null;
+        using var networkFloor = files?.OpenFloor();
+        var source = files?.Source(networkFloor!);
+        if (source is not null)
+        {
+            var local = OnionPathCandidateSnapshotFactory.Create(f.Signed.NetworkContext).Candidates.Single(candidate =>
+                candidate.NodeId.Span.SequenceEqual(f.Node));
+            await source.ReadCurrentAsync(local.RouterOwnerId,
+                ScalarMult.Base(f.Signed.TestOnionScalar(local.NodeId.Span)), default, default);
+        }
+        CurrentMailboxAdmission CurrentAdmission() => source is null ? f.Admission :
+            new(source, f.Signed, f.Node, f.Deposit, f.Retrieve, f.Runtime);
+        var admission = CurrentAdmission();
         using var handler = new Records(snapshots); using var client = new HttpClient(handler);
         var artifacts = new HttpsMailboxGrantRevocationArtifactSource(client, "https://registry.example/");
-        await Assert.ThrowsAsync<IOException>(() => f.Admission.RefreshRevocationsAsync(artifacts, default).AsTask());
+        await Assert.ThrowsAsync<IOException>(() => admission.RefreshRevocationsAsync(artifacts, default).AsTask());
         Assert.Equal(65UL, MailboxGrantRevocationV1Codec.Decode((await f.Deposit.ReadProtectedAsync()).Span).Generation);
         var callbacks = 0;
-        await Assert.ThrowsAsync<CryptographicException>(() => f.Admission.WithHostAsync((_, _) =>
+        await Assert.ThrowsAsync<CryptographicException>(() => admission.WithHostAsync((_, _) =>
         { callbacks++; return ValueTask.FromResult(true); }).AsTask());
         Assert.Equal(0, callbacks);
         f.ReopenRuntime(); // No transient cursor authorizes the next batch.
-        await f.Admission.RefreshRevocationsAsync(artifacts, default);
+        admission = CurrentAdmission();
+        await admission.RefreshRevocationsAsync(artifacts, default);
         Assert.Equal(71UL, MailboxGrantRevocationV1Codec.Decode((await f.Deposit.ReadProtectedAsync()).Span).Generation);
         Assert.Equal(snapshots[(MailboxCapabilityDomain.Retrieve, 2)], (await f.Retrieve.ReadProtectedAsync()).ToArray());
-        await f.Admission.WithHostAsync(async (scope, token) => { _ = await scope.Lease.CheckAsync(token); return true; });
+        await admission.WithHostAsync(async (scope, token) => { _ = await scope.Lease.CheckAsync(token); return true; });
         var calls = handler.Calls;
-        await f.Admission.RefreshRevocationsAsync(artifacts, default);
+        await admission.RefreshRevocationsAsync(artifacts, default);
         Assert.Equal(calls + 2, handler.Calls); // Exact replay reads only one target per role.
+        if (observed)
+        {
+            Assert.Equal(1, f.Signed.ProofReads);
+            Assert.True(f.Signed.ObservationChecks > 260);
+        }
     }
 
     [Fact]

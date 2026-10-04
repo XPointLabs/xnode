@@ -441,6 +441,20 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable, IOnionM
         return ValueTask.FromResult(Freshness);
     }
 
+    internal int ObservationChecks { get; private set; }
+    internal Action? OnObservationCheck { get; set; }
+    public ValueTask ValidateObservedAsync(VerifiedDeepIdV2DirectoryFreshness freshness,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ObservationChecks++;
+        OnObservationCheck?.Invoke();
+        if (RejectProof || !ReferenceEquals(freshness, Freshness) ||
+            !freshness.IsCurrentAtMonotonic(Boot, Sample))
+            throw new CryptographicException("Current test DID2 observation unavailable.");
+        return ValueTask.CompletedTask;
+    }
+
 #if !DEEP_REGISTRY_MGR1_FIXTURE
     public ValueTask<ContactServicePlacementCapability> MintPreKeyPublicationAsync(
         ParsedDid2 publisher, ReadOnlyMemory<byte> serviceCapability, CancellationToken cancellationToken)

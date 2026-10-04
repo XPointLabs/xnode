@@ -4,11 +4,55 @@ using Deep.Protocol.AccountDirectoryV1;
 using Deep.Protocol.ApplicationCore;
 using Deep.Protocol.DeepExtension.PrivacyRouting;
 using Deep.Protocol.XPointNetworkV1;
+using Microsoft.AspNetCore.DataProtection;
+using XNode.Core.Mailbox;
 
 namespace XNode.IntegrationTests.Runtime;
 
 public sealed class DeepIdV2DirectoryCurrentProofReaderTests
 {
+    [Theory]
+    [InlineData("current")]
+    [InlineData("expiry")]
+    [InlineData("boot")]
+    [InlineData("rollback")]
+    [InlineData("index")]
+    public async Task GenuineProofObservationRechecksActualProtectedHeadAndClockWithoutFetching(string state)
+    {
+        using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        var root = Path.Combine(Path.GetTempPath(), "did2-observed-head-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var genesis = signed.Freshness.VerifiedProtectedLkgExactAdh1;
+            Assert.Equal(1UL, signed.Freshness.NextProtectedLkg.LogGeneration);
+            var genesisHash = signed.Freshness.NextProtectedLkg.Head.PredecessorAdh1CoreHash;
+            using var store = new FileDeepIdV2DirectoryProtectedHeadStore(Path.Combine(root, "journal"), root,
+                genesis.Span, genesisHash.Span, new EphemeralDataProtectionProvider(), new MailboxStorageSecurity(), new MailboxDurabilityBarrier());
+            var prior = await store.RestoreAsync(signed.Authority, default);
+            await store.CommitVerifiedAsync(prior, signed.Freshness, default);
+            var source = new RejectIfCalledArtifacts();
+            var reader = new DeepIdV2DirectoryCurrentProofReader(source, store, signed, new RejectIfCalledPq());
+            var latest = Path.Combine(root, "journal", "latest.floor");
+            var exactIndex = File.ReadAllBytes(latest);
+            switch (state)
+            {
+                case "expiry": signed.Sample = signed.Freshness.FreshnessDeadlineMonotonicSeconds; break;
+                case "boot": signed.ClockReadings.Enqueue(new OnionMonotonicReading(Bytes(16, 0x42), 100)); break;
+                case "rollback": signed.Sample = 99; break;
+                case "index": File.Delete(latest); break;
+            }
+            if (state == "current") await reader.ValidateObservedAsync(signed.Freshness, signed.Authority, default);
+            else if (state == "index")
+                await Assert.ThrowsAsync<InvalidDataException>(async () => await reader.ValidateObservedAsync(signed.Freshness, signed.Authority, default));
+            else await Assert.ThrowsAsync<CryptographicException>(async () => await reader.ValidateObservedAsync(signed.Freshness, signed.Authority, default));
+            Assert.False(source.Called);
+            if (state == "index") Assert.False(File.Exists(latest));
+            else Assert.Equal(exactIndex, File.ReadAllBytes(latest));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
     [Fact]
     public async Task MissingProtectedFloorRejectsBeforeClockOrNetworkRequest()
     {
@@ -75,6 +119,9 @@ public sealed class DeepIdV2DirectoryCurrentProofReaderTests
 
     private sealed class MissingFloor : IDeepIdV2DirectoryProtectedHeadStore
     {
+        public ValueTask<AccountDirectoryProtectedLkg> ReadRetainedAsync(
+            VerifiedXPointNetworkAuthority authority, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("No retained observation is available.");
         public ValueTask CommitCatchupAsync(VerifiedDeepIdV2DirectoryCatchup verified,
             CancellationToken cancellationToken) => throw new InvalidOperationException("No history may be committed.");
         internal bool Called { get; private set; }

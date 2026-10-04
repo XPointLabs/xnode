@@ -18,6 +18,11 @@ internal interface IDeepIdV2DirectoryProtectedHeadStore
         VerifiedXPointNetworkAuthority authority,
         CancellationToken cancellationToken);
 
+    // Observation must not bootstrap a missing floor or repair an index.
+    ValueTask<AccountDirectoryProtectedLkg> ReadRetainedAsync(
+        VerifiedXPointNetworkAuthority authority,
+        CancellationToken cancellationToken);
+
     ValueTask CommitVerifiedAsync(AccountDirectoryProtectedLkg expected,
         VerifiedDeepIdV2DirectoryFreshness verified,
         CancellationToken cancellationToken);
@@ -45,6 +50,29 @@ internal sealed class DeepIdV2DirectoryCurrentProofReader(
     private readonly IDeepMlDsa65Verifier mlDsa65 =
         mlDsa65 ?? throw new ArgumentNullException(nameof(mlDsa65));
     private readonly SemaphoreSlim readGate = new(1, 1);
+
+    internal async ValueTask ValidateObservedAsync(VerifiedDeepIdV2DirectoryFreshness freshness,
+        VerifiedXPointNetworkAuthority authority, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(freshness);
+        ArgumentNullException.ThrowIfNull(authority);
+        await readGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var retained = await protectedHeads.ReadRetainedAsync(authority, cancellationToken)
+                .ConfigureAwait(false) ?? throw new CryptographicException("The observed DID2 floor is absent.");
+            var floor = RestoreAuthenticatedFloor(retained, authority);
+            if (!CryptographicOperations.FixedTimeEquals(floor.ExactAdh1.Span, freshness.ExactAdh1.Span) ||
+                !CryptographicOperations.FixedTimeEquals(authority.NetworkId.Span, freshness.NetworkId.Span))
+                throw new CryptographicException("The observed DID2 proof no longer closes the protected floor.");
+            var reading = await RequireClockAsync(cancellationToken).ConfigureAwait(false);
+            if (freshness.CurrentCheckpoint is null ||
+                !freshness.IsCurrentAtMonotonic(reading.BootId.Span, reading.SampleSeconds))
+                throw new CryptographicException("The observed DID2 proof is no longer current.");
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+        finally { readGate.Release(); }
+    }
 
     internal async ValueTask<VerifiedDeepIdV2DirectoryFreshness>
         ReadCurrentAsync(ParsedDid2 requestedDid2,

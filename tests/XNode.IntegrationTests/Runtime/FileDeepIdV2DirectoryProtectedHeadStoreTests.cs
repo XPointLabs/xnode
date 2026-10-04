@@ -10,6 +10,37 @@ namespace XNode.IntegrationTests.Runtime;
 public sealed class FileDeepIdV2DirectoryProtectedHeadStoreTests
 {
     [Fact]
+    public async Task RetainedReadCannotInitializeEmptyHeadCustody()
+    {
+        using var fixture = await Fixture.CreateAsync();
+        using var store = fixture.Open();
+        await Assert.ThrowsAsync<InvalidDataException>(async () => await store.ReadRetainedAsync(fixture.Authority, default));
+        Assert.False(File.Exists(fixture.AnchorPath));
+        Assert.False(File.Exists(fixture.TipPath));
+        Assert.False(File.Exists(fixture.LatestPath));
+    }
+
+    [Fact]
+    public async Task RetainedReadVerifiesExactFloorWithoutRepairingLostIndex()
+    {
+        using var fixture = await Fixture.CreateAsync();
+        using var store = fixture.Open();
+        await store.RestoreAsync(fixture.Authority, default);
+        var anchor = File.ReadAllBytes(fixture.AnchorPath);
+        var tip = File.ReadAllBytes(fixture.TipPath);
+        var index = File.ReadAllBytes(fixture.LatestPath);
+        Assert.Equal(fixture.ExactGenesis, (await store.ReadRetainedAsync(fixture.Authority, default)).ExactAdh1.ToArray());
+        Assert.Equal(anchor, File.ReadAllBytes(fixture.AnchorPath));
+        Assert.Equal(tip, File.ReadAllBytes(fixture.TipPath));
+        Assert.Equal(index, File.ReadAllBytes(fixture.LatestPath));
+        File.Delete(fixture.LatestPath);
+        await Assert.ThrowsAsync<InvalidDataException>(async () => await store.ReadRetainedAsync(fixture.Authority, default));
+        Assert.False(File.Exists(fixture.LatestPath));
+        Assert.Equal(anchor, File.ReadAllBytes(fixture.AnchorPath));
+        Assert.Equal(tip, File.ReadAllBytes(fixture.TipPath));
+    }
+
+    [Fact]
     public async Task SignedGenesisSurvivesRestartWithIndependentAnchor()
     {
         using var fixture = await Fixture.CreateAsync();
