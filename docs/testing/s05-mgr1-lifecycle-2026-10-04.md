@@ -457,3 +457,50 @@ Configured live HTTPS proof acquisition and control producer→node consumer,
 issuer→node→client, remaining S01 lifecycle and physical text remain open.
 Earlier unexplained HTTP503/native-access failures are not classified by the
 green current runs. No Release/main/prod/key/device changes or new wire.
+
+## Continuation: actual TLS producer-to-consumer boundary (2026-10-05)
+
+The existing Registry mailbox lifecycle ceremony now has an additional real
+Kestrel HTTPS variant, retaining its PostgreSQL winner, source-change, stop and
+restart assertions. Actual compiled XNode proof runtime uses its configuration
+validator, native PQ verifier and protected head store to acquire the nonce-bound
+proof from the actual Registry HTTP handler. It validates the resulting observation
+130 times without issuing another nonce. The actual compiled signed-control HTTP
+consumer reads both roles and retained generations from that producer.
+
+The isolated client trusts only test-owned PKI, with normal chain/validity/EKU/name
+validation and no permissive certificate callback or OS trust-store import. A
+client without that root rejects TLS before proof issuance. Kestrel supplies its
+own RawTarget: escaped generation is rejected400, plain HTTP403, missing/foreign
+control503 and busy429. The hostile URI fixture explicitly preserves escaped
+bytes instead of letting the client normalize them before sending.
+
+Initial focused1/1/0 and diagnostic0/1/0 twice reproduced HTTP500 in the test
+host: it omitted TimeProvider required by its real issuance gate. Actual Registry
+Program already registers TimeProvider.System; this fixes the fixture, not a
+claimed production defect. The next focused1/1/0 reached the escaped-target
+assertion after successful proof acquisition: ordinary Uri normalized `%31` to1.
+Preserving the actual hostile target corrected that fixture; focused2/0/0 is
+terminal0. Final source additionally includes the untrusted-certificate rejection.
+Sequential warnings-as-errors solution build is0 warnings/0 errors; approved
+isolated PostgreSQL **unfiltered347/0/7** is terminal0,1m30s. Owned tmpfs DB was
+removed. The seven Windows skips remain the unchanged Linux signer adapter cases.
+
+| Registry receipt under `artifacts/s00/` | Outcome | SHA-256 |
+| --- | --- | --- |
+| `s05-control-tls-focused-374ec03270b54ee296566e9175a91808/nikit_SURFACE-LT_2026-10-05_04_26_37_net10.0.trx` | 1/1/0 | `4a32c30528652c23abbaf7291ddab0c6c748919945feb62d4f132e88fa0da74d` |
+| `s05-control-tls-status-99a07e6df2284891b1f8b5948f8c26af/nikit_SURFACE-LT_2026-10-05_04_28_00_net10.0.trx` | 0/1/0 | `cd18cae768a036a8afe641c348ac2c0b809cc27107fbdf3bc97cdf030732089d` |
+| `s05-control-tls-transport-e12fd48b7258479fa48f0b9390bc5cb4/nikit_SURFACE-LT_2026-10-05_04_29_06_net10.0.trx` | 0/1/0 | `296083b862a6ab2752a0eac84daa3bc23d72508207c018606df912662b13f73c` |
+| `s05-control-tls-composition-8a292e3da50a436f92fb00a40402acb5/nikit_SURFACE-LT_2026-10-05_04_30_11_net10.0.trx` | 1/1/0 | `09e22ded04336ed7413bc820339dfb25efcf161e74638e29b77b965316fbd2f6` |
+| `s05-control-tls-raw-09934555f86f4a7a8a7a0eff94bf5633/nikit_SURFACE-LT_2026-10-05_04_31_29_net10.0.trx` | 2/0/0 | `e8696a8afaa751f66c3e73583cee347a1a4753a2b48dab4d9577352ebbe1f703` |
+| `s05-control-tls-final-e3426cc85ebc44ab8287ddc20eb56aa5/nikit_SURFACE-LT_2026-10-05_04_32_37_net10.0.trx` | 347/0/7 | `d9f92b21f8aea361a3e97e817e456012f767333fd32fb178f0c3d702565c2ad6` |
+
+XNode exposes internals to the existing connected test assembly only under
+source-cutover; default project evaluation excludes that friend. No runtime/test
+method bodies changed since75b24f9 and its full1297 receipt; the later Node change
+is test-access metadata, built by the connected solution, not a new full Node run.
+This proves the actual HTTPS proof/control boundary with synthetic owned inputs
+and test time, not the complete Program lifecycle/native control-admission chain,
+shared443/proxy topology, deployed authority, three-hop delivery or device E2E.
+Those remaining edges stay in the same contact/text vertical; stage0/14 and
+physical0/4 remain. No production/key/device/Release/main changes.
