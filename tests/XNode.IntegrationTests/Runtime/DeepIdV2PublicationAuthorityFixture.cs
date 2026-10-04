@@ -68,6 +68,7 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
     internal ContactRouteAuthorityWireRequest RouteSuccessorRequest { get; private set; } = null!;
     internal ContactRouteAuthorityWireResponse RouteSuccessorResponse { get; private set; } = null!;
     internal AuthoredDeepIdV2ContactObject ContactObject { get; private set; } = null!;
+    internal AuthoredDeepIdV2OneTimeContactObject? OneTimeContactObject { get; private set; }
     internal ContactPublicationAuthorityWireRequest ContactOwnedRequest { get; private set; } = null!;
     internal Xpu1Request AlternateContactPublication { get; private set; } = null!;
     internal ulong Sample { get; set; } = 100;
@@ -89,16 +90,19 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
         bool authorContactPublication = false, byte networkCommitmentMarker = 0, byte rootMarker = 0x20,
         bool authorRouteSuccessor = false, ushort lastResortReuseLimit = 1,
         bool authorInventoryRotation = false, bool corruptFirstPreKeyBundleSignature = false,
-        IReadOnlyList<TransportOrigin>? transportOrigins = null, bool distinctNodeIdentities = false)
+        IReadOnlyList<TransportOrigin>? transportOrigins = null, bool distinctNodeIdentities = false,
+        bool authorOneTimeObject = false)
     {
+        if (authorOneTimeObject && (authorContactPublication || authorRouteSuccessor))
+            throw new ArgumentException("The local one-time object fixture is not a publication/successor fixture.");
         var fixture = new DeepIdV2PublicationAuthorityFixture(serviceMarker, distinctNodeIdentities);
-        try { await fixture.AuthorAsync(authorContactPublication, networkCommitmentMarker, rootMarker, authorRouteSuccessor, lastResortReuseLimit, authorInventoryRotation, corruptFirstPreKeyBundleSignature, transportOrigins); return fixture; }
+        try { await fixture.AuthorAsync(authorContactPublication, networkCommitmentMarker, rootMarker, authorRouteSuccessor, lastResortReuseLimit, authorInventoryRotation, corruptFirstPreKeyBundleSignature, transportOrigins, authorOneTimeObject); return fixture; }
         catch { fixture.Dispose(); throw; }
     }
 
     private async Task AuthorAsync(bool authorContactPublication, byte networkCommitmentMarker, byte rootMarker, bool authorRouteSuccessor,
         ushort lastResortReuseLimit, bool authorInventoryRotation, bool corruptFirstPreKeyBundleSignature,
-        IReadOnlyList<TransportOrigin>? transportOrigins)
+        IReadOnlyList<TransportOrigin>? transportOrigins, bool authorOneTimeObject)
     {
         using var root = new TestSigner(rootMarker);
         using var w1 = new TestSigner(0x30);
@@ -283,7 +287,7 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
                 };
             }
             InventoryHistory = inventoryHistory;
-            if (authorContactPublication)
+            if (authorContactPublication || authorOneTimeObject)
             {
                 var current = DeepIdV2CurrentContactAuthorizationVerifier.Verify(Freshness,
                     authorization, Boot, Sample);
@@ -293,8 +297,18 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
                     ScalarMult.Base(Bytes(32, 0x43)), 1_000, 1_400, time);
                 var threshold = await DeepIdV2ContactRouteAuthor.AuthorThresholdAsync(current,
                     network, Authority, advertisement.CanonicalBytes, witnesses, 1_000, 1_400, time);
-                var route = await DeepIdV2ContactRouteAuthor.CompleteGenesisAsync(current,
-                    network, Authority, secrets, advertisement.CanonicalBytes, threshold, 1, time);
+                var route = authorOneTimeObject
+                    ? await DeepIdV2ContactRouteAuthor.CompleteOneTimeGenesisAsync(current,
+                        network, Authority, secrets, advertisement.CanonicalBytes, threshold, 1, time)
+                    : await DeepIdV2ContactRouteAuthor.CompleteGenesisAsync(current,
+                        network, Authority, secrets, advertisement.CanonicalBytes, threshold, 1, time);
+                if (authorOneTimeObject)
+                {
+                    ContactRoute = route;
+                    OneTimeContactObject = await DeepIdV2ContactObjectAuthor.AuthorOneTimeGenesisAsync(
+                        route, secrets, [DeepIdV2PreKeyServiceCodec.Decode(Xps)], "DID2 invitation QA");
+                    return;
+                }
                 var resolverCapability = DeepIdV2Root.DerivePermanentIdV2(phrase).ResolverReadCapability.ToArray();
                 AuthoredDeepIdV2ContactObject contact;
                 try
@@ -450,7 +464,7 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
                 Freshness.TrustedLowerUnixSeconds, Freshness.TrustedUpperUnixSeconds)));
     }
 
-    public void Dispose() { foreach (var node in nodes) node.Dispose(); }
+    public void Dispose() { OneTimeContactObject?.Dispose(); foreach (var node in nodes) node.Dispose(); }
 
     internal static byte[] Bytes(int length, byte value) => Enumerable.Repeat(value, length).ToArray();
     private static byte[] Hash(string value) => SHA256.HashData(Encoding.ASCII.GetBytes(value));
