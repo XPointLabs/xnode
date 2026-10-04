@@ -38,8 +38,47 @@ Focused host tests: **15 pass / 0 fail / 0 skips**. Program HTTP: **3/0/0**.
 | `artifacts/s01-host-recovery/health/nikit_SURFACE-LT_2026-10-04_15_30_24_net10.0.trx` | `48f7a2254363e757aee7d11479546b0b7e9d974d3c404a372b53208b0123a187` |
 
 Fresh source-cutover solution Release build: **0 warnings / 0 errors**, exit0.
-Connected/full gate terminal results are pending; no former full result is
-substituted for them.
+Code gate: `77c946eefbd117ece248c7909aa8f6782b1aa4e3`.
+Connected mailbox/readiness selection finishes **239/0/0**, exit0, 28m22s:
+`artifacts/s01-host-recovery/connected/nikit_SURFACE-LT_2026-10-04_15_30_43_net10.0.trx`,
+SHA-256 `39bc3f1cf1bb4ee57f507ec32eca79ea4b225a5ae318cb1bac1b353637e76995`.
+
+## Full gate and unresolved setup failure
+
+The required source-cutover Release full solution run finishes **1204 pass /
+1 fail / 0 skips**, exit1. Unit272 and profile107 pass; integration825 pass /
+1 fail / 0 skips (826 total), 30m17s. It is not a successful full gate.
+
+| Local receipt under `artifacts/s01-host-recovery/full` | SHA-256 |
+| --- | --- |
+| `nikit_SURFACE-LT_2026-10-04_15_59_09_net10.0.trx` (profile) | `a7fbb1f5ab2c674a0146d56eca1e5bf0399c61a51e0ed70e9925e85748f7f355` |
+| `nikit_SURFACE-LT_2026-10-04_15_59_09_net10.0[1].trx` (unit) | `5d50afff9986aad036875b8eaf791f367a4d017f1cf0be5f0e34fa129d8fdebf` |
+| `nikit_SURFACE-LT_2026-10-04_15_59_10_net10.0.trx` (integration) | `5a826955fae33975ce35b201f5d6e6a9432f84c546adc08b53d713caf7dbd75b` |
+
+`CurrentClientAckRevokedRoleCannotReleaseCachedAggregate` fails in its setup
+`StoreItem`: expected Durable, observed PartialFailure, before the revocation
+branch. That same test passes in the connected selection. The original failure
+does not identify whether a transport deadline, storage failure or another
+dependency prevented quorum; those explanations remain hypotheses.
+
+Only the helper's failure message is expanded with existing enum/count/type
+diagnostics. The assertion still requires Durable; no retry, skip, timeout,
+quorum, crypto, authority or runtime behavior is changed. Original isolated
+Debug ACK case passes1/1 in17s:
+`artifacts/s01-host-recovery/ack-setup-diagnostic/nikit_SURFACE-LT_2026-10-04_16_16_59_net10.0.trx`,
+SHA-256 `318c381eecd0570417b23a20a56daa948db6d1587d95bc65e3883f038e2c040b`.
+The first full run's Release test assembly remains byte-identical during this
+Debug diagnostic (SHA-256 `d21ddddb46647b05ed0f3d615d15bf9e344b333dda7eef0e5db3bac0ab093978`).
+
+A bounded startup diagnostic runs the same ACK case with existing network and
+publication tests while the existing unit/profile jobs run concurrently. All20
+selected cases pass; unit272/profile107 also pass. The ACK takes37s there versus
+49s in the failed full run, but timing correlation is not a cause diagnosis:
+`artifacts/s01-host-recovery/startup-diagnostic/nikit_SURFACE-LT_2026-10-04_16_32_55_net10.0.trx`,
+SHA-256 `5da78ac1dde8a44fbf104eebf737bb19b5d65f5875bc75a58936e56595806832`.
+Release test-only diagnostic build finishes with0 warnings/errors. Full
+reproduction with that message remains pending; no former full pass replaces
+the unresolved failure or qualifies the diagnostic source.
 
 Fresh real-Xray transport smoke and three-node rehearsal both finish exit0:
 

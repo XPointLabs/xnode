@@ -290,8 +290,11 @@ public sealed partial class CurrentMailboxPeerHttpTests
             DeduplicationDigest = Enumerable.Repeat(checked((byte)(0x90 + index)), 32).ToArray(),
             Ciphertext = Enumerable.Repeat(checked((byte)(0xA0 + index)), size).ToArray()
         };
-        Assert.Equal(MailboxPeerQuorumStatus.Durable, (await f.Coordinator.StoreClientAsync(
-            f.ClientStoreFrame(MailboxClientCodec.EncodeEncryptedEnvelope(body), checked((ulong)index)), f.Ledger!)).Status);
+        var result = await f.Coordinator.StoreClientAsync(
+            f.ClientStoreFrame(MailboxClientCodec.EncodeEncryptedEnvelope(body), checked((ulong)index)), f.Ledger!);
+        Assert.True(result.Status == MailboxPeerQuorumStatus.Durable,
+            $"Setup Store={result.Status}; durable replicas={result.DurableReplicaCount}; peer calls={f.PeerClient.Calls}; " +
+            $"failure={f.PeerClient.Failure}; HTTP requests={f.RemoteHost.Requests}; status={f.RemoteHost.LastStatus}; bytes={f.RemoteHost.LastBytes}.");
     }
     private static MailboxRetrievePage DecodePage(ReadOnlySpan<byte> bytes, Fixture f) =>
         MailboxClientCodec.DecodeRetrievePage(bytes, new()
