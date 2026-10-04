@@ -116,7 +116,12 @@ the actual package/lock checks. The recurring ACK setup case passes this time,
 but its earlier timeout is not diagnosed or declared fixed. `-m:1` serializes
 project suites; product deadlines and in-test concurrency are unchanged.
 This terminal baseline predates the Program peer follow-up and cannot qualify
-its final source. A new unfiltered current-source solution gate is required.
+its final source. The subsequent unfiltered solution run on
+`d821f8cc2cb7f85458dbce651f638b236901641b` completes terminal exit0:
+**1224 passed /0 failed /0 skipped** (integration845, profile107, unit272).
+Integration takes29m38s. This qualifies that local source-cutover matrix only;
+it does not diagnose the earlier intermittent setup timeout or activate shipping
+packages, supported provisioning or physical endpoints.
 
 ```powershell
 dotnet test XNode.slnx -c Release --no-restore -m:1 -p:DeepProtocolSourceCutover=true -warnaserror --logger trx --results-directory artifacts/s02-current-program/final-full
@@ -130,6 +135,12 @@ Release. These source-cutover results are not a uniformly Release package matrix
 | Integration844 `nikit_SURFACE-LT_2026-10-04_19_20_58_net10.0.trx` | `376279151086aed77764553f5a9e085713d3d836d28c9b1f03bf9eb655066d85` |
 | Profile107 `nikit_SURFACE-LT_2026-10-04_19_50_48_net10.0.trx` | `e3dd67f35107bd790966d22e5e17e6d121ee17a53156c11a2165450f10576070` |
 | Unit271/1 `nikit_SURFACE-LT_2026-10-04_19_51_13_net10.0.trx` | `40529dcec2f1ad33a7ae915c901f9710280c1db6e092dc24868baa490b968137` |
+
+| Final full receipt under `artifacts/s02-current-program/program-final-full/` | SHA-256 |
+| --- | --- |
+| Integration845 `nikit_SURFACE-LT_2026-10-04_20_05_38_net10.0.trx` | `896ee94c46eb61c85c9fe8c6533189eb0ce21736f272dd990f90abdc1833a9f2` |
+| Profile107 `nikit_SURFACE-LT_2026-10-04_20_35_20_net10.0.trx` | `1b5cb709a8b41b8a3e19948f6eda5ae487a80a02a6c47a024fa6fc9d7cb44c6d` |
+| Unit272 `nikit_SURFACE-LT_2026-10-04_20_35_43_net10.0.trx` | `08a1388798be227f1fc92b2f141bc30b76ba7e1bf9a66af71d0b7156b59900eb` |
 
 | Initial full receipt under `artifacts/s02-current-program/full/` | SHA-256 |
 | --- | --- |
