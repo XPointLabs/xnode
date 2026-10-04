@@ -90,7 +90,7 @@ public sealed class Did2SignedMultiRoleHostTests
 
     private static byte[] Bytes(byte marker) => Enumerable.Repeat(marker, 32).ToArray();
 
-    private sealed class Host : IDisposable
+    internal sealed class Host : IDisposable
     {
         private readonly string replayPath, keyPath;
         private readonly FileOnionKeyAgreementVault vault;
@@ -145,7 +145,7 @@ public sealed class Did2SignedMultiRoleHostTests
         }
     }
 
-    private sealed class Peers : IPrivacyPeerClient
+    internal sealed class Peers : IPrivacyPeerClient
     {
         internal Dictionary<string, Host> Hosts { get; } = new(StringComparer.Ordinal);
         internal int Calls { get; private set; }

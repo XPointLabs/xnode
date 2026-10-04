@@ -7,6 +7,8 @@ namespace XNode;
 
 internal sealed partial class CurrentMailboxReplicationCoordinator
 {
+    internal ValueTask<ReadOnlyMemory<byte>> AcknowledgeClientAsync(ReadOnlyMemory<byte> request,
+        CancellationToken token = default) => AcknowledgeClientAsync(request, local.OperationLedger, token);
     internal ValueTask<ReadOnlyMemory<byte>> AcknowledgeClientAsync(ReadOnlyMemory<byte> canonicalClientRequest,
         MailboxClientOperationLedger ledger, CancellationToken token = default)
     {

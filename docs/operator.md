@@ -23,9 +23,19 @@ A lost remote response retains sender Pending and can reconcile on exact retry
 after reopening both stores. Unsupported transport or authority loss is not a
 fallback. Endpoint errors are bounded empty-body responses without private logs.
 
-These internal owners have no activation flag and are not registered by Program.
-Do not enable the retired provider as a bridge. Current Program/DI composition,
-public client Store/Retrieve/ACK composition remain required. The matching
+`NativeMailboxExitDispatcher` now calls the same current receiver/coordinator
+and its required protected operation ledger for Store/Retrieve/ACK. It does not
+resolve the retired adapter, raw authority source or old readiness flag. A missing
+current pair is rejected before dispatch; a split pair cannot mutate either owner.
+Ingress and authenticated-holder budgets use monotonic resource time only.
+Partial quorum, callback/expiry or custody failures suppress success and retain
+exact unknown work; an exception is not proof of absence of a remote effect.
+These current owners have no activation flag and are not registered by Program.
+Do not enable the retired provider as a bridge. Whole-host startup/health/DI,
+retained-route, signed retirement and object-horizon gates remain required.
+See the [native terminal checkpoint](testing/s02-native-terminal-2026-10-04.md)
+for the precise local three-hop/current two-store evidence, not device qualification.
+The matching
 [descriptor-key checkpoint](testing/s03-descriptor-keys-2026-10-04.md) now
 exercises genuinely separate node IDs and immutable descriptor identity keys
 through the current producer and native consumer, not fabricated rotation.

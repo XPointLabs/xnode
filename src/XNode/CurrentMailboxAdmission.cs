@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
 using Deep.Protocol.DeepExtension.PrivacyRouting;
@@ -16,6 +17,7 @@ internal sealed class CurrentMailboxAdmission(
     MailboxAuthenticatedCapabilityRuntime runtime)
 {
     private readonly byte[] node = CaptureNode(localNodeId);
+    private readonly MailboxClientVerifiedHolderLimiter holderLimiter = new();
     internal ReadOnlyMemory<byte> LocalNodeId => node.ToArray();
 
     internal async ValueTask<T> WithRequestAsync<T>(ReadOnlyMemory<byte> exactRequest,
@@ -42,6 +44,12 @@ internal sealed class CurrentMailboxAdmission(
                     throw new CryptographicException("Client Store requires the authenticated PMS2 writer.");
                 runtime.RequireCurrentHolder(owned, scope.Lease.RequireActive);
                 requireSigningCustody?.Invoke(scope);
+                // The host already authenticated the grant-selected pair and
+                // issuer; holder authentication precedes this memory-only budget.
+                // No host UTC, caller time or durable replay floor is involved.
+                if (!holderLimiter.TryAccept(grant.HolderPublicKey.Span, operation,
+                    checked((ulong)(Stopwatch.GetTimestamp() / Stopwatch.Frequency))))
+                    throw new CurrentMailboxHolderRateLimitException();
                 if (operationLedger is not null)
                 {
                     await operationLedger.InitializeCurrentAsync(node, scope.Host, scope.Lease, ct).ConfigureAwait(false);

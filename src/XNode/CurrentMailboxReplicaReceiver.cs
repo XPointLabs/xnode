@@ -14,6 +14,7 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
     ReadOnlyMemory<byte> localSigningSeed, MailboxClientOperationLedger operations) : IDisposable
 {
     private readonly MailboxClientOperationLedger operationLedger = operations ?? throw new ArgumentNullException(nameof(operations));
+    internal MailboxClientOperationLedger OperationLedger => operationLedger;
     private readonly byte[] seed = CaptureSeed(localSigningSeed);
     private readonly SodiumMailboxPeerReplicationCrypto crypto = new();
     private readonly Dictionary<string, (ulong Start, int Count)> rates = new(StringComparer.Ordinal);

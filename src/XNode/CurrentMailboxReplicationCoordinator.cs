@@ -18,6 +18,13 @@ internal sealed partial class CurrentMailboxReplicationCoordinator(CurrentMailbo
     ICurrentMailboxReplicaPeerClient peer, ReplicatedMailboxOptions options)
 {
     private readonly TimeSpan timeout = CaptureTimeout(options);
+    internal void RequireReceiver(CurrentMailboxReplicaReceiver receiver)
+    {
+        if (!ReferenceEquals(local, receiver))
+            throw new InvalidOperationException("Current mailbox ingress has split native owners.");
+    }
+    internal ValueTask<MailboxPeerQuorumResult> StoreClientAsync(ReadOnlyMemory<byte> request,
+        CancellationToken token = default) => StoreClientAsync(request, local.OperationLedger, token);
     internal ValueTask<MailboxPeerQuorumResult> ReplicateAsync(ReadOnlyMemory<byte> exactRequest,
         MailboxPeerReplicationOperation operation, CancellationToken token = default) =>
         local.WithPeerAsync<MailboxPeerQuorumResult>(exactRequest, operation, MailboxPeerWireResponseReplicaV2.Sender,

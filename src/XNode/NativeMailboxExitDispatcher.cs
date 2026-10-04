@@ -1,6 +1,9 @@
+using System.Diagnostics;
+using System.Security.Cryptography;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
 using Deep.Protocol.DeepExtension.PrivacyRouting;
-using XNode.Core;
+using Deep.Protocol.XPointNetworkV1;
+using XNode.Core.Mailbox;
 using XNode.Core.Mailbox.Client;
 
 namespace XNode;
@@ -17,386 +20,143 @@ public sealed record NativeMailboxDispatchResult(
     ReadOnlyMemory<byte> CanonicalBody,
     NativeMailboxDispatchCertainty Certainty = NativeMailboxDispatchCertainty.Completed)
 {
-    public bool Success =>
-        Certainty == NativeMailboxDispatchCertainty.Completed
+    public bool Success => Certainty == NativeMailboxDispatchCertainty.Completed
         && StatusCode == StatusCodes.Status200OK;
-
     public static NativeMailboxDispatchResult RejectedBeforeForward() => new(
-        StatusCodes.Status503ServiceUnavailable,
-        ReadOnlyMemory<byte>.Empty,
+        StatusCodes.Status503ServiceUnavailable, ReadOnlyMemory<byte>.Empty,
         NativeMailboxDispatchCertainty.RejectedBeforeForward);
-
     public static NativeMailboxDispatchResult OutcomeUnknownAfterForward() => new(
-        StatusCodes.Status504GatewayTimeout,
-        ReadOnlyMemory<byte>.Empty,
+        StatusCodes.Status504GatewayTimeout, ReadOnlyMemory<byte>.Empty,
         NativeMailboxDispatchCertainty.OutcomeUnknownAfterForward);
 }
 
 public interface INativeMailboxExitDispatcher
 {
     Task<NativeMailboxDispatchResult> DispatchAsync(
-        VerifiedCanonicalOnionRequest request,
-        CancellationToken cancellationToken);
+        VerifiedCanonicalOnionRequest request, CancellationToken cancellationToken);
 }
 
 public interface ILocalNativeMailboxExitDispatcher
 {
-    Task<NativeMailboxDispatchResult> DispatchAsync(
-        OnionOperation privacyOperation,
-        ReadOnlyMemory<byte> canonicalMau2,
-        CancellationToken cancellationToken);
+    Task<NativeMailboxDispatchResult> DispatchAsync(OnionOperation privacyOperation,
+        ReadOnlyMemory<byte> canonicalMau3, CancellationToken cancellationToken);
 }
 
-public sealed class NativeMailboxExitDispatcher
-    : INativeMailboxExitDispatcher,
-      ILocalNativeMailboxExitDispatcher
+/// <summary>ONION terminal ingress into the actual current native owners.
+/// Missing current composition is unavailable, never a retired adapter fallback.
+/// Program activation remains fenced by the independent lifecycle requirements.</summary>
+public sealed class NativeMailboxExitDispatcher(IServiceProvider services)
+    : INativeMailboxExitDispatcher, ILocalNativeMailboxExitDispatcher
 {
-    private readonly IServiceProvider _services;
+    // Resource budgeting only, never authorization time or a replay floor.
+    private readonly MailboxClientIngressLimiter limiter = new();
 
-    public NativeMailboxExitDispatcher(IServiceProvider services)
-    {
-        _services = services;
-    }
-
-    public async Task<NativeMailboxDispatchResult> DispatchAsync(
-        VerifiedCanonicalOnionRequest request,
-        CancellationToken cancellationToken)
+    public Task<NativeMailboxDispatchResult> DispatchAsync(
+        VerifiedCanonicalOnionRequest request, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
-        return await DispatchCoreAsync(
-            request.Operation,
-            request.CanonicalBytes,
-            cancellationToken).ConfigureAwait(false);
+        return DispatchCoreAsync(request.Operation, request.CanonicalBytes, cancellationToken);
     }
-
     Task<NativeMailboxDispatchResult> ILocalNativeMailboxExitDispatcher.DispatchAsync(
-        OnionOperation privacyOperation,
-        ReadOnlyMemory<byte> canonicalMau2,
+        OnionOperation privacyOperation, ReadOnlyMemory<byte> canonicalMau3,
         CancellationToken cancellationToken) =>
-        DispatchCoreAsync(privacyOperation, canonicalMau2, cancellationToken);
+        DispatchCoreAsync(privacyOperation, canonicalMau3, cancellationToken);
 
-    private async Task<NativeMailboxDispatchResult> DispatchCoreAsync(
-        OnionOperation privacyOperation,
-        ReadOnlyMemory<byte> canonicalMau2,
-        CancellationToken cancellationToken)
+    private async Task<NativeMailboxDispatchResult> DispatchCoreAsync(OnionOperation privacyOperation,
+        ReadOnlyMemory<byte> canonicalMau3, CancellationToken cancellationToken)
     {
-        (MailboxAuthenticatedOperation operation, MailboxHttpEndpointContract contract) =
-            privacyOperation switch
+        (MailboxAuthenticatedOperation operation, MailboxHttpEndpointContract contract) = privacyOperation switch
         {
-            OnionOperation.Store =>
-                (MailboxAuthenticatedOperation.Store, MailboxWireHttpContract.Store),
-            OnionOperation.Retrieve =>
-                (MailboxAuthenticatedOperation.Retrieve, MailboxWireHttpContract.Retrieve),
-            OnionOperation.Acknowledge =>
-                (MailboxAuthenticatedOperation.Ack, MailboxWireHttpContract.Acknowledge),
+            OnionOperation.Store => (MailboxAuthenticatedOperation.Store, MailboxWireHttpContract.Store),
+            OnionOperation.Retrieve => (MailboxAuthenticatedOperation.Retrieve, MailboxWireHttpContract.Retrieve),
+            OnionOperation.Acknowledge => (MailboxAuthenticatedOperation.Ack, MailboxWireHttpContract.Acknowledge),
             _ => throw new ArgumentOutOfRangeException(nameof(privacyOperation))
         };
-
-        var readiness = _services.GetRequiredService<MailboxClientRuntimeReadiness>();
-        if (!readiness.Ready)
-        {
-            return Failure(MailboxHttpFailure.DependencyUnavailable);
-        }
-
-        if (canonicalMau2.Length < contract.MinimumRequestBytes)
-        {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (canonicalMau3.Length < contract.MinimumRequestBytes)
             return Failure(MailboxHttpFailure.MalformedCanonicalBody);
-        }
-
-        if (canonicalMau2.Length > contract.MaximumRequestBytes)
-        {
+        if (canonicalMau3.Length > contract.MaximumRequestBytes)
             return Failure(MailboxHttpFailure.PayloadTooLarge);
-        }
-
-        // Capture once before dependency callbacks. Parse only after the existing
-        // ingress budget, but before issuer authorization or durable replay reserve.
-        var capturedRequest = canonicalMau2.ToArray();
-        var clock = _services.GetRequiredService<IClock>();
-        var limiter = _services.GetRequiredService<MailboxClientIngressLimiter>();
-        if (!limiter.TryEnter(
-                contract,
-                checked((ulong)clock.UtcNow.ToUnixTimeSeconds()),
-                out var lease))
-        {
+        if (!limiter.TryEnter(contract, checked((ulong)(Stopwatch.GetTimestamp() / Stopwatch.Frequency)), out var lease))
             return Failure(MailboxHttpFailure.RateOrConcurrencyExceeded);
-        }
 
         using (lease)
         using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
         {
             deadline.CancelAfter(TimeSpan.FromSeconds(contract.RequestTimeoutSeconds));
-            MailboxAuthenticatedRuntimeReservation? authenticated = null;
+            // Capture before dependency callbacks. Unknown versions and outer
+            // mismatches consume ingress budget, but cannot touch native owners.
+            var captured = canonicalMau3.ToArray();
             try
             {
-                // This structural check is not issuer/holder/selected-exit authority.
-                if (MailboxAuthenticatedClientRequestCodec.Decode(capturedRequest)
-                        .Binding.Operation != operation)
-                {
+                if (MailboxAuthenticatedClientRequestCodec.Decode(captured).Binding.Operation != operation)
                     return Failure(MailboxHttpFailure.MalformedCanonicalBody);
-                }
+            }
+            catch (MailboxAuthenticatedCapabilityException)
+            { return Failure(MailboxHttpFailure.MalformedCanonicalBody); }
 
-                var runtime = _services.GetRequiredService<
-                    MailboxAuthenticatedCapabilityRuntime>();
-                try
-                {
-                    authenticated = runtime.Verify(capturedRequest);
-                }
-                catch (MailboxAuthenticatedCapabilityException exception)
-                {
-                    return Failure(AuthenticatedFailure(exception.Error));
-                }
-
-                if (authenticated.Verified.Binding.Operation != operation)
-                {
-                    return Failure(MailboxHttpFailure.MalformedCanonicalBody);
-                }
-
-                var holderLimiter = _services.GetRequiredService<
-                    MailboxClientVerifiedHolderLimiter>();
-                if (!holderLimiter.TryAccept(
-                        authenticated.Verified.Capability.Grant.HolderPublicKey.Span,
-                        operation,
-                        checked((ulong)clock.UtcNow.ToUnixTimeSeconds())))
-                {
-                    return Failure(MailboxHttpFailure.RateOrConcurrencyExceeded);
-                }
-
-                if (authenticated.RecoveredOutcome is not null)
-                {
-                    return MapRecoveredOutcome(authenticated.RecoveredOutcome);
-                }
-
-                if (!runtime.TryAcquireExecution(authenticated))
-                {
-                    return Failure(MailboxHttpFailure.DependencyUnavailable);
-                }
-
-                runtime.ReserveOutcomeCapacity(
-                    authenticated,
-                    contract.MaximumResponseBytes);
-                var adapter = _services.GetRequiredService<MailboxClientStoreAdapter>();
+            try
+            {
+                var receiver = services.GetService<CurrentMailboxReplicaReceiver>();
+                var coordinator = services.GetService<CurrentMailboxReplicationCoordinator>();
+                if (receiver is null || coordinator is null)
+                    return NativeMailboxDispatchResult.RejectedBeforeForward();
+                coordinator.RequireReceiver(receiver);
+                deadline.Token.ThrowIfCancellationRequested();
                 switch (operation)
                 {
                     case MailboxAuthenticatedOperation.Store:
                     {
-                        var envelope = MailboxAuthenticatedRequestTranscript.DecodeStoreBody(
-                            authenticated.Verified.Binding.CanonicalRequest.Span);
-                        var result = await adapter.StoreVerifiedAsync(
-                            authenticated,
-                            envelope,
-                            deadline.Token);
-                        if (result.Status == MailboxClientStoreStatus.Durable)
-                        {
-                            return MapRecoveredOutcome(runtime.PersistSuccess(
-                                authenticated,
-                                result.DurableQuorumReceipt,
-                                contract.MaximumResponseBytes));
-                        }
-
-                        return CompleteStoreFailure(runtime, authenticated, result);
+                        var result = await coordinator.StoreClientAsync(captured, deadline.Token).ConfigureAwait(false);
+                        return result.Status == MailboxPeerQuorumStatus.Durable
+                            ? Success(result.CanonicalMqr3) : NativeMailboxDispatchResult.OutcomeUnknownAfterForward();
                     }
                     case MailboxAuthenticatedOperation.Retrieve:
-                    {
-                        var retrieve = MailboxAuthenticatedRequestTranscript.DecodeRetrieveBody(
-                            authenticated.Verified.Binding.CanonicalRequest.Span);
-                        var result = await adapter.RetrieveVerifiedAsync(
-                            authenticated,
-                            retrieve,
-                            deadline.Token);
-                        if (result.Status == MailboxClientRetrieveStatus.Success)
-                        {
-                            return MapRecoveredOutcome(runtime.PersistSuccess(
-                                authenticated,
-                                result.CanonicalPage,
-                                contract.MaximumResponseBytes));
-                        }
-
-                        return CompleteRetrieveFailure(runtime, authenticated, result);
-                    }
+                        return Success(await receiver.RetrieveClientAsync(captured, deadline.Token).ConfigureAwait(false));
                     case MailboxAuthenticatedOperation.Ack:
-                    {
-                        var acknowledge =
-                            MailboxAuthenticatedRequestTranscript.DecodeAckBody(
-                                authenticated.Verified.Binding.CanonicalRequest.Span);
-                        var result = await adapter.AcknowledgeVerifiedAsync(
-                            authenticated,
-                            acknowledge,
-                            deadline.Token);
-                        if (result.Status == MailboxClientAckStatus.Durable)
-                        {
-                            var response = MailboxAggregateAckCodec.EncodeMqr3(
-                                new MailboxAggregateAckResponse
-                                {
-                                    Epoch = acknowledge.Epoch,
-                                    OperationId = acknowledge.OperationId.ToArray(),
-                                    TombstoneQuorums = result.Receipts
-                                        .Select(static receipt =>
-                                            (ReadOnlyMemory<byte>)receipt
-                                                .DurableQuorumReceipt.ToArray())
-                                        .ToArray()
-                                });
-                            return MapRecoveredOutcome(runtime.PersistSuccess(
-                                authenticated,
-                                response,
-                                contract.MaximumResponseBytes));
-                        }
-
-                        return CompleteAckFailure(runtime, authenticated, result);
-                    }
+                        return Success(await coordinator.AcknowledgeClientAsync(captured, deadline.Token).ConfigureAwait(false));
                     default:
-                        return Failure(MailboxHttpFailure.MalformedCanonicalBody);
+                        throw new InvalidOperationException("Unsupported current mailbox operation.");
                 }
             }
-            catch (EndOfStreamException)
-            {
-                return Failure(MailboxHttpFailure.MalformedCanonicalBody);
-            }
-            catch (MailboxAuthenticatedCapabilityException)
-            {
-                return Failure(MailboxHttpFailure.MalformedCanonicalBody);
-            }
-            catch (OperationCanceledException) when (
-                deadline.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-            {
-                return Failure(MailboxHttpFailure.DeadlineExceeded);
-            }
+            catch (CurrentMailboxHolderRateLimitException)
+            { return Failure(MailboxHttpFailure.RateOrConcurrencyExceeded); }
+            catch (MailboxAuthenticatedCapabilityException error)
+            { return Failure(AuthenticatedFailure(error.Error)); }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            { throw; }
+            catch (OperationCanceledException) when (deadline.IsCancellationRequested)
+            { return NativeMailboxDispatchResult.OutcomeUnknownAfterForward(); }
+            catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException
+                or InvalidOperationException or ArgumentException or OverflowException or CryptographicException
+                or MailboxPeerReplicationException or MailboxGrantRevocationFloorException
+                or MailboxPeerReplayCapacityException or MailboxPeerMutationCapacityException or MailboxClientLedgerCapacityException
+                or MailboxClientOperationConflictException
+                or MailboxClientException or MailboxClientCanonicalOutcomePersistenceException
+                or MailboxClientCanonicalOutcomeCapacityException or MailboxClientCanonicalOutcomeConflictException
+                or MailboxClientCanonicalOutcomeMissingException)
             {
-                throw;
-            }
-            catch (Exception exception) when (
-                exception is IOException or ArgumentException or OverflowException
-                    or InvalidDataException or UnauthorizedAccessException
-                    or InvalidOperationException or MailboxPeerReplicationException
-                    or MailboxClientCanonicalOutcomePersistenceException
-                    or MailboxClientCanonicalOutcomeCapacityException
-                    or MailboxClientCanonicalOutcomeConflictException
-                    or MailboxClientCanonicalOutcomeMissingException)
-            {
-                return Failure(MailboxHttpFailure.DependencyUnavailable);
-            }
-            finally
-            {
-                if (authenticated is not null)
-                {
-                    _services.GetRequiredService<MailboxAuthenticatedCapabilityRuntime>()
-                        .CleanupRequest(authenticated);
-                }
+                // Callbacks can fail after either store committed. An exception
+                // never proves absence of effects or permits a replacement send.
+                return NativeMailboxDispatchResult.OutcomeUnknownAfterForward();
             }
         }
     }
-
-    private static NativeMailboxDispatchResult CompleteStoreFailure(
-        MailboxAuthenticatedCapabilityRuntime runtime,
-        MailboxAuthenticatedRuntimeReservation authenticated,
-        MailboxClientStoreResult result)
-    {
-        switch (result.Status)
-        {
-            case MailboxClientStoreStatus.Unauthorized:
-                runtime.PersistTerminal(authenticated,
-                    MailboxClientTerminalOutcome.AuthorizationRejected);
-                return Failure(MailboxHttpFailure.AuthorizationFailed);
-            case MailboxClientStoreStatus.Conflict:
-                runtime.PersistTerminal(authenticated,
-                    MailboxClientTerminalOutcome.OperationConflict);
-                return Failure(MailboxHttpFailure.ReplayOrIdempotencyConflict);
-            case MailboxClientStoreStatus.Malformed:
-            case MailboxClientStoreStatus.Rejected:
-                runtime.PersistTerminal(authenticated,
-                    MailboxClientTerminalOutcome.DurableStateRejected);
-                return Failure(MailboxHttpFailure.DependencyUnavailable);
-            default:
-                return Failure(MailboxHttpFailure.DependencyUnavailable);
-        }
-    }
-
-    private static NativeMailboxDispatchResult CompleteRetrieveFailure(
-        MailboxAuthenticatedCapabilityRuntime runtime,
-        MailboxAuthenticatedRuntimeReservation authenticated,
-        MailboxClientRetrieveResult result)
-    {
-        switch (result.Status)
-        {
-            case MailboxClientRetrieveStatus.Unauthorized:
-                runtime.PersistTerminal(authenticated,
-                    MailboxClientTerminalOutcome.AuthorizationRejected);
-                return Failure(MailboxHttpFailure.AuthorizationFailed);
-            case MailboxClientRetrieveStatus.Malformed:
-            case MailboxClientRetrieveStatus.Rejected:
-                runtime.PersistTerminal(authenticated,
-                    MailboxClientTerminalOutcome.DurableStateRejected);
-                return Failure(MailboxHttpFailure.DependencyUnavailable);
-            default:
-                return Failure(MailboxHttpFailure.DependencyUnavailable);
-        }
-    }
-
-    private static NativeMailboxDispatchResult CompleteAckFailure(
-        MailboxAuthenticatedCapabilityRuntime runtime,
-        MailboxAuthenticatedRuntimeReservation authenticated,
-        MailboxClientAckResult result)
-    {
-        switch (result.Status)
-        {
-            case MailboxClientAckStatus.Unauthorized:
-                runtime.PersistTerminal(authenticated,
-                    MailboxClientTerminalOutcome.AuthorizationRejected);
-                return Failure(MailboxHttpFailure.AuthorizationFailed);
-            case MailboxClientAckStatus.Conflict:
-                runtime.PersistTerminal(authenticated,
-                    MailboxClientTerminalOutcome.OperationConflict);
-                return Failure(MailboxHttpFailure.ReplayOrIdempotencyConflict);
-            case MailboxClientAckStatus.Malformed:
-            case MailboxClientAckStatus.Rejected:
-                runtime.PersistTerminal(authenticated,
-                    MailboxClientTerminalOutcome.DurableStateRejected);
-                return Failure(MailboxHttpFailure.DependencyUnavailable);
-            default:
-                return Failure(MailboxHttpFailure.DependencyUnavailable);
-        }
-    }
-
-    private static NativeMailboxDispatchResult MapRecoveredOutcome(
-        MailboxClientCanonicalOutcome outcome)
-    {
-        if (outcome.Kind == MailboxClientCanonicalOutcomeKind.Success)
-        {
-            return new NativeMailboxDispatchResult(
-                StatusCodes.Status200OK,
-                outcome.CanonicalBytes);
-        }
-
-        return Failure(outcome.Terminal switch
-        {
-            MailboxClientTerminalOutcome.AuthorizationRejected =>
-                MailboxHttpFailure.AuthorizationFailed,
-            MailboxClientTerminalOutcome.OperationConflict =>
-                MailboxHttpFailure.ReplayOrIdempotencyConflict,
-            _ => MailboxHttpFailure.DependencyUnavailable
-        });
-    }
-
-    private static MailboxHttpFailure AuthenticatedFailure(
-        MailboxAuthenticatedCapabilityError error) => error switch
-        {
-            MailboxAuthenticatedCapabilityError.InvalidIssuerSignature or
-            MailboxAuthenticatedCapabilityError.InvalidHolderSignature =>
-                MailboxHttpFailure.AuthenticationFailed,
-            MailboxAuthenticatedCapabilityError.UntrustedIssuer or
-            MailboxAuthenticatedCapabilityError.Revoked or
-            MailboxAuthenticatedCapabilityError.GenerationRejected =>
-                MailboxHttpFailure.AuthorizationFailed,
-            MailboxAuthenticatedCapabilityError.OutsideValidityWindow =>
-                MailboxHttpFailure.ExpiredOrStale,
-            MailboxAuthenticatedCapabilityError.ReplayRejected or
-            MailboxAuthenticatedCapabilityError.ReplayConflict =>
-                MailboxHttpFailure.ReplayOrIdempotencyConflict,
-            MailboxAuthenticatedCapabilityError.InvalidReplayEvaluation =>
-                MailboxHttpFailure.DependencyUnavailable,
-            _ => MailboxHttpFailure.MalformedCanonicalBody
-        };
-
+    private static NativeMailboxDispatchResult Success(ReadOnlyMemory<byte> bytes) =>
+        new(StatusCodes.Status200OK, bytes);
     private static NativeMailboxDispatchResult Failure(MailboxHttpFailure failure) =>
         new(MailboxWireHttpContract.StatusCode(failure), ReadOnlyMemory<byte>.Empty);
+    private static MailboxHttpFailure AuthenticatedFailure(MailboxAuthenticatedCapabilityError error) => error switch
+    {
+        MailboxAuthenticatedCapabilityError.InvalidIssuerSignature or
+        MailboxAuthenticatedCapabilityError.InvalidHolderSignature => MailboxHttpFailure.AuthenticationFailed,
+        MailboxAuthenticatedCapabilityError.UntrustedIssuer or
+        MailboxAuthenticatedCapabilityError.Revoked or
+        MailboxAuthenticatedCapabilityError.GenerationRejected => MailboxHttpFailure.AuthorizationFailed,
+        MailboxAuthenticatedCapabilityError.OutsideValidityWindow => MailboxHttpFailure.ExpiredOrStale,
+        MailboxAuthenticatedCapabilityError.ReplayRejected or
+        MailboxAuthenticatedCapabilityError.ReplayConflict => MailboxHttpFailure.ReplayOrIdempotencyConflict,
+        MailboxAuthenticatedCapabilityError.InvalidReplayEvaluation => MailboxHttpFailure.DependencyUnavailable,
+        _ => MailboxHttpFailure.MalformedCanonicalBody
+    };
 }
