@@ -65,12 +65,30 @@ SHA-256 `2fff44bc8ff6572b79d2ac2eef7574e99c77320001c235091622b34f9f55e963`.
 
 ## Broader gates remain in progress
 
-The initial full source-cutover solution run is still running. It already passes
-profile107 and unit272, but reports two obsolete PMA1 Program/default assertions
-and the recurring ACK-test setup Store timeout before its revocation assertions.
+The initial full source-cutover solution run completes exit1: **1220 passed /
+3 failed /0 skipped** (integration841/3, unit272/0, profile107/0),25m53s for
+integration. Two failures are obsolete PMA1 Program/default assertions; the third
+is the recurring ACK-test setup Store timeout before its revocation assertions.
 That timeout is not classified or fixed. This run predates the final empty-object
 guard, HTTP assertions and positive registered-owner case; it cannot qualify the
 final source matrix. A green isolated case never erases the full-run failure.
+The fresh unfiltered final-source full run is now running with `-m:1` to avoid
+parallel project suites sharing the same host resources. No product deadline,
+assertion or in-test concurrency case is changed. Resource contention is a
+hypothesis, not a confirmed diagnosis; terminal results remain required.
+
+```powershell
+dotnet test XNode.slnx -c Release --no-restore -m:1 -p:DeepProtocolSourceCutover=true -warnaserror --logger trx --results-directory artifacts/s02-current-program/final-full
+```
+
+The solution maps external Protocol references to Debug; Node projects are
+Release. These source-cutover results are not a uniformly Release package matrix.
+
+| Initial full receipt under `artifacts/s02-current-program/full/` | SHA-256 |
+| --- | --- |
+| Profile107 `nikit_SURFACE-LT_2026-10-04_18_51_59_net10.0.trx` | `6b3c7e5ddf1661e7df222a593bd8e12a4579b67792ef74636ee372383036ab8e` |
+| Unit272 `nikit_SURFACE-LT_2026-10-04_18_52_14_net10.0.trx` | `6392847bb990f4eb0aad942242b4d4e7b47917d288bbeb10d204da8ccc1b96c9` |
+| Integration841/3 `nikit_SURFACE-LT_2026-10-04_18_52_20_net10.0.trx` | `941044a9842f20ae09f7866679b7b264554fa17e278628035483c23db49e9722` |
 Real-Xray smoke and the required three-node rehearsal finish exit0 with no mocked
 router. They exercise the disabled-mailbox development transport boundary, not
 current mailbox/contact delivery: contact remains503 without verified authority.
