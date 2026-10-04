@@ -49,10 +49,15 @@ there is no claim of automatic reconciliation for that uncertainty.
 The current operation document now has
 [independent protected custody](mailbox-operation-custody.md). Native startup
 uses current host/both role leases without a client grant. Missing data is not
-fresh provisioning; Store/ACK check custody before client replay. Only an
+fresh provisioning; the native receiver now requires this owner for
+Store/Retrieve/ACK and peer Store/tombstone, including completed replay.
+Holder/peer authentication and actual local descriptor signing custody precede
+recovery/replay; callback/result checks cannot release a page or receipt after
+operation custody loss. Missing/malformed local operation data at the current
+peer HTTP endpoint returns bodyless 503, preserving state. Only an
 authenticated pending replacement can recover exact bytes. Unknown pre-plan
 writes still cannot remint a known request. This does not activate Program/DI,
-whole-host readiness, retirement or deployed provisioning; the linked owner
+host health/startup composition, retirement or deployed provisioning; the linked owner
 defines the consistent backup and local anti-rollback limits.
 The current Store producer also retains the exact authenticated MQR3 in that
 same operation ledger. A new Store in the same epoch/mailbox/placement/membership

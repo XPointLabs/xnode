@@ -50,7 +50,7 @@ internal sealed class CurrentMailboxPeerHttpEndpoint(CurrentMailboxReplicaReceiv
                 ? MailboxHttpFailure.ReplayOrIdempotencyConflict : MailboxHttpFailure.MalformedCanonicalBody); }
             catch (MailboxGrantRevocationFloorException) { return Failure(MailboxHttpFailure.DependencyUnavailable); }
             catch (CryptographicException) { return Failure(MailboxHttpFailure.AuthorizationFailed); }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException
+            catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or InvalidOperationException
                 or MailboxPeerReplayCapacityException or ArgumentException)
             { return Failure(MailboxHttpFailure.DependencyUnavailable); }
         }

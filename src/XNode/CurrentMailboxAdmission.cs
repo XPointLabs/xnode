@@ -21,7 +21,8 @@ internal sealed class CurrentMailboxAdmission(
     internal async ValueTask<T> WithRequestAsync<T>(ReadOnlyMemory<byte> exactRequest,
         MailboxAuthenticatedOperation operation,
         Func<Request, CancellationToken, ValueTask<T>> action, CancellationToken token = default,
-        MailboxClientOperationLedger? storeLedger = null, MailboxPeerMutationStore? storeMutations = null)
+        MailboxClientOperationLedger? operationLedger = null, MailboxPeerMutationStore? storeMutations = null,
+        Action<GrantScope>? requireSigningCustody = null)
     {
         ArgumentNullException.ThrowIfNull(action);
         // The decoder bounds and owns request bytes before any external callback.
@@ -39,14 +40,14 @@ internal sealed class CurrentMailboxAdmission(
             {
                 if (operation == MailboxAuthenticatedOperation.Store && !Fixed(scope.Replicas[0].NodeId.Span, node))
                     throw new CryptographicException("Client Store requires the authenticated PMS2 writer.");
-                if (storeLedger is not null)
+                runtime.RequireCurrentHolder(owned, scope.Lease.RequireActive);
+                requireSigningCustody?.Invoke(scope);
+                if (operationLedger is not null)
                 {
-                    runtime.RequireCurrentHolder(owned, scope.Lease.RequireActive);
-                    await storeLedger.InitializeCurrentAsync(node, scope.Host, scope.Lease, ct).ConfigureAwait(false);
-                    if (operation == MailboxAuthenticatedOperation.Store)
+                    await operationLedger.InitializeCurrentAsync(node, scope.Host, scope.Lease, ct).ConfigureAwait(false);
+                    if (operation == MailboxAuthenticatedOperation.Store && storeMutations is not null)
                     {
-                        ArgumentNullException.ThrowIfNull(storeMutations);
-                        await storeLedger.EnsureCurrentStorePrefixAsync(
+                        await operationLedger.EnsureCurrentStorePrefixAsync(
                             MailboxAuthenticatedRequestTranscript.DecodeStoreBody(decoded.Binding.CanonicalRequest.Span),
                             scope.Host, scope.Lease, storeMutations, ct).ConfigureAwait(false);
                     }
@@ -63,7 +64,15 @@ internal sealed class CurrentMailboxAdmission(
                 };
                 reservation = runtime.VerifyCurrent(owned, policy, upper,
                     new CheckedRevocation(grant, scope.Lease.RequireActive), scope.Lease.RequireActive);
-                var request = new Request(runtime, reservation, scope, scope.Lease.CheckAsync, scope.Lease.RequireActive);
+                async ValueTask<ulong> CheckRequestAsync(CancellationToken checkToken)
+                {
+                    var now = await scope.Lease.CheckAsync(checkToken).ConfigureAwait(false);
+                    requireSigningCustody?.Invoke(scope);
+                    if (operationLedger is not null)
+                        await operationLedger.InitializeCurrentAsync(node, scope.Host, scope.Lease, checkToken).ConfigureAwait(false);
+                    return now;
+                }
+                var request = new Request(runtime, reservation, scope, CheckRequestAsync, scope.Lease.RequireActive);
                 await request.EnsureCurrentAsync(ct).ConfigureAwait(false);
                 var result = await action(request, ct).ConfigureAwait(false);
                 await request.EnsureCurrentAsync(ct).ConfigureAwait(false);

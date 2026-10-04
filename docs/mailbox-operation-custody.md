@@ -45,8 +45,17 @@ rejects existing/interrupted protection before persisting the empty operation
 document and enrollment. `InitializeOperationsAsync` is the non-enrolling
 reader/recovery entry point.
 
-The current Store/ACK admission invokes the same owner before client replay;
-holder verification precedes any recovery. Every current ledger load checks
+Every current native receiver requires one operation ledger at construction;
+Store/Retrieve/ACK and peer Store/tombstone cannot omit this owner or substitute
+a neutral ledger. A supplied producer ledger must be that same instance.
+Client holder and actual descriptor signing custody are checked before recovery
+and client replay. The peer verifies the complete signed candidate before
+recovery and before rate/replay/mutation. Both use the same live native role
+leases, without reacquiring them or inventing a client grant. Current request
+and peer result checks revalidate custody after callbacks, before releasing a
+page/receipt or completing an outcome. Already completed replay also requires
+the current independent root; it is not an alternate readiness path.
+Every current ledger load checks
 the protected root under the real operation lease, including the exact opened
 snapshot actually parsed after callbacks. A prior path check or decoded state
 label is not snapshot authentication. Every current save uses:
@@ -75,8 +84,10 @@ one side fails closed. Do not erase protection, re-enroll, regenerate a node ID
 or reconstruct operation data from blobs to clear an error. Preserve uncertain
 files for owner-approved recovery; diagnostics must not expose their contents.
 
-Program/DI, whole-host readiness on Retrieve/peer operations and deployed
-provisioning are not activated by this internal mapping. Retained-route,
+This covers the connected internal native request/peer handlers, not Program/DI,
+host health/startup composition or deployed provisioning. Missing/malformed
+local operation data at the peer HTTP boundary yields a bodyless dependency
+unavailable response; it is not a new protocol failure record. Retained-route,
 retirement, sustained quotas and horizon qualification remain separate blockers.
 No anti-rollback guarantee survives a coordinated rollback of independent root
 and matching data, even when the key ring remains intact. No production state

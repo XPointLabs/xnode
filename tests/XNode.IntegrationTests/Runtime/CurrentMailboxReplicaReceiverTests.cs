@@ -1,8 +1,11 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.Extensions.DependencyInjection;
 using XNode.Core;
 using XNode.Core.Mailbox;
+using XNode.Core.Mailbox.Client;
 using static XNode.IntegrationTests.Runtime.MailboxGrantRevocationStoreTests;
 
 namespace XNode.IntegrationTests.Runtime;
@@ -131,6 +134,9 @@ public sealed class CurrentMailboxReplicaReceiverTests
         private MailboxPeerMutationStore mutations = null!;
         private ReplicatedMailboxStore blobs = null!;
         internal CurrentMailboxReplicaReceiver Receiver = null!;
+        internal MailboxClientOperationLedger Operations = null!;
+        private FileMailboxOperationCustody? operationCustody;
+        private byte[] activeSigningSeed = [];
         internal byte[] Envelope = [], SenderSeed = [];
         private readonly BlindedMailboxId mailbox = new(Bytes(32, 0x54));
         private readonly BlindedPlacementId placement = new(Bytes(32, 0x55));
@@ -155,6 +161,13 @@ public sealed class CurrentMailboxReplicaReceiverTests
                 ExpiresAtUnixSeconds = 1_150,
                 Ciphertext = Bytes(64, 0x60)
             });
+            var provider = DataProtectionProvider.Create(new DirectoryInfo(f.Node.ProtectionRoot),
+                builder => builder.SetApplicationName("XPoint.XNode.MGR1.NativeTests.v1"));
+            f.operationCustody = new(f.Node.DataRoot, f.Node.OperationCustodyRoot, "mailbox-client-intent",
+                f.Node.Node, f.Node.Host.NetworkId.Span, provider);
+            f.Operations = new(f.Node.DataRoot, new MailboxClientAdapterOptions
+            { DirectoryName = "mailbox-client-intent" }, f.operationCustody, clock: new NoUtcClock());
+            await f.Node.Admission.EnrollNewOperationsAsync(f.Operations);
             f.Reopen(); return f;
         }
         internal byte[] Proof(MailboxCapabilityDomain role, byte serial = 0x51) =>
@@ -204,7 +217,18 @@ public sealed class CurrentMailboxReplicaReceiverTests
             blobs = new(Node.DataRoot, options, clock);
             mutations = new(Node.DataRoot, options, blobs, clock, durability: mutationDurability, faults: Fault);
             replay = new(Node.DataRoot, options, clock);
-            Receiver = new(Node.Admission, mutations, replay, signingSeed ?? Node.Signed.Node(Node.Node).Seed);
+            activeSigningSeed = (signingSeed ?? Node.Signed.Node(Node.Node).Seed).ToArray();
+            Receiver = new(Node.Admission, mutations, replay, activeSigningSeed, Operations);
+        }
+        internal void CloseOperations()
+        {
+            Operations?.Dispose(); operationCustody?.Dispose(); operationCustody = null;
+        }
+        internal void AttachOperations(MailboxClientOperationLedger operations)
+        {
+            Operations = operations;
+            Receiver.Dispose();
+            Receiver = new(Node.Admission, mutations, replay, activeSigningSeed, Operations);
         }
         internal async Task<byte[]?> ReadBlobAsync() => await Node.Admission.WithGrantAsync(
             Grant(Node.Signed, Node.Host, MailboxCapabilityDomain.Retrieve, 0x52), MailboxCapabilityDomain.Retrieve,
@@ -215,7 +239,7 @@ public sealed class CurrentMailboxReplicaReceiverTests
                 return blob is null ? null : Convert.FromBase64String(blob.Ciphertext);
             });
         public async ValueTask DisposeAsync()
-        { Receiver.Dispose(); mutations.Dispose(); replay.Dispose(); await Node.DisposeAsync(); }
+        { Receiver.Dispose(); mutations.Dispose(); replay.Dispose(); CloseOperations(); await Node.DisposeAsync(); }
     }
     internal sealed class Fault : IMailboxPeerMutationFaultInjector
     { internal Action<MailboxPeerMutationFaultPoint>? Action; public void Inject(MailboxPeerMutationFaultPoint point) => Action?.Invoke(point); }

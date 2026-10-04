@@ -575,7 +575,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
         internal void OpenLedger(IMailboxDurabilityBarrier? durability = null, int? maximumEntries = null, IClock? clock = null,
             IMailboxDurabilityBarrier? custodyDurability = null, Action? afterVerifiedRead = null)
         {
-            Ledger?.Dispose();
+            Sender.CloseOperations();
             senderCustody?.Dispose(); senderCustody = OpenCustody(Sender, custodyDurability);
             if (maximumEntries is not null) intentEntries = maximumEntries.Value;
             Ledger = new(Sender.Node.DataRoot, new MailboxClientAdapterOptions
@@ -586,6 +586,8 @@ public sealed partial class CurrentMailboxPeerHttpTests
                 MaxConcurrentSingleFlights = Math.Min(1024, intentEntries)
             }, afterVerifiedRead is null ? senderCustody : new CustodyReadCallback(senderCustody, afterVerifiedRead),
                 clock: clock ?? new NoUtcIntentClock(), durability: durability);
+            Sender.AttachOperations(Ledger);
+            Bind();
         }
         private static FileMailboxOperationCustody OpenCustody(Peer peer, IMailboxDurabilityBarrier? durability = null)
         {
@@ -631,18 +633,14 @@ public sealed partial class CurrentMailboxPeerHttpTests
                 if (wrongPin) origins = origins.Select(origin => origin with { NextSpki = SHA256.HashData(origin.NextSpki.Span) }).ToArray();
                 f.Signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync(transportOrigins: origins, distinctNodeIdentities: true);
                 f.Recipient = await Peer.CreateAsync(f.Signed, 1); f.Sender = await Peer.CreateAsync(f.Signed, 0);
-                f.OpenLedger(); f.OpenRecipientLedger();
-                _ = await f.Sender.Node.Admission.EnrollNewOperationsAsync(f.Ledger!);
-                _ = await f.Recipient.Node.Admission.EnrollNewOperationsAsync(f.RecipientLedger!);
-                f.Ledger!.Dispose(); f.Ledger = null; f.senderCustody!.Dispose(); f.senderCustody = null;
-                f.RecipientLedger!.Dispose(); f.RecipientLedger = null; f.recipientCustody!.Dispose(); f.recipientCustody = null;
+                f.Ledger = f.Sender.Operations; f.RecipientLedger = f.Recipient.Operations;
                 f.Bind(); return f;
             }
             catch { await f.DisposeAsync(); throw; }
         }
         internal void OpenRecipientLedger(int maximumEntries = 100_000)
         {
-            RecipientLedger?.Dispose();
+            Recipient.CloseOperations();
             recipientCustody?.Dispose(); recipientCustody = OpenCustody(Recipient);
             RecipientLedger = new(Recipient.Node.DataRoot, new MailboxClientAdapterOptions
             {
@@ -651,6 +649,8 @@ public sealed partial class CurrentMailboxPeerHttpTests
                 MaxCursorAuthorities = Math.Min(4096, maximumEntries),
                 MaxConcurrentSingleFlights = Math.Min(1024, maximumEntries)
             }, recipientCustody, clock: new NoUtcIntentClock());
+            Recipient.AttachOperations(RecipientLedger);
+            Bind();
         }
         internal void Bind(bool? onRecipient = null)
         {

@@ -3,6 +3,7 @@ using Deep.Protocol.DeepExtension.MailboxCapabilities;
 using Deep.Protocol.DeepExtension.PrivacyRouting;
 using Deep.Protocol.XPointNetworkV1;
 using XNode.Core.Mailbox;
+using XNode.Core.Mailbox.Client;
 
 namespace XNode;
 
@@ -10,8 +11,9 @@ namespace XNode;
 /// mutation -> descriptor-key receipt. No P04, raw policy/time, or UTC fallback.</summary>
 internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmission admission,
     MailboxPeerMutationStore mutations, DurableMailboxPeerReplayJournal replay,
-    ReadOnlyMemory<byte> localSigningSeed) : IDisposable
+    ReadOnlyMemory<byte> localSigningSeed, MailboxClientOperationLedger operations) : IDisposable
 {
+    private readonly MailboxClientOperationLedger operationLedger = operations ?? throw new ArgumentNullException(nameof(operations));
     private readonly byte[] seed = CaptureSeed(localSigningSeed);
     private readonly SodiumMailboxPeerReplicationCrypto crypto = new();
     private readonly Dictionary<string, (ulong Start, int Count)> rates = new(StringComparer.Ordinal);
@@ -25,8 +27,27 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
         XNode.Core.Mailbox.Client.MailboxClientOperationLedger? storeLedger = null)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
-        return admission.WithRequestAsync(exactRequest, operation, action, token, storeLedger,
-            storeLedger is null ? null : mutations);
+        if (storeLedger is not null && !ReferenceEquals(storeLedger, operationLedger))
+            throw new InvalidOperationException("Current client work must use this receiver's operation owner.");
+        return admission.WithRequestAsync(exactRequest, operation, action, token, operationLedger,
+            storeLedger is null ? null : mutations, RequireSigningCustody);
+    }
+
+    private void RequireSigningCustody(CurrentMailboxAdmission.GrantScope scope)
+    {
+        scope.Lease.RequireActive();
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
+        if (!ReferenceEquals(scope.Owner, admission))
+            throw new CryptographicException("Current signing custody belongs to another admission owner.");
+        var local = scope.Replicas.Single(replica => Fixed(replica.NodeId.Span, LocalNodeId.Span));
+        if (!Fixed(crypto.GetPublicKey(seed), local.SigningPublicKey.Span))
+            throw new CryptographicException("Current signing custody differs from its descriptor.");
+    }
+
+    private async ValueTask RequireOperationCustodyAsync(CurrentMailboxAdmission.GrantScope scope, CancellationToken token)
+    {
+        RequireSigningCustody(scope);
+        await operationLedger.InitializeCurrentAsync(LocalNodeId, scope.Host, scope.Lease, token).ConfigureAwait(false);
     }
 
     internal Task<bool> HasStoreCustodyAsync(CurrentMailboxAdmission.GrantScope scope,
@@ -208,11 +229,19 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
             EpochExpiresAtUnixSeconds = scope.Authority.Network.MaximumRecordExpiryUnixSeconds
         };
         _ = MailboxPeerWireV2Codec.VerifyReplayCandidate(owned, policy, crypto, proofs);
+        // Authenticate the complete candidate before recovery; even a completed
+        // replay cannot bypass this owner. The SAME role leases remain held
+        // before rate/replay/mutation, without a synthetic client request.
+        await RequireOperationCustodyAsync(scope, ct).ConfigureAwait(false);
+        upper = await scope.Lease.CheckAsync(ct).ConfigureAwait(false);
+        policy = policy with { NowUnixSeconds = upper };
+        _ = MailboxPeerWireV2Codec.VerifyReplayCandidate(owned, policy, crypto, proofs);
         RequireRate(decoded.SenderRouterId.Span, upper);
         var verified = MailboxPeerWireV2Codec.VerifyAndReserve(owned, policy, crypto, proofs, replay);
         _ = await scope.Lease.CheckAsync(ct).ConfigureAwait(false);
         var result = await action(new PeerOperation(this, scope, verified, owned, localRole), ct).ConfigureAwait(false);
         _ = await scope.Lease.CheckAsync(ct).ConfigureAwait(false);
+        await RequireOperationCustodyAsync(scope, ct).ConfigureAwait(false);
         return result;
     }
 
@@ -227,6 +256,7 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
         {
             ObjectDisposedException.ThrowIf(Volatile.Read(ref owner.disposed) != 0, owner);
             _ = await scope.Lease.CheckAsync(token).ConfigureAwait(false);
+            await owner.RequireOperationCustodyAsync(scope, token).ConfigureAwait(false);
             ObjectDisposedException.ThrowIf(Volatile.Read(ref owner.disposed) != 0, owner);
         }
         internal async ValueTask<ReadOnlyMemory<byte>> ApplyAndSignLocalAsync(CancellationToken token)
