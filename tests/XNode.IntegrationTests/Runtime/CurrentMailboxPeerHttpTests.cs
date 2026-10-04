@@ -596,7 +596,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
                     IPAddress.Loopback, checked((ushort)host.Port), wrongPin ? SHA256.HashData(host.Pin) : host.Pin, SHA256.HashData(host.Pin))).ToArray();
                 // The next pin must remain distinct even in the intentionally wrong-current-pin case.
                 if (wrongPin) origins = origins.Select(origin => origin with { NextSpki = SHA256.HashData(origin.NextSpki.Span) }).ToArray();
-                f.Signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync(transportOrigins: origins);
+                f.Signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync(transportOrigins: origins, distinctNodeIdentities: true);
                 f.Recipient = await Peer.CreateAsync(f.Signed, 1); f.Sender = await Peer.CreateAsync(f.Signed, 0);
                 f.Bind(); return f;
             }

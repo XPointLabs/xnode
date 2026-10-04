@@ -195,7 +195,8 @@ public sealed class CurrentMailboxReplicaReceiverTests
             };
             return MailboxPeerWireV2Codec.Encode(Crypto.SignRequest(unsigned, SenderSeed));
         }
-        internal void Reopen(IMailboxDurabilityBarrier? mutationDurability = null, int? maximumMutations = null)
+        internal void Reopen(IMailboxDurabilityBarrier? mutationDurability = null, int? maximumMutations = null,
+            ReadOnlyMemory<byte>? signingSeed = null)
         {
             Receiver?.Dispose(); mutations?.Dispose(); replay?.Dispose();
             if (maximumMutations is not null) options.MaxPeerMutationRecords = maximumMutations.Value;
@@ -203,7 +204,7 @@ public sealed class CurrentMailboxReplicaReceiverTests
             blobs = new(Node.DataRoot, options, clock);
             mutations = new(Node.DataRoot, options, blobs, clock, durability: mutationDurability, faults: Fault);
             replay = new(Node.DataRoot, options, clock);
-            Receiver = new(Node.Admission, mutations, replay, Node.Signed.Node(Node.Node).Seed);
+            Receiver = new(Node.Admission, mutations, replay, signingSeed ?? Node.Signed.Node(Node.Node).Seed);
         }
         internal async Task<byte[]?> ReadBlobAsync() => await Node.Admission.WithGrantAsync(
             Grant(Node.Signed, Node.Host, MailboxCapabilityDomain.Retrieve, 0x52), MailboxCapabilityDomain.Retrieve,

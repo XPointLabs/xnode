@@ -47,9 +47,9 @@ public sealed class CurrentMailboxAdmissionTests
     public async Task SignedAdmissionAndExactTerminalReplaySurviveNativeReopen(MailboxAuthenticatedOperation operation)
     {
         await using var fixture = await Fixture.CreateAsync(operation);
-        // This genesis fixture has ID == identity key. A genuine distinct-ID/key
-        // lineage must separately qualify S02/S03; do not invent key rotation.
-        Assert.Equal(fixture.Node, fixture.Replicas[0].SigningPublicKey.ToArray());
+        Assert.False(fixture.Node.AsSpan().SequenceEqual(fixture.Replicas[0].SigningPublicKey.Span));
+        Assert.Equal(fixture.Signed.Node(fixture.Node).Ed25519PublicKey.ToArray(),
+            fixture.Replicas[0].SigningPublicKey.ToArray());
         var first = await fixture.Admission.WithRequestAsync(fixture.Frame, operation, async (request, token) =>
         {
             Assert.Equal(MailboxAuthenticatedReplayDisposition.NewReserved, request.ReplayDisposition);
@@ -254,7 +254,7 @@ public sealed class CurrentMailboxAdmissionTests
         internal static async Task<Fixture> CreateAsync(MailboxAuthenticatedOperation operation,
             MailboxCapabilityDomain? missing = null, DeepIdV2PublicationAuthorityFixture? signed = null, int localReplicaIndex = 0)
         {
-            var f = new Fixture { Signed = signed ?? await DeepIdV2PublicationAuthorityFixture.CreateAsync(), ownsSigned = signed is null };
+            var f = new Fixture { Signed = signed ?? await DeepIdV2PublicationAuthorityFixture.CreateAsync(distinctNodeIdentities: true), ownsSigned = signed is null };
             f.Host = await MailboxGrantRevocationStoreTests.Host(f.Signed);
             var role = operation == MailboxAuthenticatedOperation.Store ? MailboxCapabilityDomain.Deposit : MailboxCapabilityDomain.Retrieve;
             f.ExactGrant = Grant(f.Signed, f.Host, role, 0x51);

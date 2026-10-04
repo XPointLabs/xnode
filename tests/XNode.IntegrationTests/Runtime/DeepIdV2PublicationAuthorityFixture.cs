@@ -31,8 +31,12 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
     internal static readonly byte[] Service = Bytes(32, 0x35);
     private readonly byte[] service;
     internal sealed record TransportOrigin(IPAddress Address, ushort Port, ReadOnlyMemory<byte> CurrentSpki, ReadOnlyMemory<byte> NextSpki);
-    private DeepIdV2PublicationAuthorityFixture(byte serviceMarker) => service = Bytes(32, serviceMarker);
-    private readonly TestSigner[] nodes = [new(0x70), new(0x71), new(0x72)];
+    private DeepIdV2PublicationAuthorityFixture(byte serviceMarker, bool distinctNodeIdentities)
+    {
+        service = Bytes(32, serviceMarker);
+        nodes = [new(0x70, distinctNodeIdentities), new(0x71, distinctNodeIdentities), new(0x72, distinctNodeIdentities)];
+    }
+    private readonly TestSigner[] nodes;
     private TestSigner[] ceremonyWitnesses = [];
     internal PendingXPointNetworkOperationalGenesis PendingOperational { get; private set; } = null!;
     internal AuthoredXPointNetworkOperationalGenesis CompletedOperational { get; private set; } = null!;
@@ -85,9 +89,9 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
         bool authorContactPublication = false, byte networkCommitmentMarker = 0, byte rootMarker = 0x20,
         bool authorRouteSuccessor = false, ushort lastResortReuseLimit = 1,
         bool authorInventoryRotation = false, bool corruptFirstPreKeyBundleSignature = false,
-        IReadOnlyList<TransportOrigin>? transportOrigins = null)
+        IReadOnlyList<TransportOrigin>? transportOrigins = null, bool distinctNodeIdentities = false)
     {
-        var fixture = new DeepIdV2PublicationAuthorityFixture(serviceMarker);
+        var fixture = new DeepIdV2PublicationAuthorityFixture(serviceMarker, distinctNodeIdentities);
         try { await fixture.AuthorAsync(authorContactPublication, networkCommitmentMarker, rootMarker, authorRouteSuccessor, lastResortReuseLimit, authorInventoryRotation, corruptFirstPreKeyBundleSignature, transportOrigins); return fixture; }
         catch { fixture.Dispose(); throw; }
     }
@@ -384,14 +388,14 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
     internal TestSigner Node(ReadOnlySpan<byte> id)
     {
         foreach (var node in nodes)
-            if (node.Ed25519PublicKey.Span.SequenceEqual(id)) return node;
+            if (node.SignerId.Span.SequenceEqual(id)) return node;
         throw new CryptographicException("Unknown test node.");
     }
 
     internal byte[] TestOnionScalar(ReadOnlySpan<byte> id)
     {
         for (var i = 0; i < nodes.Length; i++)
-            if (nodes[i].Ed25519PublicKey.Span.SequenceEqual(id)) return Bytes(32, (byte)(0xe0 + i));
+            if (nodes[i].SignerId.Span.SequenceEqual(id)) return Bytes(32, (byte)(0xe0 + i));
         throw new CryptographicException("Unknown test onion node.");
     }
 
@@ -506,16 +510,22 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
     {
         private readonly byte marker;
         private readonly KeyPair key;
-        internal TestSigner(byte marker)
+        private readonly byte[] signerId;
+        internal TestSigner(byte marker, bool distinctNodeIdentity = false)
         {
             this.marker = marker;
             Seed = Bytes(32, marker);
             key = PublicKeyAuth.GenerateKeyPair(Seed);
+            // A node ID is independently committed by the signed descriptor;
+            // it is neither an Ed25519 key nor a fabricated key rotation.
+            signerId = marker >= 0x70
+                ? distinctNodeIdentity ? Hash("test-node-id-" + marker) : key.PublicKey.ToArray()
+                : Bytes(32, marker);
         }
         internal byte[] Seed { get; }
         internal int TopologySignatureCalls { get; private set; }
         public ReadOnlyMemory<byte> RootKeyId => Bytes(32, marker);
-        public ReadOnlyMemory<byte> SignerId => marker >= 0x70 ? key.PublicKey : Bytes(32, marker);
+        public ReadOnlyMemory<byte> SignerId => signerId;
         public ReadOnlyMemory<byte> WitnessId => SignerId;
         public ulong KeyGeneration => 0;
         public ReadOnlyMemory<byte> Ed25519PublicKey => key.PublicKey;

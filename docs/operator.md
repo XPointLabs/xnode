@@ -25,8 +25,12 @@ fallback. Endpoint errors are bounded empty-body responses without private logs.
 
 These internal owners have no activation flag and are not registered by Program.
 Do not enable the retired provider as a bridge. Current Program/DI composition,
-public client Store/Retrieve/ACK composition and distinct ID/key evidence remain
-required. Two-store loopback HTTP evidence is not deployed, onion or physical
+public client Store/Retrieve/ACK composition remain required. The matching
+[descriptor-key checkpoint](testing/s03-descriptor-keys-2026-10-04.md) now
+exercises genuinely separate node IDs and immutable descriptor identity keys
+through the current producer and native consumer, not fabricated rotation.
+Signing custody must match that actual descriptor key; a node ID is never
+a key or signing seed. Two-store loopback HTTP evidence is not deployed, onion or physical
 client delivery evidence. Internal client Store now binds captured MAU3 to the
 exact peer request under the same native admission owner and persists final
 canonical MQR3 in the existing outcome store. Retry after advancing time/reopen
