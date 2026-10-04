@@ -89,10 +89,22 @@ is not repeated or presented as new evidence.
 Strict generator/registry gate passes. DNP1 ownership exact314/package219/final95
 has219 mapped/packageMissing0: mapping consistency, not package qualification.
 Executable manifest integrity passes only; no new DNP1 executable evidence is
-inferred. Root documentation174 and selected source/doc/receipt secret scan pass.
-Full Node final reviewed gate is still running; do not infer it from the focused
-selection or interrupted attempt. Previous full baseline remains in the
-native-terminal [checkpoint](s02-native-terminal-2026-10-04.md).
+inferred. Root documentation174, CONTACT/crypto/ONION/governance ClassificationOnly
+and selected source/doc/receipt secret scan pass. Four edited documents pass
+strict UTF-8 and101 local file links. Consistency-only gates are not release evidence.
+
+Final reviewed full Node: **1161 passed / 0 failed / 0 skipped**, terminal0.
+Integration782, unit272, profile107; integration duration22m51s. The nineteen
+new cases are added to the unchanged complete default graph, not a whitelist
+or replacement for the earlier full suite. Tested code commits are Protocol
+`b98698b8b12a5fafefd822d3ee33b4d0d176d9df` and XNode
+`a7488b968223b1f23e280467938f5c8d8375a10b`; later checkpoint edits are docs only.
+
+| Node TRX under `artifacts/s00-one-time-commit/final-reviewed-full` | SHA-256 |
+| --- | --- |
+| `nikit_SURFACE-LT_2026-10-04_11_48_12_net10.0.trx` (profile107) | `082841f1bc6d211658b4a7f321c441a2a9a8fb264f0bcdf2aed69afdb95c7b47` |
+| `nikit_SURFACE-LT_2026-10-04_11_48_14_net10.0.trx` (unit272) | `10a111b048d64e1f421e43ee794016308b438ca9a9862600bd86c78fb82fa943` |
+| `nikit_SURFACE-LT_2026-10-04_11_48_16_net10.0.trx` (integration782) | `717f17ec765931e18b5693597ec1f05aa8cf0f114bbf9c513fc2489a81cde65d` |
 
 Account-owned one-time secret pending/winner/read-back/exact AEAD restoration,
 retained genesis completion, local format closure and shipping export remain
