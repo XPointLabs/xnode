@@ -4,7 +4,8 @@ Native local-state owner for
 [DR-0087](../../docs/survival-program/decisions/DR-0087-current-mailbox-operation-custody.md).
 Network semantics remain solely in
 [XPOINT-NETWORK §9.1](../../docs/architecture/XPOINT-NETWORK-V1.md#91-current-two-replica-store-ordering).
-This is an internal current candidate, not enabled Program/DI or physical E2E.
+This is a current candidate with a real Program startup/readiness recovery hook,
+not a fully enabled current service graph or physical E2E.
 
 ## Local contract
 
@@ -45,6 +46,19 @@ rejects existing/interrupted protection before persisting the empty operation
 document and enrollment. `InitializeOperationsAsync` is the non-enrolling
 reader/recovery entry point.
 
+`CurrentMailboxHostRecovery` is registered by Program as the same singleton
+hosted service used by `/health/ready`. Startup and each readiness request call
+the actual receiver's host-only recovery: matching receiver/coordinator owner,
+actual descriptor signing custody, both native role leases and the exact
+protected operation document. No client grant or replay is created. A previous
+successful status is not admission authority and is not reused on another check.
+Checks are single-flight with a five-second cooperative cancellation budget;
+busy, stopped, missing or unavailable owners cannot report successful recovery.
+Missing current composition with mailbox enabled now makes readiness 503.
+Mailbox disabled skips these owners; that state qualifies no mailbox operation.
+Only the recovery boolean and a closed state label are added to public health,
+not exceptions, private files, identifiers, keys or contents.
+
 Every current native receiver requires one operation ledger at construction;
 Store/Retrieve/ACK and peer Store/tombstone cannot omit this owner or substitute
 a neutral ledger. A supplied producer ledger must be that same instance.
@@ -84,8 +98,10 @@ one side fails closed. Do not erase protection, re-enroll, regenerate a node ID
 or reconstruct operation data from blobs to clear an error. Preserve uncertain
 files for owner-approved recovery; diagnostics must not expose their contents.
 
-This covers the connected internal native request/peer handlers, not Program/DI,
-host health/startup composition or deployed provisioning. Missing/malformed
+This covers the connected native request/peer handlers and the Program recovery
+hook, not complete current Program/DI or deployed provisioning. Recovery here
+checks the protected operation owner; it does not independently qualify every
+historical blob/mutation, retained route or object horizon. Missing/malformed
 local operation data at the peer HTTP boundary yields a bodyless dependency
 unavailable response; it is not a new protocol failure record. Retained-route,
 retirement, sustained quotas and horizon qualification remain separate blockers.

@@ -31,8 +31,12 @@ Ingress and authenticated-holder budgets use monotonic resource time only.
 Partial quorum, callback/expiry or custody failures suppress success and retain
 exact unknown work; an exception is not proof of absence of a remote effect.
 These current owners have no activation flag and are not registered by Program.
-Do not enable the retired provider as a bridge. Whole-host startup/health/DI,
-retained-route, signed retirement and object-horizon gates remain required.
+Do not enable the retired provider as a bridge. Program now runs current
+host-only operation recovery at startup and afresh in `/health/ready`; an enabled
+mailbox without the actual current receiver/coordinator stays unready. This hook
+does not register that full graph or qualify global historical data recovery.
+Complete current DI, retained-route, signed retirement and object-horizon gates
+remain required.
 See the [native terminal checkpoint](testing/s02-native-terminal-2026-10-04.md)
 for the precise local three-hop/current two-store evidence, not device qualification.
 The matching
@@ -66,8 +70,9 @@ recovery/replay; callback/result checks cannot release a page or receipt after
 operation custody loss. Missing/malformed local operation data at the current
 peer HTTP endpoint returns bodyless 503, preserving state. Only an
 authenticated pending replacement can recover exact bytes. Unknown pre-plan
-writes still cannot remint a known request. This does not activate Program/DI,
-host health/startup composition, retirement or deployed provisioning; the linked owner
+writes still cannot remint a known request. The actual startup/readiness hook now
+uses this same non-enrolling recovery; it does not activate complete Program/DI,
+retirement or deployed provisioning. The linked owner
 defines the consistent backup and local anti-rollback limits.
 The current Store producer also retains the exact authenticated MQR3 in that
 same operation ledger. A new Store in the same epoch/mailbox/placement/membership
@@ -84,7 +89,7 @@ only the ranked first node admits client Store or authors Store intent, and both
 peer roles reject a different Store sender before native replay/mutation. The
 matching Shared client keeps Store's writer exit across primary/fallback attempts.
 Retrieve/ACK remain available on either replica; a node never reroutes a sealed
-client request. Program activation, startup/recovery, retained projection history
+client request. Complete Program activation/global recovery, retained projection history
 and signed expiry retirement remain gated. Current Store intents are not collected
 by host-UTC startup GC. This is not physical delivery or release qualification.
 Ledger initialization now avoids host UTC entirely for current-only Store/ACK

@@ -285,6 +285,8 @@ public sealed class CurrentMailboxAdmissionTests
         internal string DataRoot => depositFiles.Data;
         internal string OperationCustodyRoot => Path.Combine(depositFiles.Root, "operation-custody");
         internal string ProtectionRoot => depositFiles.Keys;
+        internal string DepositFloorFile => depositFiles.Floor;
+        internal string RetrieveFloorFile => retrieveFiles.Floor;
         internal int OutcomeCount => outcomes.Diagnostics.EntryCount;
 
         internal static async Task<Fixture> CreateAsync(MailboxAuthenticatedOperation operation,

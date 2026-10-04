@@ -23,6 +23,34 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
     private DurableMailboxPeerReplayJournal Replay => replay;
     private CurrentMailboxAdmission Admission => admission;
     internal ReadOnlyMemory<byte> LocalNodeId => admission.LocalNodeId;
+
+    // A real host recovery operation, not admission for a synthetic client
+    // request. Both MGR owners remain held through key and exact-document checks.
+    internal async ValueTask InitializeHostAsync(CancellationToken token = default)
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
+        _ = await admission.WithHostAsync(async (scope, ct) =>
+        {
+            if (!ReferenceEquals(scope.Owner, admission))
+                throw new CryptographicException("Current host recovery belongs to another admission owner.");
+            var local = await scope.Host.ResolveReplicaAsync(LocalNodeId, ct).ConfigureAwait(false);
+            void RequireKey()
+            {
+                scope.Lease.RequireActive();
+                ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
+                if (!Fixed(crypto.GetPublicKey(seed), local.SigningPublicKey.Span))
+                    throw new CryptographicException("Current host signing custody differs from its descriptor.");
+            }
+            RequireKey();
+            _ = await scope.Lease.CheckAsync(ct).ConfigureAwait(false);
+            RequireKey();
+            await operationLedger.InitializeCurrentAsync(LocalNodeId, scope.Host, scope.Lease, ct).ConfigureAwait(false);
+            _ = await scope.Lease.CheckAsync(ct).ConfigureAwait(false);
+            RequireKey();
+            return true;
+        }, token).ConfigureAwait(false);
+    }
+
     internal ValueTask<T> WithClientRequestAsync<T>(ReadOnlyMemory<byte> exactRequest, MailboxAuthenticatedOperation operation,
         Func<CurrentMailboxAdmission.Request, CancellationToken, ValueTask<T>> action, CancellationToken token,
         XNode.Core.Mailbox.Client.MailboxClientOperationLedger? storeLedger = null)

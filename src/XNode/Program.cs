@@ -198,6 +198,7 @@ builder.Services.AddSingleton<INativeMailboxExitDispatcher>(provider =>
     provider.GetRequiredService<PrivacyTerminalExitDispatcher>());
 builder.Services.AddSingleton(mailboxClientActivationPlan);
 builder.Services.AddSingleton<MailboxClientRuntimeReadiness>();
+builder.Services.AddCurrentMailboxHostRecovery();
 builder.Services.AddSingleton<IMailboxStorageSecurity, MailboxStorageSecurity>();
 builder.Services.AddSingleton<IMailboxDurabilityBarrier, MailboxDurabilityBarrier>();
 if (did2DirectoryProof is not null)
@@ -520,15 +521,18 @@ app.MapGet("/", () => Results.Redirect("/status"));
 
 app.MapGet("/health/live", () => Results.Ok(new { ok = true }));
 
-app.MapGet("/health/ready", (
+app.MapGet("/health/ready", async (
     IXraySupervisor xray,
     ReplicatedMailboxOptions mailbox,
     MailboxPeerRuntimeReadiness mailboxPeer,
     MailboxClientRuntimeReadiness mailboxClient,
+    CurrentMailboxHostRecovery currentMailboxHost,
     ProductionMailboxAuthorityProvider productionMailboxAuthority,
     PrivacyRoutingConfiguration privacy,
-    PrivacyRoutingRuntime privacyRuntime) =>
+    PrivacyRoutingRuntime privacyRuntime,
+    CancellationToken cancellationToken) =>
 {
+    var currentMailboxRecovery = await currentMailboxHost.CheckAsync(cancellationToken);
     var xrayStatus = xray.Status;
     var transportReady = !xrayStatus.Enabled || xrayStatus.Running || xrayStatus.Degraded;
     var mailboxPeerReady = !mailbox.Enabled || mailboxPeer.Ready;
@@ -548,6 +552,7 @@ app.MapGet("/health/ready", (
         && privacyReady
         && mailboxPeerReady
         && mailboxClientReady
+        && currentMailboxRecovery.Recovered
         && productionMailboxAuthorityReady
         && terminalServices.Ready;
     return ready
@@ -561,6 +566,7 @@ app.MapGet("/health/ready", (
                 : "disabled-development",
             mailboxPeer = mailboxPeer.Status,
             mailboxClient = mailboxClient.Status,
+            currentMailboxHost = currentMailboxRecovery,
             mailboxAuthorityForwarding = mailboxAuthorityForwarding.Role,
             mailboxProductionAuthority = productionMailboxAuthority.Status,
             requiredTerminals = terminalServices
@@ -575,6 +581,7 @@ app.MapGet("/health/ready", (
                     : "unavailable",
                 mailboxPeer = mailboxPeer.Status,
                 mailboxClient = mailboxClient.Status,
+                currentMailboxHost = currentMailboxRecovery,
                 mailboxAuthorityForwarding = mailboxAuthorityForwarding.Role,
                 mailboxProductionAuthority = productionMailboxAuthority.Status,
                 requiredTerminals = terminalServices
