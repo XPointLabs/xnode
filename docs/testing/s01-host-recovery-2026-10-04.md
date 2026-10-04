@@ -76,9 +76,26 @@ selected cases pass; unit272/profile107 also pass. The ACK takes37s there versus
 49s in the failed full run, but timing correlation is not a cause diagnosis:
 `artifacts/s01-host-recovery/startup-diagnostic/nikit_SURFACE-LT_2026-10-04_16_32_55_net10.0.trx`,
 SHA-256 `5da78ac1dde8a44fbf104eebf737bb19b5d65f5875bc75a58936e56595806832`.
-Release test-only diagnostic build finishes with0 warnings/errors. Full
-reproduction with that message remains pending; no former full pass replaces
-the unresolved failure or qualifies the diagnostic source.
+Release test-only diagnostic build finishes with0 warnings/errors. The full
+reproduction finishes **1205 pass / 0 fail / 0 skips**: integration826,
+unit272 and profile107. All three TRX result summaries are terminal Completed;
+the observation watcher finishes exit0. The original test-process exit handle
+was lost during output truncation, so its exit code is not inferred from that
+watcher. The diagnostic test-assembly SHA-256 is
+`d94235b4edcf395ebf0af4fda2e09230010afa6e56d068a249a8db00e8d1252a`.
+The previously failed ACK case passes in18.86s. No runtime/deadline/assertion
+change explains that result, and the cause of the original PartialFailure is
+still unclassified; it is not declared a repaired production bug.
+
+| Reproduction receipt under `artifacts/s01-host-recovery/reproduction-full` | SHA-256 |
+| --- | --- |
+| `nikit_SURFACE-LT_2026-10-04_16_49_55_net10.0.trx` (profile107) | `3bc401106ee8d9b7f15b04320d49e1e4bbdee967bcb3d91c16ed943056e38576` |
+| `nikit_SURFACE-LT_2026-10-04_16_49_57_net10.0.trx` (unit272) | `4398becf421327ee089d91a5209e7b97dfffc6c0f4df3203ec80191c6dad2025` |
+| `nikit_SURFACE-LT_2026-10-04_16_49_57_net10.0[1].trx` (integration826) | `c5e2a16d41d4872461d553d84365f30ade99035affe625f85052984e3d626822` |
+
+This gate uses XNode `5d4c5d545b62ed0c98e99ddaf9b09dcd405b7d4f` and the
+unchanged dependency binaries from the input matrix above. Later Protocol/Shared
+Store-floor edits are not exercised by this run and require their own gates.
 
 Fresh real-Xray transport smoke and three-node rehearsal both finish exit0:
 
