@@ -1,8 +1,15 @@
 using System.Net;
+using System.Net.Sockets;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Buffers.Binary;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.Extensions.Logging;
 using Deep.Protocol.ContactV1;
 using Deep.Protocol.ContactV2;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
@@ -24,7 +31,8 @@ using XNode.Core.Mailbox;
 namespace XNode.IntegrationTests.Runtime;
 
 // Real public DID2/NET authorization, opaque journals and production authenticated
-// binary peer HTTP code through an in-process handler. No socket/TLS/device claim.
+// binary peer HTTP through either an explicit in-process lane or actual pinned
+// TLS/H2 loopback hosts. Neither lane is installed/physical-device evidence.
 public sealed class Did2ContactServiceCompositionTests
 {
     [Fact]
@@ -148,16 +156,21 @@ public sealed class Did2ContactServiceCompositionTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task TwoSelectedStoresPublishResolveAndResumeExactAfterLostPeerResponse(bool grantHttp)
+    [InlineData(false, false, false, false)]
+    [InlineData(false, true, false, false)]
+    [InlineData(true, false, false, false)]
+    [InlineData(false, true, true, false)]
+    [InlineData(false, true, true, true)]
+    public async Task TwoSelectedStoresPublishResolveAndResumeExactAfterLostPeerResponse(bool grantHttp, bool distinctIds, bool socketHttp, bool wrongPin)
     {
-        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync(authorContactPublication: true);
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync(authorContactPublication: true,
+            distinctNodeIdentities: distinctIds);
         var placementSource = new VerifiedContactServicePlacementAuthoritySource(fixture, fixture);
         var publication = fixture.ContactPublication;
         var placement = await placementSource.MintAsync(ContactServiceRequestKind.PublishInvite, publication.LocatorHash, default);
         var root = Path.Combine(Path.GetTempPath(), "did2-active-contact-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
+        var hosts = new List<ContactPeerHost>();
         try
         {
             var nodes = placement.ReplicaIds.Select((id, index) => new RouterNodeOptions {
@@ -166,7 +179,13 @@ public sealed class Did2ContactServiceCompositionTests
                 DataDirectory = Path.Combine(root, index.ToString()) }).ToArray();
             var options = new ContactServicePersistenceOptions { RuntimeActivation = true, MapReplicaEndpoint = true };
             var peers = new Dictionary<RouterId, ServiceProvider>();
-            var state = new PeerState();
+            var state = new PeerState { WrongPin = wrongPin };
+            if (socketHttp)
+                foreach (var node in nodes)
+                {
+                    var host = await ContactPeerHost.CreateAsync(node.GetRouterId(), peers, state);
+                    hosts.Add(host); state.Hosts.Add(node.GetRouterId(), host);
+                }
             var providers = nodes.Select(node => Compose(node, nodes, fixture, options, peers, state, grantHttp)).ToArray();
             try
             {
@@ -179,7 +198,14 @@ public sealed class Did2ContactServiceCompositionTests
                 var uncertain = Xpo1Codec.Decode((await dispatcher.DispatchAsync(ContactServiceOperation.PublishDcr,
                     publication.CanonicalBytes, default)).Span, publication.CanonicalBytes.Span);
                 Assert.Equal(Xpo1Status.OutcomeUnknown, uncertain.Status);
-                Assert.True(state.LostAfterExecution);
+                if (wrongPin)
+                {
+                    Assert.Equal(0, state.Requests);
+                    Assert.False(state.LostAfterExecution);
+                    Assert.True(uncertain.Field(19).IsEmpty);
+                    return;
+                }
+                Assert.True(state.LostAfterExecution, $"Peer requests={state.Requests}; endpoint status={state.LastPeerStatus}; transport={state.LastTransportFailure}.");
                 // Recreate both service owners against their actual persisted
                 // directories, not just retry with an in-memory saga/receipt.
                 foreach (var provider in providers) await provider.DisposeAsync();
@@ -198,6 +224,39 @@ public sealed class Did2ContactServiceCompositionTests
                 var contact = await DeepIdV2PermanentContactResolveVerifier.VerifyAsync(candidate, fixture.Freshness,
                     fixture.NetworkContext, fixture.Authority, new(fixture));
                 Assert.Equal(fixture.ContactObject.Closure.CanonicalBytes.ToArray(), contact.Contact.CanonicalBytes.ToArray());
+                if (distinctIds)
+                {
+                    var parsed = Xis1Codec.Decode(result.Span, query.CanonicalBytes.Span);
+                    var rows = parsed.Field(22).ToArray();
+                    var offset = result.Span.IndexOf(rows);
+                    Assert.True(offset >= 0);
+                    var changed = result.ToArray();
+                    // Keep the selected ID, but sign its exact read tuple with
+                    // the other selected node's real key. No invalid fixture shortcut.
+                    var tuple = query.RequestHash.ToArray().Concat(query.LocatorHash.ToArray())
+                        .Concat(parsed.Field(16).ToArray()).Concat(parsed.Field(17).ToArray())
+                        .Concat(parsed.Field(18).ToArray()).Concat(parsed.Field(20).ToArray()).ToArray();
+                    var signer = new Rebex.Security.Cryptography.Ed25519();
+                    signer.FromSeed(fixture.Node(rows.AsSpan(97, 32)).Seed);
+                    var signature = signer.SignMessage(ContactServiceReceiptTranscript.SigningInput(
+                        new(ContactServiceReceiptKind.ResolveRead, tuple)));
+                    signature.CopyTo(changed, offset + 33);
+                    var hostile = DeepIdV2PermanentContactResolveVerifier.OpenCandidate(fixture.ContactAddress, query.CanonicalBytes, changed);
+                    await Assert.ThrowsAsync<CryptographicException>(() => DeepIdV2PermanentContactResolveVerifier.VerifyAsync(hostile,
+                        fixture.Freshness, fixture.NetworkContext, fixture.Authority, new(fixture)).AsTask());
+                    // A public signing key in the receipt ID slot is not a selected node ID.
+                    changed = result.ToArray();
+                    fixture.NetworkContext.ResolveNodeIdentityPublicKey(rows.AsSpan(1, 32).ToArray()).Span.CopyTo(changed.AsSpan(offset + 1, 32));
+                    if (changed.AsSpan(offset + 1, 32).SequenceCompareTo(changed.AsSpan(offset + 97, 32)) > 0)
+                    {
+                        var firstRow = changed.AsSpan(offset + 1, 96).ToArray();
+                        changed.AsSpan(offset + 97, 96).CopyTo(changed.AsSpan(offset + 1, 96));
+                        firstRow.CopyTo(changed, offset + 97);
+                    }
+                    hostile = DeepIdV2PermanentContactResolveVerifier.OpenCandidate(fixture.ContactAddress, query.CanonicalBytes, changed);
+                    await Assert.ThrowsAsync<CryptographicException>(() => DeepIdV2PermanentContactResolveVerifier.VerifyAsync(hostile,
+                        fixture.Freshness, fixture.NetworkContext, fixture.Authority, new(fixture)).AsTask());
+                }
                 using var holder = new GrantSigner(0x51);
                 var deposit = await DeepIdV2MailboxGrantRequestAuthor.AuthorDepositAsync(fixture.ContactRoute,
                     publication.LocatorHash, holder);
@@ -241,7 +300,11 @@ public sealed class Did2ContactServiceCompositionTests
             }
             finally { foreach (var provider in providers) await provider.DisposeAsync(); }
         }
-        finally { Directory.Delete(root, recursive: true); } // Exact test-created root only.
+        finally
+        {
+            foreach (var host in hosts) await host.DisposeAsync();
+            Directory.Delete(root, recursive: true); // Exact test-created root only.
+        }
     }
 
     [Fact]
@@ -363,8 +426,9 @@ public sealed class Did2ContactServiceCompositionTests
         services.AddSingleton<IMailboxDurabilityBarrier, MailboxDurabilityBarrier>();
         services.AddSingleton<DeepIdV2ReplicaStageReceiver>();
         services.AddDid2ContactServiceBoundary(options);
-        services.AddSingleton<IContactReplicaPeerClient>(_ => new HttpContactReplicaPeerClient(node,
-            Privacy(nodes), options, new SystemClock(), peer => new Handler(peer, providers, state)));
+        services.AddSingleton<IContactReplicaPeerClient>(_ => state.Hosts.Count > 0
+            ? new HttpContactReplicaPeerClient(node, Privacy(nodes, state), options, new SystemClock(), LoopbackHandler, new TransportLogger(state))
+            : new HttpContactReplicaPeerClient(node, Privacy(nodes), options, new SystemClock(), peer => new Handler(peer, providers, state)));
         services.AddDid2ContactResolver(new() { Enabled = true, MailboxGrantEnabled = true, MailboxGrantAuthorityOrigin = "https://issuer.example/" });
         services.RemoveAll<IMailboxGrantAuthorityClient>();
         var issuer = new VerifiedGrantIssuer(fixture, state);
@@ -379,17 +443,103 @@ public sealed class Did2ContactServiceCompositionTests
         return services.BuildServiceProvider();
     }
 
-    private static PrivacyRoutingConfiguration Privacy(RouterNodeOptions[] nodes) => new(true,
+    private static PrivacyRoutingConfiguration Privacy(RouterNodeOptions[] nodes, PeerState? state = null) => new(true,
         Enumerable.Repeat((byte)0x81, 32).ToArray(),
         Sodium.ScalarMult.Base(Enumerable.Repeat((byte)0x81, 32).ToArray()), new("https://peer.example/"), nodes.ToDictionary(node => node.GetRouterId(),
-            node => new PrivacyPeer(node.GetRouterId(), new("https://peer.example/"), new byte[32], [], false)),
+            node => state?.Hosts.TryGetValue(node.GetRouterId(), out var host) == true
+                ? new PrivacyPeer(node.GetRouterId(), new($"https://127.0.0.1:{host.Port}/"),
+                    state.WrongPin ? SHA256.HashData(host.Pin) : host.Pin, [], false)
+                : new PrivacyPeer(node.GetRouterId(), new("https://peer.example/"), new byte[32], [], false)),
         8, 1_000, TimeSpan.FromSeconds(5), 1024, 1_000, TimeSpan.FromSeconds(300));
+
+    // The configured-peer production address guard correctly excludes loopback.
+    // Override only connection selection for these owned ephemeral servers;
+    // the product SPKI/name validation and actual Schannel/H2 remain unchanged.
+    private static HttpMessageHandler LoopbackHandler(PrivacyPeer peer)
+    {
+        var handler = HttpPrivacyPeerClient.CreatePinnedHandler(peer);
+        handler.ConnectCallback = async (context, ct) =>
+        {
+            if (context.DnsEndPoint.Host != "127.0.0.1" || context.DnsEndPoint.Port != peer.Endpoint.Port)
+                throw new HttpRequestException("The test-owned loopback endpoint changed.");
+            var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            try { await socket.ConnectAsync(new IPEndPoint(IPAddress.Loopback, peer.Endpoint.Port), ct); return new NetworkStream(socket, ownsSocket: true); }
+            catch { socket.Dispose(); throw; }
+        };
+        return handler;
+    }
 
     private sealed class PeerState
     {
+        internal Dictionary<RouterId, ContactPeerHost> Hosts { get; } = [];
+        internal int LastPeerStatus;
+        internal string LastTransportFailure = "none";
+        internal bool WrongPin;
         internal int Requests, GrantCalls, GrantSignatures;
         internal bool LoseNextPublish, LostAfterExecution, LoseNextGrant;
         internal Dictionary<string, byte[]> GrantWinners { get; } = new(StringComparer.Ordinal);
+    }
+
+    private sealed class ContactPeerHost : IAsyncDisposable
+    {
+        private WebApplication app = null!;
+        private X509Certificate2 certificate = null!;
+        internal int Port;
+        internal byte[] Pin = [];
+        internal static async Task<ContactPeerHost> CreateAsync(RouterId id,
+            Dictionary<RouterId, ServiceProvider> providers, PeerState state)
+        {
+            var host = new ContactPeerHost(); using var key = RSA.Create(2048);
+            var request = new CertificateRequest("CN=localhost", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+            var san = new SubjectAlternativeNameBuilder(); san.AddIpAddress(IPAddress.Loopback);
+            request.CertificateExtensions.Add(san.Build());
+            request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, true));
+            request.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment, true));
+            request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(new OidCollection { new("1.3.6.1.5.5.7.3.1") }, true));
+            using var issued = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddHours(1));
+            var pfx = issued.Export(X509ContentType.Pfx);
+            try { host.certificate = X509CertificateLoader.LoadPkcs12(pfx, null, X509KeyStorageFlags.DefaultKeySet); }
+            finally { CryptographicOperations.ZeroMemory(pfx); }
+            host.Pin = SHA256.HashData(host.certificate.PublicKey.ExportSubjectPublicKeyInfo());
+            var builder = WebApplication.CreateSlimBuilder(); builder.Logging.ClearProviders();
+            builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, 0,
+                listen => { listen.Protocols = HttpProtocols.Http2; listen.UseHttps(host.certificate); }));
+            host.app = builder.Build();
+            host.app.MapPost(ContactReplicaHttpContract.Route, async (HttpContext context, CancellationToken ct) =>
+            {
+                var provider = providers[id]; context.RequestServices = provider;
+                using var requestCopy = new MemoryStream(); await context.Request.Body.CopyToAsync(requestCopy, ct);
+                var command = ContactReplicaWireCodec.DecodeRequest(requestCopy.ToArray());
+                requestCopy.Position = 0; context.Request.Body = requestCopy;
+                var original = context.Response.Body; using var captured = new MemoryStream(); context.Response.Body = captured;
+                state.Requests++;
+                var result = await ContactReplicaHttpEndpoint.HandleCoreAsync(context, true,
+                    provider.GetRequiredService<ContactServicePersistenceOptions>(), provider.GetRequiredService<ContactReplicaReplayGuard>(),
+                    provider.GetRequiredService<IContactReplicaCommandReceiver>(), provider.GetRequiredService<IContactServicePlacementAuthoritySource>(),
+                    provider.GetRequiredService<RouterNodeOptions>(), new SystemClock(), host.Port, ct);
+                await result.ExecuteAsync(context); context.Response.Body = original;
+                state.LastPeerStatus = context.Response.StatusCode;
+                if (state.LoseNextPublish && command.Operation == ContactReplicaRpcOperation.PublishDcr && context.Response.StatusCode == 200)
+                {
+                    state.LoseNextPublish = false; state.LostAfterExecution = true; context.Abort(); return Results.Empty;
+                }
+                return context.Response.StatusCode == 200 ? Results.Bytes(captured.ToArray(), ContactReplicaHttpContract.MediaType)
+                    : Results.StatusCode(context.Response.StatusCode);
+            });
+            await host.app.StartAsync();
+            host.Port = new Uri(host.app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single()).Port;
+            return host;
+        }
+        public async ValueTask DisposeAsync()
+        { if (app is not null) { await app.StopAsync(); await app.DisposeAsync(); } certificate?.Dispose(); }
+    }
+
+    private sealed class TransportLogger(PeerState state) : ILogger<HttpContactReplicaPeerClient>
+    {
+        public IDisposable? BeginScope<TState>(TState value) where TState : notnull => null;
+        public bool IsEnabled(LogLevel level) => true;
+        public void Log<TState>(LogLevel level, EventId eventId, TState value, Exception? exception,
+            Func<TState, Exception?, string> formatter) => state.LastTransportFailure = formatter(value, exception);
     }
 
     // Private hop/journal are in-process fixture state, not production DB/TLS evidence.
@@ -487,7 +637,8 @@ public sealed class Did2ContactServiceCompositionTests
             state.Requests++;
             var result = await ContactReplicaHttpEndpoint.HandleCoreAsync(context, true,
                 provider.GetRequiredService<ContactServicePersistenceOptions>(), provider.GetRequiredService<ContactReplicaReplayGuard>(),
-                provider.GetRequiredService<IContactReplicaCommandReceiver>(), provider.GetRequiredService<RouterNodeOptions>(),
+                provider.GetRequiredService<IContactReplicaCommandReceiver>(),
+                provider.GetRequiredService<IContactServicePlacementAuthoritySource>(), provider.GetRequiredService<RouterNodeOptions>(),
                 new SystemClock(), 4443, ct);
             await result.ExecuteAsync(context);
             if (state.LoseNextPublish && command.Operation == ContactReplicaRpcOperation.PublishDcr && context.Response.StatusCode == 200)

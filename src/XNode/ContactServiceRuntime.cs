@@ -160,19 +160,11 @@ internal sealed class ContactServiceLocalReplicaRuntime : IDisposable
         var seed = Convert.FromHexString(node.GetEd25519PrivateKey());
         try
         {
-            receiptAuthority = new LocalContactServiceReplicaReceiptAuthority(seed);
+            receiptAuthority = new LocalContactServiceReplicaReceiptAuthority(node.GetRouterId().ToBytes(), seed);
         }
         finally
         {
             CryptographicOperations.ZeroMemory(seed);
-        }
-        if (!CryptographicOperations.FixedTimeEquals(
-                receiptAuthority.ReplicaId.Span,
-                node.GetRouterId().ToBytes()))
-        {
-            receiptAuthority.Dispose();
-            throw new InvalidOperationException(
-                "The local contact receipt authority must be the local NETCODEC node identity.");
         }
 
         resolverStore = new ContactResolverOpaqueStore(
@@ -198,6 +190,9 @@ internal sealed class ContactServiceLocalReplicaRuntime : IDisposable
 
     internal ContactServiceReplicaBinding Binding { get; }
     internal ContactPublicationAuthorizationSaga AuthorizationSaga { get; }
+
+    internal void EnsureSigningCustody(ContactServicePlacementCapability placement) =>
+        receiptAuthority.EnsureSigningCustody(placement.VerifiedPlacement.Network);
 
     internal ReadOnlyMemory<byte> ResolvePublicationServiceCapability(
         Xpp1BoundedRequest request) => preKeyStore.ResolvePublicationServiceCapability(request);
@@ -322,7 +317,9 @@ internal sealed class ProductionContactServiceOpaqueDispatcher :
                 node.GetRouterId().ToBytes(),
                 peerClient,
                 canonicalRequest);
+            local.EnsureSigningCustody(placement);
             using var facade = new ContactServiceOpaqueFacade(
+                placement.VerifiedPlacement.Network,
                 [
                     local.Binding,
                     new ContactServiceReplicaBinding(remote, remote, remote)
@@ -370,6 +367,7 @@ internal sealed class ProductionContactServiceOpaqueDispatcher :
                 .ConfigureAwait(false);
             var now = checked((ulong)clock.UtcNow.ToUnixTimeSeconds());
             placement.EnsureUsable(now);
+            local.EnsureSigningCustody(placement);
             if (!Fixed(request.Field(1).Span, placement.NetworkId.Span) ||
                 !Fixed(locatorHash.Span, placement.ShardKey.Span) ||
                 !placement.ContainsReplica(node.GetRouterId().ToBytes()))
@@ -444,11 +442,11 @@ internal sealed class ProductionContactServiceOpaqueDispatcher :
                 ValidateMailboxGrantEvidence(
                     await localEvidenceTask.ConfigureAwait(false),
                     evidenceTuple,
-                    node.GetRouterId().ToBytes()),
+                    node.GetRouterId().ToBytes(), placement),
                 ValidateMailboxGrantEvidence(
                     await remoteEvidenceTask.ConfigureAwait(false),
                     evidenceTuple,
-                    remote.ReplicaId.Span),
+                    remote.ReplicaId.Span, placement),
             };
             var exactResponse = await mailboxGrantAuthority.AuthorizeAsync(
                     new MailboxGrantAuthorityRequest(
@@ -480,13 +478,14 @@ internal sealed class ProductionContactServiceOpaqueDispatcher :
     private static MailboxGrantReplicaEvidence ValidateMailboxGrantEvidence(
         ContactServiceReplicaReceipt evidence,
         ReadOnlySpan<byte> tuple,
-        ReadOnlySpan<byte> expectedReplicaId)
+        ReadOnlySpan<byte> expectedReplicaId, ContactServicePlacementCapability placement)
     {
+        placement.VerifiedPlacement.Network.EnsureCurrent();
         if (evidence.ReplicaId.Length != 32
             || evidence.Signature.Length != 64
             || !Fixed(evidence.ReplicaId.Span, expectedReplicaId)
             || !ContactServiceReceiptTranscript.Verify(
-                evidence.ReplicaId.Span,
+                placement.VerifiedPlacement.Network.ResolveNodeIdentityPublicKey(expectedReplicaId.ToArray()).Span,
                 MailboxGrantRouteEvidenceAuthentication.GetSigningBytes(tuple),
                 evidence.Signature.Span))
             throw new ContactServiceReceiptAuthorityException(
@@ -546,6 +545,7 @@ internal static class ContactServiceHostComposition
         services.TryAddSingleton(options);
         services.TryAddSingleton(plan);
         services.TryAddSingleton<ContactReplicaReplayGuard>();
+        services.TryAddSingleton<IContactServicePlacementAuthoritySource, VerifiedContactServicePlacementAuthoritySource>();
         services.TryAddSingleton<IContactReplicaPeerClient, HttpContactReplicaPeerClient>();
         services.TryAddSingleton<IMailboxGrantAuthorityClient, UnavailableMailboxGrantAuthorityClient>();
         return plan;
@@ -572,6 +572,7 @@ internal static class ContactServiceHostComposition
         }
 
         services.AddSingleton(authorities!);
+        services.TryAddSingleton(authorities!.Placements);
         services.AddSingleton<ContactServiceLocalReplicaRuntime>();
         services.AddSingleton<ProductionContactServiceOpaqueDispatcher>();
         services.AddSingleton<IContactServiceOpaqueDispatcher>(provider =>

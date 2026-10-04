@@ -312,8 +312,8 @@ public sealed class DeepIdV2OpaquePublicationConsumerTests
         DeepIdV2PublicationAuthorityFixture ceremony)
     {
         var receipts = placement.ReplicaIds.Select(id => new LocalContactServiceReplicaReceiptAuthority(
-            ceremony.Node(id.Span).Seed)).ToArray();
-        return new ContactServiceOpaqueFacade(Path.Combine(root, "a.state"), Path.Combine(root, "b.state"),
+            id.Span, ceremony.Node(id.Span).Seed)).ToArray();
+        return new ContactServiceOpaqueFacade(ceremony.NetworkContext, Path.Combine(root, "a.state"), Path.Combine(root, "b.state"),
             Path.Combine(root, "pa.state"), Path.Combine(root, "pb.state"), receipts,
             new ExactContactRequestContextVerifier(placement), verifier, new FixedClock());
     }
@@ -335,7 +335,8 @@ public sealed class DeepIdV2OpaquePublicationConsumerTests
         {
             var id = receipts.AsSpan(1 + i * 96, 32).ToArray();
             Assert.Contains(placement.ReplicaIds, value => value.Span.SequenceEqual(id));
-            Assert.True(PublicKeyAuth.VerifyDetached(receipts.AsSpan(33 + i * 96, 64).ToArray(), signingInput, id));
+            Assert.True(PublicKeyAuth.VerifyDetached(receipts.AsSpan(33 + i * 96, 64).ToArray(), signingInput,
+                placement.VerifiedPlacement.Network.ResolveNodeIdentityPublicKey(id).ToArray()));
         }
     }
 

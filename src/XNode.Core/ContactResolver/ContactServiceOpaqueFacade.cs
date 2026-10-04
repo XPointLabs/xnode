@@ -83,9 +83,11 @@ internal sealed class ContactServiceOpaqueFacade : IDisposable
     private readonly ContactPublicationAuthorizationSaga publicationAuthorizationSaga;
     private readonly SemaphoreSlim[] publicationAuthorizationGates;
     private readonly IClock clock;
+    private readonly Deep.Protocol.DeepExtension.PrivacyRouting.VerifiedOnionNetworkContext network;
     private bool disposed;
 
     public ContactServiceOpaqueFacade(
+        Deep.Protocol.DeepExtension.PrivacyRouting.VerifiedOnionNetworkContext network,
         string firstResolverStatePath,
         string secondResolverStatePath,
         string firstPreKeyStatePath,
@@ -99,6 +101,8 @@ internal sealed class ContactServiceOpaqueFacade : IDisposable
         ContactPublicationAuthorizationSagaOptions? authorizationSagaOptions = null,
         IContactPublicationAuthorizationSagaFaults? authorizationSagaFaults = null)
     {
+        this.network = network ?? throw new ArgumentNullException(nameof(network));
+        network.EnsureCurrent();
         ArgumentNullException.ThrowIfNull(localReceiptAuthorities);
         ArgumentNullException.ThrowIfNull(requestContexts);
         ArgumentNullException.ThrowIfNull(publicationAuthorizations);
@@ -113,6 +117,7 @@ internal sealed class ContactServiceOpaqueFacade : IDisposable
         var sortedAuthorities = localReceiptAuthorities
             .OrderBy(static item => item.ReplicaId.ToArray(), ByteArrayComparer.Instance)
             .ToArray();
+        foreach (var authority in sortedAuthorities) authority.EnsureSigningCustody(network);
         if (CryptographicOperations.FixedTimeEquals(
                 ValidateReplicaId(sortedAuthorities[0].ReplicaId, nameof(localReceiptAuthorities)),
                 ValidateReplicaId(sortedAuthorities[1].ReplicaId, nameof(localReceiptAuthorities))))
@@ -180,12 +185,15 @@ internal sealed class ContactServiceOpaqueFacade : IDisposable
     }
 
     internal ContactServiceOpaqueFacade(
+        Deep.Protocol.DeepExtension.PrivacyRouting.VerifiedOnionNetworkContext network,
         IReadOnlyList<ContactServiceReplicaBinding> replicaBindings,
         IContactRequestContextVerifier requestContexts,
         IContactPublicationAuthorizationVerifier publicationAuthorizations,
         ContactPublicationAuthorizationSaga publicationAuthorizationSaga,
         IClock? clock = null)
     {
+        this.network = network ?? throw new ArgumentNullException(nameof(network));
+        network.EnsureCurrent();
         ArgumentNullException.ThrowIfNull(requestContexts);
         ArgumentNullException.ThrowIfNull(publicationAuthorizations);
         var bindings = PrepareBindings(replicaBindings);
@@ -959,6 +967,7 @@ internal sealed class ContactServiceOpaqueFacade : IDisposable
 
         var firstSignature = await firstTask.ConfigureAwait(false);
         var secondSignature = await secondTask.ConfigureAwait(false);
+        network.EnsureCurrent();
         var output = new byte[193];
         output[0] = 2;
         receiptAuthorities[0].ReplicaId.CopyTo(output, 1);
@@ -968,7 +977,7 @@ internal sealed class ContactServiceOpaqueFacade : IDisposable
         return output;
     }
 
-    private static async Task<byte[]> IssueValidatedReceiptAsync(
+    private async Task<byte[]> IssueValidatedReceiptAsync(
         ReceiptAuthorityBinding binding,
         ContactServiceReplicaReceiptRequest request,
         ReadOnlyMemory<byte> statement,
@@ -977,6 +986,9 @@ internal sealed class ContactServiceOpaqueFacade : IDisposable
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
+            network.EnsureCurrent();
+            if (binding.Authority is LocalContactServiceReplicaReceiptAuthority local)
+                local.EnsureSigningCustody(network);
             var currentAuthorityId = ValidateReplicaId(
                 binding.Authority.ReplicaId,
                 nameof(binding.Authority));
@@ -990,6 +1002,9 @@ internal sealed class ContactServiceOpaqueFacade : IDisposable
 
             var receipt = await binding.Authority.IssueAsync(request, cancellationToken)
                 .ConfigureAwait(false);
+            network.EnsureCurrent();
+            if (!Fixed(binding.ReplicaId, binding.Authority.ReplicaId.Span))
+                throw new ContactServiceReceiptAuthorityException("The receipt authority changed its identity during issuance.");
             if (receipt is null)
             {
                 throw new ContactServiceReceiptAuthorityException(
@@ -1008,7 +1023,7 @@ internal sealed class ContactServiceOpaqueFacade : IDisposable
                     "The receipt authority returned a non-canonical signature size.");
             }
             if (!ContactServiceReceiptTranscript.Verify(
-                    binding.ReplicaId,
+                    network.ResolveNodeIdentityPublicKey(binding.ReplicaId).Span,
                     statement.Span,
                     receipt.Signature.Span))
             {
@@ -1226,13 +1241,21 @@ internal sealed class ContactServiceOpaqueFacade : IDisposable
     private bool Expired(ContactServiceRequestRecord request) =>
         request.ExpiresAtUnixSeconds <= Now() || request.IssuedAtUnixSeconds > Now();
 
-    private ValueTask<ContactRequestContextResult> VerifyContextAsync(
+    private async ValueTask<ContactRequestContextResult> VerifyContextAsync(
         ContactServiceRequestRecord request,
-        CancellationToken cancellationToken) => requestContexts.VerifyAsync(
+        CancellationToken cancellationToken)
+    {
+        network.EnsureCurrent();
+        if (!Fixed(request.NetworkId.Span, network.NetworkId.Span))
+            return new(ContactRequestContextStatus.Unavailable, ReadOnlyMemory<byte>.Empty);
+        var result = await requestContexts.VerifyAsync(
             request.NetworkId,
             request.ViewHash,
             request.PlacementHash,
-            cancellationToken);
+            cancellationToken).ConfigureAwait(false);
+        network.EnsureCurrent();
+        return result;
+    }
 
     private ulong Now() => checked((ulong)clock.UtcNow.ToUnixTimeSeconds());
 

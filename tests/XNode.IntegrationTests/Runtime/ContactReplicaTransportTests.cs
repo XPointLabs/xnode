@@ -140,14 +140,16 @@ public sealed class ContactReplicaTransportTests : IDisposable
     }
 
     [Fact]
-    public void ReplayGuardRejectsTheSameAuthenticatedAttempt()
+    public async Task ReplayGuardRejectsTheSameAuthenticatedAttempt()
     {
-        var sender = Identity(0x11);
-        var recipient = Identity(0x22);
-        var now = DateTimeOffset.Parse("2026-09-07T10:00:00Z");
+        using var ceremony = await DeepIdV2PublicationAuthorityFixture.CreateAsync(distinctNodeIdentities: true);
+        var sender = Identity(ceremony.Node(ceremony.Placement.ReplicaIds[0].Span));
+        var recipient = Identity(ceremony.Node(ceremony.Placement.ReplicaIds[1].Span));
+        var now = DateTimeOffset.FromUnixTimeSeconds(1100);
         var correlation = Bytes(0x31, 32);
         var body = Bytes(0x41, 512);
         var headers = ContactReplicaPeerAuthenticator.SignRequest(
+            ceremony.NetworkContext,
             sender.Id,
             recipient.Id,
             sender.SeedHex,
@@ -156,8 +158,10 @@ public sealed class ContactReplicaTransportTests : IDisposable
             now);
 
         Assert.True(ContactReplicaPeerAuthenticator.VerifyRequest(
+            ceremony.NetworkContext,
             headers,
             recipient.Id,
+            sender.Id,
             correlation,
             body,
             now,
@@ -190,6 +194,50 @@ public sealed class ContactReplicaTransportTests : IDisposable
         Span<byte> overflow = stackalloc byte[16];
         BinaryPrimitives.WriteInt32BigEndian(overflow, 2_001);
         Assert.False(guard.TryAccept(sender.Id, overflow, now.ToUnixTimeMilliseconds(), now));
+    }
+
+    [Theory]
+    [InlineData("sender")]
+    [InlineData("recipient")]
+    [InlineData("signature")]
+    [InlineData("body")]
+    [InlineData("correlation")]
+    [InlineData("timestamp")]
+    [InlineData("response-as-request")]
+    public async Task DescriptorAuthenticationRejectsHostileExactAttempt(string defect)
+    {
+        using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync(distinctNodeIdentities: true);
+        var sender = Identity(signed.Node(signed.Placement.ReplicaIds[0].Span));
+        var recipient = Identity(signed.Node(signed.Placement.ReplicaIds[1].Span));
+        var now = DateTimeOffset.FromUnixTimeSeconds(1100); var correlation = Bytes(0x31, 32); var body = Bytes(0x41, 512);
+        Assert.False(sender.Id.ToBytes().AsSpan().SequenceEqual(signed.NetworkContext.ResolveNodeIdentityPublicKey(sender.Id.ToBytes()).Span));
+        var headers = defect == "response-as-request"
+            ? ContactReplicaPeerAuthenticator.SignResponse(signed.NetworkContext, sender.Id, recipient.Id, sender.SeedHex, correlation, body, now)
+            : ContactReplicaPeerAuthenticator.SignRequest(signed.NetworkContext, sender.Id, recipient.Id, sender.SeedHex, correlation, body, now);
+        headers = defect switch
+        {
+            "sender" => headers with { SenderReplicaId = Convert.ToHexStringLower(signed.NetworkContext.ResolveNodeIdentityPublicKey(sender.Id.ToBytes()).Span) },
+            "recipient" => headers with { RecipientReplicaId = sender.Id.Value },
+            "signature" => headers with { Signature = new string('0', 128) },
+            "timestamp" => headers with { TimestampUnixMilliseconds = now.AddMinutes(-3).ToUnixTimeMilliseconds() },
+            _ => headers
+        };
+        if (defect == "body") body[0] ^= 1;
+        if (defect == "correlation") correlation[0] ^= 1;
+        Assert.False(ContactReplicaPeerAuthenticator.VerifyRequest(signed.NetworkContext, headers, recipient.Id, sender.Id,
+            correlation, body, now, out _, out _));
+    }
+
+    [Fact]
+    public async Task WrongLocalCustodyCannotSignHttpOrResolverReceipt()
+    {
+        using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync(distinctNodeIdentities: true);
+        var id = signed.Placement.ReplicaIds[0]; var wrongSeed = signed.Node(signed.Placement.ReplicaIds[1].Span).Seed;
+        Assert.Throws<InvalidOperationException>(() => ContactReplicaPeerAuthenticator.SignRequest(signed.NetworkContext,
+            RouterId.FromBytes(id.Span), RouterId.FromBytes(signed.Placement.ReplicaIds[1].Span),
+            Convert.ToHexStringLower(wrongSeed), Bytes(0x51, 32), Bytes(0x52, 300), DateTimeOffset.FromUnixTimeSeconds(1100)));
+        using var authority = new LocalContactServiceReplicaReceiptAuthority(id.Span, wrongSeed);
+        Assert.Throws<ContactServiceReceiptAuthorityException>(() => authority.EnsureSigningCustody(signed.NetworkContext));
     }
 
     [Theory]
@@ -325,12 +373,13 @@ public sealed class ContactReplicaTransportTests : IDisposable
     public async Task HttpTransportRejectsAResponseSignedByTheWrongPeer()
     {
         using var ceremony = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
-        var stranger = Identity(0x37);
         var now = DateTimeOffset.FromUnixTimeSeconds(1100);
         var shard = Bytes(0x48, 32);
         var placement = VerifiedPlacement(ceremony, shard);
         var sender = Identity(ceremony.Node(placement.ReplicaIds[0].Span));
         var recipient = Identity(ceremony.Node(placement.ReplicaIds[1].Span));
+        var stranger = ceremony.Node(ceremony.NodeIds.First(id =>
+            !id.Span.SequenceEqual(sender.Id.ToBytes()) && !id.Span.SequenceEqual(recipient.Id.ToBytes())).Span);
         var handlerCalls = 0;
         using var privacy = Privacy(sender.Id, recipient.Id);
         var client = new HttpContactReplicaPeerClient(
@@ -351,9 +400,10 @@ public sealed class ContactReplicaTransportTests : IDisposable
                         recipient.Id.ToBytes(),
                         ReadOnlyMemory<byte>.Empty));
                 var authentication = ContactReplicaPeerAuthenticator.SignResponse(
-                    stranger.Id,
+                    ceremony.NetworkContext,
+                    RouterId.FromBytes(stranger.SignerId.Span),
                     sender.Id,
-                    stranger.SeedHex,
+                    Convert.ToHexStringLower(stranger.Seed),
                     correlation,
                     responseBody,
                     now);
@@ -382,16 +432,12 @@ public sealed class ContactReplicaTransportTests : IDisposable
     [Fact]
     public async Task LostResponseIsOutcomeUnknownThenReplicaRestartExactReplaysDurableMutation()
     {
-        var sender = Identity(0x14);
-        var recipient = Identity(0x25, root);
-        var now = DateTimeOffset.Parse("2026-09-07T10:00:00Z");
+        using var ceremony = await DeepIdV2PublicationAuthorityFixture.CreateAsync(distinctNodeIdentities: true);
+        var now = DateTimeOffset.FromUnixTimeSeconds(1100);
         var shard = Bytes(0x47, 32);
-        var placement = Placement(
-            ContactServiceRequestKind.PublishContactUpdate,
-            shard,
-            sender.Id,
-            recipient.Id,
-            now.AddHours(1));
+        var placement = VerifiedPlacement(ceremony, shard, ContactServiceRequestKind.PublishContactUpdate);
+        var sender = Identity(ceremony.Node(placement.ReplicaIds[0].Span));
+        var recipient = Identity(ceremony.Node(placement.ReplicaIds[1].Span));
         var write = XurRequest(shard, now);
 
         using (var firstLocal = Local(recipient, now))
@@ -439,16 +485,12 @@ public sealed class ContactReplicaTransportTests : IDisposable
     [Fact]
     public async Task RemoteReceiptAuthoritySignsOnlyItsDurableExactResult()
     {
-        var sender = Identity(0x16);
-        var recipient = Identity(0x27, root);
-        var now = DateTimeOffset.Parse("2026-09-07T10:00:00Z");
+        using var ceremony = await DeepIdV2PublicationAuthorityFixture.CreateAsync(distinctNodeIdentities: true);
+        var now = DateTimeOffset.FromUnixTimeSeconds(1100);
         var capability = Bytes(0x49, 32);
-        var placement = Placement(
-            ContactServiceRequestKind.PublishContactUpdate,
-            capability,
-            sender.Id,
-            recipient.Id,
-            now.AddHours(1));
+        var placement = VerifiedPlacement(ceremony, capability, ContactServiceRequestKind.PublishContactUpdate);
+        var sender = Identity(ceremony.Node(placement.ReplicaIds[0].Span));
+        var recipient = Identity(ceremony.Node(placement.ReplicaIds[1].Span));
         var write = XurRequest(capability, now);
         using var local = Local(recipient, now);
         var remote = new AuthenticatedRemoteContactServiceReplica(
@@ -469,7 +511,7 @@ public sealed class ContactReplicaTransportTests : IDisposable
         var receipt = await remote.IssueAsync(request, default);
         Assert.Equal(recipient.Id.ToBytes(), receipt.ReplicaId.ToArray());
         Assert.True(ContactServiceReceiptTranscript.Verify(
-            receipt.ReplicaId.Span,
+            ceremony.NetworkContext.ResolveNodeIdentityPublicKey(receipt.ReplicaId).Span,
             ContactServiceReceiptTranscript.SigningInput(request),
             receipt.Signature.Span));
 
@@ -485,16 +527,12 @@ public sealed class ContactReplicaTransportTests : IDisposable
     [Fact]
     public async Task RemoteResolveReadReceiptBindsExactRequestAndPublishedRoute()
     {
-        var sender = Identity(0x18);
-        var recipient = Identity(0x29, root);
-        var now = DateTimeOffset.Parse("2026-09-07T10:00:00Z");
+        using var ceremony = await DeepIdV2PublicationAuthorityFixture.CreateAsync(distinctNodeIdentities: true);
+        var now = DateTimeOffset.FromUnixTimeSeconds(1100);
         var locator = Bytes(0x4b, 32);
-        var placement = Placement(
-            ContactServiceRequestKind.ResolveInvite,
-            locator,
-            sender.Id,
-            recipient.Id,
-            now.AddHours(1));
+        var placement = VerifiedPlacement(ceremony, locator, ContactServiceRequestKind.ResolveInvite);
+        var sender = Identity(ceremony.Node(placement.ReplicaIds[0].Span));
+        var recipient = Identity(ceremony.Node(placement.ReplicaIds[1].Span));
         var exactXiq1 = Xiq1Codec.Encode(
             placement.NetworkId.Span,
             Bytes(0x61, 32),
@@ -554,7 +592,7 @@ public sealed class ContactReplicaTransportTests : IDisposable
 
         Assert.Equal(recipient.Id.ToBytes(), receipt.ReplicaId.ToArray());
         Assert.True(ContactServiceReceiptTranscript.Verify(
-            receipt.ReplicaId.Span,
+            ceremony.NetworkContext.ResolveNodeIdentityPublicKey(receipt.ReplicaId).Span,
             ContactServiceReceiptTranscript.SigningInput(request),
             receipt.Signature.Span));
     }
@@ -697,11 +735,12 @@ public sealed class ContactReplicaTransportTests : IDisposable
             [first.ToBytes(), second.ToBytes()]);
 
     private static ContactServicePlacementCapability VerifiedPlacement(
-        DeepIdV2PublicationAuthorityFixture ceremony, byte[] shard) =>
+        DeepIdV2PublicationAuthorityFixture ceremony, byte[] shard,
+        ContactServiceRequestKind kind = ContactServiceRequestKind.PublishInvite) =>
         ContactServicePlacementCapability.FromNetcodec(
             ContactServicePlacementFactory.Create(ceremony.NetworkContext,
-                ContactServiceRequestKind.PublishInvite, shard),
-            ContactServiceRequestKind.PublishInvite, shard,
+                kind, shard),
+            kind, shard,
             ceremony.Freshness.TrustedUpperUnixSeconds);
 
     private static ContactServicePersistenceOptions Options() => new()

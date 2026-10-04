@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Rebex.Security.Cryptography;
 using XNode.Core;
+using Deep.Protocol.DeepExtension.PrivacyRouting;
 
 namespace XNode;
 
@@ -27,7 +28,29 @@ internal static class ContactReplicaPeerAuthenticator
     private static ReadOnlySpan<byte> RequestMagic => "CRA1"u8;
     private static ReadOnlySpan<byte> ResponseMagic => "CRA2"u8;
 
+    internal static void EnsureSigningCustody(VerifiedOnionNetworkContext network,
+        RouterId node, string privateSeedHex)
+    {
+        ArgumentNullException.ThrowIfNull(network);
+        network.EnsureCurrent();
+        var seed = PrivacyRoutingOptions.DecodeHex32(privateSeedHex.Trim(), "Contact replica local Ed25519 private seed");
+        try
+        {
+            var signer = new Ed25519(); signer.FromSeed(seed);
+            RequireMatchingKey(network, node, signer.GetPublicKey());
+        }
+        finally { CryptographicOperations.ZeroMemory(seed); }
+    }
+
+    private static void RequireMatchingKey(VerifiedOnionNetworkContext network, RouterId node, ReadOnlySpan<byte> publicKey)
+    {
+        if (!CryptographicOperations.FixedTimeEquals(publicKey,
+                network.ResolveNodeIdentityPublicKey(node.ToBytes()).Span))
+            throw new InvalidOperationException("The contact replica transport key does not match the signed node descriptor.");
+    }
+
     internal static ContactReplicaAuthenticationHeaders SignRequest(
+        VerifiedOnionNetworkContext network,
         RouterId sender,
         RouterId recipient,
         string localPrivateSeedHex,
@@ -35,6 +58,7 @@ internal static class ContactReplicaPeerAuthenticator
         ReadOnlySpan<byte> exactBody,
         DateTimeOffset now) => Sign(
             RequestMagic,
+            network,
             sender,
             recipient,
             localPrivateSeedHex,
@@ -43,6 +67,7 @@ internal static class ContactReplicaPeerAuthenticator
             now);
 
     internal static ContactReplicaAuthenticationHeaders SignResponse(
+        VerifiedOnionNetworkContext network,
         RouterId sender,
         RouterId recipient,
         string localPrivateSeedHex,
@@ -50,6 +75,7 @@ internal static class ContactReplicaPeerAuthenticator
         ReadOnlySpan<byte> exactBody,
         DateTimeOffset now) => Sign(
             ResponseMagic,
+            network,
             sender,
             recipient,
             localPrivateSeedHex,
@@ -58,16 +84,20 @@ internal static class ContactReplicaPeerAuthenticator
             now);
 
     internal static bool VerifyRequest(
+        VerifiedOnionNetworkContext network,
         ContactReplicaAuthenticationHeaders headers,
         RouterId expectedRecipient,
+        RouterId expectedSender,
         ReadOnlySpan<byte> expectedCorrelation32,
         ReadOnlySpan<byte> exactBody,
         DateTimeOffset now,
         out RouterId sender,
         out byte[] nonce) => Verify(
             RequestMagic,
+            network,
             headers,
             expectedRecipient,
+            expectedSender,
             expectedCorrelation32,
             exactBody,
             now,
@@ -75,6 +105,7 @@ internal static class ContactReplicaPeerAuthenticator
             out nonce);
 
     internal static bool VerifyResponse(
+        VerifiedOnionNetworkContext network,
         ContactReplicaAuthenticationHeaders headers,
         RouterId expectedRecipient,
         RouterId expectedSender,
@@ -84,8 +115,10 @@ internal static class ContactReplicaPeerAuthenticator
     {
         var valid = Verify(
             ResponseMagic,
+            network,
             headers,
             expectedRecipient,
+            expectedSender,
             expectedCorrelation32,
             exactBody,
             now,
@@ -96,6 +129,7 @@ internal static class ContactReplicaPeerAuthenticator
 
     private static ContactReplicaAuthenticationHeaders Sign(
         ReadOnlySpan<byte> magic,
+        VerifiedOnionNetworkContext network,
         RouterId sender,
         RouterId recipient,
         string localPrivateSeedHex,
@@ -103,6 +137,8 @@ internal static class ContactReplicaPeerAuthenticator
         ReadOnlySpan<byte> exactBody,
         DateTimeOffset now)
     {
+        ArgumentNullException.ThrowIfNull(network);
+        network.EnsureCurrent();
         if (correlation32.Length != 32)
         {
             throw new ArgumentException("The contact replica correlation must be 32 bytes.", nameof(correlation32));
@@ -115,11 +151,7 @@ internal static class ContactReplicaPeerAuthenticator
         {
             var signer = new Ed25519();
             signer.FromSeed(seed);
-            if (RouterId.FromBytes(signer.GetPublicKey()) != sender)
-            {
-                throw new InvalidOperationException(
-                    "The contact replica transport key does not match the local node identity.");
-            }
+            RequireMatchingKey(network, sender, signer.GetPublicKey());
             var timestamp = now.ToUnixTimeMilliseconds();
             var signature = signer.SignMessage(BuildTranscript(
                 magic,
@@ -145,8 +177,10 @@ internal static class ContactReplicaPeerAuthenticator
 
     private static bool Verify(
         ReadOnlySpan<byte> magic,
+        VerifiedOnionNetworkContext network,
         ContactReplicaAuthenticationHeaders headers,
         RouterId expectedRecipient,
+        RouterId expectedSender,
         ReadOnlySpan<byte> expectedCorrelation32,
         ReadOnlySpan<byte> exactBody,
         DateTimeOffset now,
@@ -159,6 +193,7 @@ internal static class ContactReplicaPeerAuthenticator
             || !RouterId.TryParse(headers.SenderReplicaId, out sender)
             || !RouterId.TryParse(headers.RecipientReplicaId, out var recipient)
             || sender == recipient
+            || sender != expectedSender
             || recipient != expectedRecipient
             || headers.Nonce.Length != 32
             || headers.Correlation.Length != 64
@@ -172,6 +207,7 @@ internal static class ContactReplicaPeerAuthenticator
 
         try
         {
+            network.EnsureCurrent();
             var signedAt = DateTimeOffset.FromUnixTimeMilliseconds(headers.TimestampUnixMilliseconds);
             var correlation = Convert.FromHexString(headers.Correlation);
             if ((now - signedAt).Duration() > MaximumClockSkew
@@ -182,7 +218,7 @@ internal static class ContactReplicaPeerAuthenticator
             nonce = Convert.FromHexString(headers.Nonce);
             var signature = Convert.FromHexString(headers.Signature);
             var verifier = new Ed25519();
-            verifier.FromPublicKey(sender.ToBytes());
+            verifier.FromPublicKey(network.ResolveNodeIdentityPublicKey(sender.ToBytes()).ToArray());
             return verifier.VerifyMessage(
                 BuildTranscript(
                     magic,

@@ -221,28 +221,28 @@ public sealed class DeepIdV2ReplicaStageReceiverTests
     [Fact]
     public async Task PeerHttpEnvelope_AuthenticatesBeforeV2DispatchAndRejectsReplay()
     {
-        var now = DateTimeOffset.Parse("2026-09-27T10:00:00Z");
-        var senderSeed = Bytes(32, 0x91);
-        var recipientSeed = Bytes(32, 0x92);
-        var senderSigner = new Ed25519();
-        senderSigner.FromSeed(senderSeed);
-        var recipientSigner = new Ed25519();
-        recipientSigner.FromSeed(recipientSeed);
-        var sender = RouterId.FromBytes(senderSigner.GetPublicKey());
-        var recipient = RouterId.FromBytes(recipientSigner.GetPublicKey());
+        using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync(distinctNodeIdentities: true);
+        var placements = new VerifiedContactServicePlacementAuthoritySource(signed, signed);
+        var placement = await placements.MintAsync(ContactServiceRequestKind.PublishPreKeyInventory,
+            signed.Placement.ShardKey, default);
+        var now = DateTimeOffset.FromUnixTimeSeconds(1100);
+        var sender = RouterId.FromBytes(placement.ReplicaIds[0].Span);
+        var recipient = RouterId.FromBytes(placement.ReplicaIds[1].Span);
+        var senderSeed = signed.Node(sender.ToBytes()).Seed;
+        var recipientSeed = signed.Node(recipient.ToBytes()).Seed;
         var node = new RouterNodeOptions
         {
             RouterId = recipient.Value,
             Ed25519PrivateKey = Convert.ToHexStringLower(recipientSeed)
         };
-        var command = new ContactReplicaRpcCommand(Placement(),
+        var command = new ContactReplicaRpcCommand(placement,
             ContactReplicaRpcOperation.StageDid2PreKeyPublication,
             Bytes(32, 0x75), Bytes(64, 0x76));
         var body = ContactReplicaWireCodec.Encode(command);
-        var headers = ContactReplicaPeerAuthenticator.SignRequest(sender,
+        var headers = ContactReplicaPeerAuthenticator.SignRequest(signed.NetworkContext, sender,
             recipient, Convert.ToHexStringLower(senderSeed),
             command.CorrelationId.Span, body, now);
-        var receiver = new RecordingReceiver();
+        var receiver = new RecordingReceiver(recipient);
         var guard = new ContactReplicaReplayGuard(new()
         {
             ReplicaTimeoutSeconds = 5,
@@ -258,14 +258,14 @@ public sealed class DeepIdV2ReplicaStageReceiverTests
 
         var first = Context(body, headers);
         var accepted = await ContactReplicaHttpEndpoint.HandleCoreAsync(
-            first, true, options, guard, receiver, node,
+            first, true, options, guard, receiver, placements, node,
             new FixedClock(now), 8083, default);
         Assert.NotNull(accepted);
         Assert.Equal(1, receiver.Calls);
         Assert.Equal(sender, receiver.LastSender);
 
         var replay = await ContactReplicaHttpEndpoint.HandleCoreAsync(
-            Context(body, headers), true, options, guard, receiver, node,
+            Context(body, headers), true, options, guard, receiver, placements, node,
             new FixedClock(now), 8083, default);
         Assert.IsType<Microsoft.AspNetCore.Http.HttpResults.NotFound>(replay);
         Assert.Equal(1, receiver.Calls);
@@ -298,7 +298,7 @@ public sealed class DeepIdV2ReplicaStageReceiverTests
         return context;
     }
 
-    private sealed class RecordingReceiver : IContactReplicaCommandReceiver
+    private sealed class RecordingReceiver(RouterId recipient) : IContactReplicaCommandReceiver
     {
         internal int Calls { get; private set; }
         internal RouterId LastSender { get; private set; }
@@ -311,7 +311,7 @@ public sealed class DeepIdV2ReplicaStageReceiverTests
             LastSender = authenticatedSender;
             return ValueTask.FromResult(new ContactReplicaRpcResponse(
                 command.Operation, command.CorrelationId.ToArray(),
-                Bytes(32, 0x92), new byte[] { 1 }));
+                recipient.ToBytes(), new byte[] { 1 }));
         }
     }
 

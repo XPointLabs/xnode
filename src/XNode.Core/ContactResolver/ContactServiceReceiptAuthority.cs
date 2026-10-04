@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Deep.Protocol.ContactV1;
 using Deep.Protocol.MessagingWire;
+using Deep.Protocol.DeepExtension.PrivacyRouting;
 using Rebex.Security.Cryptography;
 using XNode.Core.ContactPreKey;
 
@@ -83,10 +84,13 @@ internal sealed class LocalContactServiceReplicaReceiptAuthority :
 {
     private readonly byte[] seed;
     private readonly byte[] replicaId;
+    private readonly byte[] publicKey;
     private bool disposed;
 
-    internal LocalContactServiceReplicaReceiptAuthority(ReadOnlySpan<byte> ed25519Seed)
+    internal LocalContactServiceReplicaReceiptAuthority(ReadOnlySpan<byte> nodeId, ReadOnlySpan<byte> ed25519Seed)
     {
+        if (nodeId.Length != 32 || nodeId.IndexOfAnyExcept((byte)0) < 0)
+            throw new ArgumentException("A non-zero 32-byte node ID is required.", nameof(nodeId));
         if (ed25519Seed.Length != 32 || ed25519Seed.IndexOfAnyExcept((byte)0) < 0)
         {
             throw new ArgumentException(
@@ -97,10 +101,22 @@ internal sealed class LocalContactServiceReplicaReceiptAuthority :
         seed = ed25519Seed.ToArray();
         var signer = new Ed25519();
         signer.FromSeed(seed);
-        replicaId = signer.GetPublicKey();
+        replicaId = nodeId.ToArray();
+        publicKey = signer.GetPublicKey();
     }
 
     public ReadOnlyMemory<byte> ReplicaId => replicaId.ToArray();
+
+    internal void EnsureSigningCustody(VerifiedOnionNetworkContext network)
+    {
+        ObjectDisposedException.ThrowIf(disposed, this);
+        ArgumentNullException.ThrowIfNull(network);
+        network.EnsureCurrent();
+        if (!CryptographicOperations.FixedTimeEquals(publicKey,
+                network.ResolveNodeIdentityPublicKey(replicaId).Span))
+            throw new ContactServiceReceiptAuthorityException(
+                "The local contact signing custody does not match the signed node descriptor.");
+    }
 
     public ValueTask<ContactServiceReplicaReceipt> IssueAsync(
         ContactServiceReplicaReceiptRequest request,
@@ -214,11 +230,11 @@ internal static class ContactServiceReceiptTranscript
     }
 
     internal static bool Verify(
-        ReadOnlySpan<byte> replicaId,
+        ReadOnlySpan<byte> publicKey,
         ReadOnlySpan<byte> statement,
         ReadOnlySpan<byte> signature)
     {
-        if (replicaId.Length != 32 || signature.Length != 64)
+        if (publicKey.Length != 32 || signature.Length != 64)
         {
             return false;
         }
@@ -226,7 +242,7 @@ internal static class ContactServiceReceiptTranscript
         try
         {
             var verifier = new Ed25519();
-            verifier.FromPublicKey(replicaId.ToArray());
+            verifier.FromPublicKey(publicKey.ToArray());
             return verifier.VerifyMessage(statement.ToArray(), signature.ToArray());
         }
         catch (CryptographicException)

@@ -627,7 +627,8 @@ public sealed class DeepIdV2PreKeyClaimRuntimeTests
                 return changed;
             });
             var result = await ContactReplicaHttpEndpoint.HandleCoreAsync(context, true, options,
-                replays[nodeIndex], receiver, Nodes[nodeIndex], clock, 7443, token);
+                replays[nodeIndex], receiver, new VerifiedContactServicePlacementAuthoritySource(Signed, Signed),
+                Nodes[nodeIndex], clock, 7443, token);
             await result.ExecuteAsync(context);
             if (context.Response.StatusCode == StatusCodes.Status503ServiceUnavailable)
             {
@@ -650,6 +651,7 @@ public sealed class DeepIdV2PreKeyClaimRuntimeTests
             {
                 Assert.Equal(HttpStatusCode.OK, response.StatusCode);
                 Assert.True(ContactReplicaPeerAuthenticator.VerifyResponse(
+                    Signed.NetworkContext,
                     HttpContactReplicaPeerClient.ReadHeaders(response), Nodes[1 - nodeIndex].GetRouterId(),
                     Nodes[nodeIndex].GetRouterId(), command.CorrelationId.Span,
                     ((MemoryStream)context.Response.Body).ToArray(), clock.UtcNow));

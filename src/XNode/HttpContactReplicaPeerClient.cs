@@ -75,6 +75,7 @@ internal sealed class HttpContactReplicaPeerClient : IContactReplicaPeerClient
 
         var body = ContactReplicaWireCodec.Encode(command);
         var authentication = ContactReplicaPeerAuthenticator.SignRequest(
+            command.Placement.VerifiedPlacement.Network,
             local,
             remote,
             node.GetEd25519PrivateKey(),
@@ -125,6 +126,7 @@ internal sealed class HttpContactReplicaPeerClient : IContactReplicaPeerClient
             command.Placement.VerifiedPlacement.Network.EnsureCurrent();
             var headers = ReadHeaders(response);
             if (!ContactReplicaPeerAuthenticator.VerifyResponse(
+                    command.Placement.VerifiedPlacement.Network,
                     headers,
                     local,
                     remote,
@@ -150,8 +152,9 @@ internal sealed class HttpContactReplicaPeerClient : IContactReplicaPeerClient
             or CryptographicException)
         {
             logger?.LogWarning(
-                "Contact replica transport ended without an authenticated exact response: failure={FailureType}.",
-                exception.GetType().Name);
+                "Contact replica transport ended without an authenticated exact response: failure={FailureType}, httpError={HttpRequestError}, inner={InnerFailureType}.",
+                exception.GetType().Name, HttpPrivacyPeerClient.SafeHttpRequestError(exception),
+                exception.InnerException?.GetType().Name ?? "none");
             throw new IOException("The contact replica outcome is unknown.", exception);
         }
     }

@@ -87,7 +87,7 @@ public sealed class ContactServiceOpaqueFacadeTests : IClassFixture<CurrentConta
             Assert.Equal(Xis1Status.Success, decoded.Status);
             Assert.Equal(ContactServiceMutationOutcome.DurablyCommitted,
                 decoded.MutationOutcome);
-            AssertResolveClaimReceipts(decoded, Xiq1Codec.Decode(resolve));
+            AssertResolveClaimReceipts(decoded, Xiq1Codec.Decode(resolve), oneTime);
 
             fixture.Clock.UtcNow = fixture.Clock.UtcNow.AddSeconds(1);
             var replay = await fixture.Facade.DispatchAsync(
@@ -152,11 +152,13 @@ public sealed class ContactServiceOpaqueFacadeTests : IClassFixture<CurrentConta
         Assert.True(decoded.Field(19).IsEmpty);
     }
 
-    [Fact]
-    public async Task InvalidSignatureSizeFailsClosedWithoutReceiptEmission()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task InvalidSignatureSizeFailsClosedWithoutReceiptEmission(bool idAsSeed)
     {
         using var fixture = new InjectedFixture(PublicationAuthorizations,
-            secondBehavior: ReceiptAuthorityBehavior.InvalidSignatureSize);
+            secondBehavior: idAsSeed ? ReceiptAuthorityBehavior.NodeIdAsSigningSeed : ReceiptAuthorityBehavior.InvalidSignatureSize);
         var request = Xpu();
 
         var response = await fixture.Facade.DispatchAsync(
@@ -211,8 +213,8 @@ public sealed class ContactServiceOpaqueFacadeTests : IClassFixture<CurrentConta
     [Fact]
     public void ReplicaBindingsRejectMismatchedAndDuplicateAuthorityIds()
     {
-        using var first = new LocalContactServiceReplicaReceiptAuthority(B(32, 41));
-        using var second = new LocalContactServiceReplicaReceiptAuthority(B(32, 42));
+        using var first = new LocalContactServiceReplicaReceiptAuthority(B(32, 51), B(32, 41));
+        using var second = new LocalContactServiceReplicaReceiptAuthority(B(32, 52), B(32, 42));
         var firstAuthority = new RecordingReceiptAuthority(first, first);
         var secondAuthority = new RecordingReceiptAuthority(second, first);
         var firstId = first.ReplicaId;
@@ -393,7 +395,8 @@ public sealed class ContactServiceOpaqueFacadeTests : IClassFixture<CurrentConta
     private static byte[] B(int length, byte value) => Enumerable.Repeat(value, length).ToArray();
     private static byte[] U64(ulong value) { var bytes = new byte[8]; BinaryPrimitives.WriteUInt64BigEndian(bytes, value); return bytes; }
 
-    private static void AssertResolveClaimReceipts(Xis1Result result, Xiq1Request request)
+    private static void AssertResolveClaimReceipts(Xis1Result result, Xiq1Request request,
+        CurrentContactPublicationFixture inputs)
     {
         var tuple = Concat(
             result.RequestHash.ToArray(),
@@ -414,7 +417,7 @@ public sealed class ContactServiceOpaqueFacadeTests : IClassFixture<CurrentConta
         for (var offset = 1; offset < receipts.Length; offset += 96)
         {
             var verifier = new Ed25519();
-            verifier.FromPublicKey(receipts.Slice(offset, 32).ToArray());
+            verifier.FromPublicKey(inputs.Network.ResolveNodeIdentityPublicKey(receipts.Slice(offset, 32).ToArray()).ToArray());
             Assert.True(verifier.VerifyMessage(
                 statement, receipts.Slice(offset + 32, 64).ToArray()));
         }
@@ -459,6 +462,7 @@ public sealed class ContactServiceOpaqueFacadeTests : IClassFixture<CurrentConta
         var security = new TestStorageSecurity();
         var durability = new MailboxDurabilityBarrier();
         return new ContactServiceOpaqueFacade(
+            PublicationAuthorizations.Network,
             Path.Combine(directory, "resolver-a.state"),
             Path.Combine(directory, "resolver-b.state"),
             Path.Combine(directory, "prekey-a.state"),
@@ -494,6 +498,7 @@ public sealed class ContactServiceOpaqueFacadeTests : IClassFixture<CurrentConta
         try
         {
             return new ContactServiceOpaqueFacade(
+                PublicationAuthorizations.Network,
                 bindings,
                 new StaticFixtureContextVerifier(PublicationAuthorizations),
                 PublicationAuthorizations.Verifier,
@@ -528,7 +533,8 @@ public sealed class ContactServiceOpaqueFacadeTests : IClassFixture<CurrentConta
         SubstituteFirstReplica = 2,
         InvalidSignatureSize = 3,
         Unavailable = 4,
-        WaitForCancellation = 5
+        WaitForCancellation = 5,
+        NodeIdAsSigningSeed = 6
     }
 
     private sealed class OneShotSagaFaults(ContactPublicationAuthorizationSagaFailpoint target)
@@ -571,6 +577,10 @@ public sealed class ContactServiceOpaqueFacadeTests : IClassFixture<CurrentConta
                     throw new InvalidOperationException("Unreachable after cancellation.");
                 case ReceiptAuthorityBehavior.InvalidSignatureSize:
                     return new ContactServiceReplicaReceipt(ReplicaId, new byte[63]);
+                case ReceiptAuthorityBehavior.NodeIdAsSigningSeed:
+                    var wrongSigner = new Ed25519(); wrongSigner.FromSeed(ReplicaId.ToArray());
+                    return new ContactServiceReplicaReceipt(ReplicaId,
+                        wrongSigner.SignMessage(ContactServiceReceiptTranscript.SigningInput(request)));
                 case ReceiptAuthorityBehavior.SubstituteFirstReplica:
                     var substituted = await signingAuthority.IssueAsync(
                         request,
@@ -656,6 +666,7 @@ public sealed class ContactServiceOpaqueFacadeTests : IClassFixture<CurrentConta
             var firstId = firstLocal.ReplicaId;
             var secondId = secondLocal.ReplicaId;
             Facade = new ContactServiceOpaqueFacade(
+            publicationAuthorizations.Network,
             [
                 new ContactServiceReplicaBinding(
                     new ContactResolverStoreReplica(secondId.Span, secondResolverStore),
@@ -730,6 +741,7 @@ public sealed class ContactServiceOpaqueFacadeTests : IClassFixture<CurrentConta
             var firstId = firstLocal.ReplicaId;
             var secondId = secondLocal.ReplicaId;
             Facade = new ContactServiceOpaqueFacade(
+            publicationAuthorizations.Network,
             [
                 new ContactServiceReplicaBinding(
                     new ContactResolverStoreReplica(firstId.Span, firstResolverStore),
@@ -880,6 +892,7 @@ public sealed class ContactServiceOpaqueFacadeTests : IClassFixture<CurrentConta
             Clock = new FixedClock(DateTimeOffset.FromUnixTimeSeconds(1100));
             var security = new TestStorageSecurity();
             Facade = new ContactServiceOpaqueFacade(
+                publicationAuthorizations.Network,
                 Path.Combine(directory, "resolver-a.state"),
                 Path.Combine(directory, "resolver-b.state"),
                 Path.Combine(directory, "prekey-a.state"),

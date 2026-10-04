@@ -161,7 +161,7 @@ internal static class Did2ContactServiceComposition
                         provider.GetRequiredService<IClock>()));
         }
         services.AddSingleton<Did2AuthenticatedContactClock>();
-        services.AddSingleton<IContactServicePlacementAuthoritySource, VerifiedContactServicePlacementAuthoritySource>();
+        services.TryAddSingleton<IContactServicePlacementAuthoritySource, VerifiedContactServicePlacementAuthoritySource>();
         services.AddSingleton<IContactPublicationAuthorizationVerifier, VerifiedContactPublicationAuthorizationVerifier>();
         services.AddSingleton(provider => new ContactServiceAuthoritySources(
             provider.GetRequiredService<IContactServicePlacementAuthoritySource>(),

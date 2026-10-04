@@ -414,6 +414,7 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
             if (node.SignerId.Span.SequenceEqual(id)) return node;
         throw new CryptographicException("Unknown test node.");
     }
+    internal IReadOnlyList<ReadOnlyMemory<byte>> NodeIds => nodes.Select(n => (ReadOnlyMemory<byte>)n.SignerId.ToArray()).ToArray();
 
     internal byte[] TestOnionScalar(ReadOnlySpan<byte> id)
     {

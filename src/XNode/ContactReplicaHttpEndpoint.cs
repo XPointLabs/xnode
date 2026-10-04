@@ -13,12 +13,13 @@ internal static class ContactReplicaHttpEndpoint
         ContactServicePersistenceOptions options,
         ContactReplicaReplayGuard replayGuard,
         ContactReplicaRequestReceiver receiver,
+        IContactServicePlacementAuthoritySource placements,
         RouterNodeOptions node,
         IClock clock,
         int peerListenerPort,
         CancellationToken cancellationToken) => await HandleCoreAsync(
             context, plan.MapReplicaEndpoint, options, replayGuard,
-            receiver, node, clock, peerListenerPort, cancellationToken)
+            receiver, placements, node, clock, peerListenerPort, cancellationToken)
             .ConfigureAwait(false);
 
     internal static async Task<IResult> HandleCoreAsync(
@@ -27,6 +28,7 @@ internal static class ContactReplicaHttpEndpoint
         ContactServicePersistenceOptions options,
         ContactReplicaReplayGuard replayGuard,
         IContactReplicaCommandReceiver receiver,
+        IContactServicePlacementAuthoritySource placements,
         RouterNodeOptions node,
         IClock clock,
         int peerListenerPort,
@@ -56,9 +58,19 @@ internal static class ContactReplicaHttpEndpoint
             var command = ContactReplicaWireCodec.DecodeRequest(body);
             var headers = ReadHeaders(context.Request);
             var local = node.GetRouterId();
+            // Decode is bounded; only a freshly minted local capability supplies
+            // signature keys. The received projection never supplies authority.
+            var current = await placements.MintAsync(command.Placement.RequestKind,
+                command.Placement.ShardKey, deadline.Token).ConfigureAwait(false);
+            ContactReplicaRequestReceiver.EnsureExactPlacement(command.Placement, current);
+            var network = current.VerifiedPlacement.Network;
+            network.EnsureCurrent();
+            var expectedSender = RouterId.FromBytes(current.OtherReplica(local.ToBytes()));
             if (!ContactReplicaPeerAuthenticator.VerifyRequest(
+                    network,
                     headers,
                     local,
+                    expectedSender,
                     command.CorrelationId.Span,
                     body,
                     clock.UtcNow,
@@ -73,12 +85,22 @@ internal static class ContactReplicaHttpEndpoint
                 return Results.NotFound();
             }
 
+            ContactReplicaPeerAuthenticator.EnsureSigningCustody(network, local, node.GetEd25519PrivateKey());
             var result = await receiver.ReceiveAsync(
                 command,
                 sender,
                 deadline.Token).ConfigureAwait(false);
+            if (result.Operation != command.Operation ||
+                !CryptographicOperations.FixedTimeEquals(result.CorrelationId.Span, command.CorrelationId.Span) ||
+                !CryptographicOperations.FixedTimeEquals(result.ReplicaId.Span, local.ToBytes()))
+                throw new InvalidOperationException("The contact receiver returned an unbound response.");
             var exact = ContactReplicaWireCodec.Encode(result);
+            var after = await placements.MintAsync(command.Placement.RequestKind,
+                command.Placement.ShardKey, deadline.Token).ConfigureAwait(false);
+            ContactReplicaRequestReceiver.EnsureExactPlacement(current, after);
+            after.VerifiedPlacement.Network.EnsureCurrent();
             var responseAuthentication = ContactReplicaPeerAuthenticator.SignResponse(
+                after.VerifiedPlacement.Network,
                 local,
                 sender,
                 node.GetEd25519PrivateKey(),
@@ -153,11 +175,12 @@ internal static class DeepIdV2ContactReplicaEndpointMapping
             ContactServicePersistenceOptions options,
             ContactReplicaReplayGuard replay,
             IContactReplicaCommandReceiver receiver,
+            IContactServicePlacementAuthoritySource placements,
             RouterNodeOptions node,
             IClock clock,
             CancellationToken cancellationToken) =>
             ContactReplicaHttpEndpoint.HandleCoreAsync(context, enabled,
-                options, replay, receiver, node, clock, peerListenerPort,
+                options, replay, receiver, placements, node, clock, peerListenerPort,
                 cancellationToken));
         return endpoints;
     }
@@ -182,6 +205,7 @@ internal static class ContactReplicaEndpointMapping
             ContactServicePersistenceOptions options,
             ContactReplicaReplayGuard replay,
             ContactReplicaRequestReceiver receiver,
+            IContactServicePlacementAuthoritySource placements,
             RouterNodeOptions node,
             IClock clock,
             CancellationToken cancellationToken) => ContactReplicaHttpEndpoint.HandleAsync(
@@ -190,6 +214,7 @@ internal static class ContactReplicaEndpointMapping
                 options,
                 replay,
                 receiver,
+                placements,
                 node,
                 clock,
                 peerListenerPort,

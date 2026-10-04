@@ -49,6 +49,7 @@ public sealed class ContactPreKeyOpaqueStoreTests
             checked((ulong)fixture.Clock.UtcNow.ToUnixTimeSeconds()),
             inventory.ServiceExpiresAtUnixSeconds);
         using var authority = new LocalContactServiceReplicaReceiptAuthority(
+            Hash("bounded-restart/replica-id"),
             Hash("bounded-restart/replica-seed"));
         var receiptAt = checked((ulong)fixture.Clock.UtcNow.ToUnixTimeSeconds());
 
@@ -129,6 +130,7 @@ public sealed class ContactPreKeyOpaqueStoreTests
         var first = Publication(Hash("bounded-fork/operation/first"));
         var conflicting = Publication(Hash("bounded-fork/operation/second"));
         using var authority = new LocalContactServiceReplicaReceiptAuthority(
+            Hash("bounded-fork/replica-id"),
             Hash("bounded-fork/replica-seed"));
         var receiptAt = checked((ulong)fixture.Clock.UtcNow.ToUnixTimeSeconds());
         byte[] conflictReceipt;

@@ -1,6 +1,7 @@
 using Deep.Protocol.ContactV1;
 using Deep.Protocol.ContactV2;
 using Deep.Protocol.XPointNetworkV1;
+using Deep.Protocol.DeepExtension.PrivacyRouting;
 using XNode.Core.ContactResolver;
 
 namespace XNode.IntegrationTests.Runtime;
@@ -21,10 +22,12 @@ public sealed class CurrentContactPublicationFixture : IAsyncLifetime
     internal ContactServicePlacementCapability Placement { get; private set; } = null!;
     internal ContactServicePlacementCapability ClaimPlacement { get; private set; } = null!;
     internal IContactPublicationAuthorizationVerifier Verifier { get; private set; } = null!;
+    internal VerifiedOnionNetworkContext Network => ceremony.NetworkContext;
 
     public async Task InitializeAsync()
     {
-        ceremony = await DeepIdV2PublicationAuthorityFixture.CreateAsync(authorContactPublication: true, authorOneTimeObject: oneTime);
+        ceremony = await DeepIdV2PublicationAuthorityFixture.CreateAsync(authorContactPublication: true,
+            authorOneTimeObject: oneTime, distinctNodeIdentities: true);
         try
         {
             Placement = Mint(ContactServiceRequestKind.PublishInvite, Request.LocatorHash);
@@ -48,7 +51,7 @@ public sealed class CurrentContactPublicationFixture : IAsyncLifetime
 
     internal LocalContactServiceReplicaReceiptAuthority[] CreateReceiptAuthorities() =>
         Placement.ReplicaIds.OrderBy(static id => Convert.ToHexString(id.Span), StringComparer.Ordinal)
-            .Select(id => new LocalContactServiceReplicaReceiptAuthority(ceremony.Node(id.Span).Seed))
+            .Select(id => new LocalContactServiceReplicaReceiptAuthority(id.Span, ceremony.Node(id.Span).Seed))
             .ToArray();
 
     internal async Task VerifyCommittedAsync(Xpo1Result result)

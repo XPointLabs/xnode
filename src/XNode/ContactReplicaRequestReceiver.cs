@@ -46,6 +46,7 @@ internal sealed class ContactReplicaRequestReceiver : IContactReplicaCommandRece
             throw new UnauthorizedAccessException(
                 "The authenticated peer is outside the exact contact placement or operation class.");
         }
+        local.EnsureSigningCustody(current);
 
         var payload = command.Operation switch
         {
