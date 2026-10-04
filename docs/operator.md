@@ -30,13 +30,12 @@ current pair is rejected before dispatch; a split pair cannot mutate either owne
 Ingress and authenticated-holder budgets use monotonic resource time only.
 Partial quorum, callback/expiry or custody failures suppress success and retain
 exact unknown work; an exception is not proof of absence of a remote effect.
-These current owners have no activation flag and are not registered by Program.
-Do not enable the retired provider as a bridge. Program now runs current
+Program now registers one current owner graph for explicitly configured local
+mailbox custody. Do not enable the retired provider as a bridge. Program runs current
 host-only operation recovery at startup and afresh in `/health/ready`; an enabled
 mailbox without the actual current receiver/coordinator stays unready. This hook
-does not register that full graph or qualify global historical data recovery.
-Complete current DI, retained-route, signed retirement and object-horizon gates
-remain required.
+does not qualify global historical data recovery. See the custody configuration
+below; retained-route, signed retirement and object-horizon gates remain required.
 See the [native terminal checkpoint](testing/s02-native-terminal-2026-10-04.md)
 for the precise local three-hop/current two-store evidence, not device qualification.
 The matching
@@ -71,7 +70,7 @@ operation custody loss. Missing/malformed local operation data at the current
 peer HTTP endpoint returns bodyless 503, preserving state. Only an
 authenticated pending replacement can recover exact bytes. Unknown pre-plan
 writes still cannot remint a known request. The actual startup/readiness hook now
-uses this same non-enrolling recovery; it does not activate complete Program/DI,
+uses this same non-enrolling recovery; it does not qualify global recovery,
 retirement or deployed provisioning. The linked owner
 defines the consistent backup and local anti-rollback limits.
 The current Store producer also retains the exact authenticated MQR3 in that
@@ -601,9 +600,9 @@ hash-pinned candidate, not production release approval.
 
 `FileMailboxGrantRevocationStore` is an internal native-state owner for the
 [DR-0083 contract](../../docs/survival-program/decisions/DR-0083-current-mailbox-grant-revocation.md).
-It is not registered in Program and adds no usable configuration flag, HTTP
-endpoint, admission fallback or release activation. Current client/peer mailbox
-integration and issuer renewal remain prerequisites.
+Program binds one keyed native owner for each role through CurrentMailboxCustody.
+There is no raw revocation HTTP authority or admission fallback. Explicit signed
+provisioning and issuer renewal remain activation prerequisites.
 
 The caller must provision a separate persistent custody root outside, and not
 enclosing, replaceable `Node:DataDirectory`, plus a recoverable persistent Data
@@ -796,7 +795,7 @@ The public client surface is HTTP/2 only:
 - `GET /api/ingress/v1/capabilities` — managed-ingress capability document;
 - `POST /api/peer/privacy/v1/frame` — authenticated peer-only relay ingress on the peer listener.
 
-Direct `/api/client/mailbox/v2/store`, `/retrieve`, and `/acknowledge` HTTP routes are not mapped. The exit node opens the final privacy layer. An authoritative exit invokes the MAU2 verifier, durable outcome journal and two-replica PRQ2/MQR3 runtime in process. A forwarding-only exit sends the unchanged canonical MAU2 body to the explicitly pinned authoritative router over the authenticated privacy-peer transport; it never owns a client adapter, operation ledger, cursor authority, or MQR3 signing authority.
+Direct `/api/client/mailbox/v2/store`, `/retrieve`, and `/acknowledge` HTTP routes are not mapped. The selected exit opens the final privacy layer and invokes the current MAU3 admission, durable outcome/operation owners and two-replica PRQ2/MQR3 runtime in process. There is no retired forwarding-only authority bridge.
 
 The public request contract requires exact HTTP/2, HTTPS scheme, canonical
 length/media headers and the closed ingress request contract. TLS termination
@@ -918,61 +917,13 @@ HTTPS and two distinct CA-valid SPKI pins are mandatory outside the local Develo
 
 `PublicPeerBaseUrl` is the origin advertised in the signed native privacy contact. The runtime appends the exact peer path itself. Registry heartbeat publishes `privacy-routing-v1`, the independent X25519 public key and the privacy peer endpoint.
 
-### Single authoritative mailbox coordinator
+### Current selected mailbox exits
 
-PMA1 defines one logical coordinator. Multiple terminal privacy paths therefore must converge on
-the same coordinator rather than activate independent client adapters. Configure a forwarding-only
-exit with the authoritative router already present in its pinned `PrivacyRouting:Peers` inventory:
-
-```json
-{
-  "MailboxAuthorityForwarding": {
-    "enabled": true,
-    "authorityRouterId": "<authoritative router id>",
-    "allowedExitRouterIds": []
-  },
-  "MailboxClient": { "enabled": false },
-  "MailboxClientAdapter": { "enabled": false }
-}
-```
-
-On the authoritative router, keep forwarding disabled and allow only the exact terminal exits that
-may bridge canonical MAU2 requests:
-
-```json
-{
-  "MailboxAuthorityForwarding": {
-    "enabled": false,
-    "authorityRouterId": "",
-    "allowedExitRouterIds": [ "<forwarding exit router id>" ]
-  }
-}
-```
-
-The bridge uses exact HTTP/2 and the private `MAF1` Ed25519 transcript. `MAF1` binds sender and
-recipient router identities, Store/Retrieve/Acknowledge operation, exact constant route, timestamp,
-nonce, and SHA-256 of the unchanged MAU2. It has a dedicated bounded replay window and a separate
-admission limiter acquired before body allocation. The three peer-only paths are store, retrieve,
-and acknowledge under `/api/peer/mailbox-authority/v1/`. In Development the authority origin and
-pins come from the exact `PrivacyRouting:Peers` row. In Production they come only from the live,
-verified PMA1 `NodeIngress` current/next SPKI binding; stale or unavailable authority is rejected
-before forwarding. Only an exact bounded canonical response is accepted. Transport failure,
-timeout, malformed response, any `5xx`, or loss after dispatch is surfaced as outcome-unknown; it
-is never converted into an empty Retrieve or a second coordinator attempt. The authority allowlist
-is invalid unless the local client adapter is active, and forwarding is invalid when a local client
-adapter is active. A forwarding-only node does not register the MAU2 capability replay journal,
-canonical outcome store, operation ledger, or outcome GC service.
-
-Operational checks:
-
-1. Verify secret ownership/permissions without printing the key.
-2. Confirm every peer row has the expected router identity, origin and current/next SPKI pins.
-3. Confirm `GET /api/ingress/v1/capabilities` over HTTP/2 reports ready.
-4. Confirm `GET /health/ready` returns `200` on all relays and mailbox exits.
-5. Negative-test an unknown next router, replayed frame, oversized frame, wrong media type, redirect, DNS rebind and each TLS pin independently.
-6. Confirm direct MAU2 URLs return `404`.
-
-The privacy route restores single-node unlinkability under the documented non-collusion/no-global-observer assumptions. It does not hide timing, direction or padded ciphertext length from a global observer.
+The selected pair and ranked writer come from verified PMA2/PMT2 and the signed
+MCG3 selector. Privacy terminal dispatch calls the local current receiver and
+coordinator; there is no PMA1 single-coordinator forwarding bridge. See
+[the current network owner](../../docs/architecture/XPOINT-NETWORK-V1.md) and the
+current custody configuration below. Retired forwarding sections are rejected.
 
 
 ## Xray
@@ -1057,444 +1008,60 @@ The payload model is implemented in `XNode.Registry.RegistryPayload`.
 
 Run `dotnet test XNode.slnx` after configuration or runtime changes. Privacy-routing tests cover relay allowlisting, unknown-next-hop rejection, sealed exit results, key/configuration guards, and peer-authentication binding.
 
-## Canonical P10C peer mailbox runtime
+## Current mailbox host composition candidate
 
-The XNode peer listener implements the P10I binary wire only. It is disabled by default and
-must not be confused with public client-mailbox activation.
+The actual Program registers one current native graph when Mailbox is enabled.
+The same receiver, operation ledger and coordinator serve ONION client
+Store/Retrieve/ACK and descriptor-bound TLS/H2 peer Store/tombstone. The default
+remains disabled. Development/UAT network-source restrictions remain intact:
+this composition does not provide production authority or qualify activation.
 
 ```json
 {
-  "mailbox": {
-    "enabled": false,
-    "directoryName": "mailbox-v1",
-    "maxBlobBytes": 81920,
-    "maxStoredBlobs": 100000,
-    "maxRecoveryScanFiles": 200000,
-    "minimumTtl": "00:01:00",
-    "maximumTtl": "7.00:00:00",
-    "replicationFactor": 2,
-    "writeQuorum": 2,
-    "peerTimeout": "00:00:05",
-    "peerReplayDirectoryName": "mailbox-peer-replay-v2",
-    "peerMutationDirectoryName": "mailbox-peer-mutations-v2",
-    "maxPeerReplayRecords": 100000,
-    "maxPeerReplayRecordsPerRouterPairEpoch": 20000,
-    "maxPeerReplayGcBatch": 1024,
-    "maxPeerMutationRecords": 100000,
-    "maxPeerMutationGcBatch": 1024,
-    "allowInsecureHttpPeerTransport": false
-  },
-  "MailboxPeerAuthority": {
-    "currentEpoch": 0,
-    "currentMembershipCommitment": "",
-    "currentEpochExpiresAtUnixSeconds": 0,
-    "nextEpoch": 0,
-    "nextMembershipCommitment": "",
-    "nextEpochExpiresAtUnixSeconds": 0,
-    "placementSelections": [
-      {
-        "epoch": 0,
-        "placementCommitment": "64-lowercase-hex",
-        "firstRouterId": "64-lowercase-hex",
-        "secondRouterId": "64-lowercase-hex"
-      }
-    ]
+  "Mailbox": { "enabled": false },
+  "CurrentMailboxCustody": {
+    "networkIdHex": "",
+    "mailboxAuthorityCoreHashHex": "",
+    "independentCustodyDirectory": "",
+    "dataProtectionKeysDirectory": ""
   }
 }
 ```
 
-Enabling `Mailbox` also requires an authoritative current epoch/commitment/retirement time,
-optionally a cryptographically distinct E+1 entry, and at least one exact placement-commitment to
-two-distinct-router selection. Replace the illustrative zero/placeholder values above; they are
-not an enableable configuration. The only mailbox peer routes are:
+While disabled all four bindings must be empty. For a reviewed local enabled
+composition, networkIdHex is a nonzero canonical lowercase 16-byte public network
+binding; mailboxAuthorityCoreHashHex is the exact nonzero 32-byte PMA2 core hash.
+These are local protection contexts, not issuance or currentness authority.
+Data, independent custody and the existing key ring must be absolute non-root,
+mutually disjoint directories. Ancestor/descendant aliases are rejected.
 
-- `POST /api/peer/mailbox/v2/store`;
-- `POST /api/peer/mailbox/v2/tombstone`.
+The protected application is `XPoint.XNode.Mailbox.Custody.v1`. The reader
+requires an existing unlinked key ring with restricted regular key files and
+disables automatic generation. Explicit trusted provisioning of both signed
+MGR1 roles and the operation document is separate from startup. Missing,
+incompatible or rolled-back custody stays unavailable; startup neither enrolls
+nor repairs it. Node signing seed must match the current descriptor's key, not
+the node ID. Retain consistent backups of data, independent roots and key ring;
+local files cannot detect joint rollback of all three.
 
-Both accept exact raw `PRQ2` with `application/vnd.deep.mailbox.prq2` and return exact signed
-`MRR2` with `application/vnd.deep.mailbox.mrr2`. The removed
-`/api/peer/mailbox/replica` JSON route returns 404. The canonical routes return 404 on the public
-API listener. Any non-POST method on either canonical path also returns 404.
+Retired ContactAuthority, GroupControlAuthority, MailboxPeerAuthority,
+MailboxClient, MailboxClientAdapter, MailboxClientProductionAuthority and
+MailboxAuthorityForwarding sections reject, including empty sections. There are
+no retired client, closure or forwarding HTTP handlers in Program. Do not use
+the old survival-mailbox authority generators for this graph.
 
-Plain HTTP is rejected by default because it exposes otherwise opaque mailbox metadata.
-`allowInsecureHttpPeerTransport=true` is a development-only escape hatch for an isolated
-Docker network or a deployment where an authenticated outer transport terminates immediately
-in front of XNode.
+Readiness checks actual current host/role/operation custody afresh and returns
+sanitized state, never a cached success flag. This narrow check is not a full
+historical blob/replay/retained-route recovery scan. Unified retention, signed
+retirement, issuer renewal, complete provisioning and shipping composition
+remain activation requirements under the
+[implementation plan](../../docs/architecture/IMPLEMENTATION-PLAN-V1.md).
+Neutral storage limits remain bounded; no entry is retired by this change and
+no TTL, grant validity or timeout is lengthened to make a test pass.
 
-Operational invariants:
-
-- PRQ1, MQR2, JSON and cross-operation frames are rejected; no translation exists;
-- both RIP1/MIP1 proofs must verify Storage role/capability, exact router signing keys, epoch and
-  the configured membership commitment; sender/recipient RouterIds are distinct identities,
-  distinct from their independently bound and mutually distinct signing keys;
-- Store binds the exact canonical MEO1 placement preimage; Tombstone must resolve the identical
-  durable Store context; the exact router pair must be present in the authoritative placement
-  selection allowlist;
-- created-at has zero future skew and at most the protocol's fixed past-age window;
-- replay is reserved before mutation in an exclusive crash-safe journal; an exact completed retry
-  returns the cached verified MRR2 and a pending crash claim resumes idempotently. Persisted exact
-  scopes remain retryable after the initial freshness window and retain their original effective
-  reservation timestamp; an unknown stale request allocates no replay record;
-- replay GC uses the authoritative epoch retirement time plus the protocol-fixed seven-day
-  retention interval;
-- replay startup and every sender/receiver reserve path run priority-ordered bounded collection
-  before reporting capacity, so a full journal containing retired completed state remains live;
-- every replay record is semantically validated at startup even when its retention boundary is in
-  the future: the P10I state machine must accept its status/timestamp/epoch/retention ordering,
-  Pending carries no response, and Completed carries an exact canonical MRR2-domain response;
-- each Store mutation has one durable record with expiry/retention metadata. Pending Store is
-  exclusive to its exact replay nonce. Tombstone advances that same record through
-  `tombstone-pending` to `tombstoned`, so no two-file gap can admit a duplicate Store; startup
-  validates exact epoch-plus-seven-day retention and state-specific nonce/timestamp fields,
-  reconciles deletion, and bounded GC removes only state past its live/replay boundary;
-- the sender coordinator accepts only the exact local and recipient MIP1-keyed MRR2 pair and
-  the recipient endpoint must exactly match its verified RIP1 RPC endpoint plus the operation
-  route, and emits native PRQ2-only MQR3. One receipt, timeout or invalid evidence is never quorum;
-- host-global and per-operation fixed-window/concurrency admission happens before body parsing or
-  cryptography. Request body, content type/encoding, at-most-15-second deadline, per-operation
-  concurrency/rate and 120/minute verified-sender limits come from `MailboxWireHttpContract`;
-- replay and mutation leases plus full corruption validation are resolved during hosted startup
-  and are included in `/health/ready`; the first peer request is never the readiness probe;
-- Windows ACLs are replaced and verified as service-account-only; Unix modes are verified as
-  `0700` for directories and `0600` for files;
-- on Windows, journal replacement uses `MoveFileExW(REPLACE_EXISTING|WRITE_THROUGH)`. Durable
-  deletion first write-through-renames to an anonymous `.deleted` tombstone, which startup
-  removes after a crash. Unix replacement/deletion fsyncs the file and parent directory;
-- metrics and status contain counts only: no router id, membership capability, mailbox, placement
-  route, operation id, ciphertext or receipt bytes are logged or labeled.
-
-Privacy peer nonces and decrypted hop replay IDs are process-memory-only, capacity bounded and
-TTL-pruned. `/status` reports `privacyReplay=bounded-ttl`. MAU2 operation replay and canonical
-outcomes remain durable in their existing journals.
-
-### Native MAU2 client adapter
-
-The in-process privacy exit accepts only MAU2 carrying an authenticated canonical `MEO1`, `MBR2`,
-or `MBA2` body and produces `MQR3`, `MRP1`, or `MAR1`. Direct client mailbox HTTP routes are not
-mapped in any environment. There is no MCP1 envelope, V1 request decoder, translation, or fallback
-route.
-
-The adapter ledger stores native MRR2 evidence and native MQR3 completion. Development ACK emits
-the exact MBA2-ordered MQR3 list in MAR1; no MQR2 transcode is permitted.
-
-The adapter reports `StoreReady`, `RetrieveReady`, and `AcknowledgeReady` independently;
-aggregate `Ready` is true only when all three are ready. Status also exposes durable-replay and
-tombstone-fanout configuration instead of overclaiming readiness. When used in a test
-composition it reserves
-`(epoch, blindedMailboxId, operationId)`, request digest and a per-mailbox monotonic cursor before
-fanout, persists the full opaque `MEO1`, and accepts only the deterministic replica ids selected
-for the exact membership/placement context. Two native context-bound `MRR2` receipts and the
-ledger-allocated next global monotonic coordinator sequence are durably bound in one mutation
-before `MQR3` signing. Request hashes and fanout responses have no sequence authority.
-Replica receipt clocks are independent: each accepted time must be no earlier than the persisted
-request acceptance, and each durable time must be no earlier than its own accepted time and
-strictly before the common expiry. Equality between local and remote timestamps is not required.
-
-The host reserves canonical-outcome capacity for the endpoint maximum before the first
-ledger/blob/peer access. It persists exact MQR3/MRP1/MAR1 (or coarse MTO1 terminal state) before
-completing replay with the outcome digest. A host-global per-operation pre-auth limiter keeps no
-IP partitions; the post-verify limiter keys only a domain-separated hash of operation plus holder.
-
-Exact concurrent retries are single-flight. Restart recovery either resumes the exact persisted
-completion statement or fails closed; one coordinator sequence cannot sign two statements.
-Only the exact durable PendingSame claim may acquire a recovery execution. PendingPrior and a
-concurrent in-process InFlight request perform no worker or outcome mutation.
-Cached `MQR3` bytes are not trusted as a cache hit: signatures, coordinator identity/sequence,
-replica set and all request/membership bindings are reverified on every retry. Ledger loading
-rejects non-canonical keys/hex, duplicate or rewound cursors/sequences, and inconsistent
-state/receipt combinations.
-
-E and E+1 use distinct membership commitments. Blob, size and remaining-TTL preflight occurs
-before reserving a cursor, and expired operation records are cleaned without reusing cursor or
-coordinator authorities. Conflicting operation-id reuse within an epoch/mailbox is rejected.
-The two commitments must differ. `maxCursorAuthorities` bounds live per-mailbox authorities;
-unused authorities compact into a durable retired cursor floor rather than remaining as
-unbounded dictionary keys. `maxConcurrentSingleFlights` bounds unique active operations while
-exact-operation waiters share one reference-counted entry.
-
-The ledger owns `.adapter.lock` with exclusive file sharing for its complete lifetime. A second
-ledger for the same directory, or a second adapter claim on one ledger, fails startup. Dispose
-the adapter first and ledger second during orderly shutdown; only then can a replacement runtime
-acquire the directory.
-
-The native MAU2 runtime is the authorization boundary. It verifies the exact operation, operation
-id, epoch, mailbox/placement/membership authority, canonical request digest, holder signature,
-replay counter and claim digest before a worker can run. Readiness requires the strict decoder,
-Ed25519 verifier, durable replay journal and durable canonical outcome store.
-
-`MBR2` pagination is a stable high-water snapshot. The signed `XCT1` token binds the mailbox and
-authority context, last cursor, snapshot high-water, page-size ceiling, expiry and exact page ACK
-digest. It verifies against any currently authorized replica key to permit failover. If a replica
-does not possess the durable snapshot data it fails closed; clients restart at cursor zero and
-deduplicate locally.
-
-`MBA2` reserves all targets and logical tombstones atomically before signing or fanout. Quorum
-failure therefore hides the ciphertext from later retrieval but leaves retryable durable journal
-state. Every item completes as a native Tombstone `MRR2` quorum and a native `MQR3`; exact retries
-resume or return persisted, reverified bytes through the latest item expiry, including
-multi-item ACKs with staggered TTLs. A new operation id for an already tombstoned cursor is
-rejected and cannot create another journal or fanout. Retrieval emits MRP1, and Development ACK
-returns exact MBA2-ordered MQR3 receipts in MAR1. The node never infers or persists client-side
-`Delivered`.
-
-Physical ciphertext cleanup is bounded after a durable ACK and repeated on initialization.
-Deletion failure does not roll back a logical tombstone or ACK receipt; the ledger marks the blob
-clean only after the exact delete and parent-directory durability barrier succeed. Ledger schema
-v3 is intentionally incompatible with v2, whose records lack the canonical blob/placement/
-membership evidence needed for safe retrieval and tombstones. Operation capacity counts stores,
-ACK operation records and each ACK item.
-
-Do not add direct client mailbox endpoints. XNode can now consume the public PMA1
-issuer/epoch/NodeIngress-SPKI substrate, but it deliberately remains unready until a separate
-hash-bound revocation artifact can answer serial-level decisions. A survival-only Development
-composition exists for honest two-XNode interoperability testing. The activation decision is frozen in
-`docs/adr/0006-mailbox-client-activation-blocker.md`.
-
-`MailboxClient` remains fail-closed by default:
-
-```json
-{
-  "MailboxClient": {
-    "enabled": false
-  }
-}
-```
-
-Setting it to `true` from JSON, environment variables or command-line configuration prevents host
-construction in production while the revocation artifact gate is open. In Development it also requires `MailboxClientAdapter:Enabled=true`,
-`Mailbox:Enabled=true`, and an explicit `developmentFixture` containing a pinned 16-byte network
-id, issuer public key and generation/validity window, coordinator base URL, current/next
-placement ids and their SHA-256 commitments, two distinct replica ids and matching Ed25519 public
-keys, current/next local and remote canonical base64 MIP1 proofs, and revoked serials. E/E+1
-membership commitments and validity windows live in `MailboxClientAdapter`. The node key must
-match the local proof; there is no remote or client private-key field. Proof descriptors provide
-the remote peer RPC endpoint. `coordinatorUrl` must be an origin-only URL whose host and port
-exactly match `Node.PublicHost` and `Node.PublicPort`; it is intentionally independent from the
-container bind address in `Node.ApiListenUrl`. LAN HTTP is accepted only inside this explicit
-Development composition. `/status` and `/health/ready` expose
-`starting`, `ready`, or fail-closed startup state and never report enabled before the durable
-ledgers and adapter initialize.
-
-### Production PMA1 authority substrate
-
-The production-only public authority loader is configured independently from route activation:
-
-```json
-{
-  "MailboxClientProductionAuthority": {
-    "enabled": true,
-    "artifactPath": "/run/secrets/deep/mailbox-authority.pma1",
-    "revocationArtifactPath": "/run/secrets/deep/mailbox-revocation.pmr1",
-    "topologyArtifactPath": "/run/secrets/deep/mailbox-topology.pmt1",
-    "selectionArtifactDirectory": "/run/secrets/deep/selections",
-    "readinessBlindedPlacementId": "<64 lowercase hex>",
-    "readinessSelectionInputCommitment": "<64 lowercase hex>",
-    "artifactTrustRoot": "/run/secrets/deep",
-    "lastKnownGoodPath": "/var/lib/xnode/mailbox-authority/authority.pml1",
-    "closureDirectory": "/var/lib/xnode/production-mailbox-closures",
-    "closureStateHmacKeyPath": "/var/lib/xnode/secrets/closure-state-hmac.key",
-    "closurePublisherEd25519PublicKey": "<64 lowercase hex>",
-    "pinnedMrXPublicKeySha256": "<64 lowercase hex>",
-    "expectedNetworkId": "<32 lowercase hex>",
-    "clockSkewSeconds": 60,
-    "maximumArtifactBytes": 65536,
-    "maximumRevocationArtifactBytes": 131072,
-    "maximumTopologyArtifactBytes": 4997504,
-    "maximumSelectionArtifactBytes": 8840,
-    "maximumStoredClosures": 100000,
-    "maximumClosureStoreBytes": 536870912,
-    "maximumClosureVersionsPerSelection": 4,
-    "maximumClosureLineagesPerSelection": 4,
-    "maximumClosureReservations": 128,
-    "maximumClosureReservationLifetimeSeconds": 86400,
-    "minimumClosureReservationLifetimeSeconds": 60,
-    "closureScheduleAccountingOverheadBytes": 1024
-  }
-}
-```
-
-This section is rejected outside `Production`. All paths must be absolute; PMA1, PMR1, global PMT1
-and the per-selection PMS1 directory must stay inside the explicit immutable trust root, while the LKG must stay inside
-`Node:DataDirectory`. Every
-ancestor from each file to that trust root is checked before each open and may be writable only by
-the service identity. On Linux all public artifacts are owner-only `0400` regular files and the
-pre-provisioned PML3 LKG is `0600`; no traversed path may be a symlink. On Windows files and
-ancestors must have the exact service owner and protected non-inherited service-only ACLs, with the
-public artifacts read-only. PML3 contains
-only generations and SHA-256 chain state, never a private/signing key, holder, capability,
-mailbox id, or endpoint.
-
-Startup performs canonical PMA1 decode, pinned Mr. X key-hash and Ed25519 verification, then
-canonical PMR1 verification with the same clock observation and skew. PMR1 must match the exact
-network, authority binding, issuer, revocation generation/head/previous-head/times and snapshot
-hash declared by PMA1; its issuer signature is verified before an unknown MCG2 serial may return
-`false`. PMA1, PMR1, PMT1, PMS1, LKG and lock opens reject final-path links and compare native file identity
-before/during/after validation. The lock is either exclusively created or opened only after exact
-validation; an unchecked `OpenOrCreate` path is never used. XNode then verifies issuer-signed PMT1
-against that exact authority and a caller-bound readiness PMS1 against the same time observation.
-Only after all four artifacts verify does XNode atomically replace and durably flush one combined
-LKG. The accepted immutable authority, revocation, topology and readiness-selection bundle is
-published with one reference swap only after persistence. Separate authority and topology anchors
-permit independent exact successors and idempotent restart; rollback, forks, mismatches and
-partial successor publication fail closed without advancing the durable bundle.
-Diagnostics expose only coarse state and generations, not paths, endpoints, pins, hashes or
-exception text.
-
-Registry-independent refresh uses only constant-path binary POST endpoints. The public
-`/api/production-mailbox/closure` request is exactly 272 bytes (PMQ2) and binds a timestamp, nonce,
-selection commitment, exact durable old-PMS hash, lineage commitment, target replica and owner key
-to an Ed25519 proof by the mailbox owner. Neither path nor query contains a
-mailbox-derived identifier; ASP.NET request-body logging is not enabled and responses carry
-`Cache-Control: no-store`. The peer-only preposition endpoint accepts a bounded PMP2 command,
-not a bare closure: a dedicated pinned publisher signs its timestamp, nonce, exact envelope hash
-and target replica id. PMP2 retains a legacy-count byte and two fixed legacy-replica slots solely
-for its fixed header layout; clean-break v2 requires the count and all 64 slot bytes to be zero.
-XNode accepts the target only when it is present in the verified PSS2 old or new selections. The
-host also enforces the inverse listener rule: the PMP2 route returns 404
-on the public API listener and is reachable only on the configured peer RPC port. The envelope
-always contains exact PMA1/PMR1/PMT1/current+next PMS1/PSS2/PRC1/RTC1 and tagged
-Owner(PRA2) or Delegated(active RCH1 + RCA1) authorization. Protocol's cache-only verifier checks
-the closure; no client activation capability or RCD1/RDA1/RCR1/RHB1/RHC1 material is accepted.
-
-Before a proactive rotation sweep, Registry reserves conservative capacity through peer-only
-`POST /api/peer/production-mailbox/closure-capacity`. The request is an exact 208-byte PMB1
-publisher-signed reserve/renew/release command bound to a random opaque cohort id, target replica,
-monotonic revision, expiry, count and bytes. XNode returns an exact 248-byte PMB2 receipt signed by
-the target node. PMP2 is a clean-break 280-byte header and binds the same cohort id, verified
-transition mode and lineage commitment; a zero cohort
-is allowed only for ordinary unreserved publication, while a non-zero cohort atomically transfers
-the positive cardinality-one closure count/byte delta from unused reservation headroom to actual store usage.
-The byte charge includes the configured conservative per-closure filesystem overhead.
-Exact command and closure replay never double-charge. Renewal cannot reduce already consumed
-capacity; release or expiry frees only unused balance, and actual closures remain charged until
-their ordinary safe expiry GC. The HMAC ledger is only a rebuildable cache. Each cohort has a
-content-addressed PBF1 floor containing the complete authoritative reservation state, monotonic
-state generation and predecessor marker hash; startup rejects marker forks and rebuilds any stale
-or replayed ledger from the highest exact chain. PBT2 binds selection, durable old-PMS hash,
-lineage commitment, old/new closure hashes and before/after
-floor hashes/generations and recovers in journal→closure→floor→ledger order. A bounded terminal
-floor is retained after release/expiry before deletion, so recently replayed pre-release ledgers
-cannot restore headroom. Full rollback of the complete protected closure directory beyond that
-tombstone retention remains an operator/storage-integrity boundary and is not a hardware monotonic
-counter guarantee. Registry must keep fresh PMB2 receipts from every required replica with its configured
-renewal margin; expiry or renewal failure freezes further cohort publication rather than admitting
-part of a rotation.
-
-PMB1 freshness is required for every mutation. After publisher signature and exact target
-verification, an exact command hash that is already the authoritative cohort floor may recover its
-byte-identical PMB2 after PMB1 expiry or restart. This is a read-only lost-response path: it does
-not extend expiry, change counters, renew or resurrect released capacity. Unknown, changed,
-same-revision-fork and superseded expired commands are rejected coarsely.
-
-If an unreleased reservation has already auto-expired into a terminal floor, the node accepts only
-its authenticated exact revision-successor Release. The returned PMB2 binds that Release command,
-reports reserved equal to consumed, preserves every actual closure charge, and cannot renew or
-resurrect capacity. This lets Registry finish durable post-cutover cleanup after a long outage.
-
-If Registry remains unavailable until the bounded terminal floor is garbage-collected, it uses the
-peer-only constant-path `POST /api/peer/production-mailbox/closure-capacity-reconciliation`. The
-exact 504-byte publisher-signed PMB3 embeds the last exact node-signed PMB2 and binds cohort,
-target, revision and command/receipt hashes. XNode returns an exact 272-byte node-signed PMB4
-`AbsentTerminal` only after a read-only authoritative floor/ledger/`.pmcs2` accounting check under
-the process lock. A live floor, pending transfer, invalid prior receipt, fork, corrupt ledger or
-stale accounting returns a coarse 400. The endpoint never reserves, releases, renews or extends
-capacity, is peer-listener-only and returns `Cache-Control: no-store`.
-
-Each route lineage occupies one bounded cardinality-one `closure.pmcs2` under sharded
-HMAC(selection commitment)/HMAC(selection commitment + durable old-PMS hash + lineage commitment)
-directories, so
-neither stable value is present in filesystem names. Different devices at different durable old-PMS
-anchors can coexist and PMQ2 selects one exact lineage. Exact byte replay is idempotent. A distinct
-commitment for the same retained old-PMS lineage represents another device/ROL lineage and is
-allowed only within the configured per-selection cap. Every candidate preserves the exact
-network, owner, blinded route, selection commitment and durable old-PMS/authority/topology anchor.
-Forks, renamed cross-route files and commands for another replica fail
-closed under an in-process gate plus a native cross-process store lock. Fetch acquires that same
-lock and completes any pending PBT2 recovery before stable-read/response, so another process cannot
-serve a closure between journal, file, floor, ledger or parent-flush durability phases. Lock wait is
-cancellable and bounded to five seconds. The lock is released after the stable owned snapshot;
-Protocol verification then runs under only the lineage stripe, avoiding cross-lineage head-of-line
-blocking, and time windows are rechecked before response. Two XNode processes must
-not normally share a closure directory, but if they do, the lock serializes reconciliation and
-cardinality-one insertion rather than allowing the last writer to win.
-Startup and every mutation reconcile count and bytes through stable no-follow handles, reject
-unsafe/reparse/identity-swapped files, and refuse stores above both configured
-caps. Fetch returns only the exact commitment within Protocol's hard cache window (the minimum of
-all authenticated artifact expiries), never serves a future entry early, and converts expected
-Protocol parse/verification failures to a coarse miss. Startup globally removes expired `.pmcs2`
-files using count-derived bounded snapshots.
-Mutation performs selection-local expiry compaction first and runs the global expired scan only on
-count/byte pressure; an ambiguous file or directory delete/parent flush fails the attempt and the
-next locked reconciliation resumes from exact disk state. Empty lineage/selection/shard directories
-are removed durably, and startup bounds then sweeps the empty tree deepest-first; an over-bound tree
-fails closed for operator inspection. A live closure is never evicted. Clients
-still perform full PSS/LKG verification and do not trust the cache.
-An orphan `*.tmp` atomic-write file makes startup fail closed instead of disappearing from byte
-accounting. Inspect the interrupted write and remove the orphan only after confirming the adjacent
-canonical route file is intact; restart then performs a fresh authoritative scan.
-
-`maximumClosureLineagesPerSelection` separately bounds simultaneous device/LKG anchors for the
-same stable selection commitment; exceeding it fails before any new closure is written.
-
-After the complete bundle verifies, diagnostics report `authorityRevocationReady=true`,
-`topologyArtifactVerified=true`, and `productionMailboxRoutesReady=true`. Each mailbox operation
-still fails closed unless its own commitment-named PMS1 verifies for the requested blinded
-placement. The runtime recomputes rendezvous ranking, requires exactly two distinct replicas and
-canonical MIP1/RIP1 proofs, binds the proof route to the PMT HTTPS origin, and enforces the current
-or next SPKI pin during TLS. Raw mailbox identifiers, selection inputs and replica IDs are not
-logged or exposed. Official-managed PMA1 still requires public HTTPS; explicit user-managed
-private-HTTPS policy remains supported.
-
-Client HTTP is binary-only:
-
-| Operation | POST route | MAU2 inner body | Request bytes | Success response | Success |
-|---|---|---|---:|---|---:|
-| Store | `/api/client/mailbox/v2/store` | MEO1 | 608..82344 | `application/vnd.deep.mailbox.mqr3` | 200 |
-| Retrieve | `/api/client/mailbox/v2/retrieve` | MBR2 | 536..792 | `application/vnd.deep.mailbox.mrp1` | 200 |
-| Acknowledge | `/api/client/mailbox/v2/acknowledge` | MBA2 | 576..4792 | `application/vnd.deep.mailbox.mar1` | 200 |
-
-All three request media types are `application/vnd.deep.mailbox.mau2`.
-
-Failures have empty bodies: malformed 400, authentication 401, authorization 403, replay/
-idempotency conflict 409, missing length 411, too large 413, media type/encoding 415, admission
-429, dependency/quorum unavailable 503, and deadline 504. Exact byte limits, deadlines and
-admission ceilings come from `MailboxWireHttpContract`.
-
-The active privacy-routing and native mailbox protocol closure is locked under
-`vendor/production-privacy-e75bfed/packages`:
-
-- `Deep.Protocol.0.5.0-production.e75bfed.nupkg` —
-  `69578c00c503383b149c4e9bccb3f14f87d3608c9781fe684710233059060098`
-- `Deep.Protocol.MembershipRoutes.0.5.0-production.e75bfed.nupkg` —
-  `5dacdef966835452ffa2c0a404dac72524b508ebeffa3f44b79d5d290c2de75e`
-
-Core/runtime/test projects restore the exact version from the local feed in locked mode.
-`XNode.ProfileGenerator` and its tests use a separate frozen DNP1 closure under
-`vendor/dnp1-survival-9a7eaed`. Its exact protocol inventory is
-`Deep.Protocol`, `Deep.Protocol.MembershipRoutes`, and
-`Deep.Protocol.ProfileCarrier`, all pinned to `0.5.0-survival.9a7eaed` from
-protocol commit `9a7eaed337286758ab43bd3706457264c3be7c55`.
-Every nuspec dependency uses an exact bracket range. The resulting runtime
-dependency set contains only `Sodium.Core` and `libsodium`; the former
-`Deep.Protocol.Abstractions`, `Deep.Protocol.Protobuf`, and `Google.Protobuf`
-dependencies are not part of the active graph. `Deep.Protocol*` can restore
-only from the repository-local feed selected by `eng/dnp1-survival.NuGet.Config`;
-the production runtime remains isolated on `eng/survival-beta.NuGet.Config`.
-Run `eng/Verify-Dnp1ProtocolClosure.ps1` before building the generator; it
-fails closed on package inventory, bytes, provenance, dependency edges,
-project pins, lock files, or source mapping drift.
-
-The native MAU2 client adapter is active when the validated mailbox-client activation plan maps
-the development routes documented above. Startup remains fail-closed until the peer runtime,
-authenticated capability runtime, operation ledger, and native adapter all report ready.
-
-The active replay journal is stored below
-`<Node.DataDirectory>/mailbox-capability-replay-v3/replay.json`, which resolves to the existing
-`/state` volume in survival containers. It uses an exclusive process lease, same-directory
-write-through replacement and file/parent durability barriers. A crash after reservation leaves
-an explicit `Pending` record; it is never silently retried as new, and only recovery with the
-exact claim can complete it. Diagnostics expose counts only, never issuer, serial, operation,
-request or capability bytes.
+See [composition evidence](testing/s02-current-program-2026-10-04.md) for the
+exact local tests and remaining gates. Physical contact/text and release
+qualification are not implied.
 
 ### Contact route closure and recipient evidence
 

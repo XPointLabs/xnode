@@ -41,15 +41,8 @@ var membershipArtifactOptions = builder.Configuration.GetSection("MembershipArti
     .Get<MembershipRouteArtifactOptions>() ?? new MembershipRouteArtifactOptions();
 var mailboxOptions = builder.Configuration.GetSection("Mailbox")
     .Get<ReplicatedMailboxOptions>() ?? new ReplicatedMailboxOptions();
-var mailboxPeerAuthorityOptions = builder.Configuration.GetSection("MailboxPeerAuthority")
-    .Get<MailboxPeerAuthorityOptions>() ?? new MailboxPeerAuthorityOptions();
-var mailboxClientActivationOptions = builder.Configuration.GetSection("MailboxClient")
-    .Get<MailboxClientActivationOptions>() ?? new MailboxClientActivationOptions();
-var mailboxClientAdapterOptions = builder.Configuration.GetSection("MailboxClientAdapter")
-    .Get<MailboxClientAdapterOptions>() ?? new MailboxClientAdapterOptions();
-var productionMailboxAuthorityOptions = builder.Configuration
-    .GetSection("MailboxClientProductionAuthority")
-    .Get<ProductionMailboxAuthorityOptions>() ?? new ProductionMailboxAuthorityOptions();
+var currentMailboxCustodyOptions = builder.Configuration.GetSection("CurrentMailboxCustody")
+    .Get<CurrentMailboxCustodyOptions>(options => options.ErrorOnUnknownConfiguration = true) ?? new();
 var privacyRoutingOptions = builder.Configuration.GetSection("PrivacyRouting")
     .Get<PrivacyRoutingOptions>(options => options.ErrorOnUnknownConfiguration = true) ?? new PrivacyRoutingOptions();
 var contactServiceOptions = builder.Configuration.GetSection("ContactService")
@@ -75,9 +68,6 @@ var developmentUatPrivatePeerAddressOptions = builder.Configuration
     .GetSection("DevelopmentUatPrivatePeerAddresses")
     .Get<DevelopmentUatPrivatePeerAddressOptions>()
     ?? new DevelopmentUatPrivatePeerAddressOptions();
-var mailboxAuthorityForwardingOptions = builder.Configuration
-    .GetSection("MailboxAuthorityForwarding")
-    .Get<MailboxAuthorityForwardingOptions>() ?? new MailboxAuthorityForwardingOptions();
 var developmentUatPrivatePeerAddressPolicy =
     developmentUatPrivatePeerAddressOptions.ValidateAndLoad(
         nodeOptions,
@@ -96,36 +86,9 @@ var did2NetworkPlacement = did2NetworkPlacementOptions.ValidateAndLoad(
 var contactCoordinationOrigin = contactCoordinationOptions.Validate(
     privacyRouting.Enabled, did2DirectoryProof is not null && did2NetworkPlacement?.Observer is not null);
 mailboxOptions.Validate();
-mailboxPeerAuthorityOptions.Validate(mailboxOptions.Enabled);
-productionMailboxAuthorityOptions.Validate(
-    nodeOptions,
-    builder.Environment.IsProduction());
-var mailboxClientActivationPlan = MailboxClientComposition.Validate(
-    mailboxClientActivationOptions,
-    mailboxClientAdapterOptions,
-    nodeOptions,
-    mailboxOptions,
-    builder.Environment.IsDevelopment(),
-    mailboxPeerAuthorityOptions,
-    productionMailboxAuthorityOptions);
-var mailboxAuthorityForwarding = mailboxAuthorityForwardingOptions.Validate(
-    mailboxClientActivationPlan,
-    privacyRouting,
-    nodeOptions,
-    productionMailboxAuthorityOptions.Enabled);
-if (mailboxOptions.Enabled
-    && !mailboxPeerAuthorityOptions.HasNonRetiredEpoch(
-        checked((ulong)DateTimeOffset.UtcNow.ToUnixTimeSeconds())))
-{
-    throw new InvalidOperationException(
-        "MailboxPeerAuthority has no non-retired epoch.");
-}
-if (mailboxOptions.AllowInsecureHttpPeerTransport
-    && !builder.Environment.IsDevelopment())
-{
-    throw new InvalidOperationException(
-        "Mailbox:AllowInsecureHttpPeerTransport is Development-only.");
-}
+var currentMailboxCustody = currentMailboxCustodyOptions.Validate(nodeOptions, mailboxOptions);
+if (mailboxOptions.Enabled && (!privacyRouting.Enabled || did2NetworkPlacement?.Observer is null))
+    throw new InvalidOperationException("Current mailbox requires configured current network/time and privacy ingress.");
 
 VlessSecretFileLoader.Load(
     vlessOptions,
@@ -158,29 +121,19 @@ builder.Services.AddSingleton(vlessOptions);
 builder.Services.AddSingleton(heartbeatOptions);
 builder.Services.AddSingleton(registrationOptions);
 builder.Services.AddSingleton(membershipArtifactOptions);
+builder.Services.AddSingleton<MembershipRouteArtifactPublisher>();
 builder.Services.AddSingleton(mailboxOptions);
-builder.Services.AddSingleton(mailboxPeerAuthorityOptions);
-builder.Services.AddSingleton(mailboxClientActivationOptions);
-builder.Services.AddSingleton(mailboxClientAdapterOptions);
-builder.Services.AddSingleton(productionMailboxAuthorityOptions);
 builder.Services.AddSingleton(privacyRoutingOptions);
 builder.Services.AddSingleton(privacyRouting);
 builder.Services.AddSingleton(contactServiceOptions);
 builder.Services.AddSingleton(groupControlServiceOptions);
 builder.Services.AddSingleton(developmentUatPrivatePeerAddressPolicy);
-builder.Services.AddSingleton(mailboxAuthorityForwardingOptions);
-builder.Services.AddSingleton(mailboxAuthorityForwarding);
 builder.Services.AddSingleton<PrivacyPeerReplayGuard>();
-builder.Services.AddSingleton<MailboxAuthorityForwardingReplayGuard>();
 builder.Services.AddSingleton<PrivacyIngressLimiter>();
-builder.Services.AddSingleton<MailboxAuthorityForwardingIngressLimiter>();
 builder.Services.AddSingleton<IPrivacyPeerClient, HttpPrivacyPeerClient>();
 builder.Services.AddSingleton<NativeMailboxExitDispatcher>();
 builder.Services.AddSingleton<ILocalNativeMailboxExitDispatcher>(provider =>
     provider.GetRequiredService<NativeMailboxExitDispatcher>());
-builder.Services.AddSingleton<IMailboxAuthorityForwardingClient,
-    MailboxAuthorityForwardingClient>();
-builder.Services.AddSingleton<RoutedNativeMailboxExitDispatcher>();
 if (contactCoordinationOrigin is not null)
 {
     builder.Services.AddSingleton(provider => new HttpContactCoordinationBackendClient(
@@ -189,15 +142,13 @@ if (contactCoordinationOrigin is not null)
     builder.Services.AddSingleton<ContactCoordinationOnionDispatcher>();
 }
 builder.Services.AddSingleton(provider => new PrivacyTerminalExitDispatcher(
-    provider.GetRequiredService<RoutedNativeMailboxExitDispatcher>(),
+    provider.GetRequiredService<NativeMailboxExitDispatcher>(),
     provider.GetRequiredService<IContactServiceOpaqueDispatcher>(),
     provider.GetRequiredService<GroupControlOnionTerminalAdapter>(),
     provider.GetService<ContactCoordinationOnionDispatcher>(),
     provider.GetRequiredService<ILogger<PrivacyTerminalExitDispatcher>>()));
 builder.Services.AddSingleton<INativeMailboxExitDispatcher>(provider =>
     provider.GetRequiredService<PrivacyTerminalExitDispatcher>());
-builder.Services.AddSingleton(mailboxClientActivationPlan);
-builder.Services.AddSingleton<MailboxClientRuntimeReadiness>();
 builder.Services.AddCurrentMailboxHostRecovery();
 builder.Services.AddSingleton<IMailboxStorageSecurity, MailboxStorageSecurity>();
 builder.Services.AddSingleton<IMailboxDurabilityBarrier, MailboxDurabilityBarrier>();
@@ -237,126 +188,7 @@ var groupControlServicePlan = builder.Services.AddGroupControlServiceBoundary(gr
 builder.Services.AddProductionPrivacyRoutingBoundary(
     privacyRouting,
     nodeOptions);
-builder.Services.AddSingleton<IProductionMailboxAuthorityFileSecurity,
-    ProductionMailboxAuthorityFileSecurity>();
-    builder.Services.AddSingleton<ProductionMailboxAuthorityProvider>();
-    builder.Services.AddSingleton<ProductionMailboxClosureStore>();
-builder.Services.AddHostedService<ProductionMailboxAuthorityHostedService>();
-if (mailboxClientActivationPlan.DevelopmentFixture)
-{
-    builder.Services.AddSingleton<
-        IMailboxCapabilityAuthoritySource,
-        DevelopmentMailboxCapabilityAuthority>();
-    builder.Services.AddSingleton<
-        IMailboxCapabilityRevocationPolicy,
-        DevelopmentMailboxCapabilityRevocations>();
-    builder.Services.AddSingleton<
-        IMailboxClientReplicaAuthorizer,
-        DevelopmentMailboxReplicaAuthority>();
-    builder.Services.AddSingleton<DevelopmentMailboxReplicaFanout>();
-    builder.Services.AddSingleton<IMailboxClientReplicaFanout>(provider =>
-        provider.GetRequiredService<DevelopmentMailboxReplicaFanout>());
-    builder.Services.AddSingleton<IMailboxClientTombstoneFanout>(provider =>
-        provider.GetRequiredService<DevelopmentMailboxReplicaFanout>());
-}
-else if (productionMailboxAuthorityOptions.Enabled)
-{
-    builder.Services.AddSingleton<IMailboxCapabilityAuthoritySource>(provider =>
-        provider.GetRequiredService<ProductionMailboxAuthorityProvider>());
-    builder.Services.AddSingleton<IMailboxCapabilityRevocationPolicy>(provider =>
-        provider.GetRequiredService<ProductionMailboxAuthorityProvider>());
-    builder.Services.AddSingleton<IProductionMailboxTopologyProvider>(provider =>
-        provider.GetRequiredService<ProductionMailboxAuthorityProvider>());
-    builder.Services.AddSingleton<
-        IMailboxClientReplicaAuthorizer,
-        ProductionMailboxReplicaAuthority>();
-    builder.Services.AddSingleton<ProductionMailboxReplicaFanout>();
-    builder.Services.AddSingleton<IMailboxClientReplicaFanout>(provider =>
-        provider.GetRequiredService<ProductionMailboxReplicaFanout>());
-    builder.Services.AddSingleton<IMailboxClientTombstoneFanout>(provider =>
-        provider.GetRequiredService<ProductionMailboxReplicaFanout>());
-}
-else
-{
-    builder.Services.AddSingleton<
-        IMailboxCapabilityAuthoritySource,
-        RejectAllMailboxCapabilityAuthoritySource>();
-    builder.Services.AddSingleton<
-        IMailboxCapabilityRevocationPolicy,
-        RejectAllMailboxCapabilityRevocationPolicy>();
-}
-builder.Services.AddSingleton<
-    IMailboxAuthenticatedCapabilityCrypto,
-    SodiumMailboxCapabilityCrypto>();
-if (mailboxClientActivationPlan.RoutesMapped)
-{
-    builder.Services.AddSingleton(provider => new DurableMailboxCapabilityReplayJournal(
-        nodeOptions.DataDirectory));
-    builder.Services.AddSingleton(provider => new MailboxClientCanonicalOutcomeStore(
-        nodeOptions.DataDirectory));
-    builder.Services.AddSingleton<MailboxAuthenticatedCapabilityRuntime>();
-    builder.Services.AddSingleton(provider => new MailboxClientOperationLedger(
-        nodeOptions.DataDirectory,
-        mailboxClientAdapterOptions,
-        provider.GetRequiredService<IClock>()));
-    builder.Services.AddSingleton(provider => new MailboxClientReceiptCrypto(
-        nodeOptions.GetRouterId(),
-        nodeOptions.GetEd25519PrivateKey()));
-    builder.Services.AddSingleton<MailboxClientStoreAdapter>();
-    builder.Services.AddSingleton<MailboxClientIngressLimiter>();
-    builder.Services.AddSingleton<MailboxClientVerifiedHolderLimiter>();
-    builder.Services.AddHostedService<MailboxAuthenticatedStateGcHostedService>();
-}
-builder.Services.AddSingleton<MembershipRouteArtifactPublisher>();
-builder.Services.AddSingleton(provider => new ReplicatedMailboxStore(
-    nodeOptions.DataDirectory,
-    mailboxOptions,
-    provider.GetRequiredService<IClock>()));
-builder.Services.AddHostedService<MailboxStoreHostedService>();
-builder.Services.AddSingleton(provider => new MailboxPeerMutationStore(
-    nodeOptions.DataDirectory,
-    mailboxOptions,
-    provider.GetRequiredService<ReplicatedMailboxStore>(),
-    provider.GetRequiredService<IClock>()));
-builder.Services.AddSingleton<MailboxPeerRuntimeReadiness>();
-builder.Services.AddSingleton<MailboxPeerStoreHostedService>();
-builder.Services.AddHostedService(provider =>
-    provider.GetRequiredService<MailboxPeerStoreHostedService>());
-builder.Services.AddHostedService<MailboxClientAdapterHostedService>();
-builder.Services.AddSingleton<DurableMailboxPeerReplayJournal>(provider => new(
-    nodeOptions.DataDirectory,
-    mailboxOptions,
-    provider.GetRequiredService<IClock>()));
-builder.Services.AddSingleton<IMailboxPeerReplayJournal>(provider =>
-    provider.GetRequiredService<DurableMailboxPeerReplayJournal>());
-builder.Services.AddSingleton<IMailboxReplicaMembershipProofVerifier,
-    MembershipRoutesMailboxReplicaProofVerifier>();
-builder.Services.AddSingleton<IMailboxPeerRequestPolicyResolver>(provider =>
-    new MailboxPeerRequestPolicyResolver(
-        nodeOptions.GetRouterId(),
-        nodeOptions.GetEd25519PrivateKey(),
-        mailboxPeerAuthorityOptions,
-        provider.GetRequiredService<MailboxPeerMutationStore>()));
-builder.Services.AddSingleton(provider => new MailboxReplicaReceiver(
-    nodeOptions.GetEd25519PrivateKey(),
-    mailboxOptions,
-    provider.GetRequiredService<MailboxPeerMutationStore>(),
-    provider.GetRequiredService<IMailboxPeerRequestPolicyResolver>(),
-    provider.GetRequiredService<IMailboxReplicaMembershipProofVerifier>(),
-    provider.GetRequiredService<IMailboxPeerReplayJournal>(),
-    provider.GetRequiredService<IClock>()));
-builder.Services.AddSingleton<MailboxPeerIngressLimiter>();
-builder.Services.AddHttpClient<IMailboxReplicaPeerClient, HttpMailboxReplicaPeerClient>()
-    .ConfigurePrimaryHttpMessageHandler(() =>
-        MailboxPeerHttpHandler.Create(mailboxOptions));
-builder.Services.AddSingleton(provider => new MailboxReplicationCoordinator(
-    nodeOptions.GetRouterId(),
-    nodeOptions.GetEd25519PrivateKey(),
-    mailboxOptions,
-    provider.GetRequiredService<MailboxPeerMutationStore>(),
-    provider.GetRequiredService<IMailboxReplicaPeerClient>(),
-    provider.GetRequiredService<IMailboxReplicaMembershipProofVerifier>(),
-    provider.GetRequiredService<IMailboxPeerReplayJournal>()));
+builder.Services.AddCurrentMailboxHost(currentMailboxCustody, nodeOptions, mailboxOptions);
 builder.Services.AddSingleton<ILocalPrivacyContactProvider, LocalPrivacyContactProvider>();
 
 builder.Services.AddSingleton<XrayConfigGenerator>();
@@ -421,10 +253,7 @@ app.Use(async (context, next) =>
         return;
     }
 
-    if ((MailboxAuthorityForwardingHttpContract.TryOperation(
-                context.Request.Path,
-                out _)
-            || context.Request.Path.Equals(MailboxWireHttpContract.PeerStoreRoute)
+    if ((context.Request.Path.Equals(MailboxWireHttpContract.PeerStoreRoute)
             || context.Request.Path.Equals(MailboxWireHttpContract.PeerTombstoneRoute)
             || replicaEndpointActive
                 && context.Request.Path.Equals(ContactReplicaHttpContract.Route)
@@ -445,12 +274,10 @@ app.Use(async (context, next) =>
     var path = context.Request.Path;
     var allowed = (privacyPeerListenUri is null
             && path.Equals(PrivacyRoutingOptions.PeerFramePath))
-        || MailboxAuthorityForwardingHttpContract.TryOperation(path, out _)
         || replicaEndpointActive
             && path.Equals(ContactReplicaHttpContract.Route)
         || groupControlServicePlan.MapReplicaEndpoint
             && path.Equals(GroupControlReplicaHttpContract.Route)
-        || path.Equals(ProductionMailboxClosureHttpContract.PrepositionRoute)
         || path.Equals(MailboxWireHttpContract.PeerStoreRoute)
         || path.Equals(MailboxWireHttpContract.PeerTombstoneRoute)
         || path.Equals("/health/live")
@@ -472,32 +299,23 @@ app.Use(async (context, next) =>
     var path = context.Request.Path;
     if (path.Equals(ManagedIngressH2Contract.FramePath)
         || path.Equals(PrivacyRoutingOptions.PeerFramePath)
-        || MailboxAuthorityForwardingHttpContract.TryOperation(path, out _)
         || replicaEndpointActive
             && path.Equals(ContactReplicaHttpContract.Route)
         || groupControlServicePlan.MapReplicaEndpoint
             && path.Equals(GroupControlReplicaHttpContract.Route)
-        || path.Equals(ProductionMailboxClosureHttpContract.PrepositionRoute)
         || path.Equals(MailboxWireHttpContract.PeerStoreRoute)
         || path.Equals(MailboxWireHttpContract.PeerTombstoneRoute))
     {
         var maxBodyBytes = path.Equals(ManagedIngressH2Contract.FramePath)
             || path.Equals(PrivacyRoutingOptions.PeerFramePath)
                 ? ManagedIngressLimits.MaximumOpaqueFrameBytes
-                : MailboxAuthorityForwardingHttpContract.TryOperation(
-                    path,
-                    out var authorityOperation)
-                    ? MailboxAuthorityForwardingHttpContract.Contract(
-                        authorityOperation).MaximumRequestBytes
                 : replicaEndpointActive
                     && path.Equals(ContactReplicaHttpContract.Route)
                     ? ContactReplicaWireCodec.MaximumRequestBytes
                 : groupControlServicePlan.MapReplicaEndpoint
                     && path.Equals(GroupControlReplicaHttpContract.Route)
                     ? GroupControlReplicaWireCodec.MaximumRequestBytes
-                : path.Equals(ProductionMailboxClosureHttpContract.PrepositionRoute)
-                    ? ProductionMailboxPrepositionCommandCodec.MaximumCommandBytes
-                    : Math.Max(
+                : Math.Max(
                         MailboxWireHttpContract.PeerStore.MaximumRequestBytes,
                         MailboxWireHttpContract.PeerTombstone.MaximumRequestBytes);
         if (context.Request.ContentLength is > 0 and var contentLength && contentLength > maxBodyBytes)
@@ -524,10 +342,7 @@ app.MapGet("/health/live", () => Results.Ok(new { ok = true }));
 app.MapGet("/health/ready", async (
     IXraySupervisor xray,
     ReplicatedMailboxOptions mailbox,
-    MailboxPeerRuntimeReadiness mailboxPeer,
-    MailboxClientRuntimeReadiness mailboxClient,
     CurrentMailboxHostRecovery currentMailboxHost,
-    ProductionMailboxAuthorityProvider productionMailboxAuthority,
     PrivacyRoutingConfiguration privacy,
     PrivacyRoutingRuntime privacyRuntime,
     CancellationToken cancellationToken) =>
@@ -535,25 +350,16 @@ app.MapGet("/health/ready", async (
     var currentMailboxRecovery = await currentMailboxHost.CheckAsync(cancellationToken);
     var xrayStatus = xray.Status;
     var transportReady = !xrayStatus.Enabled || xrayStatus.Running || xrayStatus.Degraded;
-    var mailboxPeerReady = !mailbox.Enabled || mailboxPeer.Ready;
-    var mailboxClientReady =
-        !mailboxClientActivationPlan.RoutesMapped || mailboxClient.Ready;
     var privacyReady = XNodeReadinessPolicy.IsPrivacyReady(
         privacy.Enabled, privacyRuntime.ProductionCapabilityAvailable,
         app.Environment.IsDevelopment());
-    var productionMailboxAuthorityReady =
-        !productionMailboxAuthorityOptions.Enabled
-        || productionMailboxAuthority.Status.Ready;
     var terminalServices = XNodeReadinessPolicy.RequiredTerminals(
         requiredTerminalServices,
         contactServicePlan.RuntimeActivation,
         groupControlServicePlan.RuntimeActivation);
     var ready = transportReady
         && privacyReady
-        && mailboxPeerReady
-        && mailboxClientReady
         && currentMailboxRecovery.Recovered
-        && productionMailboxAuthorityReady
         && terminalServices.Ready;
     return ready
         ? Results.Ok(new
@@ -564,11 +370,7 @@ app.MapGet("/health/ready", async (
             privacyRouting = privacyRuntime.ProductionCapabilityAvailable
                 ? "ready"
                 : "disabled-development",
-            mailboxPeer = mailboxPeer.Status,
-            mailboxClient = mailboxClient.Status,
             currentMailboxHost = currentMailboxRecovery,
-            mailboxAuthorityForwarding = mailboxAuthorityForwarding.Role,
-            mailboxProductionAuthority = productionMailboxAuthority.Status,
             requiredTerminals = terminalServices
         })
         : Results.Json(
@@ -579,27 +381,22 @@ app.MapGet("/health/ready", async (
                 privacyRouting = privacyRuntime.ProductionCapabilityAvailable
                     ? "ready"
                     : "unavailable",
-                mailboxPeer = mailboxPeer.Status,
-                mailboxClient = mailboxClient.Status,
                 currentMailboxHost = currentMailboxRecovery,
-                mailboxAuthorityForwarding = mailboxAuthorityForwarding.Role,
-                mailboxProductionAuthority = productionMailboxAuthority.Status,
                 requiredTerminals = terminalServices
             },
             statusCode: StatusCodes.Status503ServiceUnavailable);
 });
 
-app.MapGet("/status", (
+app.MapGet("/status", async (
     IXraySupervisor xray,
     RegistryPayloadFactory registryPayloadFactory,
     ReplicatedMailboxOptions mailbox,
-    MailboxPeerRuntimeReadiness mailboxPeer,
-    MailboxClientRuntimeReadiness mailboxClient,
-    ProductionMailboxAuthorityProvider productionMailboxAuthority,
     PrivacyRoutingConfiguration privacy,
     PrivacyRoutingRuntime privacyRuntime,
-    IServiceProvider services) =>
+    CurrentMailboxHostRecovery currentMailboxHost,
+    CancellationToken cancellationToken) =>
 {
+    var currentMailboxRecovery = await currentMailboxHost.CheckAsync(cancellationToken);
     var terminalServices = XNodeReadinessPolicy.RequiredTerminals(
         requiredTerminalServices,
         contactServicePlan.RuntimeActivation,
@@ -608,9 +405,8 @@ app.MapGet("/status", (
         ? new
         {
             enabled = true,
-            peerRuntime = mailboxPeer.Status,
             wire = "prq2-mrr2-mqr3",
-            receiver = services.GetRequiredService<MailboxReplicaReceiver>().Metrics
+            currentMailboxHost = currentMailboxRecovery
         }
         : new { enabled = false };
     return Results.Ok(new
@@ -631,9 +427,6 @@ app.MapGet("/status", (
         privacyReplay = privacyRuntime.ProductionCapabilityAvailable
             ? "production-capability"
             : "unavailable",
-        mailboxClient = mailboxClient.Status,
-        mailboxAuthorityForwarding = mailboxAuthorityForwarding.Role,
-        mailboxProductionAuthority = productionMailboxAuthority.Status,
         requiredTerminals = terminalServices
     });
 });
@@ -681,62 +474,6 @@ app.MapGet("/api/network/membership-route-catalog", async (
             statusCode: StatusCodes.Status503ServiceUnavailable);
     }
 }).RequireRateLimiting("bounded-api");
-
-if (productionMailboxAuthorityOptions.Enabled)
-{
-    app.MapPost(ProductionMailboxClosureHttpContract.FetchRoute, async (
-        HttpContext context,
-        ProductionMailboxClosureStore closures,
-        CancellationToken cancellationToken) =>
-    {
-        context.Response.Headers.CacheControl = "no-store";
-        if (context.Request.ContentLength != ProductionMailboxClosureRequestCodec.EncodedLength
-            || !string.Equals(context.Request.ContentType,
-                ProductionMailboxClosureHttpContract.RequestMediaType,
-                StringComparison.OrdinalIgnoreCase))
-            return Results.NotFound();
-        var request = new byte[ProductionMailboxClosureRequestCodec.EncodedLength];
-        try
-        {
-            await context.Request.Body.ReadExactlyAsync(request, cancellationToken);
-            var closure = await closures.FetchAsync(request, cancellationToken);
-            return closure is null
-                ? Results.NotFound()
-                : Results.File(closure, ProductionMailboxClosureHttpContract.ClosureMediaType,
-                    enableRangeProcessing: false);
-        }
-        catch (Exception exception) when (exception is IOException
-            || exception is OperationCanceledException
-                && context.RequestAborted.IsCancellationRequested)
-        {
-            return Results.NotFound();
-        }
-    }).RequireRateLimiting("bounded-api");
-
-    app.MapPost(ProductionMailboxClosureHttpContract.PrepositionRoute, async (
-        HttpContext context,
-        ProductionMailboxClosureStore closures,
-        CancellationToken cancellationToken) =>
-        await ProductionMailboxClosureHttpEndpoint.HandlePrepositionAsync(
-            context, closures, peerRpcListenUri.Port, cancellationToken))
-        .RequireRateLimiting("bounded-api");
-
-    app.MapPost(ProductionMailboxClosureHttpContract.CapacityRoute, async (
-        HttpContext context,
-        ProductionMailboxClosureStore closures,
-        CancellationToken cancellationToken) =>
-        await ProductionMailboxClosureHttpEndpoint.HandleCapacityAsync(
-            context, closures, peerRpcListenUri.Port, cancellationToken))
-        .RequireRateLimiting("bounded-api");
-
-    app.MapPost(ProductionMailboxClosureHttpContract.CapacityReconciliationRoute, async (
-        HttpContext context,
-        ProductionMailboxClosureStore closures,
-        CancellationToken cancellationToken) =>
-        await ProductionMailboxClosureHttpEndpoint.HandleCapacityReconciliationAsync(
-            context, closures, peerRpcListenUri.Port, cancellationToken))
-        .RequireRateLimiting("bounded-api");
-}
 
 app.MapPost("/api/staking/quorum/sign", async (
     HttpContext context,
@@ -824,16 +561,12 @@ app.MapPost(PrivacyRoutingOptions.PeerFramePath, (
         listenerPlan.PrivacyPeerPort,
         cancellationToken));
 
-app.MapPost(MailboxAuthorityForwardingHttpContract.StoreRoute, HandleMailboxAuthorityAsync);
-app.MapPost(MailboxAuthorityForwardingHttpContract.RetrieveRoute, HandleMailboxAuthorityAsync);
-app.MapPost(MailboxAuthorityForwardingHttpContract.AcknowledgeRoute, HandleMailboxAuthorityAsync);
-
 app.MapPost(MailboxWireHttpContract.PeerStoreRoute, (
     HttpContext context,
     ReplicatedMailboxOptions options,
     IServiceProvider services,
     CancellationToken cancellationToken) =>
-    HandleMailboxPeerAsync(
+    HandleCurrentMailboxPeerAsync(
         context,
         options,
         services,
@@ -847,7 +580,7 @@ app.MapPost(MailboxWireHttpContract.PeerTombstoneRoute, (
     ReplicatedMailboxOptions options,
     IServiceProvider services,
     CancellationToken cancellationToken) =>
-    HandleMailboxPeerAsync(
+    HandleCurrentMailboxPeerAsync(
         context,
         options,
         services,
@@ -865,131 +598,24 @@ app.MapGroupControlReplicaEndpoint(
 
 app.Run();
 
-static Task<IResult> HandleMailboxAuthorityAsync(
-    HttpContext context,
-    MailboxAuthorityForwardingConfiguration configuration,
-    MailboxAuthorityForwardingIngressLimiter limiter,
-    MailboxAuthorityForwardingReplayGuard peerReplay,
-    ILocalNativeMailboxExitDispatcher localDispatcher,
-    RouterNodeOptions node,
-    IClock clock,
-    CancellationToken cancellationToken) =>
-    MailboxAuthorityForwardingHttpEndpoint.HandleAsync(
-        context,
-        configuration,
-        limiter,
-        peerReplay,
-        localDispatcher,
-        node,
-        clock,
-        NodeListenerConfiguration.Create(node).PrivacyPeerPort,
-        cancellationToken);
-
-static async Task<IResult> HandleMailboxPeerAsync(
-    HttpContext context,
-    ReplicatedMailboxOptions options,
-    IServiceProvider services,
-    MailboxHttpEndpointContract contract,
-    MailboxPeerReplicationOperation operation,
-    int peerListenerPort,
-    CancellationToken cancellationToken)
+static async Task<IResult> HandleCurrentMailboxPeerAsync(
+    HttpContext context, ReplicatedMailboxOptions options, IServiceProvider services,
+    MailboxHttpEndpointContract contract, MailboxPeerReplicationOperation operation,
+    int peerListenerPort, CancellationToken cancellationToken)
 {
-    if (!options.Enabled
-        || context.Connection.LocalPort != peerListenerPort
-        || !context.Request.IsHttps && !options.AllowInsecureHttpPeerTransport)
-    {
+    if (!options.Enabled || context.Connection.LocalPort != peerListenerPort || !context.Request.IsHttps)
         return Results.NotFound();
-    }
-
-    var limiter = services.GetRequiredService<MailboxPeerIngressLimiter>();
-    var clock = services.GetRequiredService<IClock>();
-    if (!limiter.TryEnter(
-            operation,
-            checked((ulong)clock.UtcNow.ToUnixTimeSeconds()),
-            out var lease))
+    var invalid = MailboxPeerHttpRequestValidator.Validate(context.Request, contract);
+    if (invalid is not null) return Results.StatusCode(MailboxWireHttpContract.StatusCode(invalid.Value));
+    try
     {
-        return Results.StatusCode(
-            MailboxWireHttpContract.StatusCode(
-                MailboxHttpFailure.RateOrConcurrencyExceeded));
+        var endpoint = services.GetService<CurrentMailboxPeerHttpEndpoint>();
+        return endpoint is null ? Results.StatusCode(StatusCodes.Status503ServiceUnavailable) :
+            await endpoint.HandleAsync(context, contract, operation, cancellationToken);
     }
-
-    using (lease)
-    using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
-    {
-        deadline.CancelAfter(TimeSpan.FromSeconds(contract.RequestTimeoutSeconds));
-        try
-        {
-            var preflight = MailboxPeerHttpRequestValidator.Validate(context.Request, contract);
-            if (preflight is not null)
-            {
-                return Results.StatusCode(
-                    MailboxWireHttpContract.StatusCode(preflight.Value));
-            }
-
-            var contentLength = context.Request.ContentLength!.Value;
-            var body = new byte[checked((int)contentLength)];
-            await context.Request.Body.ReadExactlyAsync(body, deadline.Token);
-            var receiver = services.GetRequiredService<MailboxReplicaReceiver>();
-            var result = await receiver.ReceiveAsync(body, operation, deadline.Token);
-            if (result.Status == MailboxPeerReceiveStatus.Accepted)
-            {
-                return Results.Bytes(
-                    result.CanonicalResponse.ToArray(),
-                    contract.ResponseContentType);
-            }
-
-            var failure = result.Status switch
-            {
-                MailboxPeerReceiveStatus.Malformed =>
-                    MailboxHttpFailure.MalformedCanonicalBody,
-                MailboxPeerReceiveStatus.AuthenticationFailed =>
-                    MailboxHttpFailure.AuthenticationFailed,
-                MailboxPeerReceiveStatus.AuthorizationFailed =>
-                    MailboxHttpFailure.AuthorizationFailed,
-                MailboxPeerReceiveStatus.Conflict =>
-                    MailboxHttpFailure.ReplayOrIdempotencyConflict,
-                MailboxPeerReceiveStatus.RateLimited =>
-                    MailboxHttpFailure.RateOrConcurrencyExceeded,
-                MailboxPeerReceiveStatus.DependencyUnavailable =>
-                    MailboxHttpFailure.DependencyUnavailable,
-                _ => MailboxHttpFailure.AuthorizationFailed
-            };
-            if (result.Status == MailboxPeerReceiveStatus.Malformed)
-            {
-                var protocolError = "unknown";
-                try
-                {
-                    _ = MailboxPeerWireV2Codec.Decode(body);
-                }
-                catch (MailboxPeerReplicationException exception)
-                {
-                    protocolError = exception.Error.ToString();
-                }
-                services.GetRequiredService<ILoggerFactory>()
-                    .CreateLogger("XNode.MailboxPeerIngress")
-                    .LogWarning(
-                        "Mailbox peer canonical decode rejected a bounded request: length={RequestLength}, prq2Magic={Prq2Magic}, protocolError={ProtocolError}.",
-                        body.Length,
-                        body.AsSpan().StartsWith("PRQ2"u8),
-                        protocolError);
-            }
-            return result.Status == MailboxPeerReceiveStatus.Disabled
-                ? Results.NotFound()
-                : Results.StatusCode(MailboxWireHttpContract.StatusCode(failure));
-        }
-        catch (EndOfStreamException)
-        {
-            return Results.StatusCode(
-                MailboxWireHttpContract.StatusCode(
-                    MailboxHttpFailure.MalformedCanonicalBody));
-        }
-        catch (OperationCanceledException) when (
-            deadline.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-        {
-            return Results.StatusCode(
-                MailboxWireHttpContract.StatusCode(MailboxHttpFailure.DeadlineExceeded));
-        }
-    }
+    catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException
+        or CryptographicException or InvalidOperationException or ArgumentException)
+    { return Results.StatusCode(StatusCodes.Status503ServiceUnavailable); }
 }
 
 public sealed class MailboxStoreHostedService : IHostedService

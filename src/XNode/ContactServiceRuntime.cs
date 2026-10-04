@@ -623,7 +623,7 @@ internal sealed class ContactServiceUnavailableException(string message)
 /// </summary>
 public sealed class PrivacyTerminalExitDispatcher : INativeMailboxExitDispatcher
 {
-    private readonly RoutedNativeMailboxExitDispatcher mailbox;
+    private readonly INativeMailboxExitDispatcher mailbox;
     private readonly IContactServiceOpaqueDispatcher contact;
     private readonly GroupControlOnionTerminalAdapter groupControl;
     private readonly ContactCoordinationOnionDispatcher? coordination;
@@ -631,7 +631,7 @@ public sealed class PrivacyTerminalExitDispatcher : INativeMailboxExitDispatcher
     private long failureLogTimestamp;
 
     public PrivacyTerminalExitDispatcher(
-        RoutedNativeMailboxExitDispatcher mailbox,
+        INativeMailboxExitDispatcher mailbox,
         IContactServiceOpaqueDispatcher contact,
         GroupControlOnionTerminalAdapter groupControl)
     {
@@ -640,7 +640,7 @@ public sealed class PrivacyTerminalExitDispatcher : INativeMailboxExitDispatcher
         this.groupControl = groupControl ?? throw new ArgumentNullException(nameof(groupControl));
     }
 
-    internal PrivacyTerminalExitDispatcher(RoutedNativeMailboxExitDispatcher mailbox,
+    internal PrivacyTerminalExitDispatcher(INativeMailboxExitDispatcher mailbox,
         IContactServiceOpaqueDispatcher contact, GroupControlOnionTerminalAdapter groupControl,
         ContactCoordinationOnionDispatcher? coordination,
         ILogger<PrivacyTerminalExitDispatcher>? logger = null) : this(mailbox, contact, groupControl)
@@ -652,7 +652,7 @@ public sealed class PrivacyTerminalExitDispatcher : INativeMailboxExitDispatcher
     // Keeps focused tests and non-hosted callers fail-closed while Program uses
     // the full three-way production composition above.
     public PrivacyTerminalExitDispatcher(
-        RoutedNativeMailboxExitDispatcher mailbox,
+        INativeMailboxExitDispatcher mailbox,
         IContactServiceOpaqueDispatcher contact)
         : this(
             mailbox,

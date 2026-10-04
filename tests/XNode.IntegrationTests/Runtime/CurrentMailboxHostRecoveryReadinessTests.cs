@@ -11,6 +11,29 @@ namespace XNode.IntegrationTests.Runtime;
 
 public sealed class CurrentMailboxHostRecoveryReadinessTests
 {
+    [Fact]
+    public async Task ActualProgramDefaultRoutesHaveCurrentHealthAndNoRetiredMailboxFallback()
+    {
+        using var factory = new RecoveryOnlyFactory(false, true);
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+        using var health = await client.GetAsync("/health/ready");
+        Assert.Equal("application/json", health.Content.Headers.ContentType?.MediaType);
+        using var body = JsonDocument.Parse(await health.Content.ReadAsByteArrayAsync());
+        Assert.Equal("disabled", body.RootElement.GetProperty("currentMailboxHost").GetProperty("state").GetString());
+        Assert.False(body.RootElement.TryGetProperty("mailboxProductionAuthority", out _));
+        Assert.False(body.RootElement.TryGetProperty("mailboxClient", out _));
+        // This independent publisher was accidentally removed with retired DI.
+        // A missing artifact is unavailable, not an endpoint-construction 500.
+        using var catalog = await client.GetAsync("/api/network/membership-route-catalog");
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, catalog.StatusCode);
+        foreach (var route in new[] { "/api/client/mailbox/v2/store", "/api/client/mailbox/v2/retrieve",
+            "/api/client/mailbox/v2/acknowledge" })
+        {
+            using var result = await client.PostAsync(route, new ByteArrayContent([]));
+            Assert.Equal(HttpStatusCode.NotFound, result.StatusCode);
+        }
+    }
+
     [Theory]
     [InlineData(true, true, false, "unconfigured")]
     [InlineData(true, false, false, "not-running")]
