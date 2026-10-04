@@ -51,9 +51,10 @@ dotnet test tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj -c Releas
 
 The last filter term matches no test: the **32** executed cases are the actual
 factory/configuration and command-input tests above, not an additional operation
-custody suite. The required unfiltered `XNode.slnx` full run is in progress on
-the fixed product source, without filters or compile whitelists. Its result is
-not inferred from the earlier full1224 matrix. The solution maps external
+custody suite. The required unfiltered `XNode.slnx` full run completes exit0 on
+the fixed product source: **1238 passed /0 failed /0 skipped** (integration859,
+profile107, unit272), integration29m46s, without filters or compile whitelists.
+This receipt, not the earlier full1224 matrix, qualifies this local source. The solution maps external
 Protocol references to Debug and Node projects to Release; source-cutover is not
 a uniformly Release shipping package matrix.
 
@@ -74,6 +75,9 @@ rehearsal resources are cleaned, with the existing six-container dev scope retai
 | DevOps `artifacts/s05-explicit-mailbox-enrollment/transport-smoke/runtime.gate.json` | `66baa316551dd43f6117e136edf2d657100052c4d260e1e8d24ba2c58ca61ce2` |
 | DevOps `artifacts/s05-explicit-mailbox-enrollment/transport-smoke/runtime.snapshot.json` | `b03a2da387f658048884a4ae451c918c4e29e6c584d3dfc22180dc0eb864701d` |
 | DevOps `artifacts/rehearsals/multi-node/20261004T162359912Z-cc85110d492b/test-results/multi-node-topology.json` | `dfce0aee76ceb6063e89272de3756831548cd232a981f93b9ea727b6a51c0ec0` |
+| Full integration859 `artifacts/s05-explicit-mailbox-enrollment/full-final/nikit_SURFACE-LT_2026-10-04_21_21_03_net10.0.trx` | `a722a86ccb34701abc149c4299d22492b870454b02247980de87ae942b8eeb83` |
+| Full profile107 `artifacts/s05-explicit-mailbox-enrollment/full-final/nikit_SURFACE-LT_2026-10-04_21_50_55_net10.0.trx` | `7690771c488b3f995eb6c36f50dc646670cc771268f7ea6e576437952f7be44a` |
+| Full unit272 `artifacts/s05-explicit-mailbox-enrollment/full-final/nikit_SURFACE-LT_2026-10-04_21_51_22_net10.0.trx` | `381806394ddb55dc56f8b9335e0ef0b4ec2282a54edf7fa893e087d0801cfab8` |
 
 ## Still open
 
