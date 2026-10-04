@@ -22,9 +22,11 @@ namespace XNode.IntegrationTests.Runtime;
 /// and monotonic clock are in-memory. This does not exercise a KEM exchange,
 /// transport/TLS, claim consumption, client composition or physical devices.
 /// </summary>
-internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
-    IDeepIdV2CurrentDirectoryProofSource, IDeepIdV2PreKeyPlacementSource, IDeepIdV2PreKeyClaimPlacementSource,
-    IOnionMonotonicClock, IDeepIdV2ContactStoreAuthoritySource
+internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable, IOnionMonotonicClock
+#if !DEEP_REGISTRY_MGR1_FIXTURE
+    , IDeepIdV2CurrentDirectoryProofSource, IDeepIdV2PreKeyPlacementSource,
+    IDeepIdV2PreKeyClaimPlacementSource, IDeepIdV2ContactStoreAuthoritySource
+#endif
 {
     internal static readonly byte[] Network = Bytes(16, 0x11);
     internal static readonly byte[] Boot = Bytes(16, 0xf3);
@@ -55,7 +57,10 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
     internal IReadOnlyList<ReadOnlyMemory<byte>> Descriptors { get; private set; } = [];
     internal ReadOnlyMemory<byte> Projection { get; private set; }
     internal ReadOnlyMemory<byte> MailboxAuthority { get; private set; }
+    private ReadOnlyMemory<byte> publicationPlacementHash;
+#if !DEEP_REGISTRY_MGR1_FIXTURE
     internal ContactServicePlacementCapability Placement { get; private set; } = null!;
+#endif
     internal ParsedXpp1V2 Publication { get; private set; } = null!;
     // Public signed candidates only; no retained authoring key or verified-capability seam.
     internal IReadOnlyList<ParsedXpp1V2> InventoryHistory { get; private set; } = [];
@@ -203,9 +208,12 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
         MailboxAuthority = operational.ExactPma2;
         var placement = ContactServicePlacementFactory.Create(network,
             ContactServiceRequestKind.PublishPreKeyInventory, service);
+        publicationPlacementHash = placement.PlacementHash.ToArray();
+#if !DEEP_REGISTRY_MGR1_FIXTURE
         Placement = ContactServicePlacementCapability.FromNetcodec(placement,
             ContactServiceRequestKind.PublishPreKeyInventory, service,
             Freshness.TrustedUpperUnixSeconds);
+#endif
 
         var seed = new byte[32];
         var agreement = new byte[32];
@@ -269,7 +277,7 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
                     xpiFields, PublicKeyAuth.SignDetached(
                         DeepIdV2PreKeyManifestCodec.CreateSignatureInput(xpiFields), key.PrivateKey)));
                 return DeepIdV2PreKeyPublicationCodec.Decode(DeepIdV2PreKeyPublicationCodec.Encode(
-                    Network, Bytes(32, operation), Placement.PlacementHash.Span, manifest, members, last));
+                    Network, Bytes(32, operation), publicationPlacementHash.Span, manifest, members, last));
             }
             Publication = Inventory(1, new byte[32], 0xd1);
             var inventoryHistory = new List<ParsedXpp1V2> { Publication };
@@ -433,6 +441,7 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
         return ValueTask.FromResult(Freshness);
     }
 
+#if !DEEP_REGISTRY_MGR1_FIXTURE
     public ValueTask<ContactServicePlacementCapability> MintPreKeyPublicationAsync(
         ParsedDid2 publisher, ReadOnlyMemory<byte> serviceCapability, CancellationToken cancellationToken)
     {
@@ -453,6 +462,7 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
         return ValueTask.FromResult(ContactServicePlacementCapability.FromNetcodec(placement,
             ContactServiceRequestKind.ClaimPreKey, serviceCapability, Freshness.TrustedUpperUnixSeconds));
     }
+#endif
 
     public ValueTask<OnionMonotonicReading> ReadAsync(CancellationToken cancellationToken)
     {
@@ -463,6 +473,7 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
 
     internal int PublicationReads { get; private set; }
 
+#if !DEEP_REGISTRY_MGR1_FIXTURE
     public ValueTask<DeepIdV2ContactStoreAuthority> ReadPublicationAuthorityAsync(CancellationToken cancellationToken)
     {
         PublicationReads++;
@@ -473,6 +484,7 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable,
             MailboxAuthorityV2Verifier.Verify(Authority, MailboxAuthority.Span,
                 Freshness.TrustedLowerUnixSeconds, Freshness.TrustedUpperUnixSeconds)));
     }
+#endif
 
     public void Dispose() { OneTimeContactObject?.Dispose(); foreach (var node in nodes) node.Dispose(); }
 
