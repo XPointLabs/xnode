@@ -450,6 +450,7 @@ internal sealed class ProductionContactServiceOpaqueDispatcher :
             };
             var exactResponse = await mailboxGrantAuthority.AuthorizeAsync(
                     new MailboxGrantAuthorityRequest(
+                        placement.VerifiedPlacement,
                         canonicalRequest.ToArray(),
                         resultCode,
                         resultCode == MailboxGrantAcquisitionResultCode.Success

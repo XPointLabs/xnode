@@ -85,8 +85,13 @@ dotnet test Deep.Client.Shared.Production.slnx --configuration Release -m:1 --lo
 Final reviewed connected/key-selection assertions: **7/7**, no skips, terminal0.
 The earlier broader connected run was **116/116**, terminal0, before the last
 test-only permanent-read negative assertions; it is not labelled final-source
-qualification. The full Node and Shared production gates are still running at
-this checkpoint; no terminal result is inferred from partial pass output.
+qualification. The full Node and Shared production gates subsequently completed
+on this source matrix: **Node1173/1173** (integration794, unit272, profile107),
+terminal0, no skips; **Shared547/547**, terminal0, no skips. Integration took
+26m20s and Shared31m57s. These results qualify this local source batch, not later
+private-hop edits or installed packages. The subsequent
+[private authority-hop checkpoint](s00-private-authority-2026-10-04.md) owns that
+new batch and its still-pending full Node result.
 
 Fresh Protocol full: **2079 pass / 1 fail / 12 skips**, terminal1, split into
 Protocol1843/1/12, MembershipRoutes131 and ProfileCarrier105. The sole actual
@@ -128,6 +133,14 @@ Receipt hashes (ignored local artifacts):
   `8e909486fef3885a3e1f034c2ecb7b6712632cc163edd5e392d51ec1ee1bf9c5`.
 - Rehearsal `deep-devops/artifacts/rehearsals/multi-node/20261004T074557481Z-ba2c67603737/test-results/multi-node-topology.json`:
   `7de4f9156fdb917b675218fa27defa1d646114cde416b93b1aac945b72ec1c28`.
+- Node profile107 `artifacts/s00-contact-descriptor/full/nikit_SURFACE-LT_2026-10-04_12_43_05_net10.0.trx`:
+  `011662f73883d6c6a7865c076e837145d859e9de2cae16de53adf170ac0716d8`.
+- Node integration794 `artifacts/s00-contact-descriptor/full/nikit_SURFACE-LT_2026-10-04_12_43_05_net10.0[1].trx`:
+  `889bbc2da04a8e1aed5569db4459dcccc6cb2aa3bc23d1a4af226fa1bdd34745`.
+- Node unit272 `artifacts/s00-contact-descriptor/full/nikit_SURFACE-LT_2026-10-04_12_43_07_net10.0.trx`:
+  `b8466f20a91ee02c97b569d2c0a16316bcb7598fe01021aa1c7052b732ec8673`.
+- Shared547 `deep-client-shared/artifacts/s00-contact-descriptor/full-production/nikit_SURFACE-LT_2026-10-04_12_44_30_net10.0.trx`:
+  `e351b0a711d1e4569c2071ce813eb0d67343ead2e86600f0d5b88985974395f9`.
 
 Strict registry/generator, ownership mapping219/packageMissing0 and executable
 manifest integrity-only pass; none is package/executable release qualification.

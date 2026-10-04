@@ -16,11 +16,14 @@ namespace XNode.IntegrationTests.Runtime;
 public sealed class ContactCoordinationOnionDispatcherTests
 {
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task BothCanonicalTargetsBindSelectedGatewayAndRejectSubstitutionWithoutSuccess(bool successor)
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task BothCanonicalTargetsBindSelectedGatewayAndRejectSubstitutionWithoutSuccess(bool successor, bool distinctIds)
     {
-        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync(authorContactPublication: true, authorRouteSuccessor: successor);
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync(authorContactPublication: true,
+            authorRouteSuccessor: successor, distinctNodeIdentities: distinctIds);
         var route = fixture.ContactRoute;
         var floor = fixture.Freshness.NextProtectedLkg;
         var request = successor ? fixture.RouteSuccessorRequest : new ContactRouteAuthorityWireRequest(fixture.NetworkContext.NetworkId.Span,
@@ -39,7 +42,7 @@ public sealed class ContactCoordinationOnionDispatcherTests
         var placement = ContactServicePlacementFactory.Create(fixture.NetworkContext,
             ContactServiceRequestKind.CoordinateContact, route.Route.Authorization.Field(6));
         var signer = fixture.Node(placement.RankedReplicaNodeIds[0].Span);
-        var node = new RouterNodeOptions { RouterId = Convert.ToHexStringLower(signer.Ed25519PublicKey.Span),
+        var node = new RouterNodeOptions { RouterId = Convert.ToHexStringLower(placement.RankedReplicaNodeIds[0].Span),
             Ed25519PrivateKey = Convert.ToHexStringLower(signer.Seed) };
         var calls = 0; var rejectAfterForward = false; var corruptPair = false;
         var backend = new HttpContactCoordinationBackendClient(new("https://authority.example/"),
@@ -57,6 +60,8 @@ public sealed class ContactCoordinationOnionDispatcherTests
                     message.Headers.GetValues(ContactCoordinationPeerAuthentication.SignatureHeader).Single());
                 Assert.True(ContactCoordinationPeerAuthentication.Verify(headers,
                     DeepIdV2PublicationAuthorityFixture.Network, target, exact, DateTimeOffset.UtcNow));
+                Assert.Equal(Convert.ToHexStringLower(signer.Ed25519PublicKey.Span), headers.NodePublicKeyHex);
+                if (distinctIds) Assert.NotEqual(node.RouterId, headers.NodePublicKeyHex);
                 if (rejectAfterForward) fixture.RejectProof = true;
                 var body = (target == ContactCoordinationTarget.Route ? routeResponse : publicationResponse).ToArray();
                 if (corruptPair) body[24] ^= 1;

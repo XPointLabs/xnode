@@ -4,6 +4,7 @@ using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using Deep.Protocol.ContactV1;
 using Deep.Protocol.ContactV2;
+using Deep.Protocol.DeepExtension.PrivacyRouting;
 using Rebex.Security.Cryptography;
 using XNode.Core;
 
@@ -49,8 +50,9 @@ internal sealed class HttpContactCoordinationBackendClient
     };
 
     internal async ValueTask<byte[]> SendAsync(ContactCoordinationTarget target, ReadOnlyMemory<byte> exactRequest,
-        CancellationToken cancellationToken)
+        VerifiedOnionNetworkContext verifiedNetwork, CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(verifiedNetwork);
         cancellationToken.ThrowIfCancellationRequested();
         var limits = target switch
         {
@@ -75,14 +77,18 @@ internal sealed class HttpContactCoordinationBackendClient
                 (publication = ContactPublicationAuthorityWireCodec.DecodeRequest(body)).NetworkId;
             if (!CryptographicOperations.FixedTimeEquals(requestNetwork.Span, network))
                 throw new ArgumentException("Private coordination request belongs to another network.");
+            verifiedNetwork.EnsureCurrent();
+            if (!CryptographicOperations.FixedTimeEquals(verifiedNetwork.NetworkId.Span, network))
+                throw new CryptographicException("Private coordination requires the exact verified network.");
             var seed = Convert.FromHexString(node.GetEd25519PrivateKey());
             byte[]? input = null;
             try
             {
                 var signer = new Ed25519(); signer.FromSeed(seed);
                 var publicKey = signer.GetPublicKey();
-                if (RouterId.FromBytes(publicKey) != node.GetRouterId())
-                    throw new InvalidOperationException("Private coordination signer is not the registered local node.");
+                if (!CryptographicOperations.FixedTimeEquals(publicKey,
+                    verifiedNetwork.ResolveNodeIdentityPublicKey(node.GetRouterId().ToBytes()).Span))
+                    throw new CryptographicException("Private coordination signer differs from its signed node descriptor.");
                 var now = clock.UtcNow.ToUnixTimeMilliseconds();
                 var nonce = RandomNumberGenerator.GetBytes(16);
                 input = ContactCoordinationPeerAuthentication.GetSigningInput(network, target, publicKey, now, nonce, body);
@@ -123,6 +129,7 @@ internal sealed class HttpContactCoordinationBackendClient
                 message.Headers.Add(ContactCoordinationPeerAuthentication.SignatureHeader, authentication.SignatureHex);
                 using var response = await client.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, attemptToken).ConfigureAwait(false);
                 attemptToken.ThrowIfCancellationRequested();
+                verifiedNetwork.EnsureCurrent();
                 if (response.StatusCode != HttpStatusCode.OK || response.Content.Headers.ContentLength is not long length ||
                     length < limits.Item3 || length > limits.Item4 || response.Content.Headers.ContentEncoding.Count != 0 ||
                     !string.Equals(response.Content.Headers.ContentType?.ToString(), limits.Item7, StringComparison.Ordinal))
@@ -131,6 +138,7 @@ internal sealed class HttpContactCoordinationBackendClient
                 attemptToken.ThrowIfCancellationRequested();
                 if (route is not null) _ = ContactRouteAuthorityWireCodec.DecodeResponse(route, result);
                 else _ = ContactPublicationAuthorityWireCodec.DecodeResponse(publication!, result);
+                verifiedNetwork.EnsureCurrent();
                 return result;
             }
             finally { CryptographicOperations.ZeroMemory(body); }

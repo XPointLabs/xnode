@@ -201,6 +201,16 @@ node key. No mailbox issuer key is installed on XNode. Both selected stores
 independently attest their current durable publication/role lookup; exact retry
 preserves the original result deadline. Existing observer, proof/network floor,
 V2 staging and candidate environment guards still apply.
+The forwarding node ID is an opaque descriptor identity, not its Ed25519 public
+key. The grant client requires the locally verified ResolveInvite placement for
+the exact locator and checks its signing seed against that descriptor before
+HTTP; the JSON admission still carries the actual node ID. The private route/
+publication backend likewise checks its seed against the independently verified
+network supplied by the selected gateway. DR-0048's `Deep-Coordination-Node`
+header remains the public signing key (and its operator allow-list remains
+mandatory); it is not replaced by an ID. Neither transcript or endpoint changes.
+Both clients recheck the verified network around the HTTP response. These local
+checks do not provision Registry ingress, signer custody or deployed endpoints.
 This opt-in composition is not production activation or device delivery evidence.
 
 The acquisition consumer now follows

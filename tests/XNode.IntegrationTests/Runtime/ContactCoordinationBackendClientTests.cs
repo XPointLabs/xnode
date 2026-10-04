@@ -21,6 +21,7 @@ public sealed class ContactCoordinationBackendClientTests
     [Fact]
     public async Task ExactRetryOwnsBytesAndRenewsOnlyTransportNonce()
     {
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync(distinctNodeIdentities: true);
         var body = Request(); var original = body.ToArray();
         var held = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -34,13 +35,14 @@ public sealed class ContactCoordinationBackendClientTests
             var exact = await message.Content.ReadAsByteArrayAsync(ct);
             var headers = Headers(message);
             Assert.True(ContactCoordinationPeerAuthentication.Verify(headers, Network, ContactCoordinationTarget.Route, exact, DateTimeOffset.UtcNow));
+            Assert.NotEqual(FixtureNode(fixture).RouterId, headers.NodePublicKeyHex);
             observed.Add(exact); nonces.Add(headers.NonceHex);
             return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
-        }));
-        var pending = client.SendAsync(ContactCoordinationTarget.Route, body, default).AsTask();
+        }), fixture);
+        var pending = client.SendAsync(ContactCoordinationTarget.Route, body, fixture.NetworkContext, default).AsTask();
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(5)); body[^1] ^= 1; held.SetResult();
         await Assert.ThrowsAsync<IOException>(() => pending);
-        await Assert.ThrowsAsync<IOException>(() => client.SendAsync(ContactCoordinationTarget.Route, original, default).AsTask());
+        await Assert.ThrowsAsync<IOException>(() => client.SendAsync(ContactCoordinationTarget.Route, original, fixture.NetworkContext, default).AsTask());
         Assert.Equal(2, count);
         Assert.All(observed, exact => Assert.Equal(original, exact));
         Assert.NotEqual(nonces[0], nonces[1]);
@@ -49,12 +51,13 @@ public sealed class ContactCoordinationBackendClientTests
     [Fact]
     public async Task CancellationBoundsIgnoredHandlerAndDisposesLateResponse()
     {
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync(distinctNodeIdentities: true);
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var late = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
         var content = new TrackedContent();
-        var client = Client(() => new Handler((_, _) => { entered.SetResult(); return late.Task; }));
+        var client = Client(() => new Handler((_, _) => { entered.SetResult(); return late.Task; }), fixture);
         using var cancel = new CancellationTokenSource();
-        var pending = client.SendAsync(ContactCoordinationTarget.Route, Request(), cancel.Token).AsTask();
+        var pending = client.SendAsync(ContactCoordinationTarget.Route, Request(), fixture.NetworkContext, cancel.Token).AsTask();
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(5)); cancel.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending.WaitAsync(TimeSpan.FromSeconds(5)));
         late.SetResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
@@ -70,6 +73,7 @@ public sealed class ContactCoordinationBackendClientTests
     [InlineData("unpaired")]
     public async Task NoncanonicalResponseNeverReturnsAuthority(string mutation)
     {
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync(distinctNodeIdentities: true);
         var count = 0;
         var client = Client(() => new Handler((_, _) =>
         {
@@ -83,23 +87,36 @@ public sealed class ContactCoordinationBackendClientTests
             var response = new HttpResponseMessage(mutation == "redirect" ? HttpStatusCode.TemporaryRedirect : HttpStatusCode.OK) { Content = content };
             response.Headers.Location = new Uri("https://other.example/");
             return Task.FromResult(response);
-        }));
-        await Assert.ThrowsAsync<IOException>(() => client.SendAsync(ContactCoordinationTarget.Route, Request(), default).AsTask());
+        }), fixture);
+        await Assert.ThrowsAsync<IOException>(() => client.SendAsync(ContactCoordinationTarget.Route, Request(), fixture.NetworkContext, default).AsTask());
         Assert.Equal(1, count);
     }
 
     [Fact]
     public async Task UnknownTargetWrongNetworkHostileBodyAndWrongNodeRejectBeforeIo()
     {
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync(distinctNodeIdentities: true);
         var count = 0;
-        var client = Client(() => { count++; return new Handler((_, _) => throw new InvalidOperationException()); });
-        await Assert.ThrowsAsync<ArgumentException>(() => client.SendAsync((ContactCoordinationTarget)3, Request(), default).AsTask());
-        await Assert.ThrowsAsync<ArgumentException>(() => client.SendAsync(ContactCoordinationTarget.Route, new byte[1_000_000], default).AsTask());
-        await Assert.ThrowsAsync<ArgumentException>(() => client.SendAsync(ContactCoordinationTarget.Route, Request(B(16, 0x12)), default).AsTask());
-        var node = Node(); node.RouterId = Convert.ToHexStringLower(B(32, 0x99));
-        var wrong = new HttpContactCoordinationBackendClient(new("https://authority.example/"), Network, node, new SystemClock(), () =>
-            { count++; return new Handler((_, _) => throw new InvalidOperationException()); });
-        await Assert.ThrowsAsync<InvalidOperationException>(() => wrong.SendAsync(ContactCoordinationTarget.Route, Request(), default).AsTask());
+        var client = Client(() => { count++; return new Handler((_, _) => throw new InvalidOperationException()); }, fixture);
+        await Assert.ThrowsAsync<ArgumentException>(() => client.SendAsync((ContactCoordinationTarget)3, Request(), fixture.NetworkContext, default).AsTask());
+        await Assert.ThrowsAsync<ArgumentException>(() => client.SendAsync(ContactCoordinationTarget.Route, new byte[1_000_000], fixture.NetworkContext, default).AsTask());
+        await Assert.ThrowsAsync<ArgumentException>(() => client.SendAsync(ContactCoordinationTarget.Route, Request(B(16, 0x12)), fixture.NetworkContext, default).AsTask());
+        foreach (var mode in new[] { "wrong-key", "node-id-as-seed", "public-key-as-node", "unknown-node" })
+        {
+            var node = FixtureNode(fixture);
+            if (mode == "wrong-key") node.Ed25519PrivateKey = Convert.ToHexStringLower(Seed);
+            if (mode == "node-id-as-seed") node.Ed25519PrivateKey = node.RouterId;
+            if (mode == "public-key-as-node") node.RouterId = Convert.ToHexStringLower(
+                fixture.NetworkContext.ResolveNodeIdentityPublicKey(node.GetRouterId().ToBytes()).Span);
+            if (mode == "unknown-node") node.RouterId = new string('f', 64);
+            var wrong = new HttpContactCoordinationBackendClient(new("https://authority.example/"), Network, node, new SystemClock(), () =>
+                { count++; return new Handler((_, _) => throw new InvalidOperationException()); });
+            if (mode is "public-key-as-node" or "unknown-node")
+                await Assert.ThrowsAsync<Deep.Protocol.DeepExtension.PrivacyRouting.OnionBoundaryException>(() =>
+                    wrong.SendAsync(ContactCoordinationTarget.Route, Request(), fixture.NetworkContext, default).AsTask());
+            else await Assert.ThrowsAsync<CryptographicException>(() =>
+                wrong.SendAsync(ContactCoordinationTarget.Route, Request(), fixture.NetworkContext, default).AsTask());
+        }
         Assert.Equal(0, count);
     }
 
@@ -121,8 +138,14 @@ public sealed class ContactCoordinationBackendClientTests
         Assert.Null(handler.SslOptions.RemoteCertificateValidationCallback);
     }
 
-    private static HttpContactCoordinationBackendClient Client(Func<HttpMessageHandler> factory) =>
-        new(new("https://authority.example/"), Network, Node(), new SystemClock(), factory);
+    private static HttpContactCoordinationBackendClient Client(Func<HttpMessageHandler> factory, DeepIdV2PublicationAuthorityFixture fixture) =>
+        new(new("https://authority.example/"), Network, FixtureNode(fixture), new SystemClock(), factory);
+    private static RouterNodeOptions FixtureNode(DeepIdV2PublicationAuthorityFixture fixture)
+    {
+        var id = fixture.Placement.ReplicaIds[0];
+        return new() { RouterId = Convert.ToHexStringLower(id.Span),
+            Ed25519PrivateKey = Convert.ToHexStringLower(fixture.Node(id.Span).Seed) };
+    }
     private static RouterNodeOptions Node()
     {
         var key = PublicKeyAuth.GenerateKeyPair(Seed);

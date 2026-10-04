@@ -3,13 +3,16 @@ using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text.Json;
 using Deep.Protocol.ContactV1;
+using Deep.Protocol.DeepExtension.PrivacyRouting;
 using Deep.Protocol.Registry;
+using Deep.Protocol.XPointNetworkV1;
 using Sodium;
 using XNode.Core;
 
 namespace XNode;
 
 internal sealed record MailboxGrantAuthorityRequest(
+    VerifiedContactServicePlacement Placement,
     ReadOnlyMemory<byte> ExactXmg1,
     MailboxGrantAcquisitionResultCode ResultCode,
     ReadOnlyMemory<byte> ExactRouteClosure,
@@ -42,6 +45,7 @@ internal sealed class UnavailableMailboxGrantAuthorityClient
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(request.Placement);
         cancellationToken.ThrowIfCancellationRequested();
         throw new ContactServiceUnavailableException(
             "The internal mailbox grant authority is unavailable.");
@@ -74,6 +78,10 @@ internal sealed class HttpsMailboxGrantAuthorityClient
         this.httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         this.node = node ?? throw new ArgumentNullException(nameof(node));
         ArgumentNullException.ThrowIfNull(authorityOrigin);
+        if (!authorityOrigin.IsAbsoluteUri || authorityOrigin.Scheme != Uri.UriSchemeHttps ||
+            authorityOrigin.AbsolutePath != "/" || authorityOrigin.UserInfo.Length != 0 ||
+            authorityOrigin.Query.Length != 0 || authorityOrigin.Fragment.Length != 0)
+            throw new ArgumentException("Private grant authority requires one credential-free HTTPS origin.", nameof(authorityOrigin));
         this.clock = clock ?? throw new ArgumentNullException(nameof(clock));
         endpoint = new UriBuilder(
             authorityOrigin.Scheme,
@@ -87,6 +95,7 @@ internal sealed class HttpsMailboxGrantAuthorityClient
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(request.Placement);
         cancellationToken.ThrowIfCancellationRequested();
         if (request.ReplicaEvidence.Count != 2)
             throw new ContactServiceUnavailableException(
@@ -99,13 +108,21 @@ internal sealed class HttpsMailboxGrantAuthorityClient
         byte[]? privateKey = null;
         try
         {
+            var exactRequest = ContactCodec.Decode(DeepProtocolIdentifiers.Magic.XMG1, request.ExactXmg1.Span);
+            var placement = request.Placement;
+            placement.Network.EnsureCurrent();
+            if (!placement.Binds(ContactServiceRequestKind.ResolveInvite, exactRequest.Field(3)) ||
+                !CryptographicOperations.FixedTimeEquals(placement.Network.NetworkId.Span, exactRequest.Field(1).Span) ||
+                !placement.RankedReplicaNodeIds.Any(id => CryptographicOperations.FixedTimeEquals(id.Span, nodeId)))
+                throw new ContactServiceUnavailableException("The forwarding node has no exact current resolver placement.");
             var keyPair = PublicKeyAuth.GenerateKeyPair(seed);
             privateKey = keyPair.PrivateKey;
-            if (!CryptographicOperations.FixedTimeEquals(keyPair.PublicKey, nodeId))
+            if (!CryptographicOperations.FixedTimeEquals(keyPair.PublicKey,
+                placement.Network.ResolveNodeIdentityPublicKey(nodeId).Span))
                 throw new ContactServiceUnavailableException(
-                    "The XNode signing seed does not match its RouterId.");
+                    "The XNode signing seed does not match its signed descriptor.");
             var signingBytes = MailboxGrantAuthorityAuthentication.GetSigningBytes(
-                request.ExactXmg1.Span,
+                exactRequest.CanonicalBytes.Span,
                 request.ResultCode,
                 request.ExactRouteClosure.Span,
                 request.ResultExpiresAtUnixSeconds,
@@ -114,7 +131,7 @@ internal sealed class HttpsMailboxGrantAuthorityClient
                 nonce);
             var signature = PublicKeyAuth.SignDetached(signingBytes, privateKey);
             var model = new ContactGrantAuthorityHttpRequest(
-                Base64Url(request.ExactXmg1.Span),
+                Base64Url(exactRequest.CanonicalBytes.Span),
                 checked((ushort)request.ResultCode),
                 Base64Url(request.ExactRouteClosure.Span),
                 request.RouteDisposition,
@@ -142,6 +159,7 @@ internal sealed class HttpsMailboxGrantAuthorityClient
                 message,
                 HttpCompletionOption.ResponseHeadersRead,
                 cancellationToken).ConfigureAwait(false);
+            placement.Network.EnsureCurrent();
             if (response.StatusCode != HttpStatusCode.OK
                 || !string.Equals(response.Content.Headers.ContentType?.MediaType,
                     ResponseMediaType, StringComparison.Ordinal)
@@ -158,7 +176,9 @@ internal sealed class HttpsMailboxGrantAuthorityClient
                 DeepProtocolIdentifiers.Magic.XMC2,
                 exact);
             ContactCodec.ValidateMailboxGrantResultBinding(
-                ContactCodec.Decode(DeepProtocolIdentifiers.Magic.XMG1, request.ExactXmg1.Span), decoded);
+                exactRequest, decoded);
+            placement.Network.EnsureCurrent();
+            cancellationToken.ThrowIfCancellationRequested();
             return decoded.CanonicalBytes.ToArray();
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -174,7 +194,8 @@ internal sealed class HttpsMailboxGrantAuthorityClient
             or CryptographicException
             or ContactFormatException
             or JsonException
-            or InvalidDataException)
+            or InvalidDataException
+            or OnionBoundaryException)
         {
             throw new ContactServiceUnavailableException(
                 "The internal mailbox grant authority hop failed closed.");

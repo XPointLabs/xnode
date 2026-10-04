@@ -40,7 +40,7 @@ internal sealed class ContactCoordinationOnionDispatcher(
             forwarded = true;
             phase = DiagnosticPhase.Backend;
             diagnostic.Check = CurrentnessCheck.None;
-            var body = await backend.SendAsync(parsed.Target, parsed.ExactBody, cancellationToken).ConfigureAwait(false);
+            var body = await backend.SendAsync(parsed.Target, parsed.ExactBody, before.Network, cancellationToken).ConfigureAwait(false);
             phase = DiagnosticPhase.AuthorityAfter;
             var after = await authoritySource.ReadPublicationAuthorityAsync(cancellationToken).ConfigureAwait(false);
             phase = DiagnosticPhase.CurrentnessAfter;

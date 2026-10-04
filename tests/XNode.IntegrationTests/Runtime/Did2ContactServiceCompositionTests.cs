@@ -159,6 +159,8 @@ public sealed class Did2ContactServiceCompositionTests
     [InlineData(false, false, false, false)]
     [InlineData(false, true, false, false)]
     [InlineData(true, false, false, false)]
+    [InlineData(true, true, false, false)]
+    [InlineData(true, true, true, false)]
     [InlineData(false, true, true, false)]
     [InlineData(false, true, true, true)]
     public async Task TwoSelectedStoresPublishResolveAndResumeExactAfterLostPeerResponse(bool grantHttp, bool distinctIds, bool socketHttp, bool wrongPin)
@@ -385,18 +387,77 @@ public sealed class Did2ContactServiceCompositionTests
         if (mode == "compressed") content.Headers.ContentEncoding.Add("gzip");
         using var client = new HttpClient(new GrantResponseHandler(content,
             mode == "http-error" ? HttpStatusCode.Forbidden : HttpStatusCode.OK));
-        var nodeId = fixture.Placement.ReplicaIds[0];
+        var placement = ContactServicePlacementFactory.Create(fixture.NetworkContext,
+            ContactServiceRequestKind.ResolveInvite, request.Field(3));
+        var nodeId = placement.RankedReplicaNodeIds[0];
         var node = new RouterNodeOptions { RouterId = Convert.ToHexStringLower(nodeId.Span),
             Ed25519PrivateKey = Convert.ToHexStringLower(fixture.Node(nodeId.Span).Seed) };
         var authority = new HttpsMailboxGrantAuthorityClient(client, node, new("https://issuer.example/"), new SystemClock());
-        var input = new MailboxGrantAuthorityRequest(owned.ExactXmg1, MailboxGrantAcquisitionResultCode.Unavailable,
-            default, 0, 0, expiry, [new(nodeId, new byte[64]), new(fixture.Placement.ReplicaIds[1], new byte[64])]);
+        var input = new MailboxGrantAuthorityRequest(placement, owned.ExactXmg1, MailboxGrantAcquisitionResultCode.Unavailable,
+            default, 0, 0, expiry, [new(nodeId, new byte[64]), new(placement.RankedReplicaNodeIds[1], new byte[64])]);
         if (mode == "current-failure")
             Assert.Equal(response, (await authority.AuthorizeAsync(input, default)).ToArray());
         else
             await Assert.ThrowsAsync<ContactServiceUnavailableException>(() => authority.AuthorizeAsync(input, default).AsTask());
         if (mode is "old-size" or "compressed" or "foreign-media-type" or "http-error" or "unknown-length")
             Assert.Equal(0, content.Reads);
+    }
+
+    [Theory]
+    [InlineData("wrong-key")]
+    [InlineData("node-id-as-seed")]
+    [InlineData("public-key-as-node")]
+    [InlineData("wrong-kind")]
+    [InlineData("wrong-shard")]
+    public async Task GrantHttpRequiresSelectedDescriptorSigningCustodyBeforeIo(string mode)
+    {
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync(authorContactPublication: true,
+            distinctNodeIdentities: true);
+        using var holder = new GrantSigner(0x51);
+        var owned = await DeepIdV2MailboxGrantRequestAuthor.AuthorDepositAsync(fixture.ContactRoute,
+            fixture.ContactPublication.LocatorHash, holder);
+        var request = ContactCodec.Decode("XMG1", owned.ExactXmg1.Span);
+        var placement = ContactServicePlacementFactory.Create(fixture.NetworkContext,
+            ContactServiceRequestKind.ResolveInvite, request.Field(3));
+        var nodeId = placement.RankedReplicaNodeIds[0];
+        var seed = fixture.Node(nodeId.Span).Seed;
+        var node = new RouterNodeOptions { RouterId = Convert.ToHexStringLower(nodeId.Span),
+            Ed25519PrivateKey = Convert.ToHexStringLower(seed) };
+        if (mode == "wrong-key") node.Ed25519PrivateKey = Convert.ToHexStringLower(Enumerable.Repeat((byte)0x97, 32).ToArray());
+        if (mode == "node-id-as-seed") node.Ed25519PrivateKey = Convert.ToHexStringLower(nodeId.Span);
+        if (mode == "public-key-as-node") node.RouterId = Convert.ToHexStringLower(fixture.NetworkContext.ResolveNodeIdentityPublicKey(nodeId).Span);
+        if (mode == "wrong-kind") placement = ContactServicePlacementFactory.Create(fixture.NetworkContext,
+            ContactServiceRequestKind.PublishInvite, request.Field(3));
+        if (mode == "wrong-shard") placement = ContactServicePlacementFactory.Create(fixture.NetworkContext,
+            ContactServiceRequestKind.ResolveInvite, Enumerable.Repeat((byte)0x96, 32).ToArray());
+        using var handler = new RejectGrantIoHandler();
+        using var client = new HttpClient(handler);
+        var authority = new HttpsMailboxGrantAuthorityClient(client, node, new("https://issuer.example/"), new SystemClock());
+        var input = new MailboxGrantAuthorityRequest(placement, owned.ExactXmg1, MailboxGrantAcquisitionResultCode.Unavailable,
+            default, 0, 0, BinaryPrimitives.ReadUInt64BigEndian(request.Field(10).Span),
+            [new(nodeId, new byte[64]), new(placement.RankedReplicaNodeIds[1], new byte[64])]);
+        await Assert.ThrowsAsync<ContactServiceUnavailableException>(() => authority.AuthorizeAsync(input, default).AsTask());
+        Assert.Equal(0, handler.Calls);
+    }
+
+    [Theory]
+    [InlineData("http://issuer.example/")]
+    [InlineData("https://issuer.example/path")]
+    [InlineData("https://user:pass@issuer.example/")]
+    [InlineData("https://issuer.example/?q=1")]
+    [InlineData("https://issuer.example/#x")]
+    public void GrantHttpRequiresCanonicalHttpsOriginAtItsOwnBoundary(string origin)
+    {
+        using var client = new HttpClient();
+        Assert.Throws<ArgumentException>(() => new HttpsMailboxGrantAuthorityClient(client,
+            new RouterNodeOptions(), new(origin), new SystemClock()));
+    }
+
+    private sealed class RejectGrantIoHandler : HttpMessageHandler
+    {
+        internal int Calls;
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage message, CancellationToken ct)
+        { Calls++; throw new InvalidOperationException("Unexpected private grant HTTP effect."); }
     }
 
     private sealed class GrantResponseHandler(HttpContent content, HttpStatusCode status) : HttpMessageHandler
@@ -434,7 +495,7 @@ public sealed class Did2ContactServiceCompositionTests
         var issuer = new VerifiedGrantIssuer(fixture, state);
         if (grantHttp)
         {
-            services.AddSingleton(_ => new HttpClient(new GrantAuthorityHandler(issuer)));
+            services.AddSingleton(_ => new HttpClient(new GrantAuthorityHandler(issuer, fixture)));
             services.AddSingleton<IMailboxGrantAuthorityClient>(provider => new HttpsMailboxGrantAuthorityClient(
                 provider.GetRequiredService<HttpClient>(), node, new("https://issuer.example/"), new SystemClock()));
         }
@@ -569,7 +630,7 @@ public sealed class Did2ContactServiceCompositionTests
     }
     // Exercises the actual private HTTP client and exact signed JSON transcript.
     // The handler is an in-process authority fixture, not TLS/socket evidence.
-    private sealed class GrantAuthorityHandler(VerifiedGrantIssuer issuer) : HttpMessageHandler
+    private sealed class GrantAuthorityHandler(VerifiedGrantIssuer issuer, DeepIdV2PublicationAuthorityFixture fixture) : HttpMessageHandler
     {
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage message, CancellationToken ct)
         {
@@ -579,8 +640,12 @@ public sealed class Did2ContactServiceCompositionTests
             Assert.Equal(HttpsMailboxGrantAuthorityClient.ResponseMediaType, Assert.Single(message.Headers.Accept).MediaType);
             using var document = JsonDocument.Parse(await message.Content.ReadAsByteArrayAsync(ct));
             var json = document.RootElement;
+            var exactXmg = Decode(json.GetProperty("exactXmg1"));
+            var placement = ContactServicePlacementFactory.Create(fixture.NetworkContext,
+                ContactServiceRequestKind.ResolveInvite, ContactCodec.Decode("XMG1", exactXmg).Field(3));
             var request = new MailboxGrantAuthorityRequest(
-                Decode(json.GetProperty("exactXmg1")), (MailboxGrantAcquisitionResultCode)json.GetProperty("resultCode").GetUInt16(),
+                placement,
+                exactXmg, (MailboxGrantAcquisitionResultCode)json.GetProperty("resultCode").GetUInt16(),
                 Decode(json.GetProperty("exactRouteClosure")), json.GetProperty("routeDisposition").GetUInt16(),
                 json.GetProperty("routeEffectiveExpiresAtUnixSeconds").GetUInt64(), json.GetProperty("resultExpiresAtUnixSeconds").GetUInt64(),
                 json.GetProperty("replicaEvidence").EnumerateArray().Select(item => new MailboxGrantReplicaEvidence(
@@ -589,7 +654,9 @@ public sealed class Did2ContactServiceCompositionTests
             var signing = MailboxGrantAuthorityAuthentication.GetSigningBytes(request.ExactXmg1.Span, request.ResultCode,
                 request.ExactRouteClosure.Span, request.ResultExpiresAtUnixSeconds, nodeId,
                 json.GetProperty("issuedAtUnixSeconds").GetUInt64(), Decode(json.GetProperty("nonce")));
-            Assert.True(PublicKeyAuth.VerifyDetached(Decode(json.GetProperty("signature")), signing, nodeId));
+            Assert.Contains(placement.RankedReplicaNodeIds, id => id.Span.SequenceEqual(nodeId));
+            Assert.True(PublicKeyAuth.VerifyDetached(Decode(json.GetProperty("signature")), signing,
+                fixture.NetworkContext.ResolveNodeIdentityPublicKey(nodeId).ToArray()));
             var exact = await issuer.AuthorizeAsync(request, ct);
             var content = new ByteArrayContent(exact.ToArray());
             content.Headers.ContentType = new MediaTypeHeaderValue(HttpsMailboxGrantAuthorityClient.ResponseMediaType);
