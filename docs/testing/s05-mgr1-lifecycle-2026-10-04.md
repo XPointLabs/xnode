@@ -72,11 +72,81 @@ Strict Protocol registry and documentation174 pass. Selected source16 and the
 first three receipts pass secret scanning; the final receipt/checkpoint are
 scanned separately before commit. No artifacts are added to Git.
 
+## 2026-10-05: reserved authoring and historical native steps
+
+Protocol product source: `a8690f7ef4a5cd09fbf1373f8050b8357281938c`.
+Node product source: `2791642a365e38621eb0a854fd9acf055b42f103`.
+The evidence above belongs to its earlier source, not this continuation.
+
+DR-0083 freezes the same eleven-field SIGINPUT reservation before signing and
+a separate historical floor-only transition. No wire magic, field, version,
+signature/core domain, lifetime, golden corpus or activation flag changed.
+Closed registry/schema metadata is coordinated with four mechanical source
+hash changes; 175 anchors validate with zero edits. Approved DNP1 blobs are
+unchanged. Matching source consumers must take the updated API/root metadata;
+this does not repin installed clients, reset custody or activate production.
+
+Protocol prepares owned canonical input, restores its exact reservation,
+completes with the actual PMA2 role signer and verifies the retained signed
+winner against that input. Expired completion is history only; a fresh successor
+is required for current use. This API does not itself reserve durable issuer
+state: the actual Registry journal still must do so. Actual-role tests cover
+both roles, zero/4096 serials, cumulative retention, interrupted exact retry
+after expiry, malformed input before callbacks, wrong/changing keys, invalid
+signature, cancellation, foreign boot and exact read-back. No software signer
+was added to production.
+
+Native `CatchUpAsync` uses the actual protected floor/concurrency owner. Each
+signed exact replay/sequential successor commits and reads back one bounded
+record, without enrollment or an admission capability. Both-role tests cold-
+reopen each of 69 expired successor steps, then accept fresh generation 71.
+Every expired step rejects the operation callback; initial protected enrollment
+remains byte-identical. Gap/rollback/signature-invalid inputs preserve the floor;
+authenticated fork/removal alone latch. Missing floor, native replacement
+interruption and cancellation fail closed.
+
+Terminal local evidence:
+
+```powershell
+# deep-protocol
+dotnet test tests/Deep.Protocol.Tests/Deep.Protocol.Tests.csproj -c Release --filter 'FullyQualifiedName~MailboxGrantRevocationV1|FullyQualifiedName~DeepProtocolRegistryTests|FullyQualifiedName~XPointRegistryMachineParityTests' -warnaserror --logger trx --results-directory artifacts/s05-mgr1-lifecycle/reserved-winner-final
+# xnode: full test assembly compilation, selected execution
+dotnet test tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj -c Release -p:DeepProtocolSourceCutover=true --filter 'FullyQualifiedName~MailboxGrantRevocationStoreTests|FullyQualifiedName~CurrentMailboxHostCompositionTests|FullyQualifiedName~CurrentMailboxEnrollmentCommandTests|FullyQualifiedName~CurrentMailboxAdmissionTests' -warnaserror --logger trx --results-directory artifacts/s05-mgr1-lifecycle/reserved-winner-final
+# unchanged binaries/source reproduction; all assertions retained
+dotnet test tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj -c Release -p:DeepProtocolSourceCutover=true --no-build --no-restore --filter 'FullyQualifiedName~MailboxGrantRevocationStoreTests|FullyQualifiedName~CurrentMailboxHostCompositionTests|FullyQualifiedName~CurrentMailboxEnrollmentCommandTests|FullyQualifiedName~CurrentMailboxAdmissionTests' --logger trx --results-directory artifacts/s05-mgr1-lifecycle/reserved-winner-reproduction
+```
+
+Protocol **83/0/0**, terminal0. Preliminary native selection **46/0/0** was
+before the final reserved-winner helper, not final-source qualification.
+Final-source expanded Node selection first returned **116/1/0**, terminal1:
+Deposit's >64-step test exhausted the existing Windows native replacement
+retry budget with `Win32Exception: Access is denied`. No assertion, barrier,
+ACL, retry budget or product code was weakened. An unchanged-source/binary
+repeat returned **117/0/0**, terminal0 (native46 + factory40 + command6 +
+admission25). Original failure retained: its external/native cause is not
+established or claimed fixed. Actual TRX non-passing counts are 0, 1 and 0.
+No inputs were edited while these gates read them. These are source receipts,
+not full Node/Protocol gates, peer HTTP requalification or shipping evidence.
+The 26m50s peer selection was not rerun for this unfinished lifecycle business
+batch; full/downstream gates remain required before its closure.
+
+| Receipt (relative to its repository) | SHA-256 |
+| --- | --- |
+| Protocol `artifacts/s05-mgr1-lifecycle/reserved-winner-final/nikit_SURFACE-LT_2026-10-05_00_16_28_net10.0.trx` | `c7a15115094c55eb9e70e254d3a835ec20abccda20560619780a51ac3bd68f40` |
+| Node preliminary `artifacts/s05-mgr1-lifecycle/author-history-final/nikit_SURFACE-LT_2026-10-05_00_12_37_net10.0.trx` | `4a64f1995d50495de48d91f83963995099d92187f43aa8b43ecf6f9f082218ff` |
+| Node initial `artifacts/s05-mgr1-lifecycle/reserved-winner-final/nikit_SURFACE-LT_2026-10-05_00_17_15_net10.0.trx` | `48214305177eb7b7846a310e1acb36e64f8473c2d9ed6c3e5317a53a02de445d` |
+| Node unchanged reproduction `artifacts/s05-mgr1-lifecycle/reserved-winner-reproduction/nikit_SURFACE-LT_2026-10-05_00_18_45_net10.0.trx` | `824287504ce70e30037a5068a383edab3b84080c47742047b43cd2e0a9917add` |
+
+Strict Protocol registry, documentation174 and CONTACT consistency pass.
+Selected source scan14 passed; receipts/checkpoint/NEXT are scanned separately
+before documentation commits. Artifacts stay untracked. No Docker/production/
+device changes, account resets, Releases or main merges occurred.
+
 ## Same delivery vertical, still open
 
 Actual Registry MGR1 durable signing intent/cumulative authoring, renewal and
-retained distribution; bounded sequential historical catch-up without admission
-from expired snapshots; actual node refresh/readiness and configured observer;
+retained distribution; wiring the implemented native historical steps into
+actual bounded node refresh/readiness and configured observer;
 matching deployed authority, full source/shipping gates and physical delivery.
 The inspected Registry distributor currently serves only the existing signed
 eight-chain network bundle. Its health or TLS success cannot supply MGR1 authority.
