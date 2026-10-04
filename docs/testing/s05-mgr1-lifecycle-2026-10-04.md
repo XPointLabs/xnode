@@ -219,8 +219,9 @@ were no production/device changes, new operational keys, Releases or main merges
 
 ## Same delivery vertical, still open
 
-Actual hosted Registry MGR1 current-context composition, renewal and retained
-distribution; wiring the implemented native historical steps into
+At the provider checkpoint above, hosted Registry MGR1 current-context
+composition/renewal and retained distribution were still open. The continuation
+below implements the hosted producer; remaining work is wiring native historical steps into
 actual bounded node refresh/readiness and configured observer;
 matching deployed authority, full source/shipping gates and physical delivery.
 The durable provider above does not close this lifecycle. The full Registry
@@ -229,3 +230,71 @@ The inspected Registry distributor currently serves only the existing signed
 eight-chain network bundle. Its health or TLS success cannot supply MGR1 authority.
 Physical contacts/messages/attachments/groups remain 0/4; S05 and the release
 are not accepted by this checkpoint.
+
+## Hosted Registry producer continuation — 2026-10-05
+
+Registry `71129ad6a170cc4c507b03bc398a816278d3e081` registers current-context
+MGR1 renewal only with the existing explicitly enabled private-grant composition.
+It shares actual directory proof/floor, complete network/PMA2, protected time and
+role custody with grant issuance. No new signed format, NCP2 chain, HTTP control
+route or software production signer is introduced. Protocol and Node product
+source are unchanged. The operator
+[guide](../../../deep-registry-api/docs/DID2_PRIVATE_MAILBOX_GRANTS.md) owns
+configuration, prerequisites and recovery consequences.
+
+Refresh has one bounded flight and at most two generations per role: identical
+pending completion, then a fresh cumulative successor if needed. Fresh unchanged
+state does not sign or allocate a generation. Current source/floor/time is checked
+around signing and release. HTTP readiness rechecks both actual signed DB winners
+without acquiring a nonce-bound proof or signing. Cold, pending, corrupt and
+stopped state remains unavailable. Internal historical reads release one actual
+signed record, never a pending intent or admission token.
+
+The initial selected run **30/1/0**, terminal1, exposed a real pre-existing
+observer-query defect: the internal proof request expects a directory leaf key,
+but the grant issuer supplied the distinct ADL1 lookup key. The shared current
+context now uses `ComputeDirectoryLeafKey`; the checkpoint requirement remains
+strict. Connected recovery test **1/0/0**, terminal0, then passed with real signed
+DID2 admission/ADA2, independent PostgreSQL floor/journal and actual witnesses.
+
+Adding HTTP readiness first produced **0/1/0**, terminal1: the TestServer omitted
+the actual genesis interface/admission-gate registrations required by the other
+mapped routes. Registering those existing services fixes the harness; no endpoint
+or assertion was removed. The completed connected test **1/0/0**, terminal0,
+covers expired pending completion then fresh renewal, source mutation during
+signing, exact cold retry, cumulative revocation, corrupt winner rejection,
+actual BackgroundService start/stop/restart and positive/negative HTTP readiness.
+Repeated health calls leave actual nonce marker and signer-call counts unchanged.
+
+Current unfiltered Registry **346/0/7**, terminal0, includes all provider14 cases,
+the three unchanged route crash cases and the new connected lifecycle fact.
+The seven actual Linux Unix-socket tests are skipped on Windows, not passing
+production custody evidence. This green run does not establish or fix the earlier
+intermittent route HTTP503 or original native Windows denial. Sequential
+warnings-as-errors solution build: zero warnings/errors, terminal0.
+Governance-contract tests22/0/0; selected source/runbook scan9: zero findings.
+
+Commands, from Registry:
+
+```powershell
+../deep-devops/scripts/test-registry-postgres.ps1 -Lane s05-mgr1-hosted-full
+dotnet build Deep.Registry.Api.slnx -c Release -p:DeepProtocolLocalCutover=true -p:DeepProtocolSourceCutover=true -warnaserror --verbosity minimal
+```
+
+| Registry receipt | SHA-256 |
+| --- | --- |
+| `artifacts/s00/s05-mgr1-hosted-focused-83f746ff3b304ebeac3b6ae5769e4dae/nikit_SURFACE-LT_2026-10-05_01_31_40_net10.0.trx` | `51736eed5587fd4101429230970b184b172c49407685f1ead9a6c9a0bdc5e71c` |
+| `artifacts/s00/s05-mgr1-hosted-leaf-656aa6e70e0d4cf6a9fb31117b4bda7e/nikit_SURFACE-LT_2026-10-05_01_34_42_net10.0.trx` | `f2795d9d11c2f3d00a5e9c3367de072c9c5310a0ac5825a75483554338339019` |
+| `artifacts/s00/s05-mgr1-hosted-http-efcd53d4ecb541a49666a6ea1f3fde43/nikit_SURFACE-LT_2026-10-05_01_35_46_net10.0.trx` | `bc90770b324ac0f698daae0fe493a3add6393ba5ca4a44987f525d8279bad9a7` |
+| `artifacts/s00/s05-mgr1-hosted-http-final-9c61843de8984d4b85a7300868752636/nikit_SURFACE-LT_2026-10-05_01_37_04_net10.0.trx` | `35b647d78bb13a65b5fa08fdfe129f5ae966e5ca28b69fbc0b438637bb3d7e26` |
+| `artifacts/s00/s05-mgr1-hosted-full-badfa7370d164d2ea1191f67535a5aaa/nikit_SURFACE-LT_2026-10-05_01_37_33_net10.0.trx` | `8103e84a34336dfa42a3e1dd7799cca52c2a89c9d93e81fc5e863f6ba2c4afc0` |
+
+Disposable containers/tmpfs were removed by the ownership-checking wrapper.
+No production/device data, node keys, releases or main branches were changed.
+Worker cadence/resource bounds are documented, not sustained-load qualification.
+PostgreSQL process-crash, configured Linux role custody, issuer→node→client
+acceptance and deployed lifecycle remain open. Next in the **same** vertical:
+freeze and implement bounded signed retained control distribution plus actual
+node refresh/readiness, then remaining S01 retention/settlement and connected text.
+Do not append MGR1 to the eight-chain NCP2 or use its health as authority.
+S05/full release acceptance remains open: stages0/14 and physical matrix0/4.
