@@ -13,7 +13,7 @@ namespace XNode.IntegrationTests.Runtime;
 
 /// <summary>Actual signed DID2/network/PMA2 and native protected files/barriers.
 /// Clock/proof production is test-owned; this is not node ingress, peer or device evidence.</summary>
-public sealed class MailboxGrantRevocationStoreTests
+public sealed partial class MailboxGrantRevocationStoreTests
 {
     [Theory]
     [InlineData(MailboxCapabilityDomain.Deposit)]
@@ -311,14 +311,14 @@ public sealed class MailboxGrantRevocationStoreTests
     internal static ValueTask<VerifiedMailboxHostAuthorityV2> Host(DeepIdV2PublicationAuthorityFixture signed, IOnionMonotonicClock? clock = null) =>
         MailboxHostAuthorityV2Verifier.VerifyAsync(signed.NetworkContext, signed.Authority, signed.MailboxAuthority, new(clock ?? signed));
     internal static byte[] Snapshot(DeepIdV2PublicationAuthorityFixture signed, MailboxCapabilityDomain role = MailboxCapabilityDomain.Deposit,
-        ulong generation = 1, byte[]? prior = null, byte[][]? serials = null, ulong expires = 1_120)
+        ulong generation = 1, byte[]? prior = null, byte[][]? serials = null, ulong expires = 1_120, ulong? issued = null)
     {
         var key = PublicKeyAuth.GenerateKeyPair(Bytes(32, role == MailboxCapabilityDomain.Deposit ? (byte)0x31 : (byte)0x32));
         try
         {
             ReadOnlyMemory<byte>[] fields = [DeepIdV2PublicationAuthorityFixture.Network, Reference(signed), new byte[] { (byte)role }, key.PublicKey,
                 U64(generation), prior is null ? new byte[32] : MailboxGrantRevocationV1Codec.Decode(prior).CoreHash,
-                U64(generation == 1 ? 1_000UL : 1_090UL), U64(generation == 1 ? 1_000UL : 1_090UL), U64(expires),
+                U64(issued ?? (generation == 1 ? 1_000UL : 1_090UL)), U64(issued ?? (generation == 1 ? 1_000UL : 1_090UL)), U64(expires),
                 U32((uint)(serials?.Length ?? 0)), (serials ?? []).SelectMany(x => x).ToArray()];
             return MailboxGrantRevocationV1Codec.Encode(fields,
                 PublicKeyAuth.SignDetached(MailboxGrantRevocationV1Codec.CreateSignatureInput(fields), key.PrivateKey));
@@ -326,7 +326,7 @@ public sealed class MailboxGrantRevocationStoreTests
         finally { CryptographicOperations.ZeroMemory(key.PrivateKey); }
     }
     internal static byte[] Grant(DeepIdV2PublicationAuthorityFixture signed, VerifiedMailboxHostAuthorityV2 host,
-        MailboxCapabilityDomain role, byte serial)
+        MailboxCapabilityDomain role, byte serial, ulong expires = 1_110)
     {
         var crypto = new SodiumMailboxCapabilityCrypto(); var seed = Bytes(32, role == MailboxCapabilityDomain.Deposit ? (byte)0x31 : (byte)0x32);
         var policy = MailboxAuthorityV2Verifier.Verify(signed.Authority, signed.MailboxAuthority.Span,
@@ -335,7 +335,7 @@ public sealed class MailboxGrantRevocationStoreTests
         {
             Domain = role, Lifecycle = MailboxCapabilityLifecycle.Active, NetworkId = signed.NetworkContext.NetworkId,
             Epoch = host.SelectionEpoch, Generation = policy.MinimumGrantGeneration,
-            Serial = Bytes(16, serial), NotBeforeUnixSeconds = 1_090, ExpiresAtUnixSeconds = 1_110,
+            Serial = Bytes(16, serial), NotBeforeUnixSeconds = 1_090, ExpiresAtUnixSeconds = expires,
             PlacementCommitment = MailboxPlacementCommitment.Compute(new(Bytes(32, 0x55))),
             MembershipCommitment = host.MembershipCommitment, SelectionInput = Bytes(32, 0x56), OverlapUntilUnixSeconds = 0,
             IssuerPublicKey = crypto.GetPublicKey(seed), HolderPublicKey = crypto.GetPublicKey(Bytes(32, 0x57)),

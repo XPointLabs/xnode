@@ -146,6 +146,39 @@ internal sealed class FileMailboxGrantRevocationStore : IAsyncDisposable
         finally { gate.Release(); }
     }
 
+    /// <summary>One signed sequential historical floor commit; never enrollment or admission authority.</summary>
+    internal async ValueTask CatchUpAsync(VerifiedMailboxHostAuthorityV2 host, ReadOnlyMemory<byte> exactCandidate,
+        CancellationToken cancellationToken = default)
+    {
+        var owned = Capture(exactCandidate);
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            CheckAvailable(); var prior = RequireFloor();
+            VerifiedMailboxGrantRevocationHistoryPlan plan;
+            try { plan = await MailboxGrantRevocationV1Verifier.PlanCatchUpSuccessorAsync(host, prior, owned, cancellationToken).ConfigureAwait(false); }
+            catch (MailboxGrantRevocationFloorException error) when
+                (error.Error is MailboxGrantRevocationFloorError.SignedFork or MailboxGrantRevocationFloorError.RemovedSerial)
+            {
+                try { Write(latchPath, owned, latchProtection); }
+                finally { faulted = true; }
+                throw;
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            var reader = new LeasedReader(this);
+            try
+            {
+                if (!Fixed(prior, owned))
+                { Write(anchorPath, owned, anchorProtection); Write(floorPath, owned, floorProtection); }
+                await MailboxGrantRevocationV1Verifier.VerifyHistoricalCommitAsync(plan, RequireFloor(), reader,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch { faulted = true; throw; }
+            finally { reader.Close(); }
+        }
+        finally { gate.Release(); }
+    }
+
     /// <summary>Native restore facts only; caller cannot obtain admission authority from these bytes.</summary>
     internal async ValueTask<ReadOnlyMemory<byte>> ReadProtectedAsync(CancellationToken cancellationToken = default)
     {
