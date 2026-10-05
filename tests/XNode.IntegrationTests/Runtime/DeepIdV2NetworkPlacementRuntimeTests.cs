@@ -183,6 +183,40 @@ public sealed class DeepIdV2NetworkPlacementRuntimeTests
     }
 
     [Theory]
+    [InlineData("valid")]
+    [InlineData("missing-observer")]
+    [InlineData("cancelled")]
+    [InlineData("stopped")]
+    public async Task ExplicitOperatorAcquisitionNeverBecomesReadinessFallback(string state)
+    {
+        using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var files = new Assets(signed);
+        using var floor = files.OpenFloor();
+        var source = files.Source(floor, observer: state != "missing-observer");
+        using var cancel = new CancellationTokenSource();
+        if (state == "cancelled") cancel.Cancel();
+        if (state == "stopped") source.StopObservations();
+        if (state == "valid")
+        {
+            await Assert.ThrowsAsync<CryptographicException>(async () => await source.ReadPublicationAuthorityAsync(default));
+            Assert.Null(await floor.ReadAsync(default));
+            Assert.Equal(0, signed.ProofReads);
+            await source.AcquireObservationAsync(cancel.Token);
+            Assert.NotNull((await source.ReadPublicationAuthorityAsync(default)).Freshness.CurrentCheckpoint);
+            Assert.NotNull(await floor.ReadAsync(default));
+            Assert.Equal(1, signed.ProofReads);
+        }
+        else
+        {
+            if (state == "cancelled")
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await source.AcquireObservationAsync(cancel.Token));
+            else await Assert.ThrowsAsync<InvalidOperationException>(async () => await source.AcquireObservationAsync(cancel.Token));
+            Assert.Null(await floor.ReadAsync(default));
+            Assert.Equal(0, signed.ProofReads);
+        }
+    }
+
+    [Theory]
     [InlineData("expiry")]
     [InlineData("rollback")]
     [InlineData("issuer")]

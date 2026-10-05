@@ -1,4 +1,5 @@
 using Deep.Protocol.DeepExtension.PrivacyRouting;
+using Deep.Protocol.DeepExtension.MailboxCapabilities;
 using Deep.Protocol.XPointNetworkV1;
 using XNode.Core;
 using XNode.Core.Mailbox;
@@ -37,9 +38,24 @@ internal static class CurrentMailboxEnrollmentCommand
         builder.Services.AddCurrentMailboxHost(custody, node, mailbox);
         await using var services = builder.Services.BuildServiceProvider();
         using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await services.GetRequiredService<CurrentMailboxReplicaReceiver>()
-            .EnrollNewHostAsync(deposit, retrieve, budget.Token).ConfigureAwait(false);
+        await EnrollConfiguredAsync(services, deposit, retrieve, budget.Token).ConfigureAwait(false);
         Console.WriteLine("Current mailbox enrollment verified. Current authority and signed renewal remain required for readiness.");
+    }
+
+    internal static async ValueTask EnrollConfiguredAsync(IServiceProvider services,
+        ReadOnlyMemory<byte> deposit, ReadOnlyMemory<byte> retrieve, CancellationToken token)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        token.ThrowIfCancellationRequested();
+        // Own and reject both bounded inputs before any network or custody callback.
+        var ownedDeposit = MailboxGrantRevocationV1Codec.Decode(deposit.Span).CanonicalBytes.ToArray();
+        var ownedRetrieve = MailboxGrantRevocationV1Codec.Decode(retrieve.Span).CanonicalBytes.ToArray();
+        _ = await services.GetRequiredService<DeepIdV2DirectoryProofRuntime>()
+            .RestoreHeadAsync(token).ConfigureAwait(false);
+        await services.GetRequiredService<DeepIdV2NetworkPlacementRuntime>()
+            .AcquireObservationAsync(token).ConfigureAwait(false);
+        await services.GetRequiredService<CurrentMailboxReplicaReceiver>()
+            .EnrollNewHostAsync(ownedDeposit, ownedRetrieve, token).ConfigureAwait(false);
     }
 
     internal static (byte[] Deposit, byte[] Retrieve) ReadInputs(string[] args)

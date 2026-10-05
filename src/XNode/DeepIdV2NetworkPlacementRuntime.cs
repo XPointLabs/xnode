@@ -249,6 +249,16 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
         Volatile.Write(ref observation, null);
     }
 
+    // Explicit operator acquisition for a non-listening enrollment command.
+    // Ordinary admission/readiness never calls this operation.
+    internal async ValueTask AcquireObservationAsync(CancellationToken cancellationToken)
+    {
+        var observer = artifacts.Observer ?? throw new InvalidOperationException(
+            "DID2 acquisition requires the configured public observation credential.");
+        _ = await ReadNetworkAsync(observer, default, default, default, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
     public async ValueTask<DeepIdV2ContactStoreAuthority> ReadPublicationAuthorityAsync(CancellationToken cancellationToken)
     {
         var observer = artifacts.Observer ?? throw new InvalidOperationException(

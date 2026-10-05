@@ -1069,7 +1069,13 @@ transitions follow [DR-0083](../../docs/survival-program/decisions/DR-0083-curre
 This does not permit skipping history or resetting an existing floor. Existing node identity, matching
 descriptor signing custody, an independently observed current network closure
 and the separately provisioned restricted mailbox key ring are mandatory. The
-command does not create role signatures, keys, identity or a trust observation.
+command does not create role signatures, keys, identity or fabricated trust.
+After owning both bounded inputs, it explicitly restores the DID2 head and
+acquires a nonce-bound proof for the configured public observer through the
+actual Registry HTTPS source, verifies the signed closure and commits the
+protected network floor. This acquisition is part of the operator command;
+ordinary readiness/admission remains observational and cannot bootstrap a cold
+source. Invalid grammar or pre-cancellation rejects before acquisition.
 Existing production source restrictions are unchanged; this is not production
 activation. Configuration comes from the normal appsettings/environment inputs;
 additional command-line switches and reset options reject.
@@ -1112,12 +1118,14 @@ enrollment, floor reset, pruning or key generation. A network failure leaves the
 worker running with bounded backoff; successful attempts delay 15–17 seconds,
 failures 10–62 seconds. Stop cancels the attempt and delay.
 
-This is locally tested HTTP-consumer/native integration, not a configured live
-Registry-to-node or physical client result. The node's authority/admission reads
+This is locally tested actual Registry HTTPS-producer/configured-node/native
+integration on synthetic owned inputs, not a deployed Registry-to-node or
+physical client result. The node's authority/admission reads
 now observe a previously acquired observer proof: they reverify the actual
 signed closure, PMA2, directory custody, independent network floor and monotonic
 interval without fetching a nonce or committing a successor. The existing ONION
-receive refresh acquires that observation; cold or failed acquisition does not
+receive refresh and the explicit non-listening enrollment command acquire that
+observation; cold or failed acquisition does not
 let readiness bootstrap it. Missing directory index/anchor is unavailable on
 this read path, not permission to repair. Source/floor changes, clock rollback,
 expiry and host stop clear the observation; no TTL extension or enrollment is

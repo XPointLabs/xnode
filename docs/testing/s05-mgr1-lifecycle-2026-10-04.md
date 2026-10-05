@@ -504,3 +504,132 @@ and test time, not the complete Program lifecycle/native control-admission chain
 shared443/proxy topology, deployed authority, three-hop delivery or device E2E.
 Those remaining edges stay in the same contact/text vertical; stage0/14 and
 physical0/4 remain. No production/key/device/Release/main changes.
+
+## Continuation: explicit configured cold enrollment (2026-10-05)
+
+The connected TLS ceremony exposed a product regression in the existing
+non-listening enrollment command: after acquisition/observation separation it
+called admission without acquiring any observation. Actual configured DI failed
+with `No acquired DID2 network observation is available`; the cold reproducer
+was0/1/0, terminal1. Readiness must remain observational, so the fix belongs to
+the explicit operator command, not a readiness fallback.
+
+The command now owns and structurally rejects both bounded MGR1 inputs before
+any network/custody callback, restores the protected proof head, and explicitly
+acquires through the existing configured observer/HTTPS proof path. Only then
+does the existing receiver perform signed native enrollment. It does not start
+listeners, invent authority, reset floors or auto-enroll during startup. Four
+network-runtime cases cover explicit acquisition, missing observer, prior
+cancellation and stopped acquisition. Ordinary cold reads still cannot fetch
+or create a floor.
+
+The existing real Registry TLS ceremony now continues through actual compiled
+node configuration validators, DI, proof/network owners, native role custody,
+signed successor refresh and host recovery. Genuine synthetic node signing
+custody and explicitly provisioned fixture protection keys are used. Pre-cancel
+and malformed input issue no proof nonce or proof floor. A clock callback zeros
+caller-owned input arrays during acquisition; enrollment still uses its captured
+canonical bytes. Later deposit generation3 and retrieve generation1 are retained
+after cold provider reopen; recovery needs a new observation, not re-enrollment.
+Stop makes recovery unavailable without replacing either floor. Two total proof
+acquisitions serve the original and reopened owners; observation/refresh do not
+consume another nonce.
+
+The first fixed fixture0/1/0 expected `FormatException` instead of the codec's
+declared `ApplicationCoreFormatException`. Correcting that exact expectation
+retained the negative assertion. Final connected1/0/0 and node focused76/0/0
+are terminal0. Sequential Registry Release source-cutover build has0 warnings/
+0 errors; approved isolated PostgreSQL unfiltered347/0/7 is terminal0 (1m34s).
+Owned tmpfs DB was removed. Seven platform skips remain skips.
+
+| Receipt | Outcome | SHA-256 |
+| --- | --- | --- |
+| Registry `artifacts/s00/s05-configured-enroll-repro-6f048902d3cb465584869136d418c638/nikit_SURFACE-LT_2026-10-05_04_45_25_net10.0.trx` | 0/1/0 | `9656051568baf206a037446821f2973fa0ee57c2f3c7bc3db0847dfba332ab40` |
+| Registry `artifacts/s00/s05-configured-enroll-fixed-c80834c9531d428faf5f21eeddfdd64b/nikit_SURFACE-LT_2026-10-05_04_47_08_net10.0.trx` | 0/1/0 | `ebca49211d566aef45b7f2405c939a9a9dc8e21ffba0946525805c3b7bab8585` |
+| Registry `artifacts/s00/s05-configured-enroll-owned-2e8aa4bb57134db09d294c2b405ccf91/nikit_SURFACE-LT_2026-10-05_04_50_39_net10.0.trx` | 1/0/0 | `63e144974eb305f249ce541ccfe928a3d55b58aba9db403caa0ea6bc838d5be7` |
+| Node `artifacts/s05-mgr1-lifecycle/configured-enrollment-focused/nikit_SURFACE-LT_2026-10-05_04_50_53_net10.0.trx` | 76/0/0 | `3fdc9e7f6275cb6087a92f8f6a2f46eeced8c1cf5d065a0b2c11fed512a7a893` |
+| Registry `artifacts/s00/s05-configured-enroll-final-a0d3303312714fad863da54b933654b2/nikit_SURFACE-LT_2026-10-05_04_55_09_net10.0.trx` | 347/0/7 | `6c0c78b465ad8d2607ba5665fef548d5d99aa4c13b6db2f61bf2ec40adc7774a` |
+
+Current-source smoke and sequential three-node rehearsal are terminal0 with real
+Xray running/non-mocked. Smoke has no hard/soft failures; rehearsal contact503
+without authority is not successful contact delivery. Owned disposable resources
+were removed; the existing deep-dev stack is intact. Transport receipts:
+DevOps `artifacts/s05-configured-enroll-smoke-final/runtime.gate.json`, SHA-256
+`b0f9ff38244ecf49574eaa423a3ccca18d14a24ab575221ebfcf7af7459344b0`;
+`artifacts/rehearsals/multi-node/20261004T235737311Z-1dff5b18477a/test-results/multi-node-topology.json`,
+SHA-256 `a59eb9ccdf2bcee62b81845f15575f893625f12105bb42cf5232a99007a0b4f1`.
+
+Full Node verification of this changed runtime/command is **1301/0/0**, terminal0:
+integration922 (29m34s), profile107 (22s), unit272 (42s). Previous full1297
+does not qualify these new method bodies; this is their own current receipt.
+
+| Node receipt under `artifacts/s05-mgr1-lifecycle/configured-enrollment-full-final/` | Outcome | SHA-256 |
+| --- | --- | --- |
+| `nikit_SURFACE-LT_2026-10-05_04_57_07_net10.0.trx` | 922/0/0 | `827d313ab09318615798c239ca33ce4616a1e0b098c4403f4fcb0d17513c7789` |
+| `nikit_SURFACE-LT_2026-10-05_05_26_44_net10.0.trx` | 107/0/0 | `f488b5836fbbb8bcf158cffcdf38e17f19a6bcb6198162dd051ec8dd915a5f96` |
+| `nikit_SURFACE-LT_2026-10-05_05_27_10_net10.0.trx` | 272/0/0 | `ca55347afbefde5de11585a52b4c463cfe81fc40e47ca2a6bd0a0cb0b5efdd51` |
+
+This connected native/DI check is not the command's actual process/environment
+parser, complete Program listener/peer lifecycle, shared443/proxy deployment,
+three-hop client transport or device E2E. Remaining S01/S04 and those connected
+edges stay in the same contact/text vertical. S05 is open; stage0/14 and
+physical0/4 remain. No new wire, production, key, identity, Release or main change.
+
+## Continuation: same custody in actual Program (2026-10-05)
+
+The same TLS/native ceremony now reopens its enrolled custody through the actual
+compiled XNode Program, with its configuration parsing, three Kestrel listeners,
+registered authority/native services and all hosted services. No native endpoint,
+authority source or recovery/refresh worker is substituted or removed. The fixture
+supplies its genuine signed synthetic inputs, matching current/staged ONION key
+files, test monotonic clock and named client's isolated TLS root. Xray and
+heartbeat are explicitly disabled by configuration; this is host/control
+composition, not a carrier/peer-data/device qualification. Its peer descriptor
+configuration is not evidence of a successful outbound peer call.
+
+The actual receive hosted service acquires one fresh proof after cold reopen;
+actual API readiness returns200 with recovered native custody and a ready ONION
+capability, while explicitly reporting disabled transport. Clock rollback returns
+503 and leaves both current signed native role floors intact. These health checks
+do not obtain another proof nonce. The fixture's temporary listener PFX is owned
+synthetic material, securely stored inside its disposable test directory; it never
+changes OS trust or operator custody. The fixture is not the actual enrollment
+CLI process/environment-argument path, three-hop data delivery or production.
+
+First0/1/0 failed before Program startup when re-exporting a non-exportable
+imported synthetic TLS key. The fixture now imports that fresh key as exportable
+for the real Program's existing file-based listener configuration. Second0/1/0
+reached Program configuration and correctly rejected the missing explicitly
+pinned peer; adding the existing signed fixture peer completed that input. No
+product security check or assertion was weakened. Focused1/0/0 is terminal0;
+after adding the explicit health nonce assertion, unfiltered Registry347/0/7
+is terminal0 (1m34s), with seven unchanged platform skips.
+
+| Registry receipt under `artifacts/s00/` | Outcome | SHA-256 |
+| --- | --- | --- |
+| `s05-configured-program-focused-09debb2a88f54c218892974e42d145fa/nikit_SURFACE-LT_2026-10-05_05_14_19_net10.0.trx` | 0/1/0 | `85c6b8785c4f3bc212de1162b80416f927d2fd30ac358606102a4f1496c658b4` |
+| `s05-configured-program-exportable-a5fdd857b08c499ea3eb868df2845977/nikit_SURFACE-LT_2026-10-05_05_15_27_net10.0.trx` | 0/1/0 | `d36ab8f2052c2e5848b2e97de416521cf5b2fde5fc91fe4269e9a8afeddb823d` |
+| `s05-configured-program-pinned-d0b1e072581c4372bf8e4d9cf9702a0a/nikit_SURFACE-LT_2026-10-05_05_18_09_net10.0.trx` | 1/0/0 | `bd8b6a89522a076d1ccdde96f56dc437a90b75425180e60afb94b13e1734340d` |
+| `s05-configured-program-final-54be9440257b43e79e24bb7591bf8ca1/nikit_SURFACE-LT_2026-10-05_05_19_22_net10.0.trx` | 347/0/7 | `b516f421379bfdcc3082b9e55944e2c7073d62bcb9bef360068223d16b76c3a7` |
+
+These test-only continuations reuse the current compiled product references
+(`BuildProjectReferences=false`) while the mandatory full Node gate ran; its
+runtime/test source inputs are unchanged. Target test build has0 warnings/errors.
+Compiled XNode, Core and Protocol SHA-256 were checked unchanged before/after
+these checks: respectively `32bab351d0865b00f5566fa7d1fb25381908a6d64abffed266a8f9cdad38f72f`,
+`74792ee923f23c0333d10b336758f0be7cbf8b543d58d4312f18e4aac8280253`,
+`397526f46c8e9dc4a4cad8ab8d4f68e5137095dc017f42139b21fd95c120b243`.
+The owned provider DB was removed after each terminal run. This extends the same
+contact/text vertical; it is not S05 closure, deployed authority or physical
+acceptance. Stage0/14 and physical0/4 remain.
+
+After the Node process completed terminal0, the whole Registry solution was
+built sequentially with normal project-reference builds:0 warnings/errors,
+terminal0. The approved default provider suite was then rerun on that graph:
+**347/0/7**, terminal0 (1m37s), not the earlier reused-reference result alone.
+Receipt: Registry `artifacts/s00/s05-configured-program-sequential-b0d5abb24a31408aac3b63ec695e0e3f/nikit_SURFACE-LT_2026-10-05_05_29_25_net10.0.trx`,
+SHA-256 `3ceb0b959dc328f024d4104378c41ca36dbb2d559b0a2d7e307d6625793fc560`.
+Owned tmpfs DB cleanup completed. Current enrollment regression and configured
+control/startup boundary are locally verified; peer data/client/physical closure,
+remaining lifecycle and Release remain open. Earlier unrelated unexplained
+failures are retained, not classified by these green gates.
