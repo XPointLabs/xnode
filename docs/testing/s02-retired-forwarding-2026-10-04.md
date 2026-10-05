@@ -283,13 +283,43 @@ finishes terminal0. Receipt
 `artifacts/s00-route-control-removal/focused/nikit_SURFACE-LT_2026-10-05_09_50_23_net10.0.trx`,
 SHA-256 `f124022f59d4d93552fa537d5745ebb1984948c62bdfe4b30c9b08a693ff0a71`.
 
-The new full is still running and is NOT GO. Profile107/0/0 and unit247/0/0
-completed; integration has observed failures in CurrentClientAckRevokedRoleCannotReleaseCachedAggregate,
-ActualHttpConsumerAndNativeRefreshResumeBeyondBudgetWithoutEnrollmentOrExpiredAdmission
-and NewGrantCannotPassLostOrRolledBackIntentForAnyRetainedNativeState. It overlapped
-the Registry build initially. Timeout/cancellation diagnostics are evidence,
-not sufficient to classify these as environment rather than product defects.
-After terminal completion, classify and rerun affected cases in isolation before
-claiming downstream closure; do not widen timeouts or delete their assertions.
+The first new full completes terminal1, **1213/3/0**: integration859/3/0,
+profile107/0/0 and unit247/0/0. All three failures occur in the first82 seconds;
+the invocation lacked `-m:1` and initially overlapped the Registry build.
+CurrentClientAckRevokedRoleCannotReleaseCachedAggregate stops at setup Store
+with PartialFailure/TaskCanceledException, before its revocation assertions.
+NewGrantCannotPassLostOrRolledBackIntentForAnyRetainedNativeState(tombstoned,false)
+also stops at setup Store with PartialFailure. The observed=true refresh case
+exhausts its30-second budget before the expected batch-limit IOException.
+Pinned peer transport explicitly disables proxies. These are load/timing-sensitive
+setup diagnostics, not proof that a production defect is absent.
+
+On unchanged compiled binaries, all nine variants of the three failed methods
+are rechecked with no build, `-m:1`, and no concurrent compilation: **9/0/0**,
+terminal0,1m48s. The exact three failed variants are Passed. No PeerTimeout,
+refresh deadline, TLS, quorum, replay or assertion changes are made. This proves
+the business branches execute in isolation, not that the first full was GO.
+A fresh unfiltered whole-solution run now uses the sequential command below;
+its terminal receipt remains pending. No source mutation occurs during either full.
+
+```powershell
+dotnet test tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj -c Release --no-build -m:1 -warnaserror -p:DeepProtocolSourceCutover=true --filter 'FullyQualifiedName~CurrentClientAckRevokedRoleCannotReleaseCachedAggregate|FullyQualifiedName~ActualHttpConsumerAndNativeRefreshResumeBeyondBudgetWithoutEnrollmentOrExpiredAdmission|FullyQualifiedName~NewGrantCannotPassLostOrRolledBackIntentForAnyRetainedNativeState' --logger trx --results-directory artifacts/s00-route-control-removal/isolated-failures
+dotnet test XNode.slnx -c Release --no-build -m:1 -warnaserror -p:DeepProtocolSourceCutover=true --logger trx --results-directory artifacts/s00-route-control-removal/sequential-full
+```
+
+Local receipts under `artifacts/s00-route-control-removal/`:
+
+| Receipt | SHA-256 |
+| --- | --- |
+| `full/nikit_SURFACE-LT_2026-10-05_09_50_28_net10.0.trx` | `aea90fae064b7bd7d528ea0132efaee8e4bd6e8bc72a93297039d7005fcfb4a3` |
+| `full/nikit_SURFACE-LT_2026-10-05_09_50_29_net10.0.trx` | `55638aeeed0ccec1eccb91fa457e08ebf3f9450c7e487f2c33b44a2db7551dfb` |
+| `full/nikit_SURFACE-LT_2026-10-05_09_50_30_net10.0.trx` | `41d789420740c8315cdf6fd89f62df3399b43e98ac45170a64c46224fe243fb7` |
+| `isolated-failures/nikit_SURFACE-LT_2026-10-05_10_21_38_net10.0.trx` | `080f2d1bfb44cdd7e1967dff3b28aa76f76b86c7fe9dda34749236cca68c2e28` |
+
+Compiled source: Node `6e0095fa4fcef89bbc527bc3fbc5018cc72f7900`,
+Protocol `2ae11346af2d1c691627e395702ac78fc1210ef8`. Actual Release hashes:
+XNode `ab8cab4fa3de63885a12f6737c53287cb59ac016578a6d64be7be6de71afea3f`,
+Core `b4dfc681cb50a13785fd18e8ebd605da300a2781f9d7b910b77c5db65cc3f4a6`,
+integration tests `9ca3c0cac864783d456c90829de445f6a54ef79d2de25b259ac9867ead21d6f7`.
 Registry source-cutover build finishes terminal0 with0 warnings/errors. No new
 Registry full, deployment, physical client, Release or S00 acceptance is claimed.
