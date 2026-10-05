@@ -171,3 +171,80 @@ guide with links to current normative owners and the reproduced S00 blocker.
 No Protocol runtime, project, registry, API/resource snapshot or test input is
 changed. Its ten local links and selected one-file secret scan pass; this
 documentation correction does not repair or requalify the package graph.
+
+## S00 continuation: retired development composition removal (2026-10-05)
+
+Input Node `b565337603434ca2df08cd9abd91ff28c8e289d6`; Protocol and Registry
+sources are unchanged. Remove13 unused compiled types: development activation,
+config-pinned authority/fanout and readiness/hosted-service composition.
+Actual Program already rejects retired configuration and never calls this owner.
+The two live admission limiters move verbatim to `MailboxAdmissionLimiters`;
+their quotas, hash domain, clocks and bodies are unchanged. Four neutral tests
+move verbatim; neutral peer transport/storage-observer assertions also remain.
+Add13 actual-assembly absence and two current-host environment rejection cases
+covering both true and false obsolete activation input. No current host,
+admission, peer, replay, TLS, time, revocation or custody body is edited.
+
+All13 cases in the two removed corpus files were Passed in the prior integration
+receipt above. Six development-specific cases and three old adapter scenarios
+are removed with their implementation, not unexplained failures. Current native
+Store/Retrieve/ACK, cold retry, lost-response, replay-completion and operation
+checkpoint crash coverage remains in `CurrentMailboxPeerHttpTests`.
+Expected full count:1240 =1233 -6 -3 +1 neutral fragment +13 absence +2 environment.
+The terminal result below confirms this count; it is not physical client evidence.
+
+Focused source-cutover build with warnings-as-errors completes without warnings
+or errors. Terminal exit0:67 passed,0 failed,0 skipped; actual TRX results match.
+Receipt: `artifacts/s00-remaining-consumers/focused/nikit_SURFACE-LT_2026-10-05_08_10_02_net10.0.trx`,
+SHA-256 `cb329e6738b74d1f15861012c4279550295d813aef30ee2f20c82d81d44f3796`.
+Selection: `MailboxAdmissionLimiterTests` plus current composition's three
+retired-type absence theories, empty-section and environment rejection theories.
+
+```powershell
+dotnet test XNode.slnx -c Release -m:1 -p:DeepProtocolSourceCutover=true -warnaserror --logger trx --results-directory artifacts/s00-remaining-consumers/full
+```
+
+The mandatory unfiltered full completes terminal exit0:1240 passed,0 failed,
+0 skipped (861 integration,107 profile,272 unit). All three TRX summaries are
+Completed and agree with the actual test results. The prior1233 qualifies its
+earlier source only. One full follows this coherent removal batch; the prior287-case
+broad focused selection is not repeated. Captured runtime/test sources remained
+unchanged while it executed.
+
+Receipts under `artifacts/s00-remaining-consumers/full/`:
+
+| Receipt | SHA-256 |
+| --- | --- |
+| `nikit_SURFACE-LT_2026-10-05_08_11_24_net10.0.trx` | `b5da1504ec1479bc92d0d6b422287b145e97e8626adcc441c02e982345e50d04` |
+| `nikit_SURFACE-LT_2026-10-05_08_45_53_net10.0.trx` | `23c0bbee289f235a0308016facfc4b81e9c7365388f30d85b4e90aadcd2624ee` |
+| `nikit_SURFACE-LT_2026-10-05_08_46_23_net10.0.trx` | `dec6925a563e3e9f3b196fa49489837ac9c7b79e1e69d949fd06588134d6ea98` |
+
+Actual Release `XNode.dll` SHA-256:
+`f524cb8791926c4749f8263aa31c19cf73667f821b9f04edafb3d5fd52b73d4d`.
+
+Sequential downstream Registry solution build finishes exit0 with0 warnings/errors:
+`dotnet build Deep.Registry.Api.slnx -c Release -m:1 -p:DeepProtocolLocalCutover=true -p:DeepProtocolSourceCutover=true -warnaserror`.
+Its existing actual private issuer HTTPS forwarder/client/native mailbox cycle
+also completes exit0:1 passed,0 failed,0 skipped, through the disposable PostgreSQL
+lane `s00-development-composition`. This is not a new Registry full. Its bounded
+synthetic inputs still do not qualify owned client/E2EE or physical delivery.
+Registry receipt:
+`artifacts/s00/s00-development-composition-634344321a7c4065bf3c01383620ea13/nikit_SURFACE-LT_2026-10-05_08_53_32_net10.0.trx`,
+SHA-256 `f6e6a2c187254e966c0193d912aa3ff64045cd8940cf408f0838a9b93b1b8e7f`.
+Owned PostgreSQL container/tmpfs cleanup completes; all six deep-dev containers
+remain healthy. Registry sources are unchanged.
+
+Real-Xray smoke completes exit0, ten fixture-runner contract cases and zero
+failed runtime checks. This disabled-mailbox transport lane is not positive
+contact, installed authority or physical delivery. Its owned disposable project
+and volumes are removed; all six existing deep-dev containers remain healthy.
+DevOps receipts under `artifacts/s00-remaining-consumers/transport-smoke/`:
+
+| Receipt | SHA-256 |
+| --- | --- |
+| `runtime.gate.json` | `fc4b8496d51ec44f7342663178f73d776aa459499b0a677b0a44c9eb56de991a` |
+| `runtime.snapshot.json` | `16686248dc6aa672cc222d8691097c0788f6af60dc43b8d63c05e3ae10ee911c` |
+
+No production, device, account, registered key, operator secret or protected
+floor is modified. Protocol source/package failures and frozen governance /
+recovery dependencies remain open. S00 is not accepted.

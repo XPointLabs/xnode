@@ -17,6 +17,45 @@ namespace XNode.IntegrationTests.Runtime;
 public sealed class CurrentMailboxHostCompositionTests
 {
     [Theory]
+    [InlineData("MailboxClientDevelopmentFixtureOptions")]
+    [InlineData("MailboxClientActivationPlan")]
+    [InlineData("MailboxClientComposition")]
+    [InlineData("DevelopmentMailboxCapabilityAuthority")]
+    [InlineData("DevelopmentMailboxCapabilityRevocations")]
+    [InlineData("DevelopmentMailboxReplicaAuthority")]
+    [InlineData("DevelopmentMailboxReplicaFanout")]
+    [InlineData("MailboxClientRuntimeReadiness")]
+    [InlineData("MailboxClientAdapterHostedService")]
+    [InlineData("MailboxAuthenticatedStateGcHostedService")]
+    [InlineData("MailboxClientActivationOptions")]
+    [InlineData("MailboxClientActivationStatus")]
+    [InlineData("MailboxClientActivationGuard")]
+    public void RetiredDevelopmentCompositionIsAbsentFromActualNodeAssembly(string type)
+    {
+        Assert.Null(typeof(Program).Assembly.GetType("XNode." + type, throwOnError: false));
+    }
+
+    [Theory]
+    [InlineData("true")]
+    [InlineData("false")]
+    public void RetiredEnvironmentConfigurationRejectsEvenDisabledInput(string enabled)
+    {
+        var prefix = "XNODE_RETIRED_COMPOSITION_TEST_" + Guid.NewGuid().ToString("N") + "_";
+        var variable = prefix + "MailboxClient__Enabled";
+        Environment.SetEnvironmentVariable(variable, enabled);
+        try
+        {
+            var configuration = new ConfigurationBuilder().AddEnvironmentVariables(prefix).Build();
+            Assert.Equal(enabled, configuration["MailboxClient:Enabled"]);
+            Assert.Throws<InvalidOperationException>(() => RetiredAuthorityConfiguration.RequireAbsent(configuration));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(variable, null);
+        }
+    }
+
+    [Theory]
     [InlineData("ProductionMailboxAuthorityOptions")]
     [InlineData("ProductionMailboxNodeIngress")]
     [InlineData("ProductionMailboxAuthorityStatus")]
