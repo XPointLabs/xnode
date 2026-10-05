@@ -299,8 +299,16 @@ are rechecked with no build, `-m:1`, and no concurrent compilation: **9/0/0**,
 terminal0,1m48s. The exact three failed variants are Passed. No PeerTimeout,
 refresh deadline, TLS, quorum, replay or assertion changes are made. This proves
 the business branches execute in isolation, not that the first full was GO.
-A fresh unfiltered whole-solution run now uses the sequential command below;
-its terminal receipt remains pending. No source mutation occurs during either full.
+A fresh unfiltered whole-solution run uses the sequential command below and
+completes **terminal0,1216/0/0**: integration862/0/0 (30m59s), profile107/0/0
+and unit247/0/0. All three exact failed cases are Passed in that full. The three
+compiled hashes below remain identical before the sequential run and after its
+terminal receipt. No runtime source, budget or assertion changed between runs.
+This qualifies the current Node removal matrix; the first invocation remains a
+failed setup/budget observation under concurrent load, not a passing receipt or
+proof of a production defect's absence under every load. Required Node qualification
+runs are serialized with no concurrent build. No source mutation occurs during
+either full.
 
 ```powershell
 dotnet test tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj -c Release --no-build -m:1 -warnaserror -p:DeepProtocolSourceCutover=true --filter 'FullyQualifiedName~CurrentClientAckRevokedRoleCannotReleaseCachedAggregate|FullyQualifiedName~ActualHttpConsumerAndNativeRefreshResumeBeyondBudgetWithoutEnrollmentOrExpiredAdmission|FullyQualifiedName~NewGrantCannotPassLostOrRolledBackIntentForAnyRetainedNativeState' --logger trx --results-directory artifacts/s00-route-control-removal/isolated-failures
@@ -315,6 +323,9 @@ Local receipts under `artifacts/s00-route-control-removal/`:
 | `full/nikit_SURFACE-LT_2026-10-05_09_50_29_net10.0.trx` | `55638aeeed0ccec1eccb91fa457e08ebf3f9450c7e487f2c33b44a2db7551dfb` |
 | `full/nikit_SURFACE-LT_2026-10-05_09_50_30_net10.0.trx` | `41d789420740c8315cdf6fd89f62df3399b43e98ac45170a64c46224fe243fb7` |
 | `isolated-failures/nikit_SURFACE-LT_2026-10-05_10_21_38_net10.0.trx` | `080f2d1bfb44cdd7e1967dff3b28aa76f76b86c7fe9dda34749236cca68c2e28` |
+| `sequential-full/nikit_SURFACE-LT_2026-10-05_10_27_12_net10.0.trx` | `09268fc48a938429567ca16b521654d15176418258ad886d899be446d1e79cb8` |
+| `sequential-full/nikit_SURFACE-LT_2026-10-05_10_58_14_net10.0.trx` | `c4b47c1f9d623de7921c3db1da55ea996df8c500d6727b48725de0b46802c322` |
+| `sequential-full/nikit_SURFACE-LT_2026-10-05_10_58_39_net10.0.trx` | `543330998253e7e45fbcd38ba19145c6cf155f5a5fcd5be1041ce38a22f5d09f` |
 
 Compiled source: Node `6e0095fa4fcef89bbc527bc3fbc5018cc72f7900`,
 Protocol `2ae11346af2d1c691627e395702ac78fc1210ef8`. Actual Release hashes:
