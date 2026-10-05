@@ -72,3 +72,102 @@ existing deep-dev containers remain healthy and running.
 No production host, device, account or operator secret is changed. Current issuer,
 renewal, sustained lifecycle, shipping composition and physical qualification
 remain open. Contacts/messages/attachments/groups physical matrix remains0/4.
+
+## S00 continuation: compiled PMA1 provider/cache removal (2026-10-05)
+
+Input Node `f2ef177754369bc0da589c5f5db3e2f14c95fd9b`, Protocol
+`78dc7a9ee6e94562a820ce7fa2a034aa5cff22ea` (documentation-only change from
+`d1ccb573d552960f0c1cb21a655483f4065e74d5`). This continuation follows the
+remaining compiled dependencies of the reproduced Protocol package blocker;
+it does not activate another stage or repair that package gate by itself.
+
+Remove `ProductionMailboxAuthorityRuntime`, `ProductionMailboxClosureRuntime`
+and `ProductionMailboxTopologyRuntime`:29 provider/cache/fanout types.
+Program already used current DID2/native owners and rejected the retired
+configuration. The remaining development-only helper cannot accept a production
+authority options object or activate a production topology. Its non-development
+activation now rejects unconditionally. No current admission, TLS, time,
+revocation, native peer/quorum, replay or custody body is changed.
+
+The retired provider's89 cases were all Passed in the previous source's actual
+922-case integration TRX recorded in the lifecycle checkpoint. Seven obsolete
+closure cases and one PMA1 composition case are removed with their implementation;
+three capacity codec cases are preserved verbatim in `MailboxCapacityCodecTests`.
+New29 negative cases inspect the actual Node assembly for the removed public and
+internal types. This is retired-runtime removal, not deletion of unexplained
+failures or successful current coverage. The previous1301 full result belongs
+to its unchanged earlier source, not this removal. The final full count1233
+matches1301 minus89 provider cases,7 closure cases and1 composition case,
+plus29 actual-assembly absence cases.
+
+Whole solution source-cutover Release build completed exit0 with0 warnings and
+0 errors (the solution maps external Protocol references to Debug). Focused
+current host/admission/peer/activation/capacity verification completes terminal0:
+287 passed,0 failed,0 skipped,28m53s. The mandatory unfiltered full completes
+terminal0:1233 passed,0 failed,0 skipped (integration854, profile107, unit272).
+No release claim is made. Protocol retains its
+PMA1/PMR1 governance/membership consumers and the MAU2 source/MCG2 package gate
+failures. No frozen bytes/API snapshots or package assertions were repinned.
+
+The current-source real-Xray Docker smoke and three-node rehearsal each complete
+terminal exit0. Smoke has zero failed runtime checks and no mocked router;
+the fixture-runner's ten contract cases are not physical message tests. Rehearsal
+has three registered nodes, zero reconciliation issues and real Xray on all
+three. Contact503 on each node is the expected missing-authority rejection,
+not contact or mailbox delivery. Both scripts clean only their owned disposable
+projects; the six existing deep-dev containers remain healthy and untouched.
+
+| Current removal DevOps receipt | SHA-256 |
+| --- | --- |
+| `artifacts/s00-retired-provider/transport-smoke/runtime.gate.json` | `d9cb18cc8401f4657c4e0777d0bc867fda4591cee2a057c38491091a957c00b3` |
+| `artifacts/s00-retired-provider/transport-smoke/runtime.snapshot.json` | `b3d488f0ab99ded0315d2319060e6ac4400463a2565f55c9d02b6563da2278b3` |
+| `artifacts/rehearsals/multi-node/20261005T020014332Z-04ccb2a38859/test-results/multi-node-topology.json` | `d134098e9d66b1e915b063b3fd48a6466b0250b05ea57e3efb3b5283764011c5` |
+
+These artifact paths are relative to deep-devops. Focused discovery enumerated
+287 cases; the final TRX independently records287 Passed results. Receipt:
+`artifacts/s00-retired-provider/focused/nikit_SURFACE-LT_2026-10-05_06_44_31_net10.0.trx`,
+SHA-256 `cf53d056920d51ecb9cf977e353edd00cdd9a570e84d8f50d73d7dbe381980c7`.
+
+```powershell
+dotnet test tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj -c Release -p:DeepProtocolSourceCutover=true -warnaserror --filter 'FullyQualifiedName~CurrentMailboxHostCompositionTests|FullyQualifiedName~CurrentMailboxAdmissionTests|FullyQualifiedName~CurrentMailboxPeerHttpTests|FullyQualifiedName~MailboxClientActivationGuardTests|FullyQualifiedName~MailboxCapacityCodecTests' --logger trx --results-directory artifacts/s00-retired-provider/focused -m:1
+dotnet test XNode.slnx -c Release -m:1 -p:DeepProtocolSourceCutover=true -warnaserror --logger trx --results-directory artifacts/s00-retired-provider/full
+```
+
+The full gate uses the same source inputs with no filter or compile whitelist.
+All three terminal Completed TRXs contain only Passed results. Integration
+takes29m22s, profile21s and unit27s. The actual full-build Release Node assembly
+SHA-256 is `26b34224c52d2a3778bea0de54e0dcfb79a2100cae931612fea1b945c0887672`.
+The solution maps external Protocol references to Debug; this is not a uniformly
+Release package or installed-client qualification. No source/test inputs are
+changed while execution is live.
+
+| Node receipt under `artifacts/s00-retired-provider/full/` | SHA-256 |
+| --- | --- |
+| Integration854 `nikit_SURFACE-LT_2026-10-05_07_14_08_net10.0.trx` | `c7e459b9612d47384f666a7b8453f6cb696d062b0560583d66ce3eb8a67fb3d2` |
+| Profile107 `nikit_SURFACE-LT_2026-10-05_07_43_33_net10.0.trx` | `0bb2d4d88dced27e22a7af8026ef7c86440473529e8bb8b0eccf6983b32d04ff` |
+| Unit272 `nikit_SURFACE-LT_2026-10-05_07_43_57_net10.0.trx` | `84dbad08d43719eca72d798dafff2c7a97c590017293cae4f53334a0a861fed3` |
+
+Sequential downstream Registry solution build with both local/source cutover
+properties and warnings-as-errors completes exit0 with0 warnings/errors.
+Registry/test projects map to Release, linked Node/Protocol/Shared to Debug,
+including the existing test-internals/recovery seam. The existing
+`ActualPrivateIssuerHttpsForwarderClientVerifierAndConfiguredNativeMailboxCycle`
+then passes1/0/0, terminal0,39s on that rebuilt graph using the approved
+disposable PostgreSQL wrapper, lane `s00-retired-node-grant`. Its invocation-owned
+container and tmpfs database are removed; the six deep-dev containers remain
+healthy. Registry runtime/test sources are unchanged. Receipt, relative to
+deep-registry-api:
+`artifacts/s00/s00-retired-node-grant-8bcd868c509848089af4e7acb2a8d883/nikit_SURFACE-LT_2026-10-05_07_46_50_net10.0.trx`,
+SHA-256 `632c56c06969cb9a698e4c9d30a3ca6f9257cdef7fd75492903369f6e60fd505`.
+The previous Registry full348 is not a new full result on this Node graph.
+This connected scope still uses synthetic resolver attestations, holder and
+ciphertext; it is not owned Shared/E2EE, selected masked carrier or physical
+delivery. Earlier unexplained HTTP503/native-access/ACK-setup failures remain
+unclassified, not declared repaired by a later passing execution.
+
+While the full gate runs, Protocol documentation-only commit
+`981ab767a61c5b364eea7472fe623d12bc24750d` replaces the stale qualification
+guide with links to current normative owners and the reproduced S00 blocker.
+No Protocol runtime, project, registry, API/resource snapshot or test input is
+changed. Its ten local links and selected one-file secret scan pass; this
+documentation correction does not repair or requalify the package graph.

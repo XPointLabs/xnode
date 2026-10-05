@@ -17,6 +17,41 @@ namespace XNode.IntegrationTests.Runtime;
 public sealed class CurrentMailboxHostCompositionTests
 {
     [Theory]
+    [InlineData("ProductionMailboxAuthorityOptions")]
+    [InlineData("ProductionMailboxNodeIngress")]
+    [InlineData("ProductionMailboxAuthorityStatus")]
+    [InlineData("ProductionMailboxTopologyReplica")]
+    [InlineData("ProductionMailboxEpochTopology")]
+    [InlineData("IProductionMailboxTopologyProvider")]
+    [InlineData("IProductionMailboxAuthorityFileSecurity")]
+    [InlineData("ProductionMailboxAuthorityFileSecurity")]
+    [InlineData("ProductionMailboxAuthorityNativeFile")]
+    [InlineData("ProductionMailboxAuthorityProvider")]
+    [InlineData("ProductionMailboxAuthorityPair")]
+    [InlineData("ProductionMailboxAuthorityHostedService")]
+    [InlineData("ProductionMailboxAuthorityLkg")]
+    [InlineData("ProductionMailboxAuthorityLkgCommit")]
+    [InlineData("ProductionMailboxTopologyLkgCommit")]
+    [InlineData("ProductionMailboxAuthorityLkgCodec")]
+    [InlineData("ProductionMailboxClosureHttpContract")]
+    [InlineData("ProductionMailboxClosureHttpEndpoint")]
+    [InlineData("ProductionMailboxClosureEnvelope")]
+    [InlineData("ProductionMailboxClosureEnvelopeCodec")]
+    [InlineData("ProductionMailboxClosureRequest")]
+    [InlineData("ProductionMailboxClosureRequestCodec")]
+    [InlineData("ProductionMailboxPrepositionCommand")]
+    [InlineData("ProductionMailboxPrepositionCommandCodec")]
+    [InlineData("ProductionMailboxClosureStore")]
+    [InlineData("ProductionMailboxClosureStoreTestHooks")]
+    [InlineData("ProductionMailboxVerifiedCacheDescriptor")]
+    [InlineData("ProductionMailboxReplicaAuthority")]
+    [InlineData("ProductionMailboxReplicaFanout")]
+    public void RetiredPma1ProviderClosureAndFanoutAreAbsentFromActualNodeAssembly(string type)
+    {
+        Assert.Null(typeof(Program).Assembly.GetType("XNode." + type, throwOnError: false));
+    }
+
+    [Theory]
     [InlineData("MailboxAuthorityForwardingOptions")]
     [InlineData("MailboxAuthorityForwardingConfiguration")]
     [InlineData("MailboxAuthorityForwardingHttpContract")]

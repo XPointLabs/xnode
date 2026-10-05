@@ -45,8 +45,7 @@ public static class MailboxClientComposition
         RouterNodeOptions node,
         ReplicatedMailboxOptions mailbox,
         bool isDevelopment,
-        MailboxPeerAuthorityOptions? peerAuthority = null,
-        ProductionMailboxAuthorityOptions? productionAuthority = null)
+        MailboxPeerAuthorityOptions? peerAuthority = null)
     {
         ArgumentNullException.ThrowIfNull(activation);
         ArgumentNullException.ThrowIfNull(adapter);
@@ -66,21 +65,8 @@ public static class MailboxClientComposition
 
         if (!isDevelopment)
         {
-            if (productionAuthority?.Enabled == true)
-            {
-                if (!mailbox.Enabled || !adapter.Enabled)
-                {
-                    throw new InvalidOperationException(
-                        "MailboxClient Production activation requires Mailbox and MailboxClientAdapter.");
-                }
-
-                adapter.Validate();
-                return new(activation, adapter, true, false, true);
-            }
-
             throw new InvalidOperationException(
-                "MailboxClient Production activation requires PMA1, PMR1, and a verified " +
-                "production topology artifact.");
+                "Production mailbox activation requires the current DID2 host composition.");
         }
 
         if (!activation.DevelopmentFixture.Enabled)

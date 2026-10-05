@@ -935,6 +935,13 @@ coordinator; there is no PMA1 single-coordinator forwarding bridge. See
 [the current network owner](../../docs/architecture/XPOINT-NETWORK-V1.md) and the
 current custody configuration below. Retired forwarding sections are rejected.
 
+The old PMA1/PMR1 authority provider, PMC2 closure cache/preposition surface and
+single-coordinator replica fanout are also removed from the compiled node.
+`MailboxClientProductionAuthority` remains rejected, including an empty section;
+it cannot reactivate a dormant legacy provider. Provision and recover only the
+current DID2 authority/custody graph. This source removal does not authorize
+deleting installed keys, independent floors, journals or retained volumes.
+
 
 ## Xray
 
