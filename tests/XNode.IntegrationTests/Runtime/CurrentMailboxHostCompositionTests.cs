@@ -16,6 +16,15 @@ namespace XNode.IntegrationTests.Runtime;
 
 public sealed class CurrentMailboxHostCompositionTests
 {
+    [Fact]
+    public void RetiredClientStoreAdapterAndItsNestedTypesAreAbsentFromActualCoreAssembly()
+    {
+        Assert.DoesNotContain(typeof(MailboxClientOperationLedger).Assembly.GetTypes(),
+            type => type.FullName!.StartsWith(
+                "XNode.Core.Mailbox.Client.MailboxClientStoreAdapter",
+                StringComparison.Ordinal));
+    }
+
     [Theory]
     [InlineData("MailboxClientDevelopmentFixtureOptions")]
     [InlineData("MailboxClientActivationPlan")]

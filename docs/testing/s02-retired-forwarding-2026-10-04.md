@@ -248,3 +248,48 @@ DevOps receipts under `artifacts/s00-remaining-consumers/transport-smoke/`:
 No production, device, account, registered key, operator secret or protected
 floor is modified. Protocol source/package failures and frozen governance /
 recovery dependencies remain open. S00 is not accepted.
+
+### S00 route-control consumer removal, 2026-10-05
+
+Input Node `65fdf1fa7163b3ae0013af0710c797590675c990`, Protocol `83a0f32`
+plus the authorized [DR-0093](../../../docs/survival-program/decisions/DR-0093-retired-mailbox-route-control-source-api.md)
+route-control removal. The initial downstream build exposes two obsolete
+MailboxTopology imports and three calls to the PMT1 selection commitment in
+the retired MailboxClientStoreAdapter. Actual Program/current native ingress
+does not call that adapter. Remove its two source files and wholly owned
+MailboxNativeMau2BusinessInvariantTests; do not copy the old hash domain into a
+new helper or weaken current verified MCG3 selection.
+
+All25 retired adapter results were Passed in the preceding unit full receipt
+`artifacts/s00-remaining-consumers/full/nikit_SURFACE-LT_2026-10-05_08_46_23_net10.0.trx`,
+SHA-256 `dec6925a563e3e9f3b196fa49489837ac9c7b79e1e69d949fd06588134d6ea98`.
+Independent capacity codec cases remain; only their unused namespace import
+is removed. Mixed peer observer/receipt restrictions now inspect the current
+coordinator. Missing current composition still rejects before mutation or
+forwarding and never resolves a raw authority runtime. A new actual-Core-assembly
+test requires the adapter and every compiler-generated nested type to be absent.
+Current replay, storage, operation ledger, receipts and native DI bodies do not
+change. Earlier1240 full qualifies only the earlier sources.
+
+```powershell
+dotnet build XNode.slnx -c Release -m:1 -p:DeepProtocolSourceCutover=true -warnaserror
+dotnet test tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj -c Release --no-build -p:DeepProtocolSourceCutover=true --filter 'FullyQualifiedName~CurrentMailboxHostCompositionTests|FullyQualifiedName~MailboxAdmissionLimiterTests|FullyQualifiedName~MailboxCapacityCodecTests|FullyQualifiedName~NativeIngressMissingCurrentCompositionNeverResolvesRawAuthorityRuntime' --logger trx --results-directory artifacts/s00-route-control-removal/focused
+dotnet test XNode.slnx -c Release --no-build -p:DeepProtocolSourceCutover=true --logger trx --results-directory artifacts/s00-route-control-removal/full
+```
+
+Corrected whole-solution build finishes terminal0,0 warnings/errors; its solution
+mapping rebuilds nested Protocol in Debug from the changed source. Focused94/0/0
+finishes terminal0. Receipt
+`artifacts/s00-route-control-removal/focused/nikit_SURFACE-LT_2026-10-05_09_50_23_net10.0.trx`,
+SHA-256 `f124022f59d4d93552fa537d5745ebb1984948c62bdfe4b30c9b08a693ff0a71`.
+
+The new full is still running and is NOT GO. Profile107/0/0 and unit247/0/0
+completed; integration has observed failures in CurrentClientAckRevokedRoleCannotReleaseCachedAggregate,
+ActualHttpConsumerAndNativeRefreshResumeBeyondBudgetWithoutEnrollmentOrExpiredAdmission
+and NewGrantCannotPassLostOrRolledBackIntentForAnyRetainedNativeState. It overlapped
+the Registry build initially. Timeout/cancellation diagnostics are evidence,
+not sufficient to classify these as environment rather than product defects.
+After terminal completion, classify and rerun affected cases in isolation before
+claiming downstream closure; do not widen timeouts or delete their assertions.
+Registry source-cutover build finishes terminal0 with0 warnings/errors. No new
+Registry full, deployment, physical client, Release or S00 acceptance is claimed.

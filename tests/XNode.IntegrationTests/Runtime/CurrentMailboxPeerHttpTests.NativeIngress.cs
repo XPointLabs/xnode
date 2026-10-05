@@ -202,11 +202,10 @@ public sealed partial class CurrentMailboxPeerHttpTests
     }
 
     [Fact]
-    public async Task NativeIngressMissingCurrentCompositionNeverResolvesRetiredAdapter()
+    public async Task NativeIngressMissingCurrentCompositionNeverResolvesRawAuthorityRuntime()
     {
         await using var f = await Fixture.CreateAsync(); var resolved = 0;
         using var services = new ServiceCollection()
-            .AddSingleton<MailboxClientStoreAdapter>(_ => { resolved++; throw new InvalidOperationException("Retired adapter must not be resolved."); })
             .AddSingleton<MailboxAuthenticatedCapabilityRuntime>(_ => { resolved++; throw new InvalidOperationException("Raw authority runtime must not be resolved."); })
             .BuildServiceProvider();
         var result = await NativeDispatcher(services).DispatchAsync(OnionOperation.Store, f.ClientStoreFrame(), default);
