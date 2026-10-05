@@ -622,3 +622,134 @@ claim B8 fixed. Existing permanent-contact behavior is unchanged.
 
 Subsequent native replacement reproduction and bounded-retry evidence:
 [S00 native replacement checkpoint](s00-native-replacement-2026-10-03.md).
+
+## Current peer HTTPS setup investigation — 2026-10-05
+
+Compiled baseline input: XNode `162ae3e10c8ca02faa2200302d1dc0e5befdb5cb`,
+Protocol `ed7153e12cc0749e875a047705566bf0a99338b9`.
+
+```powershell
+dotnet build XNode.slnx -c Release -m:1 -warnaserror -p:DeepProtocolSourceCutover=true
+dotnet test XNode.slnx -c Release --no-build -m:1 -p:DeepProtocolSourceCutover=true --logger trx --results-directory artifacts/s00-final-source/full
+```
+
+Build: terminal0, zero warnings/errors. External Protocol references build in
+Debug; this is a source baseline, not a uniformly Release shipping matrix.
+The full run terminates exit1: **1215 passed / 1 failed / 0 skipped** (1216).
+Integration861/1/0, ProfileGenerator107/0/0, Unit247/0/0. It started without a
+concurrent external build. A preceding successful matrix does not replace it.
+
+Observed failure: `CurrentClientAckRevokedRoleCannotReleaseCachedAggregate`.
+Its preparatory Store returned PartialFailure with one durable replica; the
+peer threw TaskCanceledException, one HTTPS request reached the test host, and
+no captured response/status was observed. The ACK/revocation assertion had not
+been reached. This repeats the setup problem without the earlier concurrent
+build, so build load is not an established explanation or remediation.
+
+The test-only diagnostic patch records body byte/EOF counts, processing
+phase, exception class and resource elapsed/cancellation values. The original
+request stream remains the byte/error/cancellation source and is not owned by
+the observer. Three focused observer cases preserve bytes/EOF, cancellation
+and the exact I/O exception. The affected ACK test retains sanitized Store
+observations in its TRX even on success; its security assertions are unchanged.
+Only after that full terminated were its output assemblies rebuilt. Both
+uniformly Release project build and the original solution's Debug/Release graph
+compile with zero warnings/errors. Each isolated selection passes4/0/0;
+Store peer timings1809ms and1773ms respectively, native handler1663ms/1669ms.
+The configuration difference is not an established cause.
+
+### Controlled reproduction and scoped fixture repair
+
+Run the same ACK case and observer cases alongside the existing admission,
+revocation/catch-up, prekey claim/journal/lineage and signed multi-role host
+classes. The unchanged mixed build reproduces **129/1/0** (130), terminal1.
+Exact observation: body1500 bytes plus EOF reached native receiver; client
+budget cancelled at5054ms; server aborted during native work at4843ms with
+OperationCanceledException. No MRR2/status/body was released. This identifies
+parallel fixture resource competition exhausting the real five-second budget,
+not a TLS/body framing defect or a false quorum. The budget fails closed.
+
+`CurrentMailboxPeerHttpTests` alone now uses a non-parallel test collection.
+Other test collections retain their default scheduling; concurrent requests
+inside the TLS tests are unchanged. There is no assembly-wide serialization,
+deadline increase, automatic retry of setup, deleted test or weakened assertion.
+This follows [xUnit collection isolation](https://xunit.net/docs/running-tests-in-parallel#selectively-opting-out-of-parallelism).
+It is functional fixture isolation, not production performance qualification.
+
+A new controlled native StoreReserved barrier lasts through the same real peer
+deadline, then releases in finally. It proves PartialFailure/one replica/no
+quorum or success outcome; captured body/EOF and request cancellation; native
+recipient replay stays Pending with no blob. After actual cold reopen the same
+client bytes and server-authored peer intent complete2/2, preserving one intent,
+one mutation per replica, the same request bytes and completed replay ownership.
+No clock/authority or native persistence replacement is used.
+
+Final focused selection **5/0/0**, terminal0: the three observer cases, original
+ACK/revocation case and controlled timeout/exact cold recovery. The post-repair
+loaded selection completes **131/0/0**, terminal0, with the same peer budget:
+ACK Store1885ms, native handler1755ms, no cancellation. Other fixture collections
+still run concurrently; the scoped TLS collection follows them. Required
+isolated external smoke finishes terminal0: fixture validation, ten runner/
+contract checks, actual non-mocked Xray and all runtime hard/soft checks pass.
+Its two manifested artifacts pass secret scanning. Only its new project-owned
+containers/volumes/network were removed; six existing dev containers remain.
+Three pre-existing Dockerfile InvalidDefaultArgInFrom warnings are not .NET
+build warnings. Registry in this smoke retains the local-cutover package lane;
+this does not qualify its current issuer exchange or a uniform package matrix.
+The final full run from the already-built corrected test assembly completes
+**1220 passed / 0 failed / 0 skipped**, terminal0: Integration866, Profile107,
+Unit247. Integration duration35m37s. Four added diagnostics/deadline cases
+account for the increase from1216; no test was removed or skipped. The original
+ACK/revocation case passes its full assertion, with preparatory Store2/2,
+peer1794ms/native1766ms and no cancellation. The controlled timeout/exact cold
+retry and all three transparent-observer cases also pass in the full run.
+No concurrent Docker build or executable-source edit occurred during it.
+The assembly SHA-256 remains
+`0f0cc041194164aacdc8098c062413f1b4beb6116f9891fe2acdb508c606318e`.
+This closes the Node source baseline, not a package, Release composition or
+physical delivery claim. Overall stage acceptance belongs to
+[NEXT-SPRINT](../../../docs/NEXT-SPRINT.md). Production, devices and secrets
+are not changed.
+
+The initial current full receipt also independently covers every one of the
+original **19 failure scenario groups** listed above. The two exact-request
+conflict replacements are
+`SameAuthorizationWithDifferentValidWitnessSetLatchesExactRequestConflict` and
+`SameAuthorizationDifferentValidWitnessSetPermanentlyLatchesConflict`; both
+verify genuinely signed alternate witness sets for one authorization, not a
+forged capability. `ForgedWitnessCannotReserveAuthorizationOrPreventValidPublication`
+separately rejects a tampered witness before reservation. The public prekey
+verifier maps to `PublicVerifierRequiresCurrentRecipientPlacementAndProtectedTime_NotRawServerKeys`
+plus `RetainedOpaqueStoreRequiresVerifiedInstallationPlan_NotPublicCapabilityConstruction`.
+All other original cases match their retained current names, including the
+genuine one-time claim/replay and both invalid-signature theory arguments.
+All these mapped results are independently Passed in the corrected final full,
+including both replacement public-boundary checks. The initial full remains
+recorded as FAIL; the corrected result does not rewrite its ACK setup failure.
+
+| Ignored current receipts | SHA-256 |
+| --- | --- |
+| Initial full Integration861/1/0 | `433c918f335ac9b3dfd927cd782a3383f440181708069e44d307db95a5268053` |
+| Initial full ProfileGenerator107/0/0 | `701e84337b60c97aa201eae3652b671be33c2fe60008a45188f3cb394b42cb51` |
+| Initial full Unit247/0/0 | `9f3e11c216b06e742d8e03fe479152010e008ee6ed0ba7630c5d73989c8f69bb` |
+| Release dependency isolated4/0/0 | `a01221bf2d2108edec522d491561f1a990a622633b48d848cda732ee46419614` |
+| Original mixed dependency isolated4/0/0 | `09fdff4529dad46f1c6cd1344b7e24405df9c96c92fc963ae34977e76e5cad1c` |
+| Original parallel loaded129/1/0 | `8c1bbb9b850070a89a803e38ec4396658c9b3619e915621863ba2773a90baa3f` |
+| Scoped collection focused5/0/0 | `ec1068917ed5a29fe5b69ff850b6affd38d56a8d456159f7f542bc9f66924adb` |
+| Scoped collection loaded131/0/0 | `c3dd7fbba36976e39f25f520f225e437292bb72cca1ac5f3cc9e23786e9cf5b8` |
+| Isolated external smoke runtime gate | `7c0f58a02d3936a2bda826a42e242297fb0c32a0868f4e40b51ce0cce22d1d93` |
+| Corrected final full Integration866/0/0 | `771f6348cd9d84d6a9821d8acb8530734e873f2a7b0a3f04afc37d844d76e268` |
+| Corrected final full Profile107/0/0 | `ef654e454e6488e9d7149e2037abb43ea2a6a1153e88434ddab3c59af9eededc` |
+| Corrected final full Unit247/0/0 | `d1107a6de3bd868ebe64383375068587128f29fc1a1e175af9a75360247feb2f` |
+
+Exact scoped selections (source-cutover, no shipping qualification):
+
+```powershell
+$peerCases = 'FullyQualifiedName~RequestBodyObservation|FullyQualifiedName~CurrentClientAckRevokedRoleCannotReleaseCachedAggregate|FullyQualifiedName~PeerDeadlineCannotMintQuorum'
+$nativeLoad = '|FullyQualifiedName~CurrentMailboxAdmissionTests|FullyQualifiedName~MailboxGrantRevocationStoreTests|FullyQualifiedName~MailboxGrantRevocationCatchUpTests|FullyQualifiedName~DeepIdV2PreKeyClaimRuntimeTests|FullyQualifiedName~DeepIdV2ClaimJournalTests|FullyQualifiedName~DeepIdV2InventoryLineageTests|FullyQualifiedName~Did2SignedMultiRoleHostTests'
+dotnet build XNode.slnx -c Release -m:1 -warnaserror -p:DeepProtocolSourceCutover=true --no-restore
+dotnet test tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj -c Release --no-build -m:1 -p:DeepProtocolSourceCutover=true --filter $peerCases --logger 'trx;LogFileName=peer-setup-scoped-focused.trx' --results-directory artifacts/s00-final-source/peer-setup-scoped-focused
+dotnet test tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj -c Release --no-build -m:1 -p:DeepProtocolSourceCutover=true --filter ($peerCases + $nativeLoad) --logger 'trx;LogFileName=peer-setup-scoped-loaded.trx' --results-directory artifacts/s00-final-source/peer-setup-scoped-loaded
+dotnet test XNode.slnx -c Release --no-build -m:1 -p:DeepProtocolSourceCutover=true --logger trx --results-directory artifacts/s00-final-source/peer-setup-scoped-full
+../deep-devops/scripts/test-env.ps1 -Suite smoke -BackendMode external -ManagedExternalProfile backend-external -RequireRouterNoMock -RunArtifactDirectory '<absolute fresh child of deep-devops/artifacts>'
+```

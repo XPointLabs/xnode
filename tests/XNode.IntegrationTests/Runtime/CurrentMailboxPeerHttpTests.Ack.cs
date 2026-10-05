@@ -234,7 +234,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
     [Fact]
     public async Task CurrentClientAckRevokedRoleCannotReleaseCachedAggregate()
     {
-        await using var f = await Fixture.CreateAsync(); f.OpenLedger(); await StoreItem(f, 1);
+        await using var f = await Fixture.CreateAsync(); f.OpenLedger(); await StoreItem(f, 1, diagnostics: output);
         var page = DecodePage((await f.Recipient.Receiver.RetrieveClientAsync(RetrieveFrame(f))).ToArray(), f); var exact = AckFrame(f, page);
         _ = await f.Coordinator.AcknowledgeClientAsync(exact, f.AckLedger); var outcomes = f.Sender.Node.OutcomeCount;
         var prior = MailboxGrantRevocationStoreTests.Snapshot(f.Signed, MailboxCapabilityDomain.Retrieve);

@@ -282,7 +282,8 @@ public sealed partial class CurrentMailboxPeerHttpTests
         return Path.Combine(f.Recipient.Node.DataRoot, new ReplicatedMailboxOptions().DirectoryName,
             mutation["mailboxId"]!.GetValue<string>(), $"{mutation["blobId"]!.GetValue<string>()}.json");
     }
-    private static async Task StoreItem(Fixture f, int index, int size = 64)
+    private static async Task StoreItem(Fixture f, int index, int size = 64,
+        Xunit.Abstractions.ITestOutputHelper? diagnostics = null)
     {
         var body = MailboxAuthenticatedRequestTranscript.DecodeStoreBody(f.Recipient.Envelope) with
         {
@@ -292,9 +293,12 @@ public sealed partial class CurrentMailboxPeerHttpTests
         };
         var result = await f.Coordinator.StoreClientAsync(
             f.ClientStoreFrame(MailboxClientCodec.EncodeEncryptedEnvelope(body), checked((ulong)index)), f.Ledger!);
-        Assert.True(result.Status == MailboxPeerQuorumStatus.Durable,
+        var observation =
             $"Setup Store={result.Status}; durable replicas={result.DurableReplicaCount}; peer calls={f.PeerClient.Calls}; " +
-            $"failure={f.PeerClient.Failure}; HTTP requests={f.RemoteHost.Requests}; status={f.RemoteHost.LastStatus}; bytes={f.RemoteHost.LastBytes}.");
+            $"failure={f.PeerClient.Failure}; peer elapsed-ms={f.PeerClient.ElapsedMilliseconds}; peer cancelled={f.PeerClient.Cancelled}; " +
+            $"HTTP requests={f.RemoteHost.Requests}; status={f.RemoteHost.LastStatus}; bytes={f.RemoteHost.LastBytes}; {f.RemoteHost.Diagnostics}.";
+        diagnostics?.WriteLine(observation);
+        Assert.True(result.Status == MailboxPeerQuorumStatus.Durable, observation);
     }
     private static MailboxRetrievePage DecodePage(ReadOnlySpan<byte> bytes, Fixture f) =>
         MailboxClientCodec.DecodeRetrievePage(bytes, new()

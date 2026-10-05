@@ -1,4 +1,5 @@
 using System.Net;
+using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
@@ -25,8 +26,12 @@ namespace XNode.IntegrationTests.Runtime;
 /// <summary>Real local TLS/H2 and two independent native stores under actual
 /// signed test-owned network/grants/floors. The composition theory additionally
 /// exercises Program peer middleware; no ONION or device qualification.</summary>
+[Collection(nameof(CurrentMailboxTlsCustodyCollection))]
 public sealed partial class CurrentMailboxPeerHttpTests
 {
+    private readonly Xunit.Abstractions.ITestOutputHelper output;
+    public CurrentMailboxPeerHttpTests(Xunit.Abstractions.ITestOutputHelper output) => this.output = output;
+
     [Fact]
     public async Task WrongHolderCannotWriteServerIntentOrReserveNativeReplay()
     {
@@ -736,16 +741,25 @@ public sealed partial class CurrentMailboxPeerHttpTests
         internal int Calls;
         internal readonly List<byte[]> ExactRequests = [];
         internal string? Failure;
+        internal long ElapsedMilliseconds;
+        internal bool Cancelled;
         public async ValueTask<ReadOnlyMemory<byte>?> SendAsync(VerifiedOnionNextHopTransport recipient,
             MailboxPeerReplicationOperation operation, ReadOnlyMemory<byte> exactRequest, CancellationToken token)
         {
             Calls++;
             ExactRequests.Add(exactRequest.ToArray());
+            Failure = null;
+            var started = Stopwatch.GetTimestamp();
             try { return await new CurrentMailboxReplicaPeerClient().SendAsync(recipient, operation, exactRequest, token); }
             catch (Exception error)
             {
                 Failure = $"{error.GetType().Name}/{(error as HttpRequestException)?.HttpRequestError}/{error.InnerException?.GetType().Name}";
                 throw;
+            }
+            finally
+            {
+                ElapsedMilliseconds = checked((long)Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+                Cancelled = token.IsCancellationRequested;
             }
         }
     }
@@ -775,15 +789,40 @@ public sealed partial class CurrentMailboxPeerHttpTests
                     if (host.Endpoint is null) return Results.StatusCode(503);
                     // Capture the actual product endpoint's bytes so only test-owned
                     // network fault injection changes/drops the outgoing response.
-                    var original = context.Response.Body; using var captured = new MemoryStream(); context.Response.Body = captured;
-                    var result = await host.Endpoint.HandleAsync(context, contract, operation, token);
-                    await result.ExecuteAsync(context); context.Response.Body = original;
-                    host.LastStatus = context.Response.StatusCode; host.LastBytes = checked((int)captured.Length);
-                    if (host.DropNext && context.Response.StatusCode == 200) { host.DropNext = false; context.Abort(); return Results.Empty; }
-                    var bytes = captured.ToArray();
-                    if (context.Response.StatusCode != 200) return Results.StatusCode(context.Response.StatusCode);
-                    var response = host.AfterReceive?.Invoke(bytes) ?? bytes;
-                    return Results.Bytes(response.ToArray(), contract.ResponseContentType);
+                    var original = context.Response.Body;
+                    var requestBody = context.Request.Body;
+                    using var captured = new MemoryStream();
+                    using var observed = new ObservedRequestBody(requestBody, host);
+                    var started = Stopwatch.GetTimestamp();
+                    host.BodyBytes = host.EndReads = 0;
+                    host.LastStatus = host.LastBytes = 0;
+                    Interlocked.Exchange(ref host.HandlerMilliseconds, 0);
+                    host.HandlerFailure = null; host.RequestCancelled = token.IsCancellationRequested;
+                    using var cancellation = token.Register(() => Volatile.Write(ref host.RequestCancelled, true));
+                    host.Phase = "endpoint-enter";
+                    context.Response.Body = captured; context.Request.Body = observed;
+                    try
+                    {
+                        var result = await host.Endpoint.HandleAsync(context, contract, operation, token);
+                        host.Phase = "endpoint-returned";
+                        await result.ExecuteAsync(context);
+                        host.Phase = "response-captured";
+                        context.Response.Body = original;
+                        host.LastStatus = context.Response.StatusCode; host.LastBytes = checked((int)captured.Length);
+                        if (host.DropNext && context.Response.StatusCode == 200) { host.DropNext = false; context.Abort(); return Results.Empty; }
+                        var bytes = captured.ToArray();
+                        if (context.Response.StatusCode != 200) return Results.StatusCode(context.Response.StatusCode);
+                        var response = host.AfterReceive?.Invoke(bytes) ?? bytes;
+                        return Results.Bytes(response.ToArray(), contract.ResponseContentType);
+                    }
+                    catch (Exception error) { host.HandlerFailure = error.GetType().Name; throw; }
+                    finally
+                    {
+                        context.Response.Body = original; context.Request.Body = requestBody;
+                        Interlocked.Exchange(ref host.HandlerMilliseconds,
+                            checked((long)Stopwatch.GetElapsedTime(started).TotalMilliseconds));
+                        host.RequestCompleted?.TrySetResult();
+                    }
                 });
             }
             await host.app.StartAsync();
