@@ -1,4 +1,4 @@
-# S01 retained mailbox route custody — source candidate
+# S01 retained mailbox route custody — qualified source increment
 
 Date: 2026-10-07. Sole contract:
 [CONTACT-RESOLVER §3.7.2](../../../docs/architecture/CONTACT-RESOLVER-V1.md#372-independent-retained-read-custody),
@@ -51,11 +51,13 @@ correct collision guard returned Conflict before quota. The fixture now authors
 independent signed scope; all old default fixture inputs/assertions are unchanged.
 No production guard or assertion was weakened.
 
-## Mandatory solution run — pending native completion
+## Mandatory solution run — observed and qualified
 
 The separately built Release inputs were frozen **before launch**, at
-2026-10-07T11:23:11+05:00. The original native solution test process is still
-running; **no full-pass result or stage acceptance is claimed**.
+2026-10-07T11:23:11+05:00. The original native solution process completed
+terminal0: **1241/0/0**, comprising Integration884, ProfileGenerator107 and
+Unit250. The post-terminal qualifier also completed terminal0. This accepts
+this bounded source increment, not the whole S01 stage or shipping graph.
 
 ```powershell
 ./artifacts/s01-retained-route/qualify.ps1 -Capture
@@ -70,10 +72,16 @@ Prelaunch manifest covers834 source/normative/actual Release binary inputs,
 SHA-256 `E8A8105F58CEA43A7572677D9F9F5D5F4D3D1E2F51168FB40D51BC52409FA58D`.
 Private qualifier SHA-256:
 `2812B0648060170B46C6A3612566E92932EC7E7B7C3AAC1401AC82C4DF92D538`.
-It requires the original successful native exit, exact three receipts, expected
+It verified the original successful native exit, exact three receipts,
 1241 all-Passed result/entry/method mappings, all1223 prior and21 focused exact
-case names, and every frozen input unchanged. Expected counts are obligations,
-not observed results. Do not restart or duplicate this running full matrix.
+case names, and every834 frozen input unchanged. No duplicate full run was
+launched and no expectation was changed to obtain acceptance.
+
+| Actual receipt under artifacts/s01-retained-route/full | SHA-256 |
+| --- | --- |
+| nikit_SURFACE-LT_2026-10-07_11_23_13_net10.0.trx | `4834C6F63A96CA198ADB2EF304759D59395939446D71FE8F6E27A156FA7E5ACF` |
+| nikit_SURFACE-LT_2026-10-07_12_05_20_net10.0.trx | `8D2F81BFAF5EBD90586838EC3882E1F1855F30D2E39ADF2CB7CF598C39989FFD` |
+| nikit_SURFACE-LT_2026-10-07_12_05_47_net10.0.trx | `3369B0ABF97F7342BEA8BD8747C93318FD89FC8F11CA5FD0030F9F7BBA7A4894` |
 
 ## Mandatory isolated Docker smoke
 
