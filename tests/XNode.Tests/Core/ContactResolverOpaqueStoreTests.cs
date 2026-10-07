@@ -330,6 +330,86 @@ public sealed class ContactResolverOpaqueStoreTests
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void InvalidXurCheckpointDoesNotPartiallyPruneDcrHistory(bool missingGeneration)
+    {
+        using var fixture = new StoreFixture();
+        var clock = new FixedClock(Start);
+        var locator = Hash("locator/gc-atomicity");
+        var first = DcrRequest(locator, "gc-atomicity/0", 0, Zero32(),
+            Ciphertext("gc-atomicity/0", 64), clock,
+            expiresAt: checked((ulong)Start.AddDays(30).ToUnixTimeSeconds()));
+        var successor = DcrRequest(locator, "gc-atomicity/1", 1,
+            first.ObjectCiphertextHash, Ciphertext("gc-atomicity/1", 64), clock,
+            expiresAt: first.EffectiveExpiresAtUnixSeconds);
+        var capability = Hash("capability/gc-atomicity");
+        var update = XurRequest(capability, "gc-atomicity/update", 1, Zero32(), clock);
+
+        using (var store = fixture.Open(clock))
+        {
+            Assert.Equal(ContactResolverMutationDisposition.Committed, store.PublishDcr(first).Disposition);
+            Assert.Equal(ContactResolverMutationDisposition.Committed, store.PublishDcr(successor).Disposition);
+            Assert.Equal(ContactResolverMutationDisposition.Committed, store.WriteXurSuccessor(update).Disposition);
+            var durableBefore = File.ReadAllBytes(fixture.StatePath);
+            clock.UtcNow = Start.AddHours(48);
+            var invalid = VerifiedXurCompactionCheckpoint.FromVerifiedClosure(
+                capability, missingGeneration ? 2UL : 1UL,
+                missingGeneration ? update.EventHash : Hash("wrong-checkpoint"));
+
+            Assert.Equal(0, store.CollectGarbage(invalid));
+            Assert.Equal(durableBefore, File.ReadAllBytes(fixture.StatePath));
+            Assert.Equal(ContactResolverMutationDisposition.ExactReplay, store.PublishDcr(first).Disposition);
+            Assert.Equal(successor.ObjectCiphertextHash.ToArray(),
+                store.ResolveCurrentDcr(locator).Publication!.ObjectCiphertextHash);
+        }
+
+        using var reopened = fixture.Open(clock);
+        Assert.Equal(ContactResolverMutationDisposition.ExactReplay, reopened.PublishDcr(first).Disposition);
+    }
+
+    [Fact]
+    public void ValidXurCheckpointPersistsDcrPruningAtExactGraceBoundary()
+    {
+        using var fixture = new StoreFixture();
+        var clock = new FixedClock(Start);
+        var locator = Hash("locator/gc-boundary");
+        var first = DcrRequest(locator, "gc-boundary/0", 0, Zero32(),
+            Ciphertext("gc-boundary/0", 64), clock,
+            expiresAt: checked((ulong)Start.AddDays(30).ToUnixTimeSeconds()));
+        var successor = DcrRequest(locator, "gc-boundary/1", 1,
+            first.ObjectCiphertextHash, Ciphertext("gc-boundary/1", 64), clock,
+            expiresAt: first.EffectiveExpiresAtUnixSeconds);
+        var capability = Hash("capability/gc-boundary");
+        var update = XurRequest(capability, "gc-boundary/update", 1, Zero32(), clock);
+        var checkpoint = VerifiedXurCompactionCheckpoint.FromVerifiedClosure(capability, 1, update.EventHash);
+
+        using (var store = fixture.Open(clock))
+        {
+            Assert.Equal(ContactResolverMutationDisposition.Committed, store.PublishDcr(first).Disposition);
+            Assert.Equal(ContactResolverMutationDisposition.Committed, store.PublishDcr(successor).Disposition);
+            Assert.Equal(ContactResolverMutationDisposition.Committed, store.WriteXurSuccessor(update).Disposition);
+            var durableBefore = File.ReadAllBytes(fixture.StatePath);
+            clock.UtcNow = Start.AddHours(48).AddSeconds(-1);
+            Assert.Equal(0, store.CollectGarbage(checkpoint));
+            Assert.Equal(durableBefore, File.ReadAllBytes(fixture.StatePath));
+            Assert.Equal(ContactResolverMutationDisposition.ExactReplay, store.PublishDcr(first).Disposition);
+
+            clock.UtcNow = clock.UtcNow.AddSeconds(1);
+            // The returned count describes XUR events, not removed DCR predecessors.
+            Assert.Equal(0, store.CollectGarbage(checkpoint));
+            Assert.False(durableBefore.AsSpan().SequenceEqual(File.ReadAllBytes(fixture.StatePath)));
+            Assert.Equal(ContactResolverMutationDisposition.StaleGeneration, store.PublishDcr(first).Disposition);
+            Assert.Equal(ContactResolverMutationDisposition.ExactReplay, store.PublishDcr(successor).Disposition);
+        }
+
+        using var reopened = fixture.Open(clock);
+        Assert.Equal(ContactResolverMutationDisposition.StaleGeneration, reopened.PublishDcr(first).Disposition);
+        Assert.Equal(ContactResolverMutationDisposition.ExactReplay, reopened.PublishDcr(successor).Disposition);
+        Assert.Equal(ContactResolverReadDisposition.Current, reopened.ResolveCurrentDcr(locator).Disposition);
+    }
+
     private static OpaqueDcrPublishRequest DcrRequest(byte[] locator, string operation, ulong generation,
         ReadOnlySpan<byte> predecessor, byte[] ciphertext, FixedClock clock, uint usageLimit = 0,
         ulong? expiresAt = null, byte[]? depositCapability = null, byte[]? retrieveCapability = null) =>

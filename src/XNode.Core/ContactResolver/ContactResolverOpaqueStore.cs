@@ -861,7 +861,6 @@ internal sealed class ContactResolverOpaqueStore : IDisposable
         {
             ThrowIfDisposed();
             var now = CurrentUnixSeconds();
-            var changed = CollectDcrPredecessors(now);
             var removed = 0;
             var stream = FindXurStream(checkpoint.ServiceCapability);
             if (stream is not null && !stream.ForkLatched)
@@ -873,6 +872,12 @@ internal sealed class ContactResolverOpaqueStore : IDisposable
                 {
                     return 0;
                 }
+            }
+            // Reject an inconsistent checkpoint before changing either history.
+            // Otherwise DCR pruning is visible in memory but never durably saved.
+            var changed = CollectDcrPredecessors(now);
+            if (stream is not null && !stream.ForkLatched)
+            {
                 var horizon = checked((ulong)ContactResolverOpaqueStoreOptions.XurRetention.TotalSeconds);
                 while (stream.Events.Count > ContactResolverOpaqueStoreOptions.XurMinimumRetainedGenerations)
                 {
