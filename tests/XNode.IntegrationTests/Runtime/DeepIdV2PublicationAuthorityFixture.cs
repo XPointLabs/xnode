@@ -96,18 +96,20 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable, IOnionM
         bool authorRouteSuccessor = false, ushort lastResortReuseLimit = 1,
         bool authorInventoryRotation = false, bool corruptFirstPreKeyBundleSignature = false,
         IReadOnlyList<TransportOrigin>? transportOrigins = null, bool distinctNodeIdentities = false,
-        bool authorOneTimeObject = false)
+        bool authorOneTimeObject = false, byte contactDepositMarker = 0x41,
+        byte contactPublicationMarker = 0x47)
     {
         if (authorOneTimeObject && authorRouteSuccessor)
             throw new ArgumentException("One-time invitations do not support route successors.");
         var fixture = new DeepIdV2PublicationAuthorityFixture(serviceMarker, distinctNodeIdentities);
-        try { await fixture.AuthorAsync(authorContactPublication, networkCommitmentMarker, rootMarker, authorRouteSuccessor, lastResortReuseLimit, authorInventoryRotation, corruptFirstPreKeyBundleSignature, transportOrigins, authorOneTimeObject); return fixture; }
+        try { await fixture.AuthorAsync(authorContactPublication, networkCommitmentMarker, rootMarker, authorRouteSuccessor, lastResortReuseLimit, authorInventoryRotation, corruptFirstPreKeyBundleSignature, transportOrigins, authorOneTimeObject, contactDepositMarker, contactPublicationMarker); return fixture; }
         catch { fixture.Dispose(); throw; }
     }
 
     private async Task AuthorAsync(bool authorContactPublication, byte networkCommitmentMarker, byte rootMarker, bool authorRouteSuccessor,
         ushort lastResortReuseLimit, bool authorInventoryRotation, bool corruptFirstPreKeyBundleSignature,
-        IReadOnlyList<TransportOrigin>? transportOrigins, bool authorOneTimeObject)
+        IReadOnlyList<TransportOrigin>? transportOrigins, bool authorOneTimeObject, byte contactDepositMarker,
+        byte contactPublicationMarker)
     {
         using var root = new TestSigner(rootMarker);
         using var w1 = new TestSigner(0x30);
@@ -301,7 +303,7 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable, IOnionM
                     authorization, Boot, Sample);
                 var time = new OnionTrustedTimeAuthority(this);
                 var advertisement = await DeepIdV2ContactRouteAuthor.AuthorAdvertisementAsync(
-                    current, network, Authority, secrets, 32, Bytes(32, 0x41), Bytes(32, 0x42),
+                    current, network, Authority, secrets, 32, Bytes(32, contactDepositMarker), Bytes(32, 0x42),
                     ScalarMult.Base(Bytes(32, 0x43)), 1_000, 1_400, time);
                 var threshold = await DeepIdV2ContactRouteAuthor.AuthorThresholdAsync(current,
                     network, Authority, advertisement.CanonicalBytes, witnesses, 1_000, 1_400, time);
@@ -335,7 +337,9 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable, IOnionM
                 }
                 finally { CryptographicOperations.ZeroMemory(resolverCapability); }
                 var candidate = await DeepIdV2PublicationAuthorityAuthor.AuthorGenesisRequestAsync(
-                    route, contact, secrets, Bytes(32, 0x47), Bytes(32, 0x48), Bytes(32, 0x49));
+                    route, contact, secrets, Bytes(32, contactPublicationMarker),
+                    Bytes(32, checked((byte)(contactPublicationMarker + 1))),
+                    Bytes(32, checked((byte)(contactPublicationMarker + 2))));
                 var authorized = await DeepIdV2PublicationAuthorityAuthor.AuthorThresholdAsync(
                     route, candidate.WireRequest, witnesses);
                 ContactRoute = route; ContactObject = contact; ContactOwnedRequest = candidate.WireRequest;

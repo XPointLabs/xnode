@@ -23,6 +23,9 @@ public sealed class CurrentContactPublicationFixture : IAsyncLifetime
     internal ContactServicePlacementCapability ClaimPlacement { get; private set; } = null!;
     internal IContactPublicationAuthorizationVerifier Verifier { get; private set; } = null!;
     internal VerifiedOnionNetworkContext Network => ceremony.NetworkContext;
+    internal VerifiedDeepIdV2ContactRouteClosure Route => ceremony.ContactRoute;
+    internal ValueTask<VerifiedMailboxHostAuthorityV2> VerifyMailboxHostAsync(
+        IOnionMonotonicClock? clock = null) => MailboxGrantRevocationStoreTests.Host(ceremony, clock);
 
     public async Task InitializeAsync()
     {

@@ -59,6 +59,8 @@ internal sealed class ContactResolverOpaqueStoreOptions
 
     internal int MaximumPublicationLocators { get; init; } = 16_384;
     internal long MaximumPublicationCiphertextBytes { get; init; } = 256L * 1024 * 1024;
+    internal int MaximumRetainedMailboxRoutes { get; init; } = 65_536;
+    internal long MaximumRetainedMailboxRouteBytes { get; init; } = 64L * 1024 * 1024;
     internal int MaximumXurStreams { get; init; } = 16_384;
     internal int MaximumXurEventsPerStream { get; init; } = 4_096;
     internal long MaximumXurCiphertextBytes { get; init; } = 256L * 1024 * 1024;
@@ -68,17 +70,20 @@ internal sealed class ContactResolverOpaqueStoreOptions
     {
         if (MaximumPublicationLocators < 1
             || MaximumPublicationCiphertextBytes < DcrCiphertextMaximumBytes
+            || MaximumRetainedMailboxRoutes < 1
+            || MaximumRetainedMailboxRouteBytes < OpaqueDcrResolveRequest.MaximumRouteClosureBytes
             || MaximumXurStreams < 1
             || MaximumXurEventsPerStream < XurMinimumRetainedGenerations
             || MaximumXurCiphertextBytes < XurCiphertextMaximumBytes
-            || MaximumPersistedBytes < MaximumPublicationCiphertextBytes + MaximumXurCiphertextBytes)
+            || MaximumPersistedBytes < MaximumPublicationCiphertextBytes + MaximumXurCiphertextBytes
+                + MaximumRetainedMailboxRouteBytes)
         {
             throw new ArgumentOutOfRangeException(nameof(ContactResolverOpaqueStoreOptions));
         }
     }
 }
 
-internal sealed class OpaqueDcrPublishRequest
+internal sealed partial class OpaqueDcrPublishRequest
 {
     private readonly byte[] locatorHash, operationId, requestHash, predecessorObjectHash,
         objectCiphertextHash, ciphertext, routeClosure, depositCapabilityDigest,
@@ -326,9 +331,9 @@ internal sealed class ContactResolverStoreCorruptException : IOException
 /// XUR successor bytes. It parses no DCR1, DID, account, device, or contact data
 /// and is not connected to an HTTP or runtime activation surface.
 /// </summary>
-internal sealed class ContactResolverOpaqueStore : IDisposable
+internal sealed partial class ContactResolverOpaqueStore : IDisposable
 {
-    private const int StateVersion = 4;
+    private const int StateVersion = 5;
     private const int EnvelopeOverhead = 8 + sizeof(uint) + 32;
     private static readonly byte[] EnvelopeMagic = "XCRSTR01"u8.ToArray();
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -347,6 +352,7 @@ internal sealed class ContactResolverOpaqueStore : IDisposable
     private PersistedState state;
     private bool disposed;
     private bool faulted;
+    private ulong stateRevision;
 
     internal ContactResolverOpaqueStore(
         string statePath,
@@ -435,7 +441,8 @@ internal sealed class ContactResolverOpaqueStore : IDisposable
                 }
                 if (state.Publications.Count >= options.MaximumPublicationLocators
                     || PublicationBytes() + request.Ciphertext.Length
-                        + request.CanonicalRouteClosure.Length > options.MaximumPublicationCiphertextBytes)
+                        + request.CanonicalRouteClosure.Length > options.MaximumPublicationCiphertextBytes
+                    || !HasRetainedRouteCapacity(request))
                 {
                     return ContactResolverMutationResult.Empty(ContactResolverMutationDisposition.QuotaExceeded);
                 }
@@ -472,13 +479,15 @@ internal sealed class ContactResolverOpaqueStore : IDisposable
                     return ContactResolverMutationResult.Empty(ContactResolverMutationDisposition.Conflict);
                 }
                 if (PublicationBytes() + request.Ciphertext.Length
-                    + request.CanonicalRouteClosure.Length > options.MaximumPublicationCiphertextBytes)
+                    + request.CanonicalRouteClosure.Length > options.MaximumPublicationCiphertextBytes
+                    || !HasRetainedRouteCapacity(request))
                 {
                     return ContactResolverMutationResult.Empty(ContactResolverMutationDisposition.QuotaExceeded);
                 }
             }
 
             locator.Records.Add(ToState(request, now));
+            RetainMailboxRoute(request);
             CanonicalizeState();
             SaveState();
             return Mutation(
@@ -954,7 +963,8 @@ internal sealed class ContactResolverOpaqueStore : IDisposable
         catch (Exception exception) when (exception is InvalidDataException
             or JsonException
             or OverflowException
-            or ArgumentException)
+            or ArgumentException
+            or Deep.Protocol.ContactV1.ContactFormatException)
         {
             throw QuarantineAndCreateException(exception);
         }
@@ -995,6 +1005,7 @@ internal sealed class ContactResolverOpaqueStore : IDisposable
                 durability.FlushFileAndParentDirectory(temporary);
                 ReplaceFileWithBoundedRetry(temporary);
                 durability.FlushFileAndParentDirectory(path);
+                stateRevision = checked(stateRevision + 1);
             }
             finally
             {
@@ -1083,6 +1094,8 @@ internal sealed class ContactResolverOpaqueStore : IDisposable
         {
             throw new InvalidDataException("Resolver state version or top-level bounds are invalid.");
         }
+
+        ValidateRetainedMailboxRoutes(candidate);
 
         var priorKey = Array.Empty<byte>();
         var operations = new HashSet<string>(StringComparer.Ordinal);
@@ -1265,6 +1278,8 @@ internal sealed class ContactResolverOpaqueStore : IDisposable
             left.LocatorHash.AsSpan().SequenceCompareTo(right.LocatorHash));
         state.XurStreams.Sort(static (left, right) =>
             left.ServiceCapability.AsSpan().SequenceCompareTo(right.ServiceCapability));
+        state.RetainedMailboxRoutes.Sort(static (left, right) =>
+            left.PublicationRequestHash.AsSpan().SequenceCompareTo(right.PublicationRequestHash));
     }
 
     private PublicationState? FindPublication(ReadOnlySpan<byte> locator)
@@ -1518,6 +1533,8 @@ internal sealed class ContactResolverOpaqueStore : IDisposable
         public int Version { get; set; } = StateVersion;
         public List<PublicationState> Publications { get; set; } = [];
         public List<XurStreamState> XurStreams { get; set; } = [];
+        [JsonRequired]
+        public List<RetainedMailboxRouteState> RetainedMailboxRoutes { get; set; } = [];
     }
 
     private sealed class PublicationState

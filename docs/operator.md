@@ -2,6 +2,18 @@
 
 ## Current native mailbox admission candidate
 
+The S01 retained-route storage candidate now commits private read-route custody
+with each exact verified XPA1 publication. Public DCR predecessor cleanup does
+not erase it. Its bounded typed lookup is not wired as renewed grant issuance;
+current Resolve/Deposit and their deadlines remain unchanged. The sole contract
+is [CONTACT-RESOLVER §3.7.2](../../docs/architecture/CONTACT-RESOLVER-V1.md#372-independent-retained-read-custody).
+Opaque resolver state is generation5: an older or incomplete state fails closed
+with quarantine, not migration or empty recovery. Do not reset production data
+or registered node identities to activate this source candidate. File integrity
+is not a protected rollback floor, and quota exhaustion is backpressure rather
+than permission to evict outstanding read paths. See the
+[source qualification](testing/s01-retained-route-custody-2026-10-07.md).
+
 `CurrentMailboxAdmission` connects the closed current network/PMA2 host verifier
 to both restored native MGR1 owners and the existing durable replay/outcome
 stores. The bounded operation owns captured MAU3 bytes and selected canonical
