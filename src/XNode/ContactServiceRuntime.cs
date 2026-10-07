@@ -343,7 +343,7 @@ internal sealed class ProductionContactServiceOpaqueDispatcher :
         ReadOnlyMemory<byte> canonicalRequest,
         CancellationToken cancellationToken)
     {
-        var request = ContactCodec.Decode(ProtocolMagic.XMG1, canonicalRequest.Span);
+        var request = ContactCodec.Decode(ProtocolMagic.XMG2, canonicalRequest.Span);
         ContactCodec.VerifyMailboxGrantHolderSignature(request);
         var locatorHash = request.Field(3);
         var capability = request.Field(4);
@@ -353,7 +353,7 @@ internal sealed class ProductionContactServiceOpaqueDispatcher :
                 ContactMailboxGrantRole.Deposit,
             (byte)Deep.Protocol.DeepExtension.MailboxCapabilities.MailboxCapabilityDomain.Retrieve =>
                 ContactMailboxGrantRole.Retrieve,
-            _ => throw new InvalidDataException("The XMG1 mailbox grant role is invalid.")
+            _ => throw new InvalidDataException("The XMG2 mailbox grant role is invalid.")
         };
         var gate = executionGates[BinaryPrimitives.ReadUInt16BigEndian(
             SHA256.HashData(locatorHash.Span)) % executionGates.Length];
@@ -372,7 +372,7 @@ internal sealed class ProductionContactServiceOpaqueDispatcher :
                 !Fixed(locatorHash.Span, placement.ShardKey.Span) ||
                 !placement.ContainsReplica(node.GetRouterId().ToBytes()))
                 throw new InvalidOperationException(
-                    "The XMG1 request is outside the exact resolver placement.");
+                    "The XMG2 request is outside the exact resolver placement.");
 
             var remote = new AuthenticatedRemoteContactServiceReplica(
                 placement,
@@ -521,7 +521,7 @@ internal sealed class ProductionContactServiceOpaqueDispatcher :
             ContactServiceOperation.PublishPreKeyInventory =>
                 throw new InvalidOperationException("Bounded XPP1 uses its sealed publication dispatcher."),
             ContactServiceOperation.AcquireMailboxGrant =>
-                throw new InvalidOperationException("XMG1 uses its sealed grant dispatcher."),
+                throw new InvalidOperationException("XMG2 uses its sealed grant dispatcher."),
             _ => throw new ArgumentOutOfRangeException(nameof(operation))
         };
 
@@ -780,7 +780,7 @@ public sealed class PrivacyTerminalExitDispatcher : INativeMailboxExitDispatcher
             var magic when magic.SequenceEqual("XUW1"u8) => ContactServiceOperation.WriteContactUpdate,
             var magic when magic.SequenceEqual("XUQ1"u8) => ContactServiceOperation.FetchContactUpdates,
             var magic when magic.SequenceEqual("XPP1"u8) => ContactServiceOperation.PublishPreKeyInventory,
-            var magic when magic.SequenceEqual("XMG1"u8) => ContactServiceOperation.AcquireMailboxGrant,
+            var magic when magic.SequenceEqual("XMG2"u8) => ContactServiceOperation.AcquireMailboxGrant,
             _ => default
         };
         return operation != default;

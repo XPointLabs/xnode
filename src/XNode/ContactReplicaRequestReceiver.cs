@@ -334,7 +334,7 @@ internal sealed class ContactReplicaRequestReceiver : IContactReplicaCommandRece
                     ? result.EffectiveExpiresAtUnixSeconds
                     : 0;
                 expected = MailboxGrantRouteEvidenceAuthentication.CreateTuple(
-                    request.ExactXmg1Hash,
+                    request.ExactXmg2Hash,
                     request.LocatorHash,
                     XNode.Core.ContactResolver.MailboxGrantCapabilityDigest.Compute(
                         request.Capability,

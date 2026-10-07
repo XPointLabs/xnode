@@ -87,7 +87,7 @@ internal sealed class Did2ContactResolverDispatcher(
             ContactServiceOperation.PublishDcr => Xpu1Codec.Decode(canonicalRequest.Span),
             ContactServiceOperation.ResolveDcr => Xiq1Codec.Decode(canonicalRequest.Span), _ => null,
         };
-        var grant = request is null ? ContactCodec.Decode("XMG1", canonicalRequest.Span) : null;
+        var grant = request is null ? ContactCodec.Decode("XMG2", canonicalRequest.Span) : null;
         if (grant is not null) ContactCodec.VerifyMailboxGrantHolderSignature(grant);
         var kind = grant is null ? ContactReplicaRequestBinding.RequestKind(operation) : ContactServiceRequestKind.ResolveInvite;
         var shard = grant is null ? ContactReplicaRequestBinding.ShardKey(request!) : grant.Field(3);

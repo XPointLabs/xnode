@@ -68,7 +68,7 @@ internal sealed partial class ContactResolverOpaqueStore
         VerifiedMailboxRetainedReadRequestV2 request, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
-        var exact = ContactCodec.Decode(ProtocolMagic.XMG1, request.ExactXmg1.Span);
+        var exact = ContactCodec.Decode(ProtocolMagic.XMG2, request.ExactXmg2.Span);
         var first = await request.ReadCurrentTimeAsync(cancellationToken).ConfigureAwait(false);
         RetainedMailboxRouteLookup result;
         ulong revision;
@@ -115,11 +115,12 @@ internal sealed partial class ContactResolverOpaqueStore
             var route = ContactRouteClosureCodec.Decode(item.RouteClosure);
             if (!OpaqueValue.FixedEquals(ContactCodec.ArtifactReference(ProtocolMagic.PMT2,
                     route.Projection).CanonicalBytes.Span, request.Field(7).Span)
-                || !OpaqueValue.FixedEquals(route.Selection.ArtifactHash.Span, request.Field(8).Span))
+                || !OpaqueValue.FixedEquals(route.Selection.ArtifactHash.Span, request.Field(8).Span)
+                || !OpaqueValue.FixedEquals(route.ExactHash.Span, request.Field(11).Span))
                 continue;
             if (upper >= item.ReadUntilUnixSeconds) { expired = true; continue; }
-            // Stable owner Retrieve capability and PMS2 may be reused across
-            // successors. Never infer an exact closure by choosing the latest.
+            // Exact holder-signed intent disambiguates a reused capability/PMS2.
+            // Even an alleged SHA collision must not select different bytes.
             if (match is not null && !match.RouteClosure.AsSpan().SequenceEqual(item.RouteClosure))
                 return new(RetainedMailboxRouteDisposition.Conflict, [], 0);
             if (match is null || match.ReadUntilUnixSeconds < item.ReadUntilUnixSeconds)

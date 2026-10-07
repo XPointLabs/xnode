@@ -169,23 +169,23 @@ internal static class ContactReplicaPayloadCodec
     }
 
     internal static byte[] EncodeMailboxGrantRouteRequest(
-        ReadOnlySpan<byte> exactXmg1Hash32,
+        ReadOnlySpan<byte> exactXmg2Hash32,
         ReadOnlySpan<byte> locatorHash32,
         ReadOnlySpan<byte> capability32,
         ContactMailboxGrantRole role)
     {
-        if (exactXmg1Hash32.Length != 32 || locatorHash32.Length != 32
+        if (exactXmg2Hash32.Length != 32 || locatorHash32.Length != 32
             || capability32.Length != 32 || !Enum.IsDefined(role))
             throw new ArgumentException("The mailbox grant route lookup is invalid.");
         var writer = new PayloadWriter();
-        writer.Bytes(exactXmg1Hash32);
+        writer.Bytes(exactXmg2Hash32);
         writer.Bytes(locatorHash32);
         writer.Bytes(capability32);
         writer.U16((ushort)role);
         return writer.ToArray();
     }
 
-    internal static (byte[] ExactXmg1Hash, byte[] LocatorHash, byte[] Capability,
+    internal static (byte[] ExactXmg2Hash, byte[] LocatorHash, byte[] Capability,
         ContactMailboxGrantRole Role)
         DecodeMailboxGrantRouteRequest(ReadOnlySpan<byte> payload)
     {

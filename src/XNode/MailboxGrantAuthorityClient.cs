@@ -13,7 +13,7 @@ namespace XNode;
 
 internal sealed record MailboxGrantAuthorityRequest(
     VerifiedContactServicePlacement Placement,
-    ReadOnlyMemory<byte> ExactXmg1,
+    ReadOnlyMemory<byte> ExactXmg2,
     MailboxGrantAcquisitionResultCode ResultCode,
     ReadOnlyMemory<byte> ExactRouteClosure,
     ushort RouteDisposition,
@@ -27,7 +27,7 @@ internal sealed record MailboxGrantReplicaEvidence(
 
 /// <summary>
 /// Authenticated internal authority boundary. Implementations journal the exact
-/// XMG1 operation before authoring XMC2 and keep the mailbox issuer private key
+/// XMG2 operation before authoring XMC2 and keep the mailbox issuer private key
 /// outside XNode. This is not a public Registry endpoint.
 /// </summary>
 internal interface IMailboxGrantAuthorityClient
@@ -108,7 +108,7 @@ internal sealed class HttpsMailboxGrantAuthorityClient
         byte[]? privateKey = null;
         try
         {
-            var exactRequest = ContactCodec.Decode(DeepProtocolIdentifiers.Magic.XMG1, request.ExactXmg1.Span);
+            var exactRequest = ContactCodec.Decode(DeepProtocolIdentifiers.Magic.XMG2, request.ExactXmg2.Span);
             var placement = request.Placement;
             placement.Network.EnsureCurrent();
             if (!placement.Binds(ContactServiceRequestKind.ResolveInvite, exactRequest.Field(3)) ||
@@ -220,7 +220,7 @@ internal sealed class HttpsMailboxGrantAuthorityClient
         Convert.ToBase64String(value).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 
     private sealed record ContactGrantAuthorityHttpRequest(
-        string ExactXmg1,
+        string ExactXmg2,
         ushort ResultCode,
         string ExactRouteClosure,
         ushort RouteDisposition,

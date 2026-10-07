@@ -241,13 +241,24 @@ This opt-in composition is not production activation or device delivery evidence
 
 The acquisition consumer now follows
 [DR-0081](../../docs/survival-program/decisions/DR-0081-did2-mailbox-selection-grant-clean-break.md)
-and accepts only the current bounded XMC2 result paired to the exact XMG1.
+and accepts only the current bounded XMC2 result paired to the exact XMG2.
 Old result magic/length, malformed records, foreign operation bindings,
 compressed/truncated/trailing HTTP bodies and foreign media types reject.
 Protocol independently verifies the enclosed route/selector/issuer authority;
 HTTP parsing alone does not authorize a grant. Rebuild Registry/node/client
 and provision the matching signed successors together. Node mailbox admission,
 peer mutation and physical delivery remain separate activation gates.
+
+The request clean break is governed by
+[DR-0102](../../docs/survival-program/decisions/DR-0102-exact-mailbox-request-route-binding.md).
+Both private coordination JSON and ONION operation4 use only the new request;
+the retired request/JSON field is rejected, not converted. Retained lookup now
+uses the holder-signed exact route hash, never a newest-route guess. Rebuild and
+repin Registry, Protocol and Shared/client consumers together before activation.
+No node-state generation, registered key, certbot configuration or object TTL
+changes in this increment. Exact lookup still does not establish protected
+retained authority, renewed issuance or physical Retrieve/ACK. See the
+[source checkpoint](testing/s01-exact-request-binding-2026-10-07.md).
 
 ## Private DID2 coordination backend candidate
 

@@ -264,10 +264,10 @@ public sealed class Did2ContactServiceCompositionTests
                     publication.LocatorHash, holder);
                 state.LoseNextGrant = true;
                 var uncertainGrant = await Assert.ThrowsAsync<IOException>(() => dispatcher.DispatchAsync(ContactServiceOperation.AcquireMailboxGrant,
-                    deposit.ExactXmg1, default).AsTask());
+                    deposit.ExactXmg2, default).AsTask());
                 if (grantHttp) Assert.IsType<ContactServiceUnavailableException>(uncertainGrant.InnerException);
                 fixture.Sample++;
-                var depositResult = await dispatcher.DispatchAsync(ContactServiceOperation.AcquireMailboxGrant, deposit.ExactXmg1, default);
+                var depositResult = await dispatcher.DispatchAsync(ContactServiceOperation.AcquireMailboxGrant, deposit.ExactXmg2, default);
                 var granted = await DeepIdV2MailboxGrantResultVerifier.VerifySuccessAsync(fixture.ContactRoute,
                     deposit, depositResult, fixture.MailboxAuthority);
                 Assert.Equal(510, depositResult.Length);
@@ -279,7 +279,7 @@ public sealed class Did2ContactServiceCompositionTests
                 using var ownerHolder = new GrantSigner(0x52);
                 var retrieve = await DeepIdV2MailboxGrantRequestAuthor.AuthorRetrieveAsync(fixture.ContactRoute,
                     publication.LocatorHash, fixture.ContactOwnedRequest.OwnerRetrieveCapability, ownerHolder);
-                var retrieveResult = await dispatcher.DispatchAsync(ContactServiceOperation.AcquireMailboxGrant, retrieve.ExactXmg1, default);
+                var retrieveResult = await dispatcher.DispatchAsync(ContactServiceOperation.AcquireMailboxGrant, retrieve.ExactXmg2, default);
                 Assert.Equal(MailboxCapabilityDomain.Retrieve, (await DeepIdV2MailboxGrantResultVerifier.VerifySuccessAsync(
                     fixture.ContactRoute, retrieve, retrieveResult, fixture.MailboxAuthority)).Domain);
                 Assert.Equal(2, state.GrantSignatures);
@@ -370,7 +370,7 @@ public sealed class Did2ContactServiceCompositionTests
         using var holder = new GrantSigner(0x51);
         var owned = await DeepIdV2MailboxGrantRequestAuthor.AuthorDepositAsync(fixture.ContactRoute,
             fixture.ContactPublication.LocatorHash, holder);
-        var request = ContactCodec.Decode(DeepProtocolIdentifiers.Magic.XMG1, owned.ExactXmg1.Span);
+        var request = ContactCodec.Decode(DeepProtocolIdentifiers.Magic.XMG2, owned.ExactXmg2.Span);
         var expiry = BinaryPrimitives.ReadUInt64BigEndian(request.Field(10).Span);
         var response = MailboxGrantResultAuthor.AuthorFailure(request, MailboxGrantAcquisitionResultCode.Unavailable,
             BinaryPrimitives.ReadUInt64BigEndian(request.Field(9).Span), expiry).CanonicalBytes.ToArray();
@@ -393,7 +393,7 @@ public sealed class Did2ContactServiceCompositionTests
         var node = new RouterNodeOptions { RouterId = Convert.ToHexStringLower(nodeId.Span),
             Ed25519PrivateKey = Convert.ToHexStringLower(fixture.Node(nodeId.Span).Seed) };
         var authority = new HttpsMailboxGrantAuthorityClient(client, node, new("https://issuer.example/"), new SystemClock());
-        var input = new MailboxGrantAuthorityRequest(placement, owned.ExactXmg1, MailboxGrantAcquisitionResultCode.Unavailable,
+        var input = new MailboxGrantAuthorityRequest(placement, owned.ExactXmg2, MailboxGrantAcquisitionResultCode.Unavailable,
             default, 0, 0, expiry, [new(nodeId, new byte[64]), new(placement.RankedReplicaNodeIds[1], new byte[64])]);
         if (mode == "current-failure")
             Assert.Equal(response, (await authority.AuthorizeAsync(input, default)).ToArray());
@@ -416,7 +416,7 @@ public sealed class Did2ContactServiceCompositionTests
         using var holder = new GrantSigner(0x51);
         var owned = await DeepIdV2MailboxGrantRequestAuthor.AuthorDepositAsync(fixture.ContactRoute,
             fixture.ContactPublication.LocatorHash, holder);
-        var request = ContactCodec.Decode("XMG1", owned.ExactXmg1.Span);
+        var request = ContactCodec.Decode("XMG2", owned.ExactXmg2.Span);
         var placement = ContactServicePlacementFactory.Create(fixture.NetworkContext,
             ContactServiceRequestKind.ResolveInvite, request.Field(3));
         var nodeId = placement.RankedReplicaNodeIds[0];
@@ -433,7 +433,7 @@ public sealed class Did2ContactServiceCompositionTests
         using var handler = new RejectGrantIoHandler();
         using var client = new HttpClient(handler);
         var authority = new HttpsMailboxGrantAuthorityClient(client, node, new("https://issuer.example/"), new SystemClock());
-        var input = new MailboxGrantAuthorityRequest(placement, owned.ExactXmg1, MailboxGrantAcquisitionResultCode.Unavailable,
+        var input = new MailboxGrantAuthorityRequest(placement, owned.ExactXmg2, MailboxGrantAcquisitionResultCode.Unavailable,
             default, 0, 0, BinaryPrimitives.ReadUInt64BigEndian(request.Field(10).Span),
             [new(nodeId, new byte[64]), new(placement.RankedReplicaNodeIds[1], new byte[64])]);
         await Assert.ThrowsAsync<ContactServiceUnavailableException>(() => authority.AuthorizeAsync(input, default).AsTask());
@@ -610,10 +610,10 @@ public sealed class Did2ContactServiceCompositionTests
         {
             state.GrantCalls++;
             if (request.ResultCode != MailboxGrantAcquisitionResultCode.Success) throw new ContactServiceUnavailableException("No current route.");
-            var xmg = ContactCodec.Decode("XMG1", request.ExactXmg1.Span);
+            var xmg = ContactCodec.Decode("XMG2", request.ExactXmg2.Span);
             Assert.Equal(BinaryPrimitives.ReadUInt64BigEndian(xmg.Field(10).Span), request.ResultExpiresAtUnixSeconds);
             var current = await DeepIdV2MailboxGrantIssuanceVerifier.VerifyAsync(fixture.NetworkContext, fixture.Authority,
-                fixture.MailboxAuthority, request.ExactXmg1, request.ExactRouteClosure, request.RouteEffectiveExpiresAtUnixSeconds,
+                fixture.MailboxAuthority, request.ExactXmg2, request.ExactRouteClosure, request.RouteEffectiveExpiresAtUnixSeconds,
                 request.ReplicaEvidence.Select(item => new DeepIdV2MailboxGrantReplicaEvidence(item.ReplicaId.Span, item.Signature.Span)).ToArray(),
                 new(fixture), ct);
             var key = Convert.ToHexString(xmg.Field(2).Span);
@@ -640,9 +640,9 @@ public sealed class Did2ContactServiceCompositionTests
             Assert.Equal(HttpsMailboxGrantAuthorityClient.ResponseMediaType, Assert.Single(message.Headers.Accept).MediaType);
             using var document = JsonDocument.Parse(await message.Content.ReadAsByteArrayAsync(ct));
             var json = document.RootElement;
-            var exactXmg = Decode(json.GetProperty("exactXmg1"));
+            var exactXmg = Decode(json.GetProperty("exactXmg2"));
             var placement = ContactServicePlacementFactory.Create(fixture.NetworkContext,
-                ContactServiceRequestKind.ResolveInvite, ContactCodec.Decode("XMG1", exactXmg).Field(3));
+                ContactServiceRequestKind.ResolveInvite, ContactCodec.Decode("XMG2", exactXmg).Field(3));
             var request = new MailboxGrantAuthorityRequest(
                 placement,
                 exactXmg, (MailboxGrantAcquisitionResultCode)json.GetProperty("resultCode").GetUInt16(),
@@ -651,7 +651,7 @@ public sealed class Did2ContactServiceCompositionTests
                 json.GetProperty("replicaEvidence").EnumerateArray().Select(item => new MailboxGrantReplicaEvidence(
                     Convert.FromHexString(item.GetProperty("replicaId").GetString()!), Decode(item.GetProperty("signature")))).ToArray());
             var nodeId = Convert.FromHexString(json.GetProperty("nodeId").GetString()!);
-            var signing = MailboxGrantAuthorityAuthentication.GetSigningBytes(request.ExactXmg1.Span, request.ResultCode,
+            var signing = MailboxGrantAuthorityAuthentication.GetSigningBytes(request.ExactXmg2.Span, request.ResultCode,
                 request.ExactRouteClosure.Span, request.ResultExpiresAtUnixSeconds, nodeId,
                 json.GetProperty("issuedAtUnixSeconds").GetUInt64(), Decode(json.GetProperty("nonce")));
             Assert.Contains(placement.RankedReplicaNodeIds, id => id.Span.SequenceEqual(nodeId));

@@ -345,19 +345,19 @@ internal sealed class AuthenticatedRemoteContactServiceReplica :
     {
         if (exactServiceRequest.Length == 0)
             throw new InvalidOperationException(
-                "Remote mailbox grant lookup requires the exact canonical XMG1 request.");
-        var exact = ContactCodec.Decode(ProtocolMagic.XMG1, exactServiceRequest);
+                "Remote mailbox grant lookup requires the exact canonical XMG2 request.");
+        var exact = ContactCodec.Decode(ProtocolMagic.XMG2, exactServiceRequest);
         var expectedRole = exact.Field(6).Span[0] switch
         {
             1 => ContactMailboxGrantRole.Deposit,
             2 => ContactMailboxGrantRole.Retrieve,
-            _ => throw new InvalidDataException("The exact XMG1 role is invalid.")
+            _ => throw new InvalidDataException("The exact XMG2 role is invalid.")
         };
         if (!Fixed(exact.Field(3).Span, locatorHash32.Span) ||
             !Fixed(exact.Field(4).Span, capability32.Span) ||
             role != expectedRole)
             throw new InvalidDataException(
-                "The exact XMG1 request does not bind the mailbox grant route lookup.");
+                "The exact XMG2 request does not bind the mailbox grant route lookup.");
         var payload = ContactReplicaPayloadCodec.EncodeMailboxGrantRouteRequest(
             SHA256.HashData(exactServiceRequest),
             locatorHash32.Span,

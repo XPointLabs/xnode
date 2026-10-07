@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Security.Cryptography;
+using System.Runtime.InteropServices;
 using System.Text.Json.Nodes;
 using Deep.Protocol.ContactV1;
 using Deep.Protocol.ContactV2;
@@ -37,6 +38,24 @@ public sealed class RetainedMailboxRouteStoreTests(CurrentContactPublicationFixt
         var copy = found.ExactRouteClosure.ToArray(); copy[0] ^= 1;
         Assert.Equal(publication.CanonicalRouteClosure.ToArray(), found.ExactRouteClosure.ToArray());
         Assert.Equal(-1, File.ReadAllBytes(files.Path).AsSpan().IndexOf(signed.Request.OwnerRetrieveCapability.Span));
+    }
+
+    [Fact]
+    public async Task LookupRequiresHolderSignedExactRouteIntentAndDefensivelyExportsIt()
+    {
+        using var files = new Files(); using var store = files.Open();
+        var publication = await Publication();
+        _ = store.PublishDcr(publication);
+        var exact = await Request();
+        Assert.Equal(signed.Route.Route.ExactHash.ToArray(), exact.ExactRouteHash.ToArray());
+        Assert.True(MemoryMarshal.TryGetArray(exact.ExactRouteHash, out var exported)); exported.AsSpan()[0] ^= 1;
+        Assert.Equal(signed.Route.Route.ExactHash.ToArray(), exact.ExactRouteHash.ToArray());
+        var before = File.ReadAllBytes(files.Path);
+        Assert.Equal(RetainedMailboxRouteDisposition.NotFound,
+            (await store.ResolveRetainedMailboxRouteAsync(await Request(routeHash: Bytes(32, 0xfb)))).Disposition);
+        Assert.Equal(RetainedMailboxRouteDisposition.Found,
+            (await store.ResolveRetainedMailboxRouteAsync(exact)).Disposition);
+        Assert.Equal(before, File.ReadAllBytes(files.Path));
     }
 
     [Fact]
@@ -203,14 +222,27 @@ public sealed class RetainedMailboxRouteStoreTests(CurrentContactPublicationFixt
             await signed.Verifier.VerifyAsync(signed.Request, default), signed.Request, default);
 
     private async Task<VerifiedMailboxRetainedReadRequestV2> Request(byte[]? locator = null,
-        byte[]? capability = null, CallbackClock? clock = null)
+        byte[]? capability = null, CallbackClock? clock = null, byte[]? routeHash = null)
     {
         using var signer = new Holder();
         var authored = await DeepIdV2MailboxGrantRequestAuthor.AuthorRetrieveAsync(signed.Route,
             locator is null ? signed.Request.LocatorHash : locator,
             capability is null ? signed.Request.OwnerRetrieveCapability : capability, signer);
         var host = await signed.VerifyMailboxHostAsync(clock);
-        return await host.VerifyRetainedReadRequestAsync(authored.ExactXmg1);
+        if (routeHash is not null)
+        {
+            // A real valid holder proof of wrong intent is not matching custody.
+            var changedBytes = authored.ExactXmg2.ToArray();
+            // Fixed current request: tag11 value starts 331, tag12 at371.
+            Assert.Equal(435, changedBytes.Length);
+            routeHash.CopyTo(changedBytes, 331);
+            var changed = ContactCodec.Decode("XMG2", changedBytes);
+            var proof = new byte[64];
+            await signer.SignMailboxGrantRequestAsync(changed.SignatureInput, proof, default);
+            proof.CopyTo(changedBytes, 371);
+            return await host.VerifyRetainedReadRequestAsync(changedBytes);
+        }
+        return await host.VerifyRetainedReadRequestAsync(authored.ExactXmg2);
     }
 
     private static OpaqueDcrPublishRequest Raw(OpaqueDcrPublishRequest source, bool successor = false, ulong? expiry = null)
