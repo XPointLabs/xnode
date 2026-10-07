@@ -396,7 +396,8 @@ public sealed partial class Did2ContactServiceCompositionTests
             Ed25519PrivateKey = Convert.ToHexStringLower(fixture.Node(nodeId.Span).Seed) };
         var authority = new HttpsMailboxGrantAuthorityClient(client, node, new("https://issuer.example/"), new SystemClock());
         var input = new MailboxGrantAuthorityRequest(placement, owned.ExactXmg2, MailboxGrantAcquisitionResultCode.Unavailable,
-            default, 0, 0, expiry, [new(nodeId, new byte[64]), new(placement.RankedReplicaNodeIds[1], new byte[64])]);
+            default, 0, 0, expiry, [new(nodeId, new byte[64]), new(placement.RankedReplicaNodeIds[1], new byte[64])],
+            MailboxGrantAuthorityEvidenceKind.CurrentRoute, 0);
         if (mode == "current-failure")
             Assert.Equal(response, (await authority.AuthorizeAsync(input, default)).ToArray());
         else
@@ -437,7 +438,8 @@ public sealed partial class Did2ContactServiceCompositionTests
         var authority = new HttpsMailboxGrantAuthorityClient(client, node, new("https://issuer.example/"), new SystemClock());
         var input = new MailboxGrantAuthorityRequest(placement, owned.ExactXmg2, MailboxGrantAcquisitionResultCode.Unavailable,
             default, 0, 0, BinaryPrimitives.ReadUInt64BigEndian(request.Field(10).Span),
-            [new(nodeId, new byte[64]), new(placement.RankedReplicaNodeIds[1], new byte[64])]);
+            [new(nodeId, new byte[64]), new(placement.RankedReplicaNodeIds[1], new byte[64])],
+            MailboxGrantAuthorityEvidenceKind.CurrentRoute, 0);
         await Assert.ThrowsAsync<ContactServiceUnavailableException>(() => authority.AuthorizeAsync(input, default).AsTask());
         Assert.Equal(0, handler.Calls);
     }
@@ -684,7 +686,11 @@ public sealed partial class Did2ContactServiceCompositionTests
                 Decode(json.GetProperty("exactRouteClosure")), json.GetProperty("routeDisposition").GetUInt16(),
                 json.GetProperty("routeEffectiveExpiresAtUnixSeconds").GetUInt64(), json.GetProperty("resultExpiresAtUnixSeconds").GetUInt64(),
                 json.GetProperty("replicaEvidence").EnumerateArray().Select(item => new MailboxGrantReplicaEvidence(
-                    Convert.FromHexString(item.GetProperty("replicaId").GetString()!), Decode(item.GetProperty("signature")))).ToArray());
+                    Convert.FromHexString(item.GetProperty("replicaId").GetString()!), Decode(item.GetProperty("signature")))).ToArray(),
+                (MailboxGrantAuthorityEvidenceKind)json.GetProperty("evidenceKind").GetUInt16(),
+                json.GetProperty("readUntilUnixSeconds").GetUInt64());
+            Assert.Equal(MailboxGrantAuthorityEvidenceKind.CurrentRoute, request.EvidenceKind);
+            Assert.Equal(0UL, request.ReadUntilUnixSeconds);
             var nodeId = Convert.FromHexString(json.GetProperty("nodeId").GetString()!);
             var signing = MailboxGrantAuthorityAuthentication.GetSigningBytes(request.ExactXmg2.Span, request.ResultCode,
                 request.ExactRouteClosure.Span, request.ResultExpiresAtUnixSeconds, nodeId,

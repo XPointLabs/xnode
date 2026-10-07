@@ -478,7 +478,8 @@ internal sealed class ProductionContactServiceOpaqueDispatcher :
                         checked((ushort)route.Disposition),
                         evidenceExpiry,
                         responseExpiry,
-                        replicaEvidence),
+                        replicaEvidence,
+                        MailboxGrantAuthorityEvidenceKind.CurrentRoute, 0),
                     cancellationToken)
                 .ConfigureAwait(false);
             var response = ContactCodec.Decode(ProtocolMagic.XMC2, exactResponse.Span);

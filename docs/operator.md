@@ -36,6 +36,14 @@ Public grant acquisition and physical Retrieve/ACK remain gated; do not reset
 registered identities or existing state to enable the candidate. See its
 [exact verification scope](testing/s01-retained-native-peer-2026-10-07.md).
 
+The matched private HTTPS boundary now requires explicit evidence kind and
+retained horizon, using the independent DR-0104 forwarding purpose. Deploying
+only one side of the Node/Registry private JSON cutover is unsupported. Public
+grant dispatch remains current-only; this is not automatic retained fallback or
+permission to reset identities, floors or journals. The current source candidate
+is not full-gate qualified; see the
+[matched private-boundary receipt](testing/s01-retained-private-forwarding-2026-10-07.md).
+
 `ContactResolverCustody` contains only local bindings: canonical public
 `networkIdHex`, absolute `independentCustodyDirectory` and existing persistent
 `dataProtectionKeysDirectory`. The data, checkpoint and key-ring directories

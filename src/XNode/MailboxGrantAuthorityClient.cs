@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text.Json;
 using Deep.Protocol.ContactV1;
+using Deep.Protocol.ContactV2;
 using Deep.Protocol.DeepExtension.PrivacyRouting;
 using Deep.Protocol.Registry;
 using Deep.Protocol.XPointNetworkV1;
@@ -10,6 +11,12 @@ using Sodium;
 using XNode.Core;
 
 namespace XNode;
+
+internal enum MailboxGrantAuthorityEvidenceKind : ushort
+{
+    CurrentRoute = 1,
+    RetainedRead = 2
+}
 
 internal sealed record MailboxGrantAuthorityRequest(
     VerifiedContactServicePlacement Placement,
@@ -19,7 +26,9 @@ internal sealed record MailboxGrantAuthorityRequest(
     ushort RouteDisposition,
     ulong RouteEffectiveExpiresAtUnixSeconds,
     ulong ResultExpiresAtUnixSeconds,
-    IReadOnlyList<MailboxGrantReplicaEvidence> ReplicaEvidence);
+    IReadOnlyList<MailboxGrantReplicaEvidence> ReplicaEvidence,
+    MailboxGrantAuthorityEvidenceKind EvidenceKind,
+    ulong ReadUntilUnixSeconds);
 
 internal sealed record MailboxGrantReplicaEvidence(
     ReadOnlyMemory<byte> ReplicaId,
@@ -109,6 +118,7 @@ internal sealed class HttpsMailboxGrantAuthorityClient
         try
         {
             var exactRequest = ContactCodec.Decode(DeepProtocolIdentifiers.Magic.XMG2, request.ExactXmg2.Span);
+            ContactCodec.VerifyMailboxGrantHolderSignature(exactRequest);
             var placement = request.Placement;
             placement.Network.EnsureCurrent();
             if (!placement.Binds(ContactServiceRequestKind.ResolveInvite, exactRequest.Field(3)) ||
@@ -121,14 +131,24 @@ internal sealed class HttpsMailboxGrantAuthorityClient
                 placement.Network.ResolveNodeIdentityPublicKey(nodeId).Span))
                 throw new ContactServiceUnavailableException(
                     "The XNode signing seed does not match its signed descriptor.");
-            var signingBytes = MailboxGrantAuthorityAuthentication.GetSigningBytes(
+            var signingBytes = request.EvidenceKind switch
+            {
+                MailboxGrantAuthorityEvidenceKind.CurrentRoute when request.ReadUntilUnixSeconds == 0 =>
+                    MailboxGrantAuthorityAuthentication.GetSigningBytes(
                 exactRequest.CanonicalBytes.Span,
                 request.ResultCode,
                 request.ExactRouteClosure.Span,
                 request.ResultExpiresAtUnixSeconds,
                 nodeId,
                 issuedAt,
-                nonce);
+                nonce),
+                MailboxGrantAuthorityEvidenceKind.RetainedRead when request.ResultCode == MailboxGrantAcquisitionResultCode.Success &&
+                    request.RouteDisposition == 1 && request.RouteEffectiveExpiresAtUnixSeconds == 0 && request.ReadUntilUnixSeconds != 0 =>
+                    MailboxRetainedReadAuthorityAuthentication.GetSigningBytes(exactRequest.CanonicalBytes.Span,
+                        request.ExactRouteClosure.Span, request.ReadUntilUnixSeconds, request.ResultExpiresAtUnixSeconds,
+                        nodeId, issuedAt, nonce),
+                _ => throw new ContactServiceUnavailableException("Private grant evidence kind/role/horizon is invalid.")
+            };
             var signature = PublicKeyAuth.SignDetached(signingBytes, privateKey);
             var model = new ContactGrantAuthorityHttpRequest(
                 Base64Url(exactRequest.CanonicalBytes.Span),
@@ -144,7 +164,8 @@ internal sealed class HttpsMailboxGrantAuthorityClient
                 request.ReplicaEvidence.Select(static item =>
                     new ContactGrantReplicaEvidenceHttpRequest(
                         Convert.ToHexString(item.ReplicaId.Span).ToLowerInvariant(),
-                        Base64Url(item.Signature.Span))).ToArray());
+                        Base64Url(item.Signature.Span))).ToArray(),
+                checked((ushort)request.EvidenceKind), request.ReadUntilUnixSeconds);
             var body = JsonSerializer.SerializeToUtf8Bytes(model, JsonOptions);
             using var message = new HttpRequestMessage(HttpMethod.Post, endpoint)
             {
@@ -177,6 +198,9 @@ internal sealed class HttpsMailboxGrantAuthorityClient
                 exact);
             ContactCodec.ValidateMailboxGrantResultBinding(
                 exactRequest, decoded);
+            if (request.EvidenceKind == MailboxGrantAuthorityEvidenceKind.RetainedRead &&
+                (length != 510 || decoded.Field(8).Length != 304))
+                throw new ContactServiceUnavailableException("Retained authority requires one exact successful current grant.");
             placement.Network.EnsureCurrent();
             cancellationToken.ThrowIfCancellationRequested();
             return decoded.CanonicalBytes.ToArray();
@@ -195,6 +219,7 @@ internal sealed class HttpsMailboxGrantAuthorityClient
             or ContactFormatException
             or JsonException
             or InvalidDataException
+            or ArgumentException
             or OnionBoundaryException)
         {
             throw new ContactServiceUnavailableException(
@@ -230,7 +255,9 @@ internal sealed class HttpsMailboxGrantAuthorityClient
         ulong IssuedAtUnixSeconds,
         string Nonce,
         string Signature,
-        IReadOnlyList<ContactGrantReplicaEvidenceHttpRequest> ReplicaEvidence);
+        IReadOnlyList<ContactGrantReplicaEvidenceHttpRequest> ReplicaEvidence,
+        ushort EvidenceKind,
+        ulong ReadUntilUnixSeconds);
 
     private sealed record ContactGrantReplicaEvidenceHttpRequest(
         string ReplicaId,
