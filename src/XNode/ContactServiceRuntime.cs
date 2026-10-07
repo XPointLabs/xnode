@@ -151,7 +151,8 @@ internal sealed class ContactServiceLocalReplicaRuntime : IDisposable
         RouterNodeOptions node,
         IClock clock,
         IMailboxStorageSecurity storageSecurity,
-        IMailboxDurabilityBarrier durability)
+        IMailboxDurabilityBarrier durability,
+        FileContactResolverStateCustody? custody = null)
     {
         ArgumentNullException.ThrowIfNull(node);
         ArgumentNullException.ThrowIfNull(clock);
@@ -167,25 +168,37 @@ internal sealed class ContactServiceLocalReplicaRuntime : IDisposable
             CryptographicOperations.ZeroMemory(seed);
         }
 
-        resolverStore = new ContactResolverOpaqueStore(
-            Path.Combine(root, "resolver.state"),
-            clock: clock,
-            storageSecurity: storageSecurity,
-            durability: durability);
-        preKeyStore = new ContactPreKeyOpaqueStore(
-            Path.Combine(root, "prekey.state"),
-            clock: clock,
-            storageSecurity: storageSecurity,
-            durability: durability);
-        AuthorizationSaga = new ContactPublicationAuthorizationSaga(
-            Path.Combine(root, "xpa1-saga.state"),
-            Path.Combine(root, "xpa1-saga.key"),
-            security: storageSecurity,
-            durability: durability);
-        Binding = new ContactServiceReplicaBinding(
-            new ContactResolverStoreReplica(receiptAuthority.ReplicaId.Span, resolverStore),
-            new ContactPreKeyStoreReplica(receiptAuthority.ReplicaId.Span, preKeyStore),
-            receiptAuthority);
+        ContactResolverOpaqueStore? openedResolver = null;
+        ContactPreKeyOpaqueStore? openedPreKey = null;
+        ContactPublicationAuthorizationSaga? openedSaga = null;
+        try
+        {
+            resolverStore = openedResolver = new ContactResolverOpaqueStore(
+                Path.Combine(root, "resolver.state"),
+                clock: clock,
+                storageSecurity: storageSecurity,
+                durability: durability,
+                custody: custody);
+            preKeyStore = openedPreKey = new ContactPreKeyOpaqueStore(
+                Path.Combine(root, "prekey.state"),
+                clock: clock,
+                storageSecurity: storageSecurity,
+                durability: durability);
+            AuthorizationSaga = openedSaga = new ContactPublicationAuthorizationSaga(
+                Path.Combine(root, "xpa1-saga.state"),
+                Path.Combine(root, "xpa1-saga.key"),
+                security: storageSecurity,
+                durability: durability);
+            Binding = new ContactServiceReplicaBinding(
+                new ContactResolverStoreReplica(receiptAuthority.ReplicaId.Span, resolverStore),
+                new ContactPreKeyStoreReplica(receiptAuthority.ReplicaId.Span, preKeyStore),
+                receiptAuthority);
+        }
+        catch
+        {
+            openedSaga?.Dispose(); openedPreKey?.Dispose(); openedResolver?.Dispose(); receiptAuthority.Dispose();
+            throw;
+        }
     }
 
     internal ContactServiceReplicaBinding Binding { get; }

@@ -64,6 +64,24 @@ internal sealed partial class ContactResolverOpaqueStore
 {
     internal const ulong MailboxObjectHorizonSeconds = 30 * 24 * 60 * 60;
 
+    // This returns private facts only. Future signed retained evidence must use
+    // this native read-back path, never the unprotected neutral lookup below.
+    internal ValueTask<RetainedMailboxRouteLookup> ResolveProtectedRetainedMailboxRouteAsync(
+        VerifiedMailboxRetainedReadRequestV2 request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var exact = ContactCodec.Decode(ProtocolMagic.XMG2, request.ExactXmg2.Span);
+        lock (gate)
+        {
+            ThrowIfDisposed();
+            if (custody is null) throw new InvalidOperationException("Protected retained route custody is required.");
+            custody.RequireNetwork(exact.Field(1).Span);
+            custody.RequireSnapshot(path);
+            custody.RequireDocumentSnapshot(path, documentHash, documentLength);
+        }
+        return ResolveRetainedMailboxRouteAsync(request, cancellationToken);
+    }
+
     internal async ValueTask<RetainedMailboxRouteLookup> ResolveRetainedMailboxRouteAsync(
         VerifiedMailboxRetainedReadRequestV2 request, CancellationToken cancellationToken = default)
     {
@@ -75,6 +93,8 @@ internal sealed partial class ContactResolverOpaqueStore
         lock (gate)
         {
             ThrowIfDisposed();
+            custody?.RequireSnapshot(path);
+            custody?.RequireDocumentSnapshot(path, documentHash, documentLength);
             revision = stateRevision;
             result = LookupRetainedRoute(exact, first.UpperUnixSeconds);
         }
@@ -88,6 +108,8 @@ internal sealed partial class ContactResolverOpaqueStore
         {
             ThrowIfDisposed();
             cancellationToken.ThrowIfCancellationRequested();
+            custody?.RequireSnapshot(path);
+            custody?.RequireDocumentSnapshot(path, documentHash, documentLength);
             if (revision != stateRevision)
                 throw new InvalidOperationException("Retained lookup snapshot changed during authority recheck.");
             if (result.Disposition == RetainedMailboxRouteDisposition.Found
@@ -166,6 +188,7 @@ internal sealed partial class ContactResolverOpaqueStore
         long bytes = 0;
         foreach (var item in candidate.RetainedMailboxRoutes)
         {
+            custody?.RequireNetwork(item.NetworkId);
             Validate32(item.PublicationRequestHash); Validate32(item.LocatorHash);
             Validate32(item.RetrieveCapabilityDigest);
             if (item.NetworkId is null || item.NetworkId.Length != 16 || OpaqueValue.IsZero(item.NetworkId)

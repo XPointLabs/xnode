@@ -22,6 +22,8 @@ using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Configuration;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.DataProtection.KeyManagement;
 using System.Runtime.InteropServices;
 using Sodium;
 using XNode.Core;
@@ -479,12 +481,22 @@ public sealed class Did2ContactServiceCompositionTests
         DeepIdV2PublicationAuthorityFixture fixture, ContactServicePersistenceOptions options,
         Dictionary<RouterId, ServiceProvider> providers, PeerState state, bool grantHttp)
     {
+        // Only the explicitly allocated new test scope is enrolled. A reopened
+        // provider never imports/blesses existing opaque data or missing roots.
+        var fresh = !Directory.Exists(node.DataDirectory);
+        var resolverCustody = new ContactResolverCustodyOptions {
+            NetworkIdHex = Convert.ToHexStringLower(fixture.NetworkContext.NetworkId.Span),
+            IndependentCustodyDirectory = node.DataDirectory + "-resolver-custody",
+            DataProtectionKeysDirectory = node.DataDirectory + "-resolver-keys"
+        }.Validate(node, true)!;
+        if (fresh) ProvisionResolverTestKeys(resolverCustody.DataProtectionKeysDirectory);
         var services = new ServiceCollection(); services.AddLogging();
         services.AddSingleton(node); services.AddSingleton<IOnionMonotonicClock>(fixture);
         services.AddSingleton<IDeepIdV2ContactStoreAuthoritySource>(fixture);
         services.AddSingleton<IDeepIdV2PreKeyPlacementSource>(fixture);
         services.AddSingleton<IMailboxStorageSecurity, MailboxStorageSecurity>();
         services.AddSingleton<IMailboxDurabilityBarrier, MailboxDurabilityBarrier>();
+        services.AddContactResolverCustody(resolverCustody);
         services.AddSingleton<DeepIdV2ReplicaStageReceiver>();
         services.AddDid2ContactServiceBoundary(options);
         services.AddSingleton<IContactReplicaPeerClient>(_ => state.Hosts.Count > 0
@@ -501,7 +513,24 @@ public sealed class Did2ContactServiceCompositionTests
         }
         else services.AddSingleton<IMailboxGrantAuthorityClient>(issuer);
         services.AddSingleton<IContactServiceOpaqueDispatcher, DeepIdV2ContactOnionDispatcher>();
-        return services.BuildServiceProvider();
+        var provider = services.BuildServiceProvider();
+        try
+        {
+            if (fresh) ContactResolverEnrollmentCommand.EnrollConfiguredAsync(provider, default).AsTask().GetAwaiter().GetResult();
+            return provider;
+        }
+        catch { provider.Dispose(); throw; }
+    }
+
+    private static void ProvisionResolverTestKeys(string directory)
+    {
+        var security = new MailboxStorageSecurity(); security.SecureDirectory(directory);
+        var services = new ServiceCollection();
+        services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(directory))
+            .SetApplicationName(ContactResolverCustodyComposition.ProtectionApplication).DisableAutomaticKeyGeneration();
+        using (var provider = services.BuildServiceProvider())
+            provider.GetRequiredService<IKeyManager>().CreateNewKey(DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddDays(90));
+        foreach (var key in Directory.GetFiles(directory)) security.SecureFile(key);
     }
 
     private static PrivacyRoutingConfiguration Privacy(RouterNodeOptions[] nodes, PeerState? state = null) => new(true,

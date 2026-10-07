@@ -40,6 +40,17 @@ if (args.Length > 0 && args[0] == "current-mailbox-enroll")
     return;
 }
 
+if (args.Length > 0 && args[0] == "contact-resolver-enroll")
+{
+    try { await ContactResolverEnrollmentCommand.RunAsync(args); }
+    catch
+    {
+        Console.Error.WriteLine("Resolver enrollment rejected; preserve any partial custody. No automatic reset or import is permitted.");
+        Environment.ExitCode = 1;
+    }
+    return;
+}
+
 var builder = WebApplication.CreateBuilder(args);
 
 var nodeOptions = builder.Configuration.GetSection("Node").Get<RouterNodeOptions>() ?? new RouterNodeOptions();
@@ -189,6 +200,10 @@ if (did2ClaimEnabled)
     builder.Services.AddSingleton<DeepIdV2PreKeyClaimRuntime>();
 var did2ContactResolverEnabled = did2ContactResolverOptions.Validate(did2NetworkPlacement?.Observer is not null,
     privacyRouting.Enabled, did2ReplicaStageEnabled);
+var resolverCustody = (builder.Configuration.GetSection("ContactResolverCustody")
+    .Get<ContactResolverCustodyOptions>(options => options.ErrorOnUnknownConfiguration = true) ?? new())
+    .Validate(nodeOptions, did2ContactResolverEnabled);
+builder.Services.AddContactResolverCustody(resolverCustody);
 if (did2ContactResolverEnabled)
     builder.Services.AddDid2ContactResolver(did2ContactResolverOptions);
 if (contactServiceOptions.RuntimeActivation && !did2ContactResolverEnabled)

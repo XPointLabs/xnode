@@ -23,6 +23,13 @@ public sealed class CurrentContactPublicationFixture : IAsyncLifetime
     internal ContactServicePlacementCapability ClaimPlacement { get; private set; } = null!;
     internal IContactPublicationAuthorizationVerifier Verifier { get; private set; } = null!;
     internal VerifiedOnionNetworkContext Network => ceremony.NetworkContext;
+    internal IDeepIdV2ContactStoreAuthoritySource AuthoritySource => ceremony;
+    internal XNode.Core.RouterNodeOptions NodeOptions(ReadOnlyMemory<byte> id, string dataDirectory) => new()
+    {
+        RouterId = Convert.ToHexStringLower(id.Span),
+        Ed25519PrivateKey = Convert.ToHexStringLower(ceremony.Node(id.Span).Seed),
+        DataDirectory = dataDirectory
+    };
     internal VerifiedDeepIdV2ContactRouteClosure Route => ceremony.ContactRoute;
     internal ValueTask<VerifiedMailboxHostAuthorityV2> VerifyMailboxHostAsync(
         IOnionMonotonicClock? clock = null) => MailboxGrantRevocationStoreTests.Host(ceremony, clock);

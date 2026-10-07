@@ -156,21 +156,7 @@ internal static class CurrentMailboxHostComposition
         services.GetRequiredKeyedService<IDataProtectionProvider>(typeof(CurrentMailboxHostComposition));
 
     private static IDataProtectionProvider OpenProtection(CurrentMailboxCustodyConfiguration configuration, IMailboxStorageSecurity security)
-    {
-        var directory = new DirectoryInfo(configuration.DataProtectionKeysDirectory);
-        for (var parent = directory; parent is not null; parent = parent.Parent)
-            if (!parent.Exists || (parent.Attributes & FileAttributes.ReparsePoint) != 0)
-                throw new InvalidDataException("Current mailbox key ring is absent or linked; provisioning is explicit.");
-        var keys = directory.GetFiles("key-*.xml");
-        if (keys.Length == 0) throw new InvalidDataException("Current mailbox key ring is absent; no generation is allowed by a reader.");
-        foreach (var key in keys)
-        {
-            if ((key.Attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0)
-                throw new InvalidDataException("Current mailbox key ring requires regular files.");
-            security.ValidateSecureFile(key.FullName);
-        }
-        return DataProtectionProvider.Create(directory, builder => builder.SetApplicationName(ProtectionApplication).DisableAutomaticKeyGeneration());
-    }
+        => NativeCustodyKeyRing.OpenExisting(configuration.DataProtectionKeysDirectory, ProtectionApplication, security);
 
     private sealed class NoWallClock : IClock
     { public DateTimeOffset UtcNow => throw new InvalidOperationException("Current mailbox requires its held protected time interval."); }

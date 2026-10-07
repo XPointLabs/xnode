@@ -14,6 +14,45 @@ is not a protected rollback floor, and quota exhaustion is backpressure rather
 than permission to evict outstanding read paths. See the
 [source qualification](testing/s01-retained-route-custody-2026-10-07.md).
 
+The subsequent DR-0103 native checkpoint candidate protects that same resolver
+document with a separate node/network-bound enrollment and checkpoint. It uses
+an explicitly provisioned persistent Data Protection key ring and purpose
+separation; preserve the document, independent custody and original key ring
+together for recovery. A missing checkpoint/key, data-only rollback or foreign
+scope fails closed. No startup import, reenrollment or temporary-file adoption
+is permitted. Joint rollback of matching data and root remains outside its
+guarantee. The enabled DID2 resolver now requires protected custody in its native
+composition, without unprotected fallback. This is still an unqualified source
+candidate: do not activate or reset existing production data to try it.
+Its focused tests do not qualify retained issuance or physical
+Retrieve/ACK. See the [candidate receipt](testing/s01-protected-retained-route-2026-10-07.md).
+
+`ContactResolverCustody` contains only local bindings: canonical public
+`networkIdHex`, absolute `independentCustodyDirectory` and existing persistent
+`dataProtectionKeysDirectory`. The data, checkpoint and key-ring directories
+must be disjoint and non-root; these settings are mandatory when the DID2
+resolver is enabled, including on a contact-only node. Configuration is never
+membership/time authority. Key generation is disabled on every reader; the
+application purpose is separate from mailbox-operation custody even if an
+operator uses the same explicitly provisioned persistent key ring.
+
+For a genuinely new resolver scope only, under the node's normal configuration:
+
+```sh
+dotnet XNode.dll contact-resolver-enroll
+```
+
+This bounded non-listening command restores the actual configured DID2 proof,
+acquires independent network observation, verifies current network/root/PMA2
+and local descriptor signing custody, then creates the canonical empty resolver
+document and its independent enrollment/checkpoint. It rechecks actual source
+history, current authority/time and exact read-back before reporting success.
+Existing documents, interrupted roots, missing keys, foreign scope or authority
+loss reject; partial custody is preserved. There are no import/reset arguments,
+node-identity generation or automatic startup enrollment. Back up the complete
+coherent custody; never delete its root to make an existing document enrollable.
+The command cannot issue/renew a grant or authorize an object ACK/deletion.
+
 `CurrentMailboxAdmission` connects the closed current network/PMA2 host verifier
 to both restored native MGR1 owners and the existing durable replay/outcome
 stores. The bounded operation owns captured MAU3 bytes and selected canonical

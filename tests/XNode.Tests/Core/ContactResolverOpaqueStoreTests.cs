@@ -10,6 +10,24 @@ public sealed class ContactResolverOpaqueStoreTests
     private static readonly DateTimeOffset Start = new(2026, 9, 7, 8, 0, 0, TimeSpan.Zero);
 
     [Fact]
+    public void LockSecurityFailureReleasesTheWriterWithoutCreatingResolverState()
+    {
+        using var fixture = new StoreFixture();
+        Assert.Throws<UnauthorizedAccessException>(() => new ContactResolverOpaqueStore(
+            fixture.StatePath, storageSecurity: new RejectLockSecurity()));
+        Assert.False(File.Exists(fixture.StatePath));
+        using var reopened = fixture.Open(new FixedClock(Start));
+        Assert.Equal(ContactResolverReadDisposition.NotFound, reopened.ResolveCurrentDcr(Hash("lock-failure")).Disposition);
+    }
+
+    private sealed class RejectLockSecurity : IMailboxStorageSecurity
+    {
+        private readonly MailboxStorageSecurity actual = new();
+        public void SecureDirectory(string path) => actual.SecureDirectory(path);
+        public void SecureFile(string path) => throw new UnauthorizedAccessException("Injected writer lock security failure.");
+    }
+
+    [Fact]
     public void DcrPublicationSurvivesRestartAndReturnsDefensiveOpaqueCopies()
     {
         using var fixture = new StoreFixture();

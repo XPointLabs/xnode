@@ -15,7 +15,7 @@ namespace XNode.IntegrationTests.Runtime;
 
 /// <summary>Real signed DID2 publication/host/request with actual durable files.
 /// No renewed grant, peer dispatch, elapsed-history or device E2E claim.</summary>
-public sealed class RetainedMailboxRouteStoreTests(CurrentContactPublicationFixture signed)
+public sealed partial class RetainedMailboxRouteStoreTests(CurrentContactPublicationFixture signed)
     : IClassFixture<CurrentContactPublicationFixture>
 {
     [Fact]

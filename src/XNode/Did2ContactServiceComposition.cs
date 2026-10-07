@@ -168,7 +168,8 @@ internal static class Did2ContactServiceComposition
             provider.GetRequiredService<IContactPublicationAuthorizationVerifier>()));
         services.AddSingleton(provider => new ContactServiceLocalReplicaRuntime(
             provider.GetRequiredService<RouterNodeOptions>(), provider.GetRequiredService<Did2AuthenticatedContactClock>(),
-            provider.GetRequiredService<IMailboxStorageSecurity>(), provider.GetRequiredService<IMailboxDurabilityBarrier>()));
+            provider.GetRequiredService<IMailboxStorageSecurity>(), provider.GetRequiredService<IMailboxDurabilityBarrier>(),
+            provider.GetRequiredService<FileContactResolverStateCustody>()));
         services.AddSingleton(provider => new ProductionContactServiceOpaqueDispatcher(
             provider.GetRequiredService<RouterNodeOptions>(), provider.GetRequiredService<ContactServiceAuthoritySources>(),
             provider.GetRequiredService<ContactServiceLocalReplicaRuntime>(), provider.GetRequiredService<IContactReplicaPeerClient>(),

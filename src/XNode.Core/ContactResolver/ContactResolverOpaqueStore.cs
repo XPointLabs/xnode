@@ -348,18 +348,36 @@ internal sealed partial class ContactResolverOpaqueStore : IDisposable
     private readonly IClock clock;
     private readonly IMailboxStorageSecurity storageSecurity;
     private readonly IMailboxDurabilityBarrier durability;
+    private readonly IContactResolverStateCustody? custody;
     private readonly FileStream lifetimeLease;
     private PersistedState state;
     private bool disposed;
     private bool faulted;
     private ulong stateRevision;
+    private byte[] documentHash = [];
+    private long documentLength;
 
     internal ContactResolverOpaqueStore(
         string statePath,
         ContactResolverOpaqueStoreOptions? options = null,
         IClock? clock = null,
         IMailboxStorageSecurity? storageSecurity = null,
-        IMailboxDurabilityBarrier? durability = null)
+        IMailboxDurabilityBarrier? durability = null,
+        IContactResolverStateCustody? custody = null)
+        : this(statePath, options, clock, storageSecurity, durability, custody, enrollNew: false)
+    { }
+
+    // Explicit fresh native enrollment, never a normal-reopen fallback.
+    internal static ContactResolverOpaqueStore EnrollNewProtected(
+        string statePath, IContactResolverStateCustody custody,
+        ContactResolverOpaqueStoreOptions? options = null, IClock? clock = null,
+        IMailboxStorageSecurity? storageSecurity = null, IMailboxDurabilityBarrier? durability = null) =>
+        new(statePath, options, clock, storageSecurity, durability,
+            custody ?? throw new ArgumentNullException(nameof(custody)), enrollNew: true);
+
+    private ContactResolverOpaqueStore(string statePath, ContactResolverOpaqueStoreOptions? options,
+        IClock? clock, IMailboxStorageSecurity? storageSecurity, IMailboxDurabilityBarrier? durability,
+        IContactResolverStateCustody? custody, bool enrollNew)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(statePath);
         path = Path.GetFullPath(statePath);
@@ -368,6 +386,7 @@ internal sealed partial class ContactResolverOpaqueStore : IDisposable
         this.clock = clock ?? new SystemClock();
         this.storageSecurity = storageSecurity ?? new MailboxStorageSecurity();
         this.durability = durability ?? new MailboxDurabilityBarrier();
+        this.custody = custody;
 
         var directory = Path.GetDirectoryName(path)
             ?? throw new ArgumentException("The resolver state path has no parent directory.", nameof(statePath));
@@ -380,10 +399,20 @@ internal sealed partial class ContactResolverOpaqueStore : IDisposable
             FileShare.None,
             1,
             FileOptions.WriteThrough);
-        this.storageSecurity.SecureFile(lockPath);
         try
         {
-            state = LoadState();
+            this.storageSecurity.SecureFile(lockPath);
+            if (enrollNew)
+            {
+                custody!.RequireNewScope(path);
+                state = new PersistedState();
+                SaveState(enrollNew: true);
+            }
+            else
+            {
+                custody?.Recover(path, candidate => _ = ReadStateDocument(candidate));
+                state = LoadState();
+            }
         }
         catch
         {
@@ -933,32 +962,7 @@ internal sealed partial class ContactResolverOpaqueStore : IDisposable
         }
         try
         {
-            var info = new FileInfo(path);
-            if (info.Length < EnvelopeOverhead || info.Length > options.MaximumPersistedBytes)
-            {
-                throw new InvalidDataException("Resolver state envelope length is invalid.");
-            }
-            var bytes = File.ReadAllBytes(path);
-            if (!bytes.AsSpan(0, EnvelopeMagic.Length).SequenceEqual(EnvelopeMagic))
-            {
-                throw new InvalidDataException("Resolver state envelope magic is invalid.");
-            }
-            var payloadLength = BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(EnvelopeMagic.Length, 4));
-            if (payloadLength > int.MaxValue
-                || checked(EnvelopeOverhead + (int)payloadLength) != bytes.Length)
-            {
-                throw new InvalidDataException("Resolver state payload length is invalid.");
-            }
-            var payload = bytes.AsSpan(EnvelopeMagic.Length + 4, (int)payloadLength);
-            var digest = bytes.AsSpan(EnvelopeMagic.Length + 4 + (int)payloadLength, 32);
-            if (!CryptographicOperations.FixedTimeEquals(SHA256.HashData(payload), digest))
-            {
-                throw new InvalidDataException("Resolver state digest is invalid.");
-            }
-            var loaded = JsonSerializer.Deserialize<PersistedState>(payload, JsonOptions)
-                ?? throw new InvalidDataException("Resolver state payload is empty.");
-            ValidateState(loaded);
-            return loaded;
+            return ReadStateDocument(path);
         }
         catch (Exception exception) when (exception is InvalidDataException
             or JsonException
@@ -970,10 +974,39 @@ internal sealed partial class ContactResolverOpaqueStore : IDisposable
         }
     }
 
-    private void SaveState()
+    private PersistedState ReadStateDocument(string documentPath)
+    {
+        using var stream = new FileStream(documentPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        if (stream.Length < EnvelopeOverhead || stream.Length > options.MaximumPersistedBytes || stream.Length > int.MaxValue)
+            throw new InvalidDataException("Resolver state envelope length is invalid.");
+        var bytes = new byte[checked((int)stream.Length)]; stream.ReadExactly(bytes);
+        if (stream.ReadByte() != -1) throw new InvalidDataException("Resolver state changed while reading.");
+        var capturedHash = SHA256.HashData(bytes);
+        custody?.RequireDocumentSnapshot(documentPath, capturedHash, bytes.LongLength);
+        if (!bytes.AsSpan(0, EnvelopeMagic.Length).SequenceEqual(EnvelopeMagic))
+            throw new InvalidDataException("Resolver state envelope magic is invalid.");
+        var payloadLength = BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(EnvelopeMagic.Length, 4));
+        if (payloadLength > int.MaxValue || checked(EnvelopeOverhead + (int)payloadLength) != bytes.Length)
+            throw new InvalidDataException("Resolver state payload length is invalid.");
+        var payload = bytes.AsSpan(EnvelopeMagic.Length + 4, (int)payloadLength);
+        var digest = bytes.AsSpan(EnvelopeMagic.Length + 4 + (int)payloadLength, 32);
+        if (!CryptographicOperations.FixedTimeEquals(SHA256.HashData(payload), digest))
+            throw new InvalidDataException("Resolver state digest is invalid.");
+        var loaded = JsonSerializer.Deserialize<PersistedState>(payload, JsonOptions)
+            ?? throw new InvalidDataException("Resolver state payload is empty.");
+        ValidateState(loaded); documentHash = capturedHash; documentLength = bytes.LongLength;
+        return loaded;
+    }
+
+    private void SaveState(bool enrollNew = false)
     {
         try
         {
+            if (!enrollNew)
+            {
+                custody?.RequireSnapshot(path);
+                custody?.RequireDocumentSnapshot(path, documentHash, documentLength);
+            }
             ValidateState(state);
             var payload = JsonSerializer.SerializeToUtf8Bytes(state, JsonOptions);
             if ((long)payload.Length + EnvelopeOverhead > options.MaximumPersistedBytes)
@@ -987,6 +1020,7 @@ internal sealed partial class ContactResolverOpaqueStore : IDisposable
                 checked((uint)payload.Length));
             payload.CopyTo(envelope.AsSpan(EnvelopeMagic.Length + 4));
             SHA256.HashData(payload).CopyTo(envelope, EnvelopeMagic.Length + 4 + payload.Length);
+            var nextHash = SHA256.HashData(envelope);
             var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
             try
             {
@@ -1003,15 +1037,22 @@ internal sealed partial class ContactResolverOpaqueStore : IDisposable
                 }
                 storageSecurity.SecureFile(temporary);
                 durability.FlushFileAndParentDirectory(temporary);
+                if (!enrollNew) custody?.Prepare(path, temporary, nextHash, envelope.LongLength);
                 ReplaceFileWithBoundedRetry(temporary);
                 durability.FlushFileAndParentDirectory(path);
+                if (enrollNew) custody!.Enroll(path, nextHash, envelope.LongLength);
+                else custody?.Commit(path);
+                documentHash = nextHash; documentLength = envelope.LongLength;
                 stateRevision = checked(stateRevision + 1);
             }
             finally
             {
                 CryptographicOperations.ZeroMemory(payload);
                 CryptographicOperations.ZeroMemory(envelope);
-                if (File.Exists(temporary))
+                // A native pending checkpoint may already anchor this exact
+                // file even when Prepare/Replace/Commit reported failure.
+                // Recovery, not this failed writer, decides whether to purge it.
+                if (custody is null && File.Exists(temporary))
                 {
                     File.Delete(temporary);
                 }
