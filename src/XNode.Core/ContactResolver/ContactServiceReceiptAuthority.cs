@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
 using Deep.Protocol.ContactV1;
+using Deep.Protocol.ContactV2;
 using Deep.Protocol.MessagingWire;
 using Deep.Protocol.DeepExtension.PrivacyRouting;
 using Rebex.Security.Cryptography;
@@ -17,6 +18,7 @@ internal enum ContactServiceReceiptKind
     InviteClaimCommit = 4,
     ResolveRead = 5,
     MailboxGrantRoute = 6,
+    MailboxRetainedRead = 7,
 }
 
 internal sealed class ContactServiceReplicaReceiptRequest
@@ -175,12 +177,16 @@ internal static class ContactServiceReceiptTranscript
         ContactServiceReceiptKind.ResolveRead => 144,
         ContactServiceReceiptKind.MailboxGrantRoute =>
             MailboxGrantRouteEvidenceAuthentication.TupleLength,
+        ContactServiceReceiptKind.MailboxRetainedRead =>
+            MailboxRetainedReadEvidenceAuthentication.TupleLength,
         _ => throw new ArgumentOutOfRangeException(nameof(kind))
     };
 
     internal static byte[] SigningInput(ContactServiceReplicaReceiptRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
+        if (request.Kind == ContactServiceReceiptKind.MailboxRetainedRead)
+            return MailboxRetainedReadEvidenceAuthentication.GetSigningBytes(request.CanonicalTuple.Span);
         var domain = request.Kind switch
         {
             ContactServiceReceiptKind.PublishCommit =>

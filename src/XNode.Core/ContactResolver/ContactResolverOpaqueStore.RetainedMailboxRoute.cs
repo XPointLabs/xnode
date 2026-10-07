@@ -82,6 +82,42 @@ internal sealed partial class ContactResolverOpaqueStore
         return ResolveRetainedMailboxRouteAsync(request, cancellationToken);
     }
 
+    // Keep actual independent document custody across the signing callback.
+    // The callback never runs under the storage lock and cannot mint custody
+    // from copied lookup facts. Any intervening mutation invalidates completion.
+    internal async ValueTask<T> WithProtectedRetainedMailboxRouteAsync<T>(
+        VerifiedMailboxRetainedReadRequestV2 request,
+        Func<RetainedMailboxRouteLookup, CancellationToken, ValueTask<T>> action,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request); ArgumentNullException.ThrowIfNull(action);
+        cancellationToken.ThrowIfCancellationRequested();
+        ulong revision;
+        lock (gate)
+        {
+            ThrowIfDisposed();
+            if (custody is null) throw new InvalidOperationException("Protected retained route custody is required.");
+            custody.RequireNetwork(ContactCodec.Decode(ProtocolMagic.XMG2, request.ExactXmg2.Span).Field(1).Span);
+            custody.RequireSnapshot(path);
+            custody.RequireDocumentSnapshot(path, documentHash, documentLength);
+            revision = stateRevision;
+        }
+        var facts = await ResolveProtectedRetainedMailboxRouteAsync(request, cancellationToken).ConfigureAwait(false);
+        var result = await action(facts, cancellationToken).ConfigureAwait(false);
+        var final = await ResolveProtectedRetainedMailboxRouteAsync(request, cancellationToken).ConfigureAwait(false);
+        lock (gate)
+        {
+            ThrowIfDisposed(); cancellationToken.ThrowIfCancellationRequested();
+            custody!.RequireSnapshot(path);
+            custody.RequireDocumentSnapshot(path, documentHash, documentLength);
+            if (revision != stateRevision || final.Disposition != facts.Disposition ||
+                final.ReadUntilUnixSeconds != facts.ReadUntilUnixSeconds ||
+                !OpaqueValue.FixedEquals(final.ExactRouteClosure.Span, facts.ExactRouteClosure.Span))
+                throw new InvalidOperationException("Protected retained read snapshot changed during completion.");
+        }
+        return result;
+    }
+
     internal async ValueTask<RetainedMailboxRouteLookup> ResolveRetainedMailboxRouteAsync(
         VerifiedMailboxRetainedReadRequestV2 request, CancellationToken cancellationToken = default)
     {

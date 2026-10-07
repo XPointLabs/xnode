@@ -26,7 +26,8 @@ internal enum ContactReplicaRpcOperation : byte
     CoordinateDid2PreKeyClaim = 14,
     PrepareDid2PreKeyClaim = 15,
     CompleteDid2PreKeyClaim = 16,
-    ReadDid2PreKeyInventoryCommit = 17
+    ReadDid2PreKeyInventoryCommit = 17,
+    ReadRetainedMailboxGrantRoute = 18
 }
 
 internal sealed class ContactServicePlacementCapability
@@ -372,6 +373,22 @@ internal sealed class AuthenticatedRemoteContactServiceReplica :
             payload,
             cancellationToken).ConfigureAwait(false);
         return ContactReplicaPayloadCodec.DecodeMailboxGrantRouteResult(response.Payload.Span);
+    }
+
+    internal async ValueTask<RetainedMailboxRouteLookup> ReadRetainedMailboxGrantRouteAsync(
+        CancellationToken cancellationToken)
+    {
+        var exact = ContactReplicaPayloadCodec.DecodeRetainedMailboxGrantRequest(exactServiceRequest);
+        var request = ContactCodec.Decode(ProtocolMagic.XMG2, exact);
+        if (placement.RequestKind != ContactServiceRequestKind.ResolveInvite ||
+            !Fixed(request.Field(1).Span, placement.NetworkId.Span) ||
+            !Fixed(request.Field(3).Span, placement.ShardKey.Span))
+            throw new InvalidDataException("Retained request does not bind the exact current placement.");
+        Remember(ContactServiceReceiptKind.MailboxRetainedRead,
+            ContactReplicaRpcOperation.ReadRetainedMailboxGrantRoute, exact);
+        var response = await SendAsync(ContactReplicaRpcOperation.ReadRetainedMailboxGrantRoute,
+            exact, cancellationToken).ConfigureAwait(false);
+        return ContactReplicaPayloadCodec.DecodeRetainedMailboxGrantResult(response.Payload.Span);
     }
 
     public async ValueTask<ContactResolverDcrResolveResult> ResolveDcrAsync(

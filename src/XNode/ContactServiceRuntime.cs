@@ -207,6 +207,12 @@ internal sealed class ContactServiceLocalReplicaRuntime : IDisposable
     internal void EnsureSigningCustody(ContactServicePlacementCapability placement) =>
         receiptAuthority.EnsureSigningCustody(placement.VerifiedPlacement.Network);
 
+    internal ValueTask<T> WithProtectedRetainedMailboxRouteAsync<T>(
+        VerifiedMailboxRetainedReadRequestV2 request,
+        Func<RetainedMailboxRouteLookup, CancellationToken, ValueTask<T>> action,
+        CancellationToken cancellationToken) =>
+        resolverStore.WithProtectedRetainedMailboxRouteAsync(request, action, cancellationToken);
+
     internal ReadOnlyMemory<byte> ResolvePublicationServiceCapability(
         Xpp1BoundedRequest request) => preKeyStore.ResolvePublicationServiceCapability(request);
 

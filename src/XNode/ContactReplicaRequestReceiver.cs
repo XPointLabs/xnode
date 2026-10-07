@@ -13,17 +13,20 @@ internal sealed class ContactReplicaRequestReceiver : IContactReplicaCommandRece
     private readonly ContactServiceAuthoritySources authorities;
     private readonly ContactServiceLocalReplicaRuntime local;
     private readonly IClock clock;
+    private readonly ProtectedRetainedMailboxReadAuthority? retained;
 
     public ContactReplicaRequestReceiver(
         RouterNodeOptions node,
         ContactServiceAuthoritySources authorities,
         ContactServiceLocalReplicaRuntime local,
-        IClock clock)
+        IClock clock,
+        ProtectedRetainedMailboxReadAuthority? retained = null)
     {
         this.node = node ?? throw new ArgumentNullException(nameof(node));
         this.authorities = authorities ?? throw new ArgumentNullException(nameof(authorities));
         this.local = local ?? throw new ArgumentNullException(nameof(local));
         this.clock = clock ?? throw new ArgumentNullException(nameof(clock));
+        this.retained = retained;
     }
 
     public async ValueTask<ContactReplicaRpcResponse> ReceiveAsync(
@@ -61,6 +64,8 @@ internal sealed class ContactReplicaRequestReceiver : IContactReplicaCommandRece
             ContactReplicaRpcOperation.ReadMailboxGrantRoute => await ReadMailboxGrantRouteAsync(
                 command.Payload,
                 cancellationToken).ConfigureAwait(false),
+            ContactReplicaRpcOperation.ReadRetainedMailboxGrantRoute => ContactReplicaPayloadCodec.Encode(
+                await RequireRetained().ReadAsync(current, command.Payload, cancellationToken).ConfigureAwait(false)),
             ContactReplicaRpcOperation.ResolveDcr => ContactReplicaPayloadCodec.Encode(
                 await local.Binding.ResolverReplica.ResolveDcrAsync(
                     ContactReplicaPayloadCodec.DecodeDcrResolveRequest(command.Payload.Span),
@@ -85,7 +90,7 @@ internal sealed class ContactReplicaRequestReceiver : IContactReplicaCommandRece
                 cancellationToken).ConfigureAwait(false),
             ContactReplicaRpcOperation.IssueReceipt => await IssueReceiptAsync(
                 command.Payload,
-                current.RequestKind,
+                current,
                 cancellationToken).ConfigureAwait(false),
             _ => throw new InvalidDataException("The contact replica RPC operation is unknown.")
         };
@@ -158,15 +163,23 @@ internal sealed class ContactReplicaRequestReceiver : IContactReplicaCommandRece
 
     private async ValueTask<byte[]> IssueReceiptAsync(
         ReadOnlyMemory<byte> payload,
-        Deep.Protocol.XPointNetworkV1.ContactServiceRequestKind requestKind,
+        ContactServicePlacementCapability current,
         CancellationToken cancellationToken)
     {
         var request = ContactReplicaPayloadCodec.DecodeReceiptRequest(payload.Span);
+        if (request.Request.Kind == ContactServiceReceiptKind.MailboxRetainedRead)
+        {
+            if (current.RequestKind != Deep.Protocol.XPointNetworkV1.ContactServiceRequestKind.ResolveInvite ||
+                request.EvidenceOperation != ContactReplicaRpcOperation.ReadRetainedMailboxGrantRoute)
+                throw new ContactServiceReceiptAuthorityException("Retained receipt requires its exact read operation and placement.");
+            return ContactReplicaPayloadCodec.Encode(await RequireRetained().IssueAsync(current,
+                request.EvidencePayload, request.Request, cancellationToken).ConfigureAwait(false));
+        }
         var authorization = await VerifyReceiptEvidenceAsync(
             request.Request,
             request.EvidenceOperation,
             request.EvidencePayload,
-            requestKind,
+            current.RequestKind,
             cancellationToken).ConfigureAwait(false);
         if (authorization is not null)
             await authorization.EnsureCurrentAsync(cancellationToken).ConfigureAwait(false);
@@ -358,6 +371,9 @@ internal sealed class ContactReplicaRequestReceiver : IContactReplicaCommandRece
         return publicationAuthorization;
     }
 
+    private ProtectedRetainedMailboxReadAuthority RequireRetained() => retained ??
+        throw new InvalidOperationException("Retained evidence requires the actual protected current-source owner.");
+
     private static bool OperationMatches(
         ContactReplicaRpcOperation operation,
         Deep.Protocol.XPointNetworkV1.ContactServiceRequestKind requestKind) => requestKind switch
@@ -370,6 +386,7 @@ internal sealed class ContactReplicaRequestReceiver : IContactReplicaCommandRece
                     or ContactReplicaRpcOperation.ResolveDcr
                     or ContactReplicaRpcOperation.ReadDcrClaim
                     or ContactReplicaRpcOperation.ReadMailboxGrantRoute
+                    or ContactReplicaRpcOperation.ReadRetainedMailboxGrantRoute
                     or ContactReplicaRpcOperation.IssueReceipt,
             Deep.Protocol.XPointNetworkV1.ContactServiceRequestKind.ClaimPreKey =>
                 operation is ContactReplicaRpcOperation.ClaimPreKey

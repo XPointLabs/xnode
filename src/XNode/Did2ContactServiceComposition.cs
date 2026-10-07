@@ -138,7 +138,7 @@ internal sealed class Did2ContactReplicaCommandDispatcher(
         if (command.Placement.RequestKind is not (ContactServiceRequestKind.PublishInvite or ContactServiceRequestKind.ResolveInvite) ||
             command.Operation is not (ContactReplicaRpcOperation.PublishDcr or ContactReplicaRpcOperation.ReadCurrentDcr or
                 ContactReplicaRpcOperation.ResolveDcr or ContactReplicaRpcOperation.ReadDcrClaim or ContactReplicaRpcOperation.IssueReceipt or
-                ContactReplicaRpcOperation.ReadMailboxGrantRoute))
+                ContactReplicaRpcOperation.ReadMailboxGrantRoute or ContactReplicaRpcOperation.ReadRetainedMailboxGrantRoute))
             throw new InvalidDataException("The DID2 contact endpoint rejects non-current contact operations.");
         return contacts.ReceiveAsync(command, authenticatedSender, ct);
     }
@@ -174,9 +174,11 @@ internal static class Did2ContactServiceComposition
             provider.GetRequiredService<RouterNodeOptions>(), provider.GetRequiredService<ContactServiceAuthoritySources>(),
             provider.GetRequiredService<ContactServiceLocalReplicaRuntime>(), provider.GetRequiredService<IContactReplicaPeerClient>(),
             provider.GetRequiredService<IMailboxGrantAuthorityClient>(), provider.GetRequiredService<Did2AuthenticatedContactClock>()));
+        services.AddSingleton<ProtectedRetainedMailboxReadAuthority>();
         services.AddSingleton(provider => new ContactReplicaRequestReceiver(
             provider.GetRequiredService<RouterNodeOptions>(), provider.GetRequiredService<ContactServiceAuthoritySources>(),
-            provider.GetRequiredService<ContactServiceLocalReplicaRuntime>(), provider.GetRequiredService<Did2AuthenticatedContactClock>()));
+            provider.GetRequiredService<ContactServiceLocalReplicaRuntime>(), provider.GetRequiredService<Did2AuthenticatedContactClock>(),
+            provider.GetRequiredService<ProtectedRetainedMailboxReadAuthority>()));
         services.AddSingleton(provider => new Did2ContactResolverDispatcher(
             provider.GetRequiredService<ProductionContactServiceOpaqueDispatcher>(),
             provider.GetRequiredService<IContactServicePlacementAuthoritySource>(),

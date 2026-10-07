@@ -27,6 +27,15 @@ candidate: do not activate or reset existing production data to try it.
 Its focused tests do not qualify retained issuance or physical
 Retrieve/ACK. See the [candidate receipt](testing/s01-protected-retained-route-2026-10-07.md).
 
+The DR-0104 peer producer candidate adds private retained read/signing using the
+same real protected document. The enabled DID2 peer composition requires its
+actual current-source owner: missing admission, native root/data loss, a changed
+snapshot, wrong signing key or expired request cannot return a retained signature.
+This is not an operator import/reenrollment path and adds no public operation.
+Public grant acquisition and physical Retrieve/ACK remain gated; do not reset
+registered identities or existing state to enable the candidate. See its
+[exact verification scope](testing/s01-retained-native-peer-2026-10-07.md).
+
 `ContactResolverCustody` contains only local bindings: canonical public
 `networkIdHex`, absolute `independentCustodyDirectory` and existing persistent
 `dataProtectionKeysDirectory`. The data, checkpoint and key-ring directories

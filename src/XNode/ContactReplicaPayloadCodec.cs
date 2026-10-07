@@ -224,6 +224,50 @@ internal static class ContactReplicaPayloadCodec
         return new(disposition, closure, expiry);
     }
 
+    internal static byte[] DecodeRetainedMailboxGrantRequest(ReadOnlySpan<byte> payload)
+    {
+        if (payload.Length != 435) throw new InvalidDataException("Retained read requires one exact XMG2.");
+        var request = ContactCodec.Decode(ProtocolMagic.XMG2, payload);
+        ContactCodec.VerifyMailboxGrantHolderSignature(request);
+        if (request.Field(6).Span[0] != 2) throw new InvalidDataException("Retained read requires Retrieve intent.");
+        return request.CanonicalBytes.ToArray();
+    }
+
+    internal static byte[] Encode(RetainedMailboxRouteLookup result)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        var writer = new PayloadWriter();
+        writer.U16((ushort)result.Disposition);
+        writer.U64(result.ReadUntilUnixSeconds);
+        writer.Lp32(result.ExactRouteClosure.Span);
+        var exact = writer.ToArray();
+        _ = DecodeRetainedMailboxGrantResult(exact);
+        return exact;
+    }
+
+    internal static RetainedMailboxRouteLookup DecodeRetainedMailboxGrantResult(ReadOnlySpan<byte> payload)
+    {
+        if (payload.Length is < 14 or > 14 + ContactRouteClosureCodec.MaximumEncodedBytes)
+            throw new InvalidDataException("Retained result exceeds its bounded frame.");
+        var reader = new PayloadReader(payload);
+        var disposition = (RetainedMailboxRouteDisposition)reader.U16();
+        var readUntil = reader.U64();
+        var route = reader.Lp32(ContactRouteClosureCodec.MaximumEncodedBytes).ToArray();
+        reader.End();
+        if (!Enum.IsDefined(disposition)) throw new InvalidDataException("Unknown retained lookup disposition.");
+        if (disposition == RetainedMailboxRouteDisposition.Found)
+        {
+            var parsed = ContactRouteClosureCodec.Decode(route);
+            var admission = ContactResolverOpaqueStore.LastPossibleRouteAdmission(parsed);
+            if (readUntil == 0 || admission > ulong.MaxValue - ContactResolverOpaqueStore.MailboxObjectHorizonSeconds ||
+                readUntil > admission + ContactResolverOpaqueStore.MailboxObjectHorizonSeconds)
+                throw new InvalidDataException("Retained result horizon exceeds the original admission ceiling.");
+        }
+        else if (route.Length != 0 || readUntil != 0)
+            throw new InvalidDataException("Failed retained lookup cannot return route or horizon authority.");
+        return new(disposition, route, readUntil);
+    }
+
     internal static byte[] EncodeReadXur(
         ReadOnlySpan<byte> serviceCapability32,
         ReadOnlySpan<byte> exactXur1Hash32,

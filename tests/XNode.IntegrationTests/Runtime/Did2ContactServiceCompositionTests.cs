@@ -35,7 +35,7 @@ namespace XNode.IntegrationTests.Runtime;
 // Real public DID2/NET authorization, opaque journals and production authenticated
 // binary peer HTTP through either an explicit in-process lane or actual pinned
 // TLS/H2 loopback hosts. Neither lane is installed/physical-device evidence.
-public sealed class Did2ContactServiceCompositionTests
+public sealed partial class Did2ContactServiceCompositionTests
 {
     [Fact]
     public async Task PendingGenesisExposesOnlyDefensiveSignedArtifacts()
@@ -479,7 +479,8 @@ public sealed class Did2ContactServiceCompositionTests
 
     private static ServiceProvider Compose(RouterNodeOptions node, RouterNodeOptions[] nodes,
         DeepIdV2PublicationAuthorityFixture fixture, ContactServicePersistenceOptions options,
-        Dictionary<RouterId, ServiceProvider> providers, PeerState state, bool grantHttp)
+        Dictionary<RouterId, ServiceProvider> providers, PeerState state, bool grantHttp,
+        IDeepIdV2ContactStoreAuthoritySource? publicationSource = null)
     {
         // Only the explicitly allocated new test scope is enrolled. A reopened
         // provider never imports/blesses existing opaque data or missing roots.
@@ -492,7 +493,7 @@ public sealed class Did2ContactServiceCompositionTests
         if (fresh) ProvisionResolverTestKeys(resolverCustody.DataProtectionKeysDirectory);
         var services = new ServiceCollection(); services.AddLogging();
         services.AddSingleton(node); services.AddSingleton<IOnionMonotonicClock>(fixture);
-        services.AddSingleton<IDeepIdV2ContactStoreAuthoritySource>(fixture);
+        services.AddSingleton<IDeepIdV2ContactStoreAuthoritySource>(publicationSource ?? fixture);
         services.AddSingleton<IDeepIdV2PreKeyPlacementSource>(fixture);
         services.AddSingleton<IMailboxStorageSecurity, MailboxStorageSecurity>();
         services.AddSingleton<IMailboxDurabilityBarrier, MailboxDurabilityBarrier>();
@@ -567,6 +568,7 @@ public sealed class Did2ContactServiceCompositionTests
         internal bool WrongPin;
         internal int Requests, GrantCalls, GrantSignatures;
         internal bool LoseNextPublish, LostAfterExecution, LoseNextGrant;
+        internal ContactReplicaRpcOperation? LoseNextOperation;
         internal Dictionary<string, byte[]> GrantWinners { get; } = new(StringComparer.Ordinal);
     }
 
@@ -612,6 +614,10 @@ public sealed class Did2ContactServiceCompositionTests
                 if (state.LoseNextPublish && command.Operation == ContactReplicaRpcOperation.PublishDcr && context.Response.StatusCode == 200)
                 {
                     state.LoseNextPublish = false; state.LostAfterExecution = true; context.Abort(); return Results.Empty;
+                }
+                if (state.LoseNextOperation == command.Operation && context.Response.StatusCode == 200)
+                {
+                    state.LoseNextOperation = null; state.LostAfterExecution = true; context.Abort(); return Results.Empty;
                 }
                 return context.Response.StatusCode == 200 ? Results.Bytes(captured.ToArray(), ContactReplicaHttpContract.MediaType)
                     : Results.StatusCode(context.Response.StatusCode);
