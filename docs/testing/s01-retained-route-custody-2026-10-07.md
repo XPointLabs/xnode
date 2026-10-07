@@ -116,3 +116,24 @@ selected-source scanner15 files/0 findings passed. Separate current Protocol
 full remains2088/1/7 terminal1 and production graph remains MAU2 FAIL; static
 evidence mapping219/219 is not executed package approval. S01, release and
 physical E2E remain unaccepted; the next work stays within retained-read closure.
+
+## Verified next producer/consumer boundary
+
+The existing XMG1 binds PMT2 and PMS2, but not the exact six-record route hash:
+tag11 is a random nonce. `DeepIdV2ContactRoutePredecessor` permits reuse of an
+unchanged PMS2, while publication successors preserve the owner Retrieve
+capability. Thus those lookup fields cannot uniquely name every legal retained
+route. The fail-closed conflict above is intentional, not a usable renewal path.
+The current139-byte `MailboxGrantRouteEvidenceAuthentication` tuple has an
+explicit Current disposition and publication expiry; it must not be reinterpreted
+as retained eligibility or `readUntil`. `DeepIdV2MailboxGrantIssuanceVerifier`
+also requires the exact current PMT/view/head and live six-record intervals.
+
+The next single coupled batch must settle exact route selection, independent
+protected custody/read-back and both current selected stores' signed evidence
+before renewed issuer and owned request/result consumers can use expired route
+history. A new hash/domain/version is not allocated by this investigation.
+Use the existing native protected-custody design rather than treating encrypted
+files or the XPA saga as an anti-rollback floor. Its joint custody/key-ring
+rollback limit must remain explicit. Runtime activation, object TTL and physical
+claims remain fenced; no separate S02/S04 task is opened here.
