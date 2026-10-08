@@ -17,6 +17,37 @@ namespace XNode.IntegrationTests.Runtime;
 public sealed class CurrentMailboxReplicaReceiverTests
 {
     [Fact]
+    [Trait("FixturePreflight", "true")]
+    public async Task FixturePreflight_SignedEpochOverlapAndNativeLeaseAfterSetupAndReopen()
+    {
+        using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync(
+            distinctNodeIdentities: true, shortMailboxProjection: true);
+        await using var fixture = await Fixture.CreateAsync(signed, envelopeExpiry: 1_600);
+        var original = signed.Projection.ToArray();
+        var originalEnd = BinaryPrimitives.ReadUInt64BigEndian(ContactCodec.Decode("PMT2", original).Field(12).Span);
+        Assert.Equal(DeepIdV2PublicationAuthorityFixture.ShortMailboxProjectionExpiry, originalEnd);
+        await signed.RefreshInitialMailboxLeaseAsync();
+        for (var pass = 0; pass < 2; pass++)
+        {
+            _ = await fixture.Node.Admission.WithHostAsync(async (scope, token) =>
+            {
+                scope.Lease.RequireActive();
+                _ = await scope.Lease.CheckAsync(token);
+                await scope.Host.EnsureCurrentAsync(token);
+                return true;
+            });
+            fixture.Node.ReopenRuntime();
+            fixture.Reopen();
+        }
+        Assert.Equal(original, signed.Projection.ToArray());
+        await signed.AdvanceMailboxProjectionAsync();
+        var successor = ContactCodec.Decode("PMT2", signed.Projection.Span);
+        Assert.Equal(originalEnd, BinaryPrimitives.ReadUInt64BigEndian(successor.Field(11).Span));
+        Assert.True(signed.Freshness.TrustedLowerUnixSeconds >= originalEnd);
+        await (await Host(signed)).EnsureCurrentAsync();
+    }
+
+    [Fact]
     public async Task CorrectlySignedNonWriterPeerStoreRejectsBeforeReplayAndMutationAfterReopen()
     {
         // Both proof keys and the peer signature are genuine. Only rank is wrong.

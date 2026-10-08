@@ -36,3 +36,10 @@ dotnet test XNode.slnx
 ```
 
 Run `../deep-devops/scripts/multi-node-rehearsal.ps1` for path, peer or release transport changes.
+
+Use the root `scripts/Invoke-RepositoryTestGate.ps1 -Repository xnode` for the
+full source-cutover gate with a fresh run directory and exact reference union.
+Its `FixturePreflight=true` native case checks the genuine short signed epoch,
+successor boundary and actual operation lease after setup/native cold reopen.
+Run from Windows PowerShell5.1; do not copy historical artifact runners.
+Transport smoke/rehearsal requirements above remain separate mandatory evidence.

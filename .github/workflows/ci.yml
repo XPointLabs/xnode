@@ -74,6 +74,11 @@ jobs:
       - name: Build
         working-directory: xnode
         run: dotnet build tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj --configuration Release --no-restore -p:DeepProtocolSourceCutover=true
+      # Native prerequisites are checked first; mocked Xray still cannot
+      # qualify external/no-mock transport.
+      - name: Check native fixture prerequisites before integration full
+        working-directory: xnode
+        run: dotnet test tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj --configuration Release --no-build --no-restore --filter "FixturePreflight=true" -p:DeepProtocolSourceCutover=true
       - name: Integration tests with mocked Xray
         working-directory: xnode
         run: dotnet test tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj --configuration Release --no-build --logger trx --results-directory artifacts/test-results/c3 -p:DeepProtocolSourceCutover=true
