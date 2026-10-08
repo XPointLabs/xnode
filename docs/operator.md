@@ -88,6 +88,13 @@ before reservation and across the callback/result boundary. Holder/body rejectio
 does not advance the replay time floor. Expiry, cancellation or unavailable
 authority after reservation retains exact Pending custody.
 
+Windows MGR1 and operation-custody reads now inspect entry attributes instead
+of resolving every ordinary ancestor's link target. Every read still checks the
+full ancestor chain without a cache, rejects reparse points (including dangling
+links), and propagates access failures. This changes no custody format, ACL,
+enrollment, grant/replay check or Store deadline. Source qualification is tracked
+in [the S01 path checkpoint](testing/s01-native-store-path-safety-2026-10-08.md).
+
 The same protected operation now also guards `CurrentMailboxReplicaReceiver`:
 current grant-bound peer verification, native replay, blob mutation/read-back,
 tombstone and descriptor-key receipt. Restoring its peer replay journal no

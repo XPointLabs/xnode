@@ -236,12 +236,8 @@ internal sealed class FileMailboxOperationCustody : IMailboxOperationCustody, ID
         OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
     private static bool IsWithin(string root, string candidate)
     { var relative = Path.GetRelativePath(root, candidate); return relative == "." || (relative != ".." && !relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal) && !Path.IsPathFullyQualified(relative)); }
-    private static void RejectLinks(string path)
-    {
-        for (var current = new DirectoryInfo(path); current is not null; current = current.Parent)
-            if (current.LinkTarget is not null || (current.Exists && (current.Attributes & FileAttributes.ReparsePoint) != 0))
-                throw new UnauthorizedAccessException("Mailbox operation custody cannot traverse links.");
-    }
+    private static void RejectLinks(string path) =>
+        MailboxCustodyPathSafety.RejectLinks(path, "Mailbox operation custody cannot traverse links.");
     private static bool IsId(string? value) => value is { Length: 32 } && value.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f');
     private static bool IsTemporary(string? value) => value is { Length: 52 } && value.StartsWith("operations.json.", StringComparison.Ordinal) &&
         value.EndsWith(".tmp", StringComparison.Ordinal) && IsId(value.Substring(16, 32));

@@ -340,12 +340,8 @@ internal sealed class FileMailboxGrantRevocationStore : IAsyncDisposable
         return relative == "." || (relative != ".." && !relative.StartsWith(".." + Path.DirectorySeparatorChar,
             StringComparison.Ordinal) && !Path.IsPathFullyQualified(relative));
     }
-    private static void RejectLinks(string path)
-    {
-        for (var current = new DirectoryInfo(path); current is not null; current = current.Parent)
-            if (current.LinkTarget is not null || (current.Exists && (current.Attributes & FileAttributes.ReparsePoint) != 0))
-                throw new UnauthorizedAccessException("MGR1 custody cannot traverse links.");
-    }
+    private static void RejectLinks(string path) =>
+        MailboxCustodyPathSafety.RejectLinks(path, "MGR1 custody cannot traverse links.");
     private void CheckAvailable()
     {
         ObjectDisposedException.ThrowIf(disposed, this);
