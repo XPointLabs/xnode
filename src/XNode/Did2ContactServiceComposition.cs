@@ -105,7 +105,7 @@ internal sealed class Did2ContactResolverDispatcher(
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception error) when (error is OnionBoundaryException or CryptographicException or
-            InvalidOperationException or UnauthorizedAccessException or IOException or OverflowException or
+            InvalidOperationException or UnauthorizedAccessException or IOException or InvalidDataException or OverflowException or
             ContactServiceReceiptAuthorityException)
         {
             if (forwarded) throw new IOException("DID2 contact dispatch has no current authenticated completion; outcome is unknown.", error);
@@ -173,7 +173,8 @@ internal static class Did2ContactServiceComposition
         services.AddSingleton(provider => new ProductionContactServiceOpaqueDispatcher(
             provider.GetRequiredService<RouterNodeOptions>(), provider.GetRequiredService<ContactServiceAuthoritySources>(),
             provider.GetRequiredService<ContactServiceLocalReplicaRuntime>(), provider.GetRequiredService<IContactReplicaPeerClient>(),
-            provider.GetRequiredService<IMailboxGrantAuthorityClient>(), provider.GetRequiredService<Did2AuthenticatedContactClock>()));
+            provider.GetRequiredService<IMailboxGrantAuthorityClient>(), provider.GetRequiredService<Did2AuthenticatedContactClock>(),
+            provider.GetRequiredService<ProtectedRetainedMailboxReadAuthority>()));
         services.AddSingleton<ProtectedRetainedMailboxReadAuthority>();
         services.AddSingleton(provider => new ContactReplicaRequestReceiver(
             provider.GetRequiredService<RouterNodeOptions>(), provider.GetRequiredService<ContactServiceAuthoritySources>(),

@@ -52,11 +52,12 @@ internal sealed class ProtectedRetainedMailboxReadAuthority(
         }, ct);
     }
 
-    private async ValueTask<T> WithProtectedReadAsync<T>(ContactServicePlacementCapability placement,
+    internal async ValueTask<T> WithProtectedReadAsync<T>(ContactServicePlacementCapability placement,
         ReadOnlyMemory<byte> exactXmg2,
         Func<RetainedMailboxRouteLookup, CancellationToken, ValueTask<T>> action, CancellationToken ct)
     {
-        ArgumentNullException.ThrowIfNull(placement); ct.ThrowIfCancellationRequested();
+        ArgumentNullException.ThrowIfNull(placement); ArgumentNullException.ThrowIfNull(action);
+        ct.ThrowIfCancellationRequested();
         var exact = ContactReplicaPayloadCodec.DecodeRetainedMailboxGrantRequest(exactXmg2.Span);
         var snapshot = await source.ReadPublicationAuthorityAsync(ct).ConfigureAwait(false);
         var host = await MailboxHostAuthorityV2Verifier.VerifyAsync(snapshot.Network, snapshot.Authority,

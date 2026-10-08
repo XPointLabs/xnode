@@ -12,6 +12,24 @@ public sealed class ReplicatedMailboxTests : IDisposable
     private readonly string _root =
         Path.Combine(Path.GetTempPath(), $"xnode-prq2-{Guid.NewGuid():N}");
 
+    [Theory]
+    [InlineData(2_592_000, true)]
+    [InlineData(2_592_001, false)]
+    public void NativeBlobTtlMatchesCanonicalObjectHorizon(int ttlSeconds, bool accepted)
+    {
+        var options = new ReplicatedMailboxOptions();
+        options.Validate();
+        Assert.Equal(TimeSpan.FromDays(30), options.MaximumTtl);
+        Assert.Throws<InvalidOperationException>(() =>
+            new ReplicatedMailboxOptions { MaximumTtl = TimeSpan.FromDays(30) + TimeSpan.FromSeconds(1) }.Validate());
+        var ciphertext = new byte[64];
+        var blob = new EncryptedMailboxBlob(new string('a', 64),
+            Convert.ToHexString(SHA256.HashData(ciphertext)).ToLowerInvariant(),
+            checked(1_100_000L + ttlSeconds * 1000L), Convert.ToBase64String(ciphertext));
+        Assert.Equal(accepted, EncryptedMailboxBlobValidator.TryValidate(blob,
+            DateTimeOffset.FromUnixTimeSeconds(1_100), options, out _, out _));
+    }
+
     [Fact]
     public async Task CanonicalStore_IsDurableAndExactRetryReturnsIdenticalMrr2()
     {

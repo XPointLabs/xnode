@@ -7,6 +7,38 @@ namespace XNode.IntegrationTests.Runtime;
 public sealed partial class CurrentMailboxPeerHttpTests
 {
     [Theory]
+    [InlineData(1_600UL)]
+    [InlineData(2_593_090UL)]
+    public async Task CurrentClientStoreRetrieveAckPreservesObjectBeyondShortAuthorityOverPinnedHttp(ulong objectExpiry)
+    {
+        await using var f = await Fixture.CreateAsync(envelopeExpiry: objectExpiry);
+        f.OpenLedger(); AssertDescriptorKeys(f);
+        var exactStore = f.ClientStoreFrame();
+        var grant = MailboxAuthenticatedClientRequestCodec.Decode(exactStore).Presentation.Grant;
+        Assert.True(objectExpiry > grant.ExpiresAtUnixSeconds);
+        f.RemoteHost.DropNext = true;
+        Assert.Equal(MailboxPeerQuorumStatus.PartialFailure,
+            (await f.Coordinator.StoreClientAsync(exactStore, f.Ledger!)).Status);
+        var intent = Assert.Single(f.ExactIntents);
+        f.Reopen(); f.Signed.Sample = 101;
+        var stored = await f.Coordinator.StoreClientAsync(exactStore, f.Ledger!);
+        Assert.Equal(MailboxPeerQuorumStatus.Durable, stored.Status);
+        Assert.Equal(intent, Assert.Single(f.ExactIntents));
+        AssertQuorumDescriptorKeys(f, stored.CanonicalMqr3.Span);
+        var page = DecodePage((await f.Recipient.Receiver.RetrieveClientAsync(RetrieveFrame(f))).Span, f);
+        Assert.Equal(objectExpiry, Assert.Single(page.Items).Envelope.ExpiresAtUnixSeconds);
+        var exactAck = AckFrame(f, page);
+        var ack = (await f.Coordinator.AcknowledgeClientAsync(exactAck, f.AckLedger)).ToArray();
+        AssertAck(ack, page, 0x74); AssertTombstones(f, 1);
+        f.Reopen(); f.Signed.Sample = 102;
+        Assert.Equal(ack, (await f.Coordinator.AcknowledgeClientAsync(exactAck, f.AckLedger)).ToArray());
+        Assert.Equal(stored.CanonicalMqr3.ToArray(),
+            (await f.Coordinator.StoreClientAsync(exactStore, f.Ledger!)).CanonicalMqr3.ToArray());
+        Assert.Null(await f.Sender.ReadBlobAsync()); Assert.Null(await f.Recipient.ReadBlobAsync());
+        Assert.Equal(3, f.AllHttpRequests);
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task DistinctDescriptorKeysCompleteStorePaginationAckAndExactRecovery(bool ackOnRecipient)

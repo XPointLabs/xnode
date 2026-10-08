@@ -35,7 +35,7 @@ internal sealed partial class CurrentMailboxReplicaReceiver
                         NowUnixSeconds = upper,
                         EpochWindow = new()
                         {
-                            CurrentEpoch = scope.Host.SelectionEpoch,
+                            CurrentEpoch = scope.Grant.Epoch,
                             NextEpoch = 0,
                             CurrentNotBeforeUnixSeconds = scope.Grant.NotBeforeUnixSeconds,
                             CurrentExpiresAtUnixSeconds = scope.Grant.ExpiresAtUnixSeconds,
@@ -65,7 +65,7 @@ internal sealed partial class CurrentMailboxReplicaReceiver
                     }
                     if (!MailboxContinuationToken.TryRead(body.ContinuationToken.Span, body.Epoch, body.AfterCursor,
                             upper, body.MailboxId.Bytes.Span, scope.Grant.PlacementCommitment.Span,
-                            scope.Host.MembershipCommitment.Span, MailboxContinuationToken.RetrievePurpose, Verify, out var window) ||
+                            scope.Grant.MembershipCommitment.Span, MailboxContinuationToken.RetrievePurpose, Verify, out var window) ||
                         body.MaximumItems > window.MaximumItems)
                         throw new CryptographicException("Current Retrieve continuation is invalid.");
                     snapshot = window.SnapshotHighWater;
@@ -74,7 +74,7 @@ internal sealed partial class CurrentMailboxReplicaReceiver
                     throw new InvalidOperationException("Current Retrieve already has an active execution.");
                 var maximum = MailboxWireHttpContract.Retrieve.MaximumResponseBytes;
                 await request.ReserveOutcomeCapacityAsync(maximum, ct).ConfigureAwait(false);
-                var read = await mutations.ReadCurrentWindowAsync(body, scope.Host.MembershipCommitment,
+                var read = await mutations.ReadCurrentWindowAsync(body, scope.Grant.MembershipCommitment,
                     snapshot, scope.Lease, ct).ConfigureAwait(false);
                 var selectedCount = Math.Min(body.MaximumItems, read.Items.Count);
                 while (true)
@@ -86,7 +86,7 @@ internal sealed partial class CurrentMailboxReplicaReceiver
                         throw new InvalidDataException("Current Retrieve object expired before outcome.");
                     var continuation = hasMore ? MailboxContinuationToken.Create(body.Epoch, selected[^1].Cursor,
                         read.SnapshotHighWater, body.MaximumItems, Math.Min(scope.Grant.ExpiresAtUnixSeconds, checked(upper + 600)),
-                        body.MailboxId.Bytes.Span, scope.Grant.PlacementCommitment.Span, scope.Host.MembershipCommitment.Span,
+                        body.MailboxId.Bytes.Span, scope.Grant.PlacementCommitment.Span, scope.Grant.MembershipCommitment.Span,
                         PageDigest(selected), SignContinuation) : [];
                     var page = new MailboxRetrievePage
                     {

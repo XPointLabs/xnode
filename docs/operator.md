@@ -38,11 +38,21 @@ registered identities or existing state to enable the candidate. See its
 
 The matched private HTTPS boundary now requires explicit evidence kind and
 retained horizon, using the independent DR-0104 forwarding purpose. Deploying
-only one side of the Node/Registry private JSON cutover is unsupported. Public
-grant dispatch remains current-only; this is not automatic retained fallback or
-permission to reset identities, floors or journals. The current source candidate
-is not full-gate qualified; see the
+only one side of the Node/Registry private JSON cutover is unsupported. At the
+`8607c60` checkpoint public grant dispatch was current-only; that checkpoint is not automatic retained fallback or
+permission to reset identities, floors or journals. Current source qualification
+and its remaining activation boundaries are recorded in the
 [matched private-boundary receipt](testing/s01-retained-private-forwarding-2026-10-07.md).
+
+The next coupled source batch now selects protected retained custody for public
+Retrieve from the outset; Deposit stays current-only. It checks both native
+stores over the authenticated peer, issues independent receipts and rechecks
+local custody/current source around private issuance and response release.
+Current Shared/Node full source matrices and required isolated infrastructure
+checks pass; matching Protocol source qualification preserves its shipping FAIL.
+Registry connected qualification and complete shipping/installed boundaries are
+still required. These results do not authorize automatic runtime activation.
+[Current source follow-up](testing/s01-retained-private-forwarding-2026-10-07.md#coupled-public-retrieve-follow-up).
 
 `ContactResolverCustody` contains only local bindings: canonical public
 `networkIdHex`, absolute `independentCustodyDirectory` and existing persistent
@@ -1278,3 +1288,16 @@ Therefore a forged but canonically framed request cannot probe mailbox presence 
 I/O. Cancellation before the first durable effect releases only a new reservation. Cancellation
 after ACK reservation, local storage, or peer mutation preserves Pending; exact restart retry
 resumes the ledger and completes replay without duplicating remote work.
+
+### Retained-object source cutover (not yet activated)
+
+The matching DR-0104 increment derives native peer Store/ACK retention from the
+exact signed object expiry rather than the current network-authority end. Product
+retention is owned by [RETENTION-AND-RECOVERY](../../docs/architecture/RETENTION-AND-RECOVERY-V1.md);
+current authority, revocation and short grants still gate every admitted operation.
+Rebuild/repin the whole consumer graph before activation. Existing private mutation
+records with authority-derived retention are incompatible with this invariant and
+fail closed; no migration, automatic reset or silent deletion is provided. This
+source change does not alter registered node keys, protected authority floors,
+production volumes, certbot or other colocated services. An explicit scoped data
+reset, if needed for activation, is a separate operator step.

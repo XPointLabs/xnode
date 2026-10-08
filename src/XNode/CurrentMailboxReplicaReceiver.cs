@@ -125,7 +125,7 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
     {
         scope.Lease.RequireActive();
         if (!ReferenceEquals(scope.Owner, admission)) throw new CryptographicException("Current ACK belongs to another native owner.");
-        return mutations.ReadCurrentAckTargetsAsync(body, scope.Host.MembershipCommitment, scope.Lease, token);
+        return mutations.ReadCurrentAckTargetsAsync(body, scope.Grant.MembershipCommitment, scope.Lease, token);
     }
 
     private ReadOnlyMemory<byte> AuthorRequest(CurrentMailboxAdmission.GrantScope scope,
@@ -143,14 +143,14 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
         if (!Fixed(crypto.GetPublicKey(seed), local.SigningPublicKey.Span))
             throw new CryptographicException("Current Store producer signing custody differs from its descriptor.");
         var proof = new byte[342];
-        scope.Host.ProjectionReference.Span.CopyTo(proof);
+        scope.ProjectionReference.Span.CopyTo(proof);
         MailboxAuthenticatedCapabilityCodec.EncodeGrant(scope.Grant).CopyTo(proof, 38);
         MailboxReplicaMembershipProof Membership(VerifiedMailboxReplicaV2 replica) => new()
         {
             ReplicaId = replica.NodeId,
             SigningPublicKey = replica.SigningPublicKey,
-            Epoch = scope.Host.SelectionEpoch,
-            MembershipCommitment = scope.Host.MembershipCommitment,
+            Epoch = scope.Grant.Epoch,
+            MembershipCommitment = scope.Grant.MembershipCommitment,
             CanonicalInclusionProof = proof
         };
         return MailboxPeerWireV2Codec.Encode(crypto.SignRequest(new MailboxPeerWireRequestV2
@@ -160,7 +160,7 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
             OperationId = operationId,
             SenderRouterId = local.NodeId,
             RecipientRouterId = remote.NodeId,
-            MembershipCommitment = scope.Host.MembershipCommitment,
+            MembershipCommitment = scope.Grant.MembershipCommitment,
             PlacementCommitment = scope.Grant.PlacementCommitment,
             BlindedMailboxId = mailbox,
             Cursor = cursor,
@@ -236,8 +236,8 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
             scope.Grant.Domain != (expectedOperation == MailboxPeerReplicationOperation.Store ? MailboxCapabilityDomain.Deposit : MailboxCapabilityDomain.Retrieve))
             throw new CryptographicException("Current peer grant differs from the admitted client scope.");
         var ct = token;
-        if (!Fixed(first.Span[..38], scope.Host.ProjectionReference.Span))
-            throw new CryptographicException("Current peer projection differs from the signed host.");
+        if (!Fixed(first.Span[..38], scope.ProjectionReference.Span))
+            throw new CryptographicException("Peer projection differs from the exact host-verified grant selection.");
         if (expectedOperation == MailboxPeerReplicationOperation.Store &&
             !Fixed(decoded.SenderRouterId.Span, scope.Replicas[0].NodeId.Span))
             throw new CryptographicException("Peer Store sender must be the authenticated PMS2 writer.");
@@ -257,23 +257,26 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
         else if (!mutations.TryResolveTombstonePlacement(decoded, out placement))
             throw new CryptographicException("Current peer tombstone has no matching durable target.");
         if (!Fixed(MailboxPlacementCommitment.Compute(placement), scope.Grant.PlacementCommitment.Span) ||
-            decoded.Epoch != scope.Host.SelectionEpoch ||
-            !Fixed(decoded.MembershipCommitment.Span, scope.Host.MembershipCommitment.Span) ||
+            decoded.Epoch != scope.Grant.Epoch ||
+            !Fixed(decoded.MembershipCommitment.Span, scope.Grant.MembershipCommitment.Span) ||
             !Fixed(decoded.PlacementCommitment.Span, scope.Grant.PlacementCommitment.Span))
             throw new CryptographicException("Current peer body/placement differs from its signed grant.");
         upper = await scope.Lease.CheckAsync(ct).ConfigureAwait(false);
         var policy = new MailboxPeerWireVerificationPolicyV2
         {
             ExpectedOperation = expectedOperation,
-            Epoch = scope.Host.SelectionEpoch,
+            Epoch = scope.Grant.Epoch,
             OperationId = decoded.OperationId,
             SenderRouterId = decoded.SenderRouterId,
             RecipientRouterId = decoded.RecipientRouterId,
-            MembershipCommitment = scope.Host.MembershipCommitment,
+            MembershipCommitment = scope.Grant.MembershipCommitment,
             PlacementCommitment = scope.Grant.PlacementCommitment,
             PlacementId = placement,
             NowUnixSeconds = upper,
-            EpochExpiresAtUnixSeconds = scope.Authority.Network.MaximumRecordExpiryUnixSeconds
+            // Canonical object retention must be identical for Store and ACK
+            // after network renewal. Independent current host/MGR/grant leases
+            // above and around every effect remain the admission authority.
+            EpochExpiresAtUnixSeconds = decoded.ExpiresAtUnixSeconds
         };
         _ = MailboxPeerWireV2Codec.VerifyReplayCandidate(owned, policy, crypto, proofs);
         // Authenticate the complete candidate before recovery; even a completed
@@ -351,8 +354,8 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
         {
             scope.Lease.RequireActive();
             var replica = scope.Replicas.SingleOrDefault(fact => Fixed(fact.NodeId.Span, proof.ReplicaId.Span));
-            return replica is not null && proof.Epoch == scope.Host.SelectionEpoch &&
-                Fixed(proof.MembershipCommitment.Span, scope.Host.MembershipCommitment.Span) &&
+            return replica is not null && proof.Epoch == scope.Grant.Epoch &&
+                Fixed(proof.MembershipCommitment.Span, scope.Grant.MembershipCommitment.Span) &&
                 Fixed(proof.SigningPublicKey.Span, replica.SigningPublicKey.Span) &&
                 Fixed(proof.CanonicalInclusionProof.Span, exactProof);
         }

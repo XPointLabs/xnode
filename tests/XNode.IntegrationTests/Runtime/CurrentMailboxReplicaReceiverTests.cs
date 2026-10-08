@@ -1,6 +1,8 @@
+using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text.Json;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
+using Deep.Protocol.ContactV1;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.DependencyInjection;
 using XNode.Core;
@@ -55,6 +57,105 @@ public sealed class CurrentMailboxReplicaReceiverTests
         var fresh = MailboxPeerWireV2Codec.Encode(f.Crypto.SignRequest(freshStore, f.SenderSeed));
         Assert.NotNull(await Record.ExceptionAsync(() => f.Receiver.ReceiveAsync(fresh, MailboxPeerReplicationOperation.Store).AsTask()));
         Assert.Null(await f.ReadBlobAsync());
+    }
+
+    [Theory]
+    [InlineData(1_600UL)]
+    [InlineData(2_593_090UL)]
+    public async Task AcceptedObjectLifetimeOutlivesCurrentAuthorityWithoutLosingTombstoneReplay(ulong objectExpiry)
+    {
+        // Genuine still-current signed role/holder/node authority and native
+        // custody. Object retention is not a longer grant or epoch admission.
+        await using var f = await Fixture.CreateAsync(envelopeExpiry: objectExpiry);
+        var store = f.Frame(MailboxPeerReplicationOperation.Store);
+        var response = await f.Receiver.ReceiveAsync(store, MailboxPeerReplicationOperation.Store);
+        var receipt = MailboxReceiptV2Codec.DecodeReplica(response.Span);
+        Assert.Equal(MailboxReplicaDisposition.Stored, receipt.Disposition);
+        Assert.Equal(objectExpiry, receipt.ExpiresAtUnixSeconds);
+        Assert.Equal(f.Envelope, await f.ReadBlobAsync());
+        f.Reopen();
+        Assert.Equal(response.ToArray(), (await f.Receiver.ReceiveAsync(store, MailboxPeerReplicationOperation.Store)).ToArray());
+        var tombstone = f.Frame(MailboxPeerReplicationOperation.Tombstone);
+        var removed = await f.Receiver.ReceiveAsync(tombstone, MailboxPeerReplicationOperation.Tombstone);
+        Assert.Equal(objectExpiry, MailboxReceiptV2Codec.DecodeReplica(removed.Span).ExpiresAtUnixSeconds);
+        Assert.Null(await f.ReadBlobAsync());
+        f.Reopen();
+        Assert.Equal(removed.ToArray(), (await f.Receiver.ReceiveAsync(tombstone, MailboxPeerReplicationOperation.Tombstone)).ToArray());
+        var fresh = MailboxPeerWireV2Codec.Decode(store) with { ReplayNonce = Bytes(32, 0x67) };
+        Assert.NotNull(await Record.ExceptionAsync(() => f.Receiver.ReceiveAsync(
+            MailboxPeerWireV2Codec.Encode(f.Crypto.SignRequest(fresh, f.SenderSeed)), MailboxPeerReplicationOperation.Store).AsTask()));
+        Assert.Null(await f.ReadBlobAsync());
+    }
+
+    [Fact]
+    public async Task RetainedObjectReadAndAckUseOriginalEpochAfterSignedProjectionAdvanceAndNativePeerColdReopen()
+    {
+        using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync(
+            distinctNodeIdentities: true, shortMailboxProjection: true);
+        await using var f = await Fixture.CreateAsync(signed, envelopeExpiry: 1_600);
+        var originalProjection = signed.Projection.ToArray();
+        var originalEpochEnd = BinaryPrimitives.ReadUInt64BigEndian(ContactCodec.Decode("PMT2", originalProjection).Field(12).Span);
+        Assert.Equal(DeepIdV2PublicationAuthorityFixture.ShortMailboxProjectionExpiry, originalEpochEnd);
+        Assert.True(originalEpochEnd < 1_500);
+        var originalTimeUpper = signed.Freshness.TrustedUpperUnixSeconds;
+        await signed.RefreshInitialMailboxLeaseAsync();
+        Assert.Equal(originalProjection, signed.Projection.ToArray());
+        Assert.Equal(originalTimeUpper, signed.Freshness.TrustedUpperUnixSeconds);
+        var store = f.Frame(MailboxPeerReplicationOperation.Store);
+        var stored = await f.Receiver.ReceiveAsync(store, MailboxPeerReplicationOperation.Store);
+        Assert.Equal(MailboxReplicaDisposition.Stored, MailboxReceiptV2Codec.DecodeReplica(stored.Span).Disposition);
+        f.Reopen();
+        Assert.Equal(stored.ToArray(), (await f.Receiver.ReceiveAsync(store, MailboxPeerReplicationOperation.Store)).ToArray());
+
+        await signed.AdvanceMailboxProjectionAsync();
+        var current = await Host(signed);
+        Assert.Equal(checked(f.Node.Host.SelectionEpoch + 1), current.SelectionEpoch);
+        Assert.True(signed.Freshness.TrustedLowerUnixSeconds >= originalEpochEnd);
+        foreach (var role in new[] { MailboxCapabilityDomain.Deposit, MailboxCapabilityDomain.Retrieve })
+        {
+            var owner = role == MailboxCapabilityDomain.Deposit ? f.Node.Deposit : f.Node.Retrieve;
+            var prior = (await owner.ReadProtectedAsync()).ToArray();
+            await owner.AdvanceAsync(current, Snapshot(signed, role, 2, prior, expires: 1_300, issued: originalEpochEnd));
+        }
+        var retrieve = Grant(signed, f.Node.Host, MailboxCapabilityDomain.Retrieve, 0x52, expires: 1_300,
+            notBefore: originalEpochEnd + 1);
+        Assert.True(MailboxAuthenticatedCapabilityCodec.DecodeGrant(retrieve).NotBeforeUnixSeconds > originalEpochEnd);
+        await Assert.ThrowsAsync<CryptographicException>(() => current.ResolveGrantReplicasAsync(retrieve).AsTask());
+        var originalReplicas = await current.GetSelectedRetainedReadReplicasAsync(retrieve);
+        Assert.Equal(f.Node.Replicas.SelectMany(value => value.NodeId.ToArray()), originalReplicas.SelectMany(value => value.NodeId.ToArray()));
+        Assert.Equal(f.Node.Replicas.SelectMany(value => value.SigningPublicKey.ToArray()), originalReplicas.SelectMany(value => value.SigningPublicKey.ToArray()));
+        var wrongEpoch = MailboxAuthenticatedCapabilityCodec.DecodeGrant(retrieve) with { Epoch = current.SelectionEpoch };
+        var remixed = MailboxAuthenticatedCapabilityCodec.EncodeGrant(new SodiumMailboxCapabilityCrypto().SignGrant(wrongEpoch, Bytes(32, 0x32)));
+        var originalAck = MailboxPeerWireV2Codec.Decode(f.Frame(MailboxPeerReplicationOperation.Tombstone, retrieve));
+        byte[] wrongProof = [.. f.Node.Host.ProjectionReference.Span, .. remixed];
+        var hostile = originalAck with
+        {
+            Epoch = current.SelectionEpoch,
+            SenderMembershipProof = originalAck.SenderMembershipProof with
+            { Epoch = current.SelectionEpoch, CanonicalInclusionProof = wrongProof },
+            RecipientMembershipProof = originalAck.RecipientMembershipProof with
+            { Epoch = current.SelectionEpoch, CanonicalInclusionProof = wrongProof }
+        };
+        var hostileFrame = MailboxPeerWireV2Codec.Encode(f.Crypto.SignRequest(hostile, f.SenderSeed));
+        var reservations = f.ReplayFiles.Length;
+        var authorityReads = signed.PublicationReads;
+        await Assert.ThrowsAnyAsync<CryptographicException>(() => f.Receiver.ReceiveAsync(
+            hostileFrame, MailboxPeerReplicationOperation.Tombstone).AsTask());
+        Assert.True(signed.PublicationReads > authorityReads);
+        Assert.Equal(reservations, f.ReplayFiles.Length);
+        Assert.Equal(f.Envelope, await f.ReadBlobAsync(retrieve));
+        var tombstone = f.Frame(MailboxPeerReplicationOperation.Tombstone, retrieve);
+        var removed = await f.Receiver.ReceiveAsync(tombstone, MailboxPeerReplicationOperation.Tombstone);
+        Assert.Equal(MailboxReplicaDisposition.Tombstone, MailboxReceiptV2Codec.DecodeReplica(removed.Span).Disposition);
+        Assert.Equal(1_600UL, MailboxReceiptV2Codec.DecodeReplica(removed.Span).ExpiresAtUnixSeconds);
+        f.Node.ReopenRuntime();
+        f.Reopen();
+        Assert.Equal(removed.ToArray(), (await f.Receiver.ReceiveAsync(tombstone, MailboxPeerReplicationOperation.Tombstone)).ToArray());
+        Assert.Null(await f.ReadBlobAsync(retrieve));
+        var freshStore = MailboxPeerWireV2Codec.Decode(store) with { ReplayNonce = Bytes(32, 0x67) };
+        await Assert.ThrowsAsync<CryptographicException>(() => f.Receiver.ReceiveAsync(
+            MailboxPeerWireV2Codec.Encode(f.Crypto.SignRequest(freshStore, f.SenderSeed)), MailboxPeerReplicationOperation.Store).AsTask());
+        Assert.Null(await f.ReadBlobAsync(retrieve));
     }
 
     [Theory]
@@ -138,14 +239,17 @@ public sealed class CurrentMailboxReplicaReceiverTests
         private FileMailboxOperationCustody? operationCustody;
         private byte[] activeSigningSeed = [];
         internal byte[] Envelope = [], SenderSeed = [];
+        private ulong envelopeExpiry;
         private readonly BlindedMailboxId mailbox = new(Bytes(32, 0x54));
         private readonly BlindedPlacementId placement = new(Bytes(32, 0x55));
         internal string[] ReplayFiles => Directory.GetFiles(Path.Combine(Node.DataRoot, options.PeerReplayDirectoryName), "*.json");
         internal string[] MutationFiles => Directory.GetFiles(Path.Combine(Node.DataRoot, options.PeerMutationDirectoryName), "*.json");
-        internal static async Task<Fixture> CreateAsync(DeepIdV2PublicationAuthorityFixture? signed = null, int localReplicaIndex = 1)
+        internal static async Task<Fixture> CreateAsync(DeepIdV2PublicationAuthorityFixture? signed = null,
+            int localReplicaIndex = 1, ulong envelopeExpiry = 1_150)
         {
             var f = new Fixture
             {
+                envelopeExpiry = envelopeExpiry,
                 Node = await CurrentMailboxAdmissionTests.Fixture.CreateAsync(MailboxAuthenticatedOperation.Store,
                 signed: signed, localReplicaIndex: localReplicaIndex)
             };
@@ -158,7 +262,7 @@ public sealed class CurrentMailboxReplicaReceiverTests
                 OperationId = Bytes(16, 0x58),
                 DeduplicationDigest = Bytes(32, 0x59),
                 CreatedAtUnixSeconds = 1_090,
-                ExpiresAtUnixSeconds = 1_150,
+                ExpiresAtUnixSeconds = envelopeExpiry,
                 Ciphertext = Bytes(64, 0x60)
             });
             var provider = DataProtectionProvider.Create(new DirectoryInfo(f.Node.ProtectionRoot),
@@ -172,11 +276,13 @@ public sealed class CurrentMailboxReplicaReceiverTests
         }
         internal byte[] Proof(MailboxCapabilityDomain role, byte serial = 0x51) =>
             [.. Node.Host.ProjectionReference.Span, .. Grant(Node.Signed, Node.Host, role, serial)];
-        internal byte[] Frame(MailboxPeerReplicationOperation operation)
+        internal byte[] Frame(MailboxPeerReplicationOperation operation, byte[]? exactGrant = null)
         {
             var recipient = Node.Replicas.ToList().FindIndex(replica => replica.NodeId.Span.SequenceEqual(Node.Node));
             var sender = 1 - recipient;
-            var proof = Proof(operation == MailboxPeerReplicationOperation.Store ? MailboxCapabilityDomain.Deposit : MailboxCapabilityDomain.Retrieve);
+            byte[] proof = exactGrant is null
+                ? Proof(operation == MailboxPeerReplicationOperation.Store ? MailboxCapabilityDomain.Deposit : MailboxCapabilityDomain.Retrieve)
+                : [.. Node.Host.ProjectionReference.Span, .. exactGrant];
             MailboxReplicaMembershipProof Membership(int index) => new()
             {
                 ReplicaId = Node.Replicas[index].NodeId,
@@ -198,7 +304,7 @@ public sealed class CurrentMailboxReplicaReceiverTests
                 BlindedMailboxId = mailbox.Bytes,
                 Cursor = 1,
                 CreatedAtUnixSeconds = 1_100,
-                ExpiresAtUnixSeconds = 1_150,
+                ExpiresAtUnixSeconds = envelopeExpiry,
                 ReplayNonce = Bytes(32, operation == MailboxPeerReplicationOperation.Store ? (byte)0x63 : (byte)0x64),
                 Payload = payload,
                 PayloadDigest = SHA256.HashData(payload),
@@ -230,8 +336,8 @@ public sealed class CurrentMailboxReplicaReceiverTests
             Receiver.Dispose();
             Receiver = new(Node.Admission, mutations, replay, activeSigningSeed, Operations);
         }
-        internal async Task<byte[]?> ReadBlobAsync() => await Node.Admission.WithGrantAsync(
-            Grant(Node.Signed, Node.Host, MailboxCapabilityDomain.Retrieve, 0x52), MailboxCapabilityDomain.Retrieve,
+        internal async Task<byte[]?> ReadBlobAsync(byte[]? exactGrant = null) => await Node.Admission.WithGrantAsync(
+            exactGrant ?? Grant(Node.Signed, Node.Host, MailboxCapabilityDomain.Retrieve, 0x52), MailboxCapabilityDomain.Retrieve,
             async (scope, token) =>
             {
                 var blob = await blobs.ReadExactCurrentAsync(Convert.ToHexString(mailbox.Bytes.Span).ToLowerInvariant(),

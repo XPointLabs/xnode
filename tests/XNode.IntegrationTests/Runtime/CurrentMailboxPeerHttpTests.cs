@@ -334,7 +334,11 @@ public sealed partial class CurrentMailboxPeerHttpTests
         Assert.Equal(f.Recipient.Envelope, await f.Recipient.ReadBlobAsync());
         f.Reopen();
         var complete = await f.Coordinator.StoreClientAsync(client, peer);
-        Assert.Equal(MailboxPeerQuorumStatus.Durable, complete.Status);
+        Assert.True(complete.Status == MailboxPeerQuorumStatus.Durable,
+            $"Exact lost-response recovery={complete.Status}; peer calls={f.PeerClient.Calls}; " +
+            $"failure={f.PeerClient.Failure}; elapsed-ms={f.PeerClient.ElapsedMilliseconds}; " +
+            $"cancelled={f.PeerClient.Cancelled}; HTTP requests={f.RemoteHost.Requests}; " +
+            $"status={f.RemoteHost.LastStatus}; bytes={f.RemoteHost.LastBytes}; {f.RemoteHost.Diagnostics}.");
         Assert.Equal(1, f.Sender.Node.Replay.Diagnostics.CompletedCount);
         Assert.Equal(0, f.Sender.Node.Replay.Diagnostics.PendingCount);
         Assert.Single(f.Sender.MutationFiles); Assert.Single(f.Recipient.MutationFiles);
@@ -627,7 +631,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
                 return true;
             });
         }
-        internal static async Task<Fixture> CreateAsync(bool wrongPin = false)
+        internal static async Task<Fixture> CreateAsync(bool wrongPin = false, ulong envelopeExpiry = 1_150)
         {
             var f = new Fixture();
             try
@@ -638,7 +642,8 @@ public sealed partial class CurrentMailboxPeerHttpTests
                 // The next pin must remain distinct even in the intentionally wrong-current-pin case.
                 if (wrongPin) origins = origins.Select(origin => origin with { NextSpki = SHA256.HashData(origin.NextSpki.Span) }).ToArray();
                 f.Signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync(transportOrigins: origins, distinctNodeIdentities: true);
-                f.Recipient = await Peer.CreateAsync(f.Signed, 1); f.Sender = await Peer.CreateAsync(f.Signed, 0);
+                f.Recipient = await Peer.CreateAsync(f.Signed, 1, envelopeExpiry);
+                f.Sender = await Peer.CreateAsync(f.Signed, 0, envelopeExpiry);
                 f.Ledger = f.Sender.Operations; f.RecipientLedger = f.Recipient.Operations;
                 f.Bind(); return f;
             }

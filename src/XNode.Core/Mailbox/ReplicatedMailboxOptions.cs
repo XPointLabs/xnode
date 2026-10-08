@@ -1,3 +1,5 @@
+using Deep.Protocol.DeepExtension.MailboxCapabilities;
+
 namespace XNode.Core.Mailbox;
 
 public sealed class ReplicatedMailboxOptions
@@ -14,7 +16,7 @@ public sealed class ReplicatedMailboxOptions
 
     public TimeSpan MinimumTtl { get; set; } = TimeSpan.FromMinutes(1);
 
-    public TimeSpan MaximumTtl { get; set; } = TimeSpan.FromDays(7);
+    public TimeSpan MaximumTtl { get; set; } = TimeSpan.FromSeconds(MailboxClientLimits.MaximumTtlSeconds);
 
     // P10I freezes exactly two selected replicas and a 2-of-2 durable quorum.
     public int ReplicationFactor { get; set; } = 2;
@@ -62,7 +64,7 @@ public sealed class ReplicatedMailboxOptions
             || MaxRecoveryScanFiles > 2_000_000
             || MinimumTtl <= TimeSpan.Zero
             || MaximumTtl < MinimumTtl
-            || MaximumTtl > TimeSpan.FromDays(7)
+            || MaximumTtl > TimeSpan.FromSeconds(MailboxClientLimits.MaximumTtlSeconds)
             || ReplicationFactor != 2
             || WriteQuorum != 2
             || PeerTimeout <= TimeSpan.Zero

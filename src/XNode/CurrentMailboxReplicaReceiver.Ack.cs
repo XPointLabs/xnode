@@ -32,7 +32,7 @@ internal sealed partial class CurrentMailboxReplicaReceiver
             hash.AppendData(item.EnvelopeDigest.Span);
         }
         if (!MailboxContinuationToken.TryRead(body.ContinuationToken.Span, body.Epoch, body.Acknowledgements[^1].Cursor,
-                upper, body.MailboxId.Bytes.Span, scope.Grant.PlacementCommitment.Span, scope.Host.MembershipCommitment.Span,
+                upper, body.MailboxId.Bytes.Span, scope.Grant.PlacementCommitment.Span, scope.Grant.MembershipCommitment.Span,
                 MailboxContinuationToken.AckPurpose, Verify, out var window) ||
             !Fixed(window.PageAcknowledgementDigest.Span, hash.GetHashAndReset()))
             throw new CryptographicException("Current ACK continuation differs from its exact page.");

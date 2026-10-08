@@ -228,6 +228,12 @@ internal sealed class FileMailboxGrantRevocationStore : IAsyncDisposable
             await capability.EnsureGrantNotRevokedAsync(exactGrant, token).ConfigureAwait(false);
             requireActive();
         }
+        internal async ValueTask EnsureRetainedReadGrantNotRevokedAsync(ReadOnlyMemory<byte> exactGrant, CancellationToken token = default)
+        {
+            requireActive();
+            await capability.EnsureRetainedReadGrantNotRevokedAsync(exactGrant, token).ConfigureAwait(false);
+            requireActive();
+        }
     }
 
     private async ValueTask VerifyReadBackAsync(VerifiedMailboxGrantRevocationPlan plan, CancellationToken token)

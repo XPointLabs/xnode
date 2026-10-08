@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
+using Deep.Protocol.ContactV1;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
 using Deep.Protocol.DeepExtension.PrivacyRouting;
 using Deep.Protocol.XPointNetworkV1;
@@ -8,7 +9,9 @@ using XNode.Core.Mailbox.Client;
 
 namespace XNode;
 
-/// <summary>Current-only native admission owner. Endpoint activation and peer
+/// <summary>Current authority native admission owner. Store requires current
+/// selection; Retrieve/ACK require the exact verified retained selection.
+/// Endpoint activation and peer
 /// quorum remain separate: neither copied replica facts nor a recovered outcome
 /// authorize a receipt outside this bounded, protected operation.</summary>
 internal sealed partial class CurrentMailboxAdmission(
@@ -63,8 +66,8 @@ internal sealed partial class CurrentMailboxAdmission(
                 var upper = await scope.Lease.CheckAsync(ct).ConfigureAwait(false);
                 var policy = new MailboxAuthenticatedVerificationPolicy
                 {
-                    NetworkId = scope.Host.NetworkId, Epoch = scope.Host.SelectionEpoch,
-                    MembershipCommitment = scope.Host.MembershipCommitment,
+                    NetworkId = scope.Host.NetworkId, Epoch = scope.Grant.Epoch,
+                    MembershipCommitment = scope.Grant.MembershipCommitment,
                     PlacementCommitment = grant.PlacementCommitment,
                     MinimumGeneration = scope.Authority.MailboxAuthority.MinimumGrantGeneration,
                     NowUnixSeconds = upper,
@@ -133,7 +136,9 @@ internal sealed partial class CurrentMailboxAdmission(
             authority.MailboxAuthority.ExactPma2, authority.TrustedTime, token).ConfigureAwait(false);
         _ = await host.ResolveReplicaAsync(node, token).ConfigureAwait(false);
         IReadOnlyList<VerifiedMailboxReplicaV2> replicas = exactGrant is null ? [] :
-            await host.ResolveGrantReplicasAsync(exactGrant, token).ConfigureAwait(false);
+            grant!.Domain == MailboxCapabilityDomain.Retrieve
+                ? await host.GetSelectedRetainedReadReplicasAsync(exactGrant, token).ConfigureAwait(false)
+                : await host.ResolveGrantReplicasAsync(exactGrant, token).ConfigureAwait(false);
         var protectedHistory = OnionNetworkProtectedHistoryCodec.Encode(authority.Network);
         if (exactGrant is not null && (replicas.Count != 2 || !replicas.Any(replica => Fixed(replica.NodeId.Span, node))))
             throw new CryptographicException("The local node is not a selected mailbox replica.");
@@ -167,15 +172,18 @@ internal sealed partial class CurrentMailboxAdmission(
                     var currentHost = await MailboxHostAuthorityV2Verifier.VerifyAsync(current.Network, current.Authority,
                         current.MailboxAuthority.ExactPma2, current.TrustedTime, checkToken).ConfigureAwait(false);
                     RequireActive();
-                    if (exactGrant is null) await currentHost.EnsureCurrentAsync(checkToken).ConfigureAwait(false);
-                    else await currentHost.EnsureGrantCurrentAsync(exactGrant, checkToken).ConfigureAwait(false);
+                    await RequireGrantCurrentAsync(currentHost, checkToken).ConfigureAwait(false);
                     RequireActive();
                     await depositLease.EnsureCurrentAsync(checkToken).ConfigureAwait(false);
                     RequireActive();
                     await retrieveLease.EnsureCurrentAsync(checkToken).ConfigureAwait(false);
                     RequireActive();
                     if (exactGrant is not null)
-                        await roleLease.EnsureGrantNotRevokedAsync(exactGrant, checkToken).ConfigureAwait(false);
+                    {
+                        if (grant!.Domain == MailboxCapabilityDomain.Retrieve)
+                            await roleLease.EnsureRetainedReadGrantNotRevokedAsync(exactGrant, checkToken).ConfigureAwait(false);
+                        else await roleLease.EnsureGrantNotRevokedAsync(exactGrant, checkToken).ConfigureAwait(false);
+                    }
                     RequireActive();
                     var reading = await clock.ReadAsync(checkToken).ConfigureAwait(false);
                     RequireActive(); checkToken.ThrowIfCancellationRequested();
@@ -189,10 +197,23 @@ internal sealed partial class CurrentMailboxAdmission(
                     if (grant is not null && (lower < grant.NotBeforeUnixSeconds || upper >= grant.ExpiresAtUnixSeconds))
                         throw new CryptographicException("Current mailbox grant does not cover the full trusted interval.");
                     // Recheck the same closed host after the final clock callback.
-                    if (exactGrant is null) await host.EnsureCurrentAsync(checkToken).ConfigureAwait(false);
-                    else await host.EnsureGrantCurrentAsync(exactGrant, checkToken).ConfigureAwait(false);
+                    await RequireGrantCurrentAsync(host, checkToken).ConfigureAwait(false);
                     RequireActive(); checkToken.ThrowIfCancellationRequested();
                     return upper;
+                }
+
+                async ValueTask RequireGrantCurrentAsync(VerifiedMailboxHostAuthorityV2 actualHost, CancellationToken checkToken)
+                {
+                    if (exactGrant is null) await actualHost.EnsureCurrentAsync(checkToken).ConfigureAwait(false);
+                    else if (grant!.Domain == MailboxCapabilityDomain.Retrieve)
+                    {
+                        var selected = await actualHost.GetSelectedRetainedReadReplicasAsync(exactGrant, checkToken).ConfigureAwait(false);
+                        if (selected.Count != replicas.Count || selected.Where((fact, index) =>
+                            !Fixed(fact.NodeId.Span, replicas[index].NodeId.Span) ||
+                            !Fixed(fact.SigningPublicKey.Span, replicas[index].SigningPublicKey.Span)).Any())
+                            throw new CryptographicException("Retained read changed its selected current descriptor custody.");
+                    }
+                    else await actualHost.EnsureGrantCurrentAsync(exactGrant, checkToken).ConfigureAwait(false);
                 }
 
                 try
@@ -210,7 +231,15 @@ internal sealed partial class CurrentMailboxAdmission(
 
     internal sealed record GrantScope(CurrentMailboxAdmission Owner, DeepIdV2ContactStoreAuthority Authority,
         VerifiedMailboxHostAuthorityV2 Host, IReadOnlyList<VerifiedMailboxReplicaV2> Replicas,
-        MailboxAuthenticatedGrant Grant, MailboxCurrentOperationLease Lease);
+        MailboxAuthenticatedGrant Grant, MailboxCurrentOperationLease Lease)
+    {
+        // This scope is created only after current host selection/issuer checks
+        // and both protected MGR1 owners. These are exact grant-selected facts,
+        // never a caller-supplied historical projection authority.
+        internal ReadOnlyMemory<byte> ProjectionReference =>
+            ContactCodec.DecodeArtifactReference(
+                [.. "PMT2"u8, 0, 1, .. Grant.MembershipCommitment.Span], ProtocolMagic.PMT2).CanonicalBytes;
+    }
 
     internal sealed record HostScope(CurrentMailboxAdmission Owner, DeepIdV2ContactStoreAuthority Authority,
         VerifiedMailboxHostAuthorityV2 Host, MailboxCurrentOperationLease Lease);

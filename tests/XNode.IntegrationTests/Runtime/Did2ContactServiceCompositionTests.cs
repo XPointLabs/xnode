@@ -282,8 +282,16 @@ public sealed partial class Did2ContactServiceCompositionTests
                 var retrieve = await DeepIdV2MailboxGrantRequestAuthor.AuthorRetrieveAsync(fixture.ContactRoute,
                     publication.LocatorHash, fixture.ContactOwnedRequest.OwnerRetrieveCapability, ownerHolder);
                 var retrieveResult = await dispatcher.DispatchAsync(ContactServiceOperation.AcquireMailboxGrant, retrieve.ExactXmg2, default);
-                Assert.Equal(MailboxCapabilityDomain.Retrieve, (await DeepIdV2MailboxGrantResultVerifier.VerifySuccessAsync(
-                    fixture.ContactRoute, retrieve, retrieveResult, fixture.MailboxAuthority)).Domain);
+                // The retained grant has the current issuer's short lifetime,
+                // not the old route's effective expiry. Keep the current-only
+                // verifier's rejection; consume the closed retained boundary.
+                await Assert.ThrowsAsync<CryptographicException>(() => DeepIdV2MailboxGrantResultVerifier.VerifySuccessAsync(
+                    fixture.ContactRoute, retrieve, retrieveResult, fixture.MailboxAuthority).AsTask());
+                var readHost = await MailboxHostAuthorityV2Verifier.VerifyAsync(fixture.NetworkContext,
+                    fixture.Authority, fixture.MailboxAuthority, new(fixture));
+                var readGrant = await readHost.VerifyRetainedReadSuccessAsync(fixture.ContactRoute.ExactRouteClosure,
+                    retrieve.ExactXmg2, retrieveResult);
+                await readGrant.EnsureCurrentAsync(); Assert.Equal(MailboxCapabilityDomain.Retrieve, readGrant.Domain);
                 Assert.Equal(2, state.GrantSignatures);
                 Assert.Equal(3, state.GrantCalls);
                 Assert.True(state.Requests >= 4);
@@ -570,6 +578,7 @@ public sealed partial class Did2ContactServiceCompositionTests
         internal bool WrongPin;
         internal int Requests, GrantCalls, GrantSignatures;
         internal bool LoseNextPublish, LostAfterExecution, LoseNextGrant;
+        internal Action? BeforeGrantReturn;
         internal ContactReplicaRpcOperation? LoseNextOperation;
         internal Dictionary<string, byte[]> GrantWinners { get; } = new(StringComparer.Ordinal);
     }
@@ -649,18 +658,37 @@ public sealed partial class Did2ContactServiceCompositionTests
             if (request.ResultCode != MailboxGrantAcquisitionResultCode.Success) throw new ContactServiceUnavailableException("No current route.");
             var xmg = ContactCodec.Decode("XMG2", request.ExactXmg2.Span);
             Assert.Equal(BinaryPrimitives.ReadUInt64BigEndian(xmg.Field(10).Span), request.ResultExpiresAtUnixSeconds);
-            var current = await DeepIdV2MailboxGrantIssuanceVerifier.VerifyAsync(fixture.NetworkContext, fixture.Authority,
-                fixture.MailboxAuthority, request.ExactXmg2, request.ExactRouteClosure, request.RouteEffectiveExpiresAtUnixSeconds,
-                request.ReplicaEvidence.Select(item => new DeepIdV2MailboxGrantReplicaEvidence(item.ReplicaId.Span, item.Signature.Span)).ToArray(),
-                new(fixture), ct);
+            Func<IMailboxGrantIssuerSigner, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> author;
+            Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> verify;
+            var evidence = request.ReplicaEvidence.Select(item =>
+                new DeepIdV2MailboxGrantReplicaEvidence(item.ReplicaId.Span, item.Signature.Span)).ToArray();
+            if (request.EvidenceKind == MailboxGrantAuthorityEvidenceKind.RetainedRead)
+            {
+                Assert.Equal(0UL, request.RouteEffectiveExpiresAtUnixSeconds);
+                var host = await MailboxHostAuthorityV2Verifier.VerifyAsync(fixture.NetworkContext, fixture.Authority,
+                    fixture.MailboxAuthority, new(fixture), ct);
+                var retained = await host.VerifyRetainedReadIssuanceAsync(request.ExactXmg2, request.ExactRouteClosure,
+                    request.ReadUntilUnixSeconds, evidence, ct);
+                author = retained.AuthorSuccessAsync; verify = retained.VerifySuccessAsync;
+            }
+            else
+            {
+                Assert.Equal(MailboxGrantAuthorityEvidenceKind.CurrentRoute, request.EvidenceKind);
+                Assert.Equal(0UL, request.ReadUntilUnixSeconds);
+                var current = await DeepIdV2MailboxGrantIssuanceVerifier.VerifyAsync(fixture.NetworkContext, fixture.Authority,
+                    fixture.MailboxAuthority, request.ExactXmg2, request.ExactRouteClosure, request.RouteEffectiveExpiresAtUnixSeconds,
+                    evidence, new(fixture), ct);
+                author = current.AuthorSuccessAsync; verify = current.VerifySuccessAsync;
+            }
             var key = Convert.ToHexString(xmg.Field(2).Span);
             if (!state.GrantWinners.TryGetValue(key, out var exact))
             {
                 using var issuer = new GrantSigner(xmg.Field(6).Span[0] == 1 ? (byte)0x31 : (byte)0x32);
-                exact = (await current.AuthorSuccessAsync(issuer, ct)).ToArray();
+                exact = (await author(issuer, ct)).ToArray();
                 state.GrantSignatures++; state.GrantWinners.Add(key, exact);
             }
-            await current.VerifySuccessAsync(exact, ct);
+            await verify(exact, ct);
+            state.BeforeGrantReturn?.Invoke();
             if (state.LoseNextGrant) { state.LoseNextGrant = false; throw new IOException("Injected lost grant response."); }
             return exact.ToArray();
         }
@@ -689,12 +717,17 @@ public sealed partial class Did2ContactServiceCompositionTests
                     Convert.FromHexString(item.GetProperty("replicaId").GetString()!), Decode(item.GetProperty("signature")))).ToArray(),
                 (MailboxGrantAuthorityEvidenceKind)json.GetProperty("evidenceKind").GetUInt16(),
                 json.GetProperty("readUntilUnixSeconds").GetUInt64());
-            Assert.Equal(MailboxGrantAuthorityEvidenceKind.CurrentRoute, request.EvidenceKind);
-            Assert.Equal(0UL, request.ReadUntilUnixSeconds);
             var nodeId = Convert.FromHexString(json.GetProperty("nodeId").GetString()!);
-            var signing = MailboxGrantAuthorityAuthentication.GetSigningBytes(request.ExactXmg2.Span, request.ResultCode,
-                request.ExactRouteClosure.Span, request.ResultExpiresAtUnixSeconds, nodeId,
-                json.GetProperty("issuedAtUnixSeconds").GetUInt64(), Decode(json.GetProperty("nonce")));
+            var issued = json.GetProperty("issuedAtUnixSeconds").GetUInt64(); var nonce = Decode(json.GetProperty("nonce"));
+            var signing = request.EvidenceKind switch {
+                MailboxGrantAuthorityEvidenceKind.CurrentRoute when request.ReadUntilUnixSeconds == 0 =>
+                    MailboxGrantAuthorityAuthentication.GetSigningBytes(request.ExactXmg2.Span, request.ResultCode,
+                        request.ExactRouteClosure.Span, request.ResultExpiresAtUnixSeconds, nodeId, issued, nonce),
+                MailboxGrantAuthorityEvidenceKind.RetainedRead when request.RouteEffectiveExpiresAtUnixSeconds == 0 =>
+                    Deep.Protocol.ContactV2.MailboxRetainedReadAuthorityAuthentication.GetSigningBytes(request.ExactXmg2.Span,
+                        request.ExactRouteClosure.Span, request.ReadUntilUnixSeconds, request.ResultExpiresAtUnixSeconds, nodeId, issued, nonce),
+                _ => throw new InvalidDataException("Unexpected private forwarding evidence scope.")
+            };
             Assert.Contains(placement.RankedReplicaNodeIds, id => id.Span.SequenceEqual(nodeId));
             Assert.True(PublicKeyAuth.VerifyDetached(Decode(json.GetProperty("signature")), signing,
                 fixture.NetworkContext.ResolveNodeIdentityPublicKey(nodeId).ToArray()));

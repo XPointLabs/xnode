@@ -267,7 +267,7 @@ internal sealed class ExactContactRequestContextVerifier : IContactRequestContex
         && CryptographicOperations.FixedTimeEquals(left, right);
 }
 
-internal sealed class ProductionContactServiceOpaqueDispatcher :
+internal sealed partial class ProductionContactServiceOpaqueDispatcher :
     IContactServiceOpaqueDispatcher,
     IDisposable
 {
@@ -277,6 +277,7 @@ internal sealed class ProductionContactServiceOpaqueDispatcher :
     private readonly IContactReplicaPeerClient peerClient;
     private readonly IMailboxGrantAuthorityClient mailboxGrantAuthority;
     private readonly IClock clock;
+    private readonly ProtectedRetainedMailboxReadAuthority? retainedReads;
     private readonly SemaphoreSlim[] executionGates = Enumerable.Range(0, 64)
         .Select(static _ => new SemaphoreSlim(1, 1))
         .ToArray();
@@ -288,7 +289,8 @@ internal sealed class ProductionContactServiceOpaqueDispatcher :
         ContactServiceLocalReplicaRuntime local,
         IContactReplicaPeerClient peerClient,
         IMailboxGrantAuthorityClient mailboxGrantAuthority,
-        IClock clock)
+        IClock clock,
+        ProtectedRetainedMailboxReadAuthority? retainedReads = null)
     {
         this.node = node ?? throw new ArgumentNullException(nameof(node));
         this.authorities = authorities ?? throw new ArgumentNullException(nameof(authorities));
@@ -297,6 +299,7 @@ internal sealed class ProductionContactServiceOpaqueDispatcher :
         this.mailboxGrantAuthority = mailboxGrantAuthority
             ?? throw new ArgumentNullException(nameof(mailboxGrantAuthority));
         this.clock = clock ?? throw new ArgumentNullException(nameof(clock));
+        this.retainedReads = retainedReads;
     }
 
     public async ValueTask<ReadOnlyMemory<byte>> DispatchAsync(
@@ -398,6 +401,9 @@ internal sealed class ProductionContactServiceOpaqueDispatcher :
                 node.GetRouterId().ToBytes(),
                 peerClient,
                 canonicalRequest);
+            if (role == ContactMailboxGrantRole.Retrieve)
+                return await DispatchRetainedRetrieveGrantAsync(placement, remote, request,
+                    cancellationToken).ConfigureAwait(false);
             using var coordinator = new ContactResolverTwoReplicaCoordinator(
                 local.Binding.ResolverReplica,
                 remote);
@@ -420,14 +426,8 @@ internal sealed class ProductionContactServiceOpaqueDispatcher :
             if (resultCode == MailboxGrantAcquisitionResultCode.Success)
             {
                 exactRoute = ContactRouteClosureCodec.Decode(route.CanonicalRouteClosure);
-                if (role == ContactMailboxGrantRole.Deposit)
-                    MailboxGrantRequestVerifier.VerifyDeposit(canonicalRequest.Span, exactRoute, now);
-                else
-                    MailboxGrantRequestVerifier.VerifyRetrieve(
-                        canonicalRequest.Span,
-                        exactRoute,
-                        capability.Span,
-                        now);
+                // Retrieve already entered the independent retained owner path.
+                MailboxGrantRequestVerifier.VerifyDeposit(canonicalRequest.Span, exactRoute, now);
             }
 
             // Exact unknown-outcome retry must not change the issuer's journal

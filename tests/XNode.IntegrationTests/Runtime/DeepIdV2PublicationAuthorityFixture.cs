@@ -22,7 +22,7 @@ namespace XNode.IntegrationTests.Runtime;
 /// and monotonic clock are in-memory. This does not exercise a KEM exchange,
 /// transport/TLS, claim consumption, client composition or physical devices.
 /// </summary>
-internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable, IOnionMonotonicClock
+internal sealed partial class DeepIdV2PublicationAuthorityFixture : IDisposable, IOnionMonotonicClock
 #if !DEEP_REGISTRY_MGR1_FIXTURE
     , IDeepIdV2CurrentDirectoryProofSource, IDeepIdV2PreKeyPlacementSource,
     IDeepIdV2PreKeyClaimPlacementSource, IDeepIdV2ContactStoreAuthoritySource
@@ -31,6 +31,10 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable, IOnionM
     internal static readonly byte[] Network = Bytes(16, 0x11);
     internal static readonly byte[] Boot = Bytes(16, 0xf3);
     internal static readonly byte[] Service = Bytes(32, 0x35);
+    // This is an epoch-transition fixture, not a sub-five-second latency test.
+    // The independently signed proof is still freshness-bounded to30 seconds;
+    // the original projection expires well before the live1500 policy.
+    internal const ulong ShortMailboxProjectionExpiry = 1_200;
     private readonly byte[] service;
     internal sealed record TransportOrigin(IPAddress Address, ushort Port, ReadOnlyMemory<byte> CurrentSpki, ReadOnlyMemory<byte> NextSpki);
     private DeepIdV2PublicationAuthorityFixture(byte serviceMarker, bool distinctNodeIdentities)
@@ -97,19 +101,19 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable, IOnionM
         bool authorInventoryRotation = false, bool corruptFirstPreKeyBundleSignature = false,
         IReadOnlyList<TransportOrigin>? transportOrigins = null, bool distinctNodeIdentities = false,
         bool authorOneTimeObject = false, byte contactDepositMarker = 0x41,
-        byte contactPublicationMarker = 0x47)
+        byte contactPublicationMarker = 0x47, bool shortMailboxProjection = false)
     {
         if (authorOneTimeObject && authorRouteSuccessor)
             throw new ArgumentException("One-time invitations do not support route successors.");
         var fixture = new DeepIdV2PublicationAuthorityFixture(serviceMarker, distinctNodeIdentities);
-        try { await fixture.AuthorAsync(authorContactPublication, networkCommitmentMarker, rootMarker, authorRouteSuccessor, lastResortReuseLimit, authorInventoryRotation, corruptFirstPreKeyBundleSignature, transportOrigins, authorOneTimeObject, contactDepositMarker, contactPublicationMarker); return fixture; }
+        try { await fixture.AuthorAsync(authorContactPublication, networkCommitmentMarker, rootMarker, authorRouteSuccessor, lastResortReuseLimit, authorInventoryRotation, corruptFirstPreKeyBundleSignature, transportOrigins, authorOneTimeObject, contactDepositMarker, contactPublicationMarker, shortMailboxProjection); return fixture; }
         catch { fixture.Dispose(); throw; }
     }
 
     private async Task AuthorAsync(bool authorContactPublication, byte networkCommitmentMarker, byte rootMarker, bool authorRouteSuccessor,
         ushort lastResortReuseLimit, bool authorInventoryRotation, bool corruptFirstPreKeyBundleSignature,
         IReadOnlyList<TransportOrigin>? transportOrigins, bool authorOneTimeObject, byte contactDepositMarker,
-        byte contactPublicationMarker)
+        byte contactPublicationMarker, bool shortMailboxProjection)
     {
         using var root = new TestSigner(rootMarker);
         using var w1 = new TestSigner(0x30);
@@ -193,9 +197,12 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable, IOnionM
             new(Boot, 100, 100, 100), genesis.ProtectedHead, 1, 2, pq);
         var operational = await XPointNetworkOperationalGenesisAuthor.CompleteDid2Async(pendingOperational, Freshness, new(this));
         CompletedOperational = operational;
+        var exactProjection = shortMailboxProjection
+            ? AuthorShortMailboxProjection(operational.ExactPmt2, witnesses)
+            : operational.ExactPmt2;
         var network = await OnionNetworkContextVerifier.VerifyAsync(bootstrap.Authority,
             Freshness, [operational.ExactXvp1], [operational.ExactXnv1],
-            [operational.ExactXnh1], operational.ExactXnd1, [operational.ExactPmt2],
+            [operational.ExactXnh1], operational.ExactXnd1, [exactProjection],
             null, new(this), default);
         NetworkContext = network;
         Authority = bootstrap.Authority;
@@ -206,7 +213,7 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable, IOnionM
         View = operational.ExactXnv1;
         Head = operational.ExactXnh1;
         Descriptors = operational.ExactXnd1;
-        Projection = operational.ExactPmt2;
+        Projection = exactProjection;
         MailboxAuthority = operational.ExactPma2;
         var placement = ContactServicePlacementFactory.Create(network,
             ContactServiceRequestKind.PublishPreKeyInventory, service);
@@ -400,6 +407,17 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable, IOnionM
 
     private async Task<DeepIdV2CurrentContactAuthorization> RefreshCurrentDirectoryEvidenceAsync(ulong sample, ulong proofTime)
     {
+        await RefreshDirectoryProofAsync(sample, proofTime);
+        NetworkContext = await OnionNetworkContextVerifier.VerifyAsync(Authority, Freshness,
+            [Policy], [View], [Head], Descriptors, [Projection], null, new(this), default);
+        var checkpoint = Freshness.CurrentCheckpoint!;
+        var dca = DeepIdV2ContactAuthorizationCodec.Verify(DeepIdV2ContactAuthorizationCodec.Decode(Dca),
+            checkpoint.Binding, checkpoint.Directory);
+        return DeepIdV2CurrentContactAuthorizationVerifier.Verify(Freshness, dca, Boot, Sample);
+    }
+
+    private async Task RefreshDirectoryProofAsync(ulong sample, ulong proofTime)
+    {
         Sample = sample;
         using var w1 = new TestSigner(0x30); using var w2 = new TestSigner(0x31); using var w3 = new TestSigner(0x32);
         using var pq = DeepMlDsa65CandidateVerifierFactory.OpenForCurrentProcess();
@@ -412,12 +430,6 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable, IOnionM
         Freshness = DeepIdV2DirectoryCurrentProofVerifier.VerifyRequestedDid2(Authority,
             proof.ExactAdh1, proof.ExactDtt1, proof.ExactAdp1V2, nonce, proofQuery,
             new(Boot, sample, sample, sample), initialDirectoryFloor, 1, 2, pq);
-        NetworkContext = await OnionNetworkContextVerifier.VerifyAsync(Authority, Freshness,
-            [Policy], [View], [Head], Descriptors, [Projection], null, new(this), default);
-        var checkpoint = Freshness.CurrentCheckpoint!;
-        var dca = DeepIdV2ContactAuthorizationCodec.Verify(DeepIdV2ContactAuthorizationCodec.Decode(Dca),
-            checkpoint.Binding, checkpoint.Directory);
-        return DeepIdV2CurrentContactAuthorizationVerifier.Verify(Freshness, dca, Boot, Sample);
     }
 
     internal TestSigner Node(ReadOnlySpan<byte> id)
@@ -425,6 +437,45 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable, IOnionM
         foreach (var node in nodes)
             if (node.SignerId.Span.SequenceEqual(id)) return node;
         throw new CryptographicException("Unknown test node.");
+    }
+
+    private static ReadOnlyMemory<byte> AuthorShortMailboxProjection(
+        ReadOnlyMemory<byte> original, TestSigner[] witnesses)
+    {
+        var exact = original.ToArray();
+        ReplaceProjectionField(exact, 12, U64(ShortMailboxProjectionExpiry));
+        return SignProjection(exact, witnesses);
+    }
+
+    private static ReadOnlyMemory<byte> SignProjection(byte[] exact, TestSigner[] witnesses)
+    {
+        var candidate = ContactCodec.Decode("PMT2", exact);
+        var input = candidate.SignatureInput;
+        var offset = exact.Length - candidate.Field(16).Length;
+        for (var row = 0; row < candidate.Field(16).Length; row += 96)
+        {
+            var id = exact.AsSpan(offset + row, 32).ToArray();
+            var signer = witnesses.Single(value => value.SignerId.Span.SequenceEqual(id));
+            signer.SignCommit(input).CopyTo(exact, offset + row + 32);
+        }
+        return ContactCodec.Decode("PMT2", exact).CanonicalBytes;
+    }
+
+    private static void ReplaceProjectionField(byte[] exact, int wantedTag, ReadOnlySpan<byte> value)
+    {
+        var offset = 12;
+        for (var tag = 1; tag <= 16; tag++)
+        {
+            var length = checked((int)BinaryPrimitives.ReadUInt32BigEndian(exact.AsSpan(offset + 4, 4)));
+            offset += 8;
+            if (tag == wantedTag)
+            {
+                if (value.Length != length) throw new InvalidDataException("Projection field width differs.");
+                value.CopyTo(exact.AsSpan(offset, length)); return;
+            }
+            offset += length;
+        }
+        throw new InvalidDataException("Projection field is absent.");
     }
     internal IReadOnlyList<ReadOnlyMemory<byte>> NodeIds => nodes.Select(n => (ReadOnlyMemory<byte>)n.SignerId.ToArray()).ToArray();
 
@@ -578,6 +629,7 @@ internal sealed class DeepIdV2PublicationAuthorityFixture : IDisposable, IOnionM
         }
         internal byte[] Seed { get; }
         internal int TopologySignatureCalls { get; private set; }
+        internal byte[] SignCommit(ReadOnlyMemory<byte> input) => PublicKeyAuth.SignDetached(input.ToArray(), key.PrivateKey);
         public ReadOnlyMemory<byte> RootKeyId => Bytes(32, marker);
         public ReadOnlyMemory<byte> SignerId => signerId;
         public ReadOnlyMemory<byte> WitnessId => SignerId;
