@@ -101,6 +101,101 @@ public sealed partial class CurrentMailboxPeerHttpTests
     }
 
     [Fact]
+    public async Task CurrentHostNativeRecoveryColdOpenRejectsLostClientReplayAndOutcomesTogether()
+    {
+        await using var f = await Fixture.CreateAsync(); f.OpenLedger();
+        Assert.Equal(MailboxPeerQuorumStatus.Durable, (await f.Coordinator.StoreClientAsync(f.ClientStoreFrame())).Status);
+        var replay = Path.Combine(f.Sender.Node.DataRoot, "mailbox-capability-replay-v3", "replay.json");
+        var outcomes = Directory.GetFiles(Path.Combine(f.Sender.Node.DataRoot,
+            "mailbox-client-canonical-outcomes-v1"), "*.outcome");
+        Assert.Single(outcomes);
+        var intent = File.ReadAllBytes(f.LedgerFile);
+        File.Delete(replay);
+        foreach (var path in outcomes) File.Delete(path);
+        f.Reopen(); var requests = f.AllHttpRequests;
+        using var host = RecoveryHost(f); await host.StartAsync();
+        Assert.False((await host.Services.GetRequiredService<CurrentMailboxHostRecovery>().CheckAsync()).Recovered);
+        Assert.False(File.Exists(replay));
+        Assert.All(outcomes, path => Assert.False(File.Exists(path)));
+        Assert.Equal(intent, File.ReadAllBytes(f.LedgerFile));
+        Assert.Equal(requests, f.AllHttpRequests);
+        await host.StopAsync();
+    }
+
+    [Fact]
+    public async Task CurrentHostNativeRecoveryColdOpenRejectsAuthenticOlderClientCounterSnapshot()
+    {
+        await using var f = await Fixture.CreateAsync(); f.OpenLedger();
+        Assert.Equal(MailboxPeerQuorumStatus.Durable, (await f.Coordinator.StoreClientAsync(f.ClientStoreFrame())).Status);
+        var replay = Path.Combine(f.Sender.Node.DataRoot, "mailbox-capability-replay-v3", "replay.json");
+        var prior = File.ReadAllBytes(replay);
+        var outcomeDirectory = Path.Combine(f.Sender.Node.DataRoot, "mailbox-client-canonical-outcomes-v1");
+        var priorOutcomes = Directory.GetFiles(outcomeDirectory, "*.outcome").ToHashSet(StringComparer.Ordinal);
+        var body = MailboxAuthenticatedRequestTranscript.DecodeStoreBody(f.Recipient.Envelope) with
+        {
+            OperationId = Enumerable.Repeat((byte)0x68, 16).ToArray(),
+            DeduplicationDigest = Enumerable.Repeat((byte)0x69, 32).ToArray(),
+            Ciphertext = Enumerable.Repeat((byte)0x70, 64).ToArray()
+        };
+        var newer = f.ClientStoreFrame(MailboxClientCodec.EncodeEncryptedEnvelope(body), 2);
+        Assert.Equal(MailboxPeerQuorumStatus.Durable, (await f.Coordinator.StoreClientAsync(newer)).Status);
+        var intent = File.ReadAllBytes(f.LedgerFile);
+        var newerOutcome = Assert.Single(Directory.GetFiles(outcomeDirectory, "*.outcome").Except(priorOutcomes));
+        // Genuine prior bytes, not corruption; keep the independent anchored
+        // operation document and older canonical outcome intact.
+        File.WriteAllBytes(replay, prior); File.Delete(newerOutcome);
+        f.Reopen(); var requests = f.AllHttpRequests;
+        using var host = RecoveryHost(f); await host.StartAsync();
+        Assert.False((await host.Services.GetRequiredService<CurrentMailboxHostRecovery>().CheckAsync()).Recovered);
+        await Assert.ThrowsAsync<InvalidDataException>(() => f.Coordinator.StoreClientAsync(newer).AsTask());
+        Assert.Equal(prior, File.ReadAllBytes(replay)); Assert.False(File.Exists(newerOutcome));
+        Assert.Equal(intent, File.ReadAllBytes(f.LedgerFile)); Assert.Equal(requests, f.AllHttpRequests);
+        await host.StopAsync();
+    }
+
+    [Fact]
+    public async Task CurrentHostNativeRecoveryColdOpenRejectsAuthenticPendingSnapshotAfterCompletion()
+    {
+        await using var f = await Fixture.CreateAsync(); f.OpenLedger();
+        var exact = f.ClientStoreFrame(); f.RemoteHost.DropNext = true;
+        Assert.Equal(MailboxPeerQuorumStatus.PartialFailure, (await f.Coordinator.StoreClientAsync(exact)).Status);
+        var replay = Path.Combine(f.Sender.Node.DataRoot, "mailbox-capability-replay-v3", "replay.json");
+        var pending = File.ReadAllBytes(replay);
+        Assert.Equal(MailboxPeerQuorumStatus.Durable, (await f.Coordinator.StoreClientAsync(exact)).Status);
+        var outcome = Assert.Single(Directory.GetFiles(Path.Combine(f.Sender.Node.DataRoot,
+            "mailbox-client-canonical-outcomes-v1"), "*.outcome"));
+        var intent = File.ReadAllBytes(f.LedgerFile);
+        File.WriteAllBytes(replay, pending); File.Delete(outcome);
+        f.Reopen(); var requests = f.AllHttpRequests;
+        using var host = RecoveryHost(f); await host.StartAsync();
+        Assert.False((await host.Services.GetRequiredService<CurrentMailboxHostRecovery>().CheckAsync()).Recovered);
+        await Assert.ThrowsAsync<InvalidDataException>(() => f.Coordinator.StoreClientAsync(exact).AsTask());
+        Assert.Equal(pending, File.ReadAllBytes(replay)); Assert.False(File.Exists(outcome));
+        Assert.Equal(intent, File.ReadAllBytes(f.LedgerFile)); Assert.Equal(requests, f.AllHttpRequests);
+        await host.StopAsync();
+    }
+
+    [Fact]
+    public async Task CurrentHostNativeRecoveryColdOpenRejectsLostRetrieveOnlyClientState()
+    {
+        await using var f = await Fixture.CreateAsync(); f.OpenLedger();
+        Assert.Equal(MailboxPeerQuorumStatus.Durable, (await f.Coordinator.StoreClientAsync(f.ClientStoreFrame())).Status);
+        _ = await f.Recipient.Receiver.RetrieveClientAsync(RetrieveFrame(f));
+        var ledger = Path.Combine(f.Recipient.Node.DataRoot, "mailbox-client-intent", "operations.json");
+        Assert.Empty(JsonNode.Parse(File.ReadAllBytes(ledger))!["operations"]!.AsObject());
+        var replay = Path.Combine(f.Recipient.Node.DataRoot, "mailbox-capability-replay-v3", "replay.json");
+        var outcome = Assert.Single(Directory.GetFiles(Path.Combine(f.Recipient.Node.DataRoot,
+            "mailbox-client-canonical-outcomes-v1"), "*.outcome"));
+        var intent = File.ReadAllBytes(ledger);
+        File.Delete(replay); File.Delete(outcome); f.Reopen(); var requests = f.AllHttpRequests;
+        using var host = RecoveryHost(f, recipient: true); await host.StartAsync();
+        Assert.False((await host.Services.GetRequiredService<CurrentMailboxHostRecovery>().CheckAsync()).Recovered);
+        Assert.False(File.Exists(replay)); Assert.False(File.Exists(outcome));
+        Assert.Equal(intent, File.ReadAllBytes(ledger)); Assert.Equal(requests, f.AllHttpRequests);
+        await host.StopAsync();
+    }
+
+    [Fact]
     public async Task CurrentHostNativeRecoveryColdOpenJoinsExactCompletedReplayDigest()
     {
         await using var f = await Fixture.CreateAsync(); f.OpenLedger();

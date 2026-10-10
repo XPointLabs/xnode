@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
 using Deep.Protocol.XPointNetworkV1;
 
@@ -50,7 +51,8 @@ internal sealed class MailboxClientLedgerDocument
         ulong retiredCursorFloor,
         Dictionary<string, ulong> nextCursorByMailbox,
         Dictionary<string, MailboxClientLedgerOperation> operations,
-        Dictionary<string, MailboxClientLedgerAckOperation> ackOperations)
+        Dictionary<string, MailboxClientLedgerAckOperation> ackOperations,
+        Dictionary<string, MailboxCurrentClientReplayFloor> clientReplayFloors)
     {
         SchemaVersion = schemaVersion;
         NextCoordinatorSequence = nextCoordinatorSequence;
@@ -58,6 +60,7 @@ internal sealed class MailboxClientLedgerDocument
         NextCursorByMailbox = nextCursorByMailbox;
         Operations = operations;
         AckOperations = ackOperations;
+        ClientReplayFloors = clientReplayFloors;
     }
 
     public int SchemaVersion { get; set; }
@@ -66,6 +69,8 @@ internal sealed class MailboxClientLedgerDocument
     public Dictionary<string, ulong> NextCursorByMailbox { get; set; }
     public Dictionary<string, MailboxClientLedgerOperation> Operations { get; set; }
     public Dictionary<string, MailboxClientLedgerAckOperation> AckOperations { get; set; }
+    [JsonRequired]
+    public Dictionary<string, MailboxCurrentClientReplayFloor> ClientReplayFloors { get; set; }
 }
 
 internal sealed record MailboxClientLedgerOperation(
@@ -95,7 +100,7 @@ internal sealed record MailboxClientLedgerOperation(
 
 public sealed partial class MailboxClientOperationLedger : IDisposable
 {
-    private const int SchemaVersion = 6;
+    private const int SchemaVersion = 7;
     internal const long MaximumDocumentBytes = 768L * 1024 * 1024;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _directory;
@@ -584,6 +589,7 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
                 0,
                 new(StringComparer.Ordinal),
                 new(StringComparer.Ordinal),
+                new(StringComparer.Ordinal),
                 new(StringComparer.Ordinal));
         }
 
@@ -630,6 +636,9 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
             document.AckOperations = new(
                 document.AckOperations ?? throw new InvalidDataException("Mailbox ack intent authority is missing."),
                 StringComparer.Ordinal);
+            document.ClientReplayFloors = new(
+                document.ClientReplayFloors ?? throw new InvalidDataException("Mailbox client replay floors are missing."),
+                StringComparer.Ordinal);
             ValidateDocument(document);
             return document;
         }
@@ -643,9 +652,19 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
     {
         if (document.SchemaVersion != SchemaVersion
             || LedgerEntryCost(document) > _maxEntries
+            || document.ClientReplayFloors.Count > _maxEntries
             || document.NextCursorByMailbox.Count > _maxCursorAuthorities)
         {
             throw new InvalidDataException("Mailbox client operation ledger schema is invalid.");
+        }
+        foreach (var pair in document.ClientReplayFloors)
+        {
+            _ = DecodeLowerHex(pair.Key, 32);
+            var floor = pair.Value ?? throw new InvalidDataException("Mailbox client replay floor is null.");
+            _ = DecodeLowerHex(floor.ClaimDigest, 32);
+            if (floor.HighestCounter == 0 || floor.CanonicalOutcomeDigest is null)
+                throw new InvalidDataException("Mailbox client replay floor is malformed.");
+            if (floor.CanonicalOutcomeDigest.Length != 0) _ = DecodeLowerHex(floor.CanonicalOutcomeDigest, 32);
         }
 
         var cursors = new HashSet<string>(StringComparer.Ordinal);

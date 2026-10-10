@@ -5,6 +5,183 @@ S02 is the sole active stage after the
 This checkpoint is source/composition evidence, not runtime activation,
 whole-stage acceptance or physical Windows/Android E2E.
 
+## Public HTTPS/H2 entry and independent client replay floor batch
+
+Candidate after qualified Node `31784a9`; matching full03 now qualifies the
+current source batch, and its separate transport runs have also passed. Whole-S02
+acceptance review is still pending. The previous full1423 and transport receipts below
+qualify only that earlier source. S02 remains the sole active stage.
+
+Matching full03 (`artifacts/test-gate-20261010/node-client-entry-full-03`) finished
+native0 on `2026-10-10T11:30:58.3839995Z` (started `11:01:31.5693167Z`).
+Desktop5.1.26100.9457/SDK10.0.301; build/preflight/test/qualification exits0,
+zero build warnings/errors,1431/0/0, exact1431 required cases and2137 unchanged
+captured inputs, FullAccepted=true. Integration1069/0/0,
+ProfileGenerator107/0/0, unit255/0/0. The extra captured input versus full02 is
+the new unit reference TRX, not an additional production component. SHA256:
+
+| TRX filename | SHA256 |
+| --- | --- |
+| `nikit_SURFACE-LT_2026-10-10_16_02_34_net10.0.trx` | `B0B8DCD331F28C1AD9D77785C258F5A1F5394D910D4CAE48D3306D60BF76A600` |
+| `nikit_SURFACE-LT_2026-10-10_16_29_12_net10.0.trx` | `30F71171A8D632FD7600F35C9D8012D11CBB5A92FAAD1BFFBB6F6D2D603EE1CA` |
+| `nikit_SURFACE-LT_2026-10-10_16_29_39_net10.0.trx` | `E104CA9E34D59AAA08C663DC6C438667833FFB5373A8E39861D012EC16C6152C` |
+
+This successful run does not identify or erase full02's intermittent native5
+denial. No retry/ACL repair or failure exemption was introduced. Neither this
+source gate nor the configured test-only HTTPS proxy proves physical delivery.
+
+Matching transport: external/no-mock smoke finished native0 at
+`deep-devops/artifacts/s02-client-entry-20261010/smoke-01`. Actual Xray running,
+routerTransportMocked=false, hard/soft failures0 and runtime warnings0;
+runtime.gate.json SHA256
+`2E3830AB8F4C8D8FAA294E8FE4B02A7C501444937553AF4FB5DD502DE893F1E5`.
+Three pre-existing Dockerfile `InvalidDefaultArgInFrom` build notices remain
+separate from .NET/runtime warnings.
+
+Three-node rehearsal finished native0 at
+`deep-devops/artifacts/rehearsals/multi-node/20261010T113549429Z-0b1e414bc3ae`:
+status=ok, requireNoMock=true, three distinct real Xray routers, Registry count3,
+reconciliation issues0. All three privacy endpoints return expected503 without
+verified authority, not message success. `test-results/multi-node-topology.json`
+SHA256 `2A3500972E09A0D5A0660BAC5D645F03A8666CC590C4A65E5CD4F70A0A695C89`.
+Both disposable stacks were removed; six existing `deep-dev` containers remain.
+Production and physical clients were not changed by these runs.
+
+Matching full01 (`artifacts/test-gate-20261010/node-client-entry-full-01`) finished
+native1 on `2026-10-10T09:58:58.1130029Z`: build0/zero warnings, preflight0,
+test1/qualification1, FullAccepted=false. Integration1044/23/0,
+ProfileGenerator107/0/0, unit255/0/0;1429 total cases,2134 captured inputs.
+The public-entry cycle and new cold-loss/rollback tests passed, but this does not
+override the23 failures. Input read-back qualification did not complete; do not
+claim unchanged inputs or a full PASS. Full receipt SHA256:
+
+| TRX filename | SHA256 |
+| --- | --- |
+| `nikit_SURFACE-LT_2026-10-10_14_28_21_net10.0.trx` | `B4E5160A85C0DCCC9573BAA03BE5FEA81D06C0D68FFD9B8D8A4904B0A3FDDC2B` |
+| `nikit_SURFACE-LT_2026-10-10_14_57_42_net10.0.trx` | `B573D2510960B86348EF956F96D490233A9EC02FBB416B5A768EDD2904CC097F` |
+| `nikit_SURFACE-LT_2026-10-10_14_58_10_net10.0.trx` | `9EE7B850030C7688410E83B9CBB13CDE0D551901208BA3984F74709160E83DCC` |
+
+The failing intent/settlement/checkpoint injectors counted every document write;
+the added floor transition moved their intended crash points. Candidate fixture
+fixes select business-document changes instead, without changing the existing
+assertions or replacing native durability. Separate raw floor-write failures
+cover before/after replacement. The Retrieve callback restore now captures the
+exact document at the actual hostile callback, not a pre-floor snapshot that
+the independent root correctly rejects as stale. Focused16 finished native0,
+warnings-as-errors build0,27/0/0: all23 failing cases, two previously passing
+mutation variants and two new raw floor-write cases. Receipt:
+`artifacts/s02-client-entry-20261010/focused-16/nikit_SURFACE-LT_2026-10-10_15_03_36_net10.0.trx`,
+SHA256 `2854501AE7B5ECDC7C7EDF95BE426045A985A8C468618BF3EC3A07C51D2A2F08`.
+The raw floor cases preserve Pending and issue no effects/outcome; recovery of
+the exact anchored floor is not authority to remint a missing peer intent. That
+request still denies safely. This preserves the original pre-intent failure
+contract, not a claim that every disk failure can settle automatically.
+Corrective full02 finished native1 on `2026-10-10T10:47:18.5304977Z`:
+build0/zero warnings, preflight0, test1/qualification1, FullAccepted=false.
+Integration1069/0/0 and ProfileGenerator107/0/0 passed; unit254/1/0 failed.
+The exact union contained1431 cases and2136 captured inputs; final unchanged-input
+qualification did not complete. No allowed FAIL/skips were supplied. All23
+previously failing integration cases now pass, but the batch is not accepted.
+The sole failure is
+`DurableMailboxCapabilityReplayJournalTests.ConcurrentAcceptedTimes_NeverMoveDurableFloorBackwardOrLoseClaims`:
+native `MoveFileEx` replacement throws `Win32Exception`5 (`Access is denied`)
+through `MailboxDurabilityBarrier.ReplaceFile`. The denying process/condition is
+not established; a later passing repeat cannot erase this failure. Investigate
+the current Release binaries before another matching full. Receipt SHA256:
+
+| TRX filename | SHA256 |
+| --- | --- |
+| `nikit_SURFACE-LT_2026-10-10_15_09_10_net10.0.trx` | `5DE81A99DFE0A1320C5359389FD3315A5CDD1AC6056FAD73FA008614352BB2B2` |
+| `nikit_SURFACE-LT_2026-10-10_15_45_58_net10.0.trx` | `FDD2B1E558B4FF3473827B10B33DD7BE49306D342FE8BE1AD0F19D54DC3CFC07` |
+| `nikit_SURFACE-LT_2026-10-10_15_46_25_net10.0.trx` | `DEB58BDC6965ED01B1B23012B4DE78A4E08AB00CF4DEB315C5ED991317AF688E` |
+
+At full02, transport had not yet run against that candidate. The subsequent
+full03/transport receipts are above; original full01/full02 FAIL remain unchanged.
+
+Native-denial diagnosis: all129 selected current unit Release binary/source inputs
+matched full02 hashes before repetition. Six isolated current Release repeats and
+two whole-unit repeats255/0/0 finished native0 (`unit-repro-04`). Debug repeats
+were also run accidentally; they are not current-source qualification. The
+native denying process/condition remains unknown, so no product retry budget,
+ACL, error classification or assertion has been relaxed. The affected test now
+adds failure-only numeric error/file-attribute observation around the unchanged
+native barrier and independently reopens all51 claims and the durable time floor.
+New Release warnings-as-errors build0/zero warnings; focused replay/barrier19/0/0
+and whole unit255/0/0 both native0 (`unit-repro-05`). SHA256:
+
+| Receipt | SHA256 |
+| --- | --- |
+| `unit-repro-04/run-7.trx` | `75B6D66D8044BFD87991BEEE8156C2955DC0852435CE8029D0FECC909E080A0E` |
+| `unit-repro-04/run-8.trx` | `DF0308D4C58EAFA6D41C9AC0863C2AACE983D62665FB5E41F3044A8944D60C20` |
+| `unit-repro-05/run-1.trx` | `585423E4AA5B917E138D511FD17459AA21AC6A9E02C2C2A16AC182B59BD647C7` |
+| `unit-repro-05/run-2.trx` | `84616D95B48987B00E8D0112DBEC41B6873CC4620FB76FCE522DD9CD25241C9A` |
+
+These receipts are below `artifacts/s02-client-entry-20261010`. They do not erase
+full02's FAIL or identify the external cause. Matching full03 includes the
+strengthened unit receipt in the existing exact reference union and has now
+passed as recorded above. Transport follows that actual full acceptance.
+The unresolved intermittent native
+denial remains explicitly tracked for further observation rather than called fixed.
+
+Privacy check: scanning the complete two diagnostic directories rejects11 raw
+`.log` files by artifact policy. They remain ignored local diagnostics and are
+not eligible for upload; no renaming, deletion or policy exemption hides them.
+An explicit eligible selection of changed source, TRX receipts and full02 passes
+52 files/native0 (`deep-devops/artifacts/s02-client-entry-20261010/unit-eligible-selected-scan.json`).
+This is not a global artifacts PASS or authorization to export the raw logs.
+
+The configured three-Program cycle now enters the signed public origin over
+actual HTTPS/H2 with the typed selected-entry transport and descriptor SPKI pin.
+Both onward onion hops and replication remain actual Program HTTP/native owners.
+A test-only transparent Node.js built-in HTTP/2/TLS proxy joins each signed public
+origin to its private Program listeners. It applies the existing HAProxy header
+hygiene, validates the private certificate name/chain/SPKI, and neither parses
+native frames nor makes authority/outcome decisions. The client checks the
+unfiltered received MHT response. This proves the source HTTP boundary, not the
+deployed HAProxy/Xray carrier or installed Windows/Android clients. The fixture
+requires Node.js22+; CI selects24, with an executable preflight and captured copied
+`.cjs` input. It adds no npm packages or production Node.js dependency.
+
+The same real public-entry cycle rejects eight malformed MHT inputs, a genuine
+but wrong entry and a genuine selected second replica used as the Store exit.
+Every refusal preserves all native mailbox digests and the Store/ACK peer count.
+The wrong exit returns the exact MHT504 `UpstreamOutcomeUnknown` contract:
+forwarding already occurred, so the client cannot infer absence of effects or
+replace its exact intent. Positive Store/read from both replicas/ACK/cold exact
+retry still requires strict MHT transit completion and a decrypted success.
+
+A cold-loss repro previously recovered successfully after both client replay and
+canonical outcomes were removed, despite independently protected operation
+custody remaining. The current fix implements DR-0084 through that same existing
+operation document, as amended in [DR-0087](../../../docs/survival-program/decisions/DR-0087-current-mailbox-operation-custody.md):
+counter/claim/completed-outcome floors are recorded before effects/response,
+joined on actual host, client and peer admission, and never evicted. Private
+operation generation7 rejects old6 without migration/reset. Public wire and node
+keys are unchanged. Coordinated peer replay/mutation/blob loss is not proved
+independently anchored by these client floors; it remains a separate S03 concern.
+
+Focused12 finished native0/build0 with warnings-as-errors:34/0/0, including joint
+loss, authentic older counters, distinct Store intents, exact recovery and the
+new public-entry cycle. Its SHA256 is
+`3629BA9E5765DC133419A40ED5DBDBA4DBDDFFA35287F7182BFEA16E7C7E7036`.
+Focused13 contains30/0/0, including restored Pending after completion and
+Retrieve-only native loss; its native handle was lost, so it is not terminal0
+evidence. Focused15 finished native0/build0:5/0/0, covering those two new cases,
+helper preflight, the extended public-entry cycle and retained original-epoch
+read/ACK after signed projection advance and native peer cold reopen. That
+retained case is direct native-peer evidence, not configured public HTTP evidence.
+Receipt `artifacts/s02-client-entry-20261010/focused-15/nikit_SURFACE-LT_2026-10-10_14_25_28_net10.0.trx`,
+SHA256 `FFFEDDE6102EF6D0ECE7995D31F9C3BC11CE366C557ABEC82344AAC48FDBB368`.
+Root executable-input gate contracts pass35 checks, native0.
+
+Original FAILs remain in the focused run directories:05/06 exposed extra response
+headers in the attempted Kestrel front end;08 test-key export;09 early rejection
+upload flow-control deadlock;10 the real coordinated client cold-loss defect;
+14 incorrectly expected a sealed successful transit for the wrong exit instead
+of its exact MHT unknown contract. None is relabelled PASS. The successful
+response contract/assertions are unchanged. No production deployment, release,
+main merge or physical device delivery is claimed by this candidate.
+
 ## Configured Program / descriptor-bound HTTP forwarding batch
 
 This source batch extends the registered-native business cycle to three

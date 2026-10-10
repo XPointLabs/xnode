@@ -32,6 +32,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Update="Fixtures\configured-ingress.cjs" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\XNode.Core\XNode.Core.csproj" />
     <ProjectReference Include="..\..\src\XNode.Transport.Vless\XNode.Transport.Vless.csproj" />
     <ProjectReference Include="..\..\src\XNode.Registry\XNode.Registry.csproj" />

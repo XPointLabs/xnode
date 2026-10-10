@@ -157,13 +157,14 @@ public sealed partial class CurrentMailboxPeerHttpTests
     {
         await using var f = await Fixture.CreateAsync(); await StoreItem(f, 1);
         var path = Path.Combine(f.Recipient.Node.DataRoot, "mailbox-client-intent", "operations.json");
-        var backup = File.ReadAllBytes(path); var reads = 0;
+        byte[]? backup = null; var reads = 0;
         f.Recipient.Fault.Action = point =>
-        { if (point == MailboxPeerMutationFaultPoint.RetrieveBlobRead) { reads++; File.Delete(path); } };
+        { if (point == MailboxPeerMutationFaultPoint.RetrieveBlobRead) { reads++; backup = File.ReadAllBytes(path); File.Delete(path); } };
         var exact = RetrieveFrame(f);
         await Assert.ThrowsAsync<InvalidDataException>(() => f.Recipient.Receiver.RetrieveClientAsync(exact).AsTask());
         Assert.Equal(1, reads); Assert.Equal(0, f.Recipient.Node.OutcomeCount); Assert.False(File.Exists(path));
         Assert.Equal(1, f.Recipient.Node.Replay.Diagnostics.PendingCount);
+        Assert.NotNull(backup);
         f.Recipient.Fault.Action = null; File.WriteAllBytes(path, backup); new MailboxStorageSecurity().SecureFile(path);
         Assert.Single(DecodePage((await f.Recipient.Receiver.RetrieveClientAsync(exact)).Span, f).Items);
         Assert.Equal(1, f.Recipient.Node.OutcomeCount); Assert.Equal(1, f.AllHttpRequests);

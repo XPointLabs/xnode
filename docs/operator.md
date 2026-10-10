@@ -158,8 +158,19 @@ quorum journal, public wire field, authority adapter or activation switch.
 The current internal Store producer now owns a durable random nonce and complete
 signed peer frame in the existing operation ledger before any peer effect.
 Reopening retains those exact bytes; known replay or existing mutation custody
-without its intent rejects instead of reminting. The local ledger is schema 6;
-older schemas 3/4/5 or malformed state reject without migration or automatic reset.
+without its intent rejects instead of reminting. The local ledger is schema 7;
+older schemas 3/4/5/6 or malformed state reject without migration or automatic reset.
+The same independently anchored document now retains current client replay
+scope/counter/claim floors and completed outcome digests for Store/Retrieve/ACK.
+Reservation floors precede operation effects; completion digests precede a
+successful response. Startup and current admission reject missing/older native
+replay against these floors, including joint replay/outcome loss after cold open.
+An unanchored higher native Pending can be retried only through ordinary current
+authentication; recovery does not promote it or initialize lost state. These
+floors are not collected by current native reads or working-set compaction.
+Bounded floor capacity remains backpressure; retirement/lifecycle activation
+belongs to its subsequent stage. This clean break is not deployed automatically:
+an old document remains unready, without resetting operator keys or enrollment.
 This is not another journal or a production data/key reset. Current reservations
 do not use host UTC for garbage collection; capacity remains backpressure until
 protected retention is composed. A pre-intent write failure can remain Pending;

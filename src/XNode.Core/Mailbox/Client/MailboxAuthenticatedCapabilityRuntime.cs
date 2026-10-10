@@ -232,6 +232,13 @@ public sealed class MailboxAuthenticatedCapabilityRuntime
         _replay.ValidateNativeRecovery(outcomes, token);
     }
 
+    internal void ValidateCurrentNativeRecovery(
+        IReadOnlyDictionary<string, MailboxCurrentClientReplayFloor> independentFloors, CancellationToken token)
+    {
+        var outcomes = _outcomes.ValidateNativeRecovery(token);
+        _replay.ValidateNativeRecovery(outcomes, token, independentFloors);
+    }
+
     internal void ValidateNewNativeScope(CancellationToken token)
     {
         _outcomes.ValidateNewNativeScope(token);

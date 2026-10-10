@@ -73,7 +73,7 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
             RequireKey();
             _ = await scope.Lease.CheckAsync(ct).ConfigureAwait(false);
             RequireKey();
-            await operationLedger.InitializeCurrentAsync(LocalNodeId, scope.Host, scope.Lease, ct).ConfigureAwait(false);
+            await admission.InitializeHostOperationsAsync(operationLedger, scope, ct).ConfigureAwait(false);
             await mutations.ValidateCurrentRecoveryAsync(scope.Lease, ct).ConfigureAwait(false);
             replay.ValidateNativeRecovery(ct);
             admission.ValidateNativeRecovery(scope, ct);
@@ -108,7 +108,7 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
     private async ValueTask RequireOperationCustodyAsync(CurrentMailboxAdmission.GrantScope scope, CancellationToken token)
     {
         RequireSigningCustody(scope);
-        await operationLedger.InitializeCurrentAsync(LocalNodeId, scope.Host, scope.Lease, token).ConfigureAwait(false);
+        await admission.InitializeGrantOperationsAsync(operationLedger, scope, token).ConfigureAwait(false);
     }
 
     internal Task<bool> HasStoreCustodyAsync(CurrentMailboxAdmission.GrantScope scope,

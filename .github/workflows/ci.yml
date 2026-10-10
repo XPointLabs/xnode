@@ -71,6 +71,9 @@ jobs:
       - name: Restore
         working-directory: xnode
         run: dotnet restore tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj -p:DeepProtocolSourceCutover=true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
       - name: Build
         working-directory: xnode
         run: dotnet build tests/XNode.IntegrationTests/XNode.IntegrationTests.csproj --configuration Release --no-restore -p:DeepProtocolSourceCutover=true

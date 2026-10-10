@@ -234,13 +234,14 @@ public sealed partial class CurrentMailboxPeerHttpTests
     [InlineData(3)]
     [InlineData(4)]
     [InlineData(5)]
+    [InlineData(6)]
     public async Task CurrentStoreRejectsIncompatibleIntentLedgerWithoutRepair(int schema)
     {
         await using var f = await Fixture.CreateAsync(); f.OpenLedger();
         var client = f.ClientStoreFrame(); f.RemoteHost.DropNext = true;
         _ = await f.Coordinator.StoreClientAsync(client, f.Ledger!);
         var path = f.LedgerFile; f.Ledger!.Dispose(); f.Ledger = null;
-        var old = File.ReadAllText(path).Replace("\"schemaVersion\":6", $"\"schemaVersion\":{schema}", StringComparison.Ordinal);
+        var old = File.ReadAllText(path).Replace("\"schemaVersion\":7", $"\"schemaVersion\":{schema}", StringComparison.Ordinal);
         File.WriteAllText(path, old); f.OpenLedger();
         await Assert.ThrowsAsync<InvalidDataException>(() => f.Coordinator.StoreClientAsync(client, f.Ledger!).AsTask());
         Assert.Equal(old, File.ReadAllText(path)); Assert.Equal(1, f.RemoteHost.Requests);
@@ -586,6 +587,8 @@ public sealed partial class CurrentMailboxPeerHttpTests
             IMailboxDurabilityBarrier? custodyDurability = null, Action? afterVerifiedRead = null)
         {
             Sender.CloseOperations();
+            if (durability is IntentWriteFault or IntentWriteCallback or SettlementWriteFault or AckQuorumFlushFault)
+                durability = new BusinessWriteFaultBoundary(durability);
             senderCustody?.Dispose(); senderCustody = OpenCustody(Sender, custodyDurability);
             if (maximumEntries is not null) intentEntries = maximumEntries.Value;
             Ledger = new(Sender.Node.DataRoot, new MailboxClientAdapterOptions
@@ -871,6 +874,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
         public async ValueTask DisposeAsync()
         {
             ReleaseConfiguredReservations();
+            await CloseConfiguredIngressAsync();
             if (program is not null) await program.DisposeAsync();
             if (app is not null) { await app.StopAsync(); await app.DisposeAsync(); }
             certificate?.Dispose();

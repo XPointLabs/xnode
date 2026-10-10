@@ -72,7 +72,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
     [InlineData(4, false)]
     public async Task OperationCheckpointCrashBoundaryNeverRemintsOrAddsPeerHttp(int write, bool beforeReplace)
     {
-        await using var f = await Fixture.CreateAsync(); var fault = new OperationCheckpointFault(write, beforeReplace);
+        await using var f = await Fixture.CreateAsync(); var fault = new OperationCheckpointFault(write, beforeReplace, f.LedgerFile);
         f.OpenLedger(custodyDurability: fault); var request = f.ClientStoreFrame();
         await Assert.ThrowsAsync<IOException>(() => f.Coordinator.StoreClientAsync(request, f.Ledger!).AsTask());
         Assert.True(fault.Reached);
@@ -145,15 +145,21 @@ public sealed partial class CurrentMailboxPeerHttpTests
         Assert.Equal(MailboxPeerQuorumStatus.Durable, (await f.Coordinator.StoreClientAsync(f.ClientStoreFrame(), f.Ledger!)).Status);
     }
 
-    private sealed class OperationCheckpointFault(int target, bool beforeReplace) : IMailboxDurabilityBarrier
+    private sealed class OperationCheckpointFault(int target, bool beforeReplace, string ledgerFile) : IMailboxDurabilityBarrier
     {
         private readonly MailboxDurabilityBarrier native = new(); private int writes;
+        private bool preparing = true, business;
         internal bool Reached;
         public void ReplaceFile(string temporary, string final)
         {
-            var fail = Path.GetFileName(final) == "checkpoint.bin" && ++writes == target;
+            var checkpoint = Path.GetFileName(final) == "checkpoint.bin";
+            if (checkpoint && preparing)
+                business = IsBusinessWrite(Assert.Single(Directory.GetFiles(Path.GetDirectoryName(ledgerFile)!,
+                    "operations.json.*.tmp")), ledgerFile);
+            var fail = checkpoint && business && ++writes == target;
             if (fail && beforeReplace) { Reached = true; throw new IOException("Test-owned pre-checkpoint replacement interruption."); }
             native.ReplaceFile(temporary, final);
+            if (checkpoint) preparing = !preparing;
             if (fail) { Reached = true; throw new IOException("Test-owned post-checkpoint replacement interruption."); }
         }
         public void FlushFileAndParentDirectory(string path) => native.FlushFileAndParentDirectory(path);

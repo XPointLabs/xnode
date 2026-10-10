@@ -15,7 +15,8 @@ public sealed partial class DurableMailboxCapabilityReplayJournal
         }
     }
 
-    internal void ValidateNativeRecovery(IReadOnlyDictionary<string, string> outcomes, CancellationToken token)
+    internal void ValidateNativeRecovery(IReadOnlyDictionary<string, string> outcomes, CancellationToken token,
+        IReadOnlyDictionary<string, MailboxCurrentClientReplayFloor>? independentFloors = null)
     {
         lock (_gate)
         {
@@ -25,6 +26,20 @@ public sealed partial class DurableMailboxCapabilityReplayJournal
             else if (_document.AcceptedTimeHighWatermarkUnixSeconds != 0 || outcomes.Count != 0)
                 throw new InvalidDataException("Mailbox recovery replay document is missing.");
             var actual = Load();
+            if (independentFloors is not null)
+                foreach (var pair in independentFloors)
+                {
+                    token.ThrowIfCancellationRequested();
+                    var floor = pair.Value;
+                    if (!actual.Records.TryGetValue(pair.Key, out var record) || record.HighestCounter < floor.HighestCounter ||
+                        record.HighestCounter == floor.HighestCounter &&
+                        (record.ClaimDigest != floor.ClaimDigest || floor.CanonicalOutcomeDigest.Length != 0 &&
+                         (record.Status != nameof(MailboxCapabilityReplayRecordStatus.Completed) ||
+                          Convert.ToHexString(Convert.FromBase64String(record.CanonicalOutcome)).ToLowerInvariant() != floor.CanonicalOutcomeDigest)) ||
+                        record.HighestCounter > floor.HighestCounter &&
+                        record.Status != nameof(MailboxCapabilityReplayRecordStatus.Pending))
+                        throw new InvalidDataException("Mailbox replay has lost or rolled back independent current custody.");
+                }
             if (actual.AcceptedTimeHighWatermarkUnixSeconds != _document.AcceptedTimeHighWatermarkUnixSeconds ||
                 actual.Records.Count != _document.Records.Count)
                 throw new InvalidDataException("Mailbox recovery replay differs from its native custody.");

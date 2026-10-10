@@ -283,27 +283,45 @@ public sealed class DurableMailboxCapabilityReplayJournalTests : IDisposable
     [Fact]
     public void ConcurrentAcceptedTimes_NeverMoveDurableFloorBackwardOrLoseClaims()
     {
-        using var journal = new DurableMailboxCapabilityReplayJournal(
-            _directory,
-            new DurableMailboxCapabilityReplayJournalOptions
+        var durability = new ObservedReplayReplacement();
+        var options = new DurableMailboxCapabilityReplayJournalOptions { MaximumScopes = 100 };
+        using (var journal = new DurableMailboxCapabilityReplayJournal(
+                   _directory, options, durability: durability))
+        {
+            try
             {
-                MaximumScopes = 100
-            });
+                Parallel.For(0, 51, index =>
+                {
+                    var value = checked((byte)(0x80 + index));
+                    _ = journal.EvaluateAndReserve(
+                        Claim(counter: 1, claimByte: value, serialByte: value),
+                        nowUnixSeconds: checked((ulong)(2_000 + index)),
+                        retainUntilUnixSeconds: ulong.MaxValue);
+                });
+            }
+            catch (AggregateException error)
+            {
+                // Preserve failure and its original stack. Only numeric error codes
+                // and file attributes are added; never paths, claims or payloads.
+                throw new AggregateException(
+                    "Concurrent replay native replacement diagnostics: "
+                    + string.Join(";", durability.Failures), error);
+            }
 
-        Parallel.For(0, 51, index =>
+            Assert.Equal(51, journal.Diagnostics.ScopeCount);
+            Assert.Equal(2_050UL, journal.Diagnostics.AcceptedTimeHighWatermarkUnixSeconds);
+        }
+
+        // In-memory diagnostics alone do not prove either floor or claim durability.
+        using var reopened = new DurableMailboxCapabilityReplayJournal(_directory, options);
+        Assert.Equal(51, reopened.Diagnostics.ScopeCount);
+        Assert.Equal(2_050UL, reopened.Diagnostics.AcceptedTimeHighWatermarkUnixSeconds);
+        for (var index = 0; index < 51; index++)
         {
             var value = checked((byte)(0x80 + index));
-            _ = journal.EvaluateAndReserve(
-                Claim(
-                    counter: 1,
-                    claimByte: value,
-                    serialByte: value),
-                nowUnixSeconds: checked((ulong)(2_000 + index)),
-                retainUntilUnixSeconds: ulong.MaxValue);
-        });
-
-        Assert.Equal(51, journal.Diagnostics.ScopeCount);
-        Assert.Equal(2_050UL, journal.Diagnostics.AcceptedTimeHighWatermarkUnixSeconds);
+            Assert.Equal(MailboxCapabilityAtomicReplayState.PendingSame,
+                Evaluate(reopened, Claim(1, value, value), nowUnixSeconds: 2_050).State);
+        }
     }
 
     [Fact]
@@ -391,6 +409,38 @@ public sealed class DurableMailboxCapabilityReplayJournalTests : IDisposable
 
         public void FlushParentDirectory(string deletedPath) =>
             throw new IOException("simulated durability barrier crash");
+    }
+
+    private sealed class ObservedReplayReplacement : IMailboxDurabilityBarrier
+    {
+        private readonly MailboxDurabilityBarrier _native = new();
+        internal List<string> Failures { get; } = [];
+
+        public void FlushFileAndParentDirectory(string path) =>
+            _native.FlushFileAndParentDirectory(path);
+
+        public void FlushParentDirectory(string path) => _native.FlushParentDirectory(path);
+
+        public void ReplaceFile(string temporaryPath, string finalPath)
+        {
+            try { _native.ReplaceFile(temporaryPath, finalPath); }
+            catch (System.ComponentModel.Win32Exception error)
+            {
+                // The journal's gate serializes replacement. Observation neither
+                // retries nor repairs permissions, and the original error rethrows.
+                Failures.Add($"code={error.NativeErrorCode},source={Attributes(temporaryPath)},destination={Attributes(finalPath)}");
+                throw;
+            }
+        }
+
+        private static string Attributes(string path)
+        {
+            try { return ((int)File.GetAttributes(path)).ToString(System.Globalization.CultureInfo.InvariantCulture); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            {
+                return $"unavailable:{error.HResult}";
+            }
+        }
     }
 
     private sealed class FixedClock(ulong nowUnixSeconds) : IClock

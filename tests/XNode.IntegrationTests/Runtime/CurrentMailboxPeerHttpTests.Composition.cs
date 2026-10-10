@@ -139,6 +139,18 @@ public sealed partial class CurrentMailboxPeerHttpTests
                     NextExpiresAtUnixSeconds = 0 }, CapabilityPolicy = new() { CurrentBucket = 0, MinimumGeneration = 1 }
             });
             var store = Present(MailboxAuthenticatedRequestTranscript.ForStore(body), deposit);
+            if (configuredProgram)
+            {
+                // The second member is a genuine selected replica with a valid
+                // descriptor and TLS pin, but is not the grant's Store writer.
+                // Send through the public entry, not a direct dispatcher call.
+                var before = owners.Select(owner => owner.NativeMailboxDigest()).ToArray();
+                await configured!.DispatchOnionAsync(owners[1], owners, OnionOperation.Store, store,
+                    replicas[0].NodeId, replicas[1].NodeId, expectFailure: true);
+                for (var index = 0; index < owners.Count; index++)
+                    Assert.Equal(before[index], owners[index].NativeMailboxDigest());
+                Assert.Equal(rejectedRequests, hosts.Sum(h => h.Requests));
+            }
             var stored = await Dispatch(owners[0], OnionOperation.Store, store);
             var quorum = MailboxReceiptV3Codec.DecodeDurableQuorum(stored);
             Assert.False(quorum.FirstReplica.ReplicaId.Span.SequenceEqual(quorum.SecondReplica.ReplicaId.Span));
@@ -203,13 +215,36 @@ public sealed partial class CurrentMailboxPeerHttpTests
         private readonly Dictionary<string, string?>? programConfiguration;
         internal IServiceProvider Services { get; private set; }
         internal int Port { get; }
+        internal byte[] NativeMailboxDigest()
+        {
+            using var digest = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            foreach (var directory in Directory.GetDirectories(node.DataDirectory)
+                .Where(path => Path.GetFileName(path).StartsWith("mailbox-", StringComparison.Ordinal)).Order(StringComparer.Ordinal))
+            {
+                digest.AppendData(System.Text.Encoding.UTF8.GetBytes(Path.GetFileName(directory) + "\0"));
+                foreach (var file in Directory.GetFiles(directory, "*", SearchOption.AllDirectories).Order(StringComparer.Ordinal))
+                {
+                    digest.AppendData(System.Text.Encoding.UTF8.GetBytes(Path.GetRelativePath(node.DataDirectory, file) + "\0"));
+                    if (Path.GetFileName(file) is ".replay.lock" or ".outcomes.lock" or ".adapter.lock" or ".lease")
+                    {
+                        // Actual owners deliberately deny a second open. Their
+                        // empty lock inventory is checked, never bypassed.
+                        Assert.Equal(0, new FileInfo(file).Length);
+                        digest.AppendData(SHA256.HashData(Array.Empty<byte>()));
+                    }
+                    else digest.AppendData(SHA256.HashData(File.ReadAllBytes(file)));
+                }
+            }
+            return digest.GetHashAndReset();
+        }
         internal RegisteredPeer(DeepIdV2PublicationAuthorityFixture signed, byte[] id, int port,
             ConfiguredAuthority? configured = null, Host? http = null, IReadOnlyList<Host>? hosts = null)
         {
             this.signed = signed; Port = port;
             this.configured = configured; configuredHost = http;
             node = new() { DataDirectory = Path.Combine(root, "data"), RouterId = Convert.ToHexString(id),
-                Ed25519PrivateKey = Convert.ToHexString(signed.Node(id).Seed), PrivacyPeerH2ListenUrl = "https://127.0.0.1:" + port };
+                Ed25519PrivateKey = Convert.ToHexString(signed.Node(id).Seed), PrivacyPeerH2ListenUrl = "https://127.0.0.1:" +
+                    (configured is null ? port : http!.configuredPorts![3]) };
             var keys = Path.Combine(root, "keys");
             var security = new MailboxStorageSecurity(); security.SecureDirectory(keys);
             var provisioning = new ServiceCollection();
@@ -259,6 +294,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
         {
             if (ownedServices is not null) { await ownedServices.DisposeAsync(); ownedServices = null; }
             Services = configuredHost!.StartConfiguredProgram(programConfiguration!, configured!);
+            await configuredHost.StartConfiguredIngressAsync();
             await AssertConfiguredReadyAsync();
         }
         internal async Task AssertConfiguredReadyAsync()

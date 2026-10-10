@@ -9,9 +9,29 @@ not a fully enabled current service graph or physical E2E.
 
 ## Local contract
 
-The existing schema-6 `operations.json` remains the only complete Store/ACK
-intent, quorum and allocator document. Its existing size/capacity validation is
-unchanged. No peer bytes, mailbox identifiers or cursor table are duplicated.
+The schema-7 `operations.json` remains the only complete Store/ACK intent,
+quorum and allocator document. Schema6 and earlier reject without migration.
+No peer bytes, mailbox identifiers or cursor table are duplicated. The same
+independently anchored document now also contains required `clientReplayFloors`:
+existing protocol replay-scope hash -> highest counter, exact claim digest and
+optional completed canonical-outcome digest. Each digest is lowercase SHA-256
+hex; counters are nonzero. Floor capacity is separately bounded by the existing
+operation entry limit; exhaustion is backpressure, not eviction.
+
+After ordinary current holder/body/grant verification reserves native Pending,
+the owner protects the floor before any operation effect. A completed outcome
+digest is protected before a page/receipt/terminal response can be released.
+Native records may be ahead of a protected floor only as Pending, representing
+the crash before floor commit; readiness never adopts that ahead state. A
+normal authenticated exact retry can finish its existing transition. The
+independent floor never authorizes reminting a missing exact peer intent. A
+failure before the first intent is anchored can remain Pending and deny retry;
+ordinary readiness is not proof that this request can settle successfully. An older
+counter, changed claim, missing required scope or rollback of an anchored
+completed result fails closed, even after simultaneous replay/outcome loss.
+Floors are not collected by readers or current working-set compaction. The
+later lifecycle/retirement stage must retain their independent guarantees;
+this change does not activate neutral expiry collection for current owners.
 
 `FileMailboxOperationCustody` uses the existing ASP.NET Core Data Protection
 provider. Its independent directory must not overlap node data or traverse
@@ -56,8 +76,9 @@ every non-lock entry, not just `operations.json` and `.tmp`. The same command
 checks actual empty blob/mutation/replay/outcome owners before network acquisition
 and repeats the refusal before role writes. Reader construction preserves
 interrupted native files rather than erasing evidence of prior custody.
-These denial-only checks do not independently anchor the other native stores
-against coordinated cold loss/rollback. Actual writers recheck; there is no multi-file atomic
+These enrollment checks do not independently anchor every peer mutation/blob
+store against coordinated cold loss/rollback. Client replay now joins the
+protected schema7 floors described above. Actual writers recheck; there is no multi-file atomic
 commit, restart enrollment or repair fallback. See the single operator procedure
 in [operator.md](operator.md#current-mailbox-host-composition-candidate).
 

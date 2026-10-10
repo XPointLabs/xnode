@@ -54,7 +54,7 @@ public sealed partial class MailboxClientOperationLedger
             custody.RequireNewScope(_path);
             RequireAbsentCurrentDocument(token);
             var empty = new MailboxClientLedgerDocument(SchemaVersion, 0, 0,
-                new(StringComparer.Ordinal), new(StringComparer.Ordinal), new(StringComparer.Ordinal));
+                new(StringComparer.Ordinal), new(StringComparer.Ordinal), new(StringComparer.Ordinal), new(StringComparer.Ordinal));
             // The actual empty document precedes protected enrollment. Readers
             // cannot retry interrupted provisioning or install a fresh root.
             await SaveAsync(empty, token, lease, enrolling: true).ConfigureAwait(false);
@@ -65,7 +65,8 @@ public sealed partial class MailboxClientOperationLedger
     }
 
     internal async Task InitializeCurrentAsync(ReadOnlyMemory<byte> localNode,
-        VerifiedMailboxHostAuthorityV2 host, MailboxCurrentOperationLease lease, CancellationToken token)
+        VerifiedMailboxHostAuthorityV2 host, MailboxCurrentOperationLease lease, CancellationToken token,
+        Action<IReadOnlyDictionary<string, MailboxCurrentClientReplayFloor>, CancellationToken>? validateReplay = null)
     {
         ThrowIfDisposed(); lease.RequireActive();
         (_currentCustody ?? throw new InvalidOperationException("Current operation custody is required."))
@@ -73,7 +74,8 @@ public sealed partial class MailboxClientOperationLedger
         await _gate.WaitAsync(token).ConfigureAwait(false);
         try
         {
-            _ = await LoadAsync(token, lease).ConfigureAwait(false);
+            var document = await LoadAsync(token, lease).ConfigureAwait(false);
+            validateReplay?.Invoke(document.ClientReplayFloors, token);
             _ = await lease.CheckAsync(token).ConfigureAwait(false);
         }
         finally { _gate.Release(); }

@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using Deep.Protocol.AccountDirectoryV1;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
+using Deep.Protocol.DeepExtension.ManagedIngress;
 using Deep.Protocol.DeepExtension.PrivacyRouting;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -38,6 +39,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
         private DurableOnionEntropyUniquenessLedger? entropy;
         private FileOnionKeyAgreementVault? vault;
         private PrivacyRoutingCodec? client;
+        private bool checkedIngressRefusals;
         internal int ProofRequests => Volatile.Read(ref proofRequests);
         internal string Origin { get; private set; } = "";
 
@@ -111,7 +113,8 @@ public sealed partial class CurrentMailboxPeerHttpTests
         }
 
         internal async Task<byte[]> DispatchOnionAsync(RegisteredPeer exit, IReadOnlyList<RegisteredPeer> owners,
-            OnionOperation operation, byte[] exact, ReadOnlyMemory<byte> firstReplica, ReadOnlyMemory<byte> secondReplica)
+            OnionOperation operation, byte[] exact, ReadOnlyMemory<byte> firstReplica, ReadOnlyMemory<byte> secondReplica,
+            bool expectFailure = false)
         {
             if (client is null)
             {
@@ -134,11 +137,55 @@ public sealed partial class CurrentMailboxPeerHttpTests
             using var built = await client.BuildAsync(path, request, default);
             var entry = owners.Single(owner => owner.Services.GetRequiredService<CurrentMailboxAdmission>()
                 .LocalNodeId.Span.SequenceEqual(forward[0].NodeId.Span));
-            // Entry is called through its actual runtime; both forwarding hops
-            // use Program's real descriptor-pinned HTTPS client/endpoints.
-            var result = await entry.Services.GetRequiredService<PrivacyRoutingRuntime>().ProcessAsync(built.Frame, default);
-            Assert.Equal(PrivacyRuntimeOutcome.Completed, result.Outcome);
-            var opened = await client.OpenResponseAsync(result.OpaqueReply, built.ReplyContext, default);
+            var selectedEntry = OnionEntryTransportFactory.Create(path);
+            selectedEntry.EnsureCurrent();
+            Assert.Equal(entry.Port, selectedEntry.Peer.Port);
+            using var transport = new HttpClient(HttpPrivacyPeerClient.CreatePinnedHandler(selectedEntry.Peer));
+            if (!checkedIngressRefusals)
+            {
+                var otherPath = OnionPathContextFactory.CreateMailbox(network, operation, firstReplica, secondReplica,
+                    forward[1].NodeId, forward[0].NodeId, exitId);
+                await AssertConfiguredIngressRefusalsAsync(transport, selectedEntry.Peer.Port, built.Frame,
+                    OnionEntryTransportFactory.Create(otherPath).Peer, owners);
+                checkedIngressRefusals = true;
+            }
+            using var message = new HttpRequestMessage(HttpMethod.Post,
+                "https://127.0.0.1:" + selectedEntry.Peer.Port + ManagedIngressH2Contract.FramePath)
+            {
+                Version = HttpVersion.Version20, VersionPolicy = HttpVersionPolicy.RequestVersionExact,
+                Content = new ByteArrayContent(built.Frame.ToArray())
+            };
+            message.Content.Headers.ContentType = new(ManagedIngressH2Contract.OpaqueMediaType);
+            message.Headers.Accept.Add(new(ManagedIngressH2Contract.OpaqueMediaType));
+            using var result = await transport.SendAsync(message);
+            var opaque = await result.Content.ReadAsByteArrayAsync();
+            var metadata = new ManagedIngressResponseMetadata((int)result.StatusCode, result.Version,
+                result.Content.Headers.ContentType?.ToString(), result.Content.Headers.ContentEncoding.SingleOrDefault(),
+                result.Content.Headers.ContentLength ?? -1,
+                result.Headers.SelectMany(header => header.Value.Select(value => new ManagedIngressHeader(header.Key.ToLowerInvariant(), value)))
+                    .ToArray());
+            if (expectFailure)
+            {
+                // Forwarding already happened at the entry/core. The client
+                // must retain the exact intent, not infer absence of effects
+                // from an exit's admission refusal or attempt a replacement.
+                Assert.Equal(HttpStatusCode.GatewayTimeout, result.StatusCode);
+                Assert.Equal(ManagedIngressTransportResult.OutcomeUnknown,
+                    ManagedIngressH2Contract.ClassifyFrameResponse(metadata, opaque));
+                var error = ManagedIngressH2Contract.ClassifyErrorResponse(metadata, opaque);
+                Assert.Equal(ManagedIngressTransportResult.OutcomeUnknown, error.Result);
+                Assert.NotNull(error.Error);
+                Assert.Equal(ManagedIngressErrorClass.UpstreamOutcomeUnknown, error.Error.ErrorClass);
+                return [];
+            }
+            Assert.True(ManagedIngressH2Contract.ClassifyFrameResponse(metadata, opaque) ==
+                ManagedIngressTransportResult.TransitCompleted,
+                $"MHT response: status={metadata.StatusCode}; HTTP={metadata.HttpVersion}; " +
+                $"declared={metadata.BodyLength}; received={opaque.Length}; " +
+                $"opaqueType={result.Content.Headers.ContentType?.MediaType == ManagedIngressH2Contract.OpaqueMediaType}; " +
+                $"encoded={!string.IsNullOrEmpty(metadata.ContentEncoding)}; " +
+                $"supplementalNames={string.Join(',', metadata.Headers.Select(header => header.Name))}");
+            var opened = await client.OpenResponseAsync(opaque, built.ReplyContext, default);
             Assert.Equal(OnionTerminalResultKind.Success, opened.Result.Kind);
             Assert.Null(opened.Result.FailureCode);
             return opened.Result.Body.ToArray();
@@ -164,6 +211,8 @@ public sealed partial class CurrentMailboxPeerHttpTests
                 ["Node:ApiListenUrl"] = "http://127.0.0.1:" + host.ApiPort,
                 ["Node:PeerRpcListenUrl"] = "http://127.0.0.1:" + host.configuredPorts![1],
                 ["Node:PrivacyPeerH2ListenUrl"] = node.PrivacyPeerH2ListenUrl,
+                ["Node:ManagedIngressH2ListenUrl"] = "https://127.0.0.1:" + host.configuredPorts![4],
+                ["Node:ManagedIngressTrustedProxyAddresses:0"] = "127.0.0.1",
                 ["Kestrel:Certificates:Default:Path"] = host.certificatePath,
                 ["Vless:Enabled"] = "false", ["RegistryHeartbeat:Enabled"] = "false",
                 ["Mailbox:Enabled"] = "true",
@@ -233,7 +282,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
         internal static Host ReserveConfiguredProgram()
         {
             var host = CreateCertificate(forProgram: true);
-            var reservations = Enumerable.Range(0, 3).Select(_ => new TcpListener(IPAddress.Loopback, 0)).ToArray();
+            var reservations = Enumerable.Range(0, 5).Select(_ => new TcpListener(IPAddress.Loopback, 0)).ToArray();
             host.configuredReservations = reservations;
             try
             {
@@ -244,10 +293,12 @@ public sealed partial class CurrentMailboxPeerHttpTests
             catch { host.ReleaseConfiguredReservations(); host.certificate.Dispose(); host.RemoveTestCertificate(); throw; }
         }
 
-        private void ReleaseConfiguredReservations()
+        private void ReleaseConfiguredReservations(bool privateOnly = false)
         {
             if (configuredReservations is null) return;
-            foreach (var listener in configuredReservations) listener.Stop();
+            for (var i = 0; i < configuredReservations.Length; i++)
+                if (!privateOnly || i != 2) configuredReservations[i].Stop();
+            if (privateOnly) return;
             configuredReservations = null;
         }
 
@@ -256,11 +307,12 @@ public sealed partial class CurrentMailboxPeerHttpTests
             program = new ConfiguredProgramFactory(this, input, authority);
             // Keep every host's ports reserved throughout the signed ceremony;
             // releasing each during allocation permits Windows to reuse another host's port.
-            ReleaseConfiguredReservations();
+            ReleaseConfiguredReservations(privateOnly: true);
             program.UseKestrel(); program.StartServer(); return program.Services;
         }
         internal async Task CloseConfiguredProgramAsync()
         {
+            await CloseConfiguredIngressAsync();
             if (program is not null) { await program.DisposeAsync(); program = null; }
         }
     }

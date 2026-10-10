@@ -66,7 +66,8 @@ internal sealed partial class CurrentMailboxAdmission(
                     throw new CurrentMailboxHolderRateLimitException();
                 if (operationLedger is not null)
                 {
-                    await operationLedger.InitializeCurrentAsync(node, scope.Host, scope.Lease, ct).ConfigureAwait(false);
+                    await operationLedger.InitializeCurrentAsync(node, scope.Host, scope.Lease, ct,
+                        runtime.ValidateCurrentNativeRecovery).ConfigureAwait(false);
                     if (operation == MailboxAuthenticatedOperation.Store && storeMutations is not null)
                     {
                         await operationLedger.EnsureCurrentStorePrefixAsync(
@@ -86,15 +87,26 @@ internal sealed partial class CurrentMailboxAdmission(
                 };
                 reservation = runtime.VerifyCurrent(owned, policy, upper,
                     new CheckedRevocation(grant, scope.Lease.RequireActive), scope.Lease.RequireActive);
+                if (operationLedger is not null)
+                    await operationLedger.RecordCurrentClientReplayAsync(reservation.Verified.Capability.ReplayClaim,
+                        null, scope.Lease, ct).ConfigureAwait(false);
                 async ValueTask<ulong> CheckRequestAsync(CancellationToken checkToken)
                 {
                     var now = await scope.Lease.CheckAsync(checkToken).ConfigureAwait(false);
                     requireSigningCustody?.Invoke(scope);
                     if (operationLedger is not null)
-                        await operationLedger.InitializeCurrentAsync(node, scope.Host, scope.Lease, checkToken).ConfigureAwait(false);
+                        await operationLedger.InitializeCurrentAsync(node, scope.Host, scope.Lease, checkToken,
+                            runtime.ValidateCurrentNativeRecovery).ConfigureAwait(false);
                     return now;
                 }
-                var request = new Request(runtime, reservation, scope, CheckRequestAsync, scope.Lease.RequireActive);
+                async ValueTask RecordCompletionAsync(ReadOnlyMemory<byte> outcome, CancellationToken completionToken)
+                {
+                    if (operationLedger is not null)
+                        await operationLedger.RecordCurrentClientReplayAsync(reservation.Verified.Capability.ReplayClaim,
+                            outcome, scope.Lease, completionToken).ConfigureAwait(false);
+                }
+                var request = new Request(runtime, reservation, scope, CheckRequestAsync, scope.Lease.RequireActive,
+                    RecordCompletionAsync);
                 await request.EnsureCurrentAsync(ct).ConfigureAwait(false);
                 var result = await action(request, ct).ConfigureAwait(false);
                 await request.EnsureCurrentAsync(ct).ConfigureAwait(false);
@@ -128,9 +140,22 @@ internal sealed partial class CurrentMailboxAdmission(
     internal ValueTask<bool> InitializeOperationsAsync(MailboxClientOperationLedger ledger, CancellationToken token = default) =>
         WithHostAsync(async (scope, ct) =>
         {
-            await ledger.InitializeCurrentAsync(node, scope.Host, scope.Lease, ct).ConfigureAwait(false);
+            await ledger.InitializeCurrentAsync(node, scope.Host, scope.Lease, ct,
+                runtime.ValidateCurrentNativeRecovery).ConfigureAwait(false);
             return true;
         }, token);
+
+    internal Task InitializeHostOperationsAsync(MailboxClientOperationLedger ledger, HostScope scope, CancellationToken token)
+    {
+        if (!ReferenceEquals(scope.Owner, this)) throw new InvalidOperationException("Recovery scope differs.");
+        return ledger.InitializeCurrentAsync(node, scope.Host, scope.Lease, token, runtime.ValidateCurrentNativeRecovery);
+    }
+
+    internal Task InitializeGrantOperationsAsync(MailboxClientOperationLedger ledger, GrantScope scope, CancellationToken token)
+    {
+        if (!ReferenceEquals(scope.Owner, this)) throw new InvalidOperationException("Operation scope differs.");
+        return ledger.InitializeCurrentAsync(node, scope.Host, scope.Lease, token, runtime.ValidateCurrentNativeRecovery);
+    }
 
     internal ValueTask<bool> EnrollNewOperationsAsync(MailboxClientOperationLedger ledger, CancellationToken token = default) =>
         WithHostAsync(async (scope, ct) =>
@@ -261,7 +286,8 @@ internal sealed partial class CurrentMailboxAdmission(
     internal sealed class Request(MailboxAuthenticatedCapabilityRuntime runtime,
         MailboxAuthenticatedRuntimeReservation reservation,
         GrantScope scope,
-        Func<CancellationToken, ValueTask<ulong>> check, Action requireActive)
+        Func<CancellationToken, ValueTask<ulong>> check, Action requireActive,
+        Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> recordCompletion)
     {
         internal GrantScope Scope { get { requireActive(); return scope; } }
         internal MailboxAuthenticatedReplayDisposition ReplayDisposition
@@ -285,6 +311,7 @@ internal sealed partial class CurrentMailboxAdmission(
         {
             await EnsureCurrentAsync(token).ConfigureAwait(false);
             var result = runtime.PersistTerminal(reservation, terminal);
+            await recordCompletion(result.CanonicalBytes, token).ConfigureAwait(false);
             await EnsureCurrentAsync(token).ConfigureAwait(false);
             return result;
         }
@@ -293,6 +320,7 @@ internal sealed partial class CurrentMailboxAdmission(
         {
             await EnsureCurrentAsync(token).ConfigureAwait(false);
             var result = runtime.PersistSuccess(reservation, exactOutcome, maximumBytes);
+            await recordCompletion(result.CanonicalBytes, token).ConfigureAwait(false);
             await EnsureCurrentAsync(token).ConfigureAwait(false);
             return result;
         }
@@ -300,6 +328,7 @@ internal sealed partial class CurrentMailboxAdmission(
         {
             await EnsureCurrentAsync(token).ConfigureAwait(false);
             var result = runtime.CompletePersistedOutcome(reservation);
+            await recordCompletion(result.CanonicalBytes, token).ConfigureAwait(false);
             await EnsureCurrentAsync(token).ConfigureAwait(false);
             return result;
         }

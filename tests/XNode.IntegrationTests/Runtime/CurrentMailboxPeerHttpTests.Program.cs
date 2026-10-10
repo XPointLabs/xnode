@@ -98,7 +98,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
         {
             app.Use(async (context, continuation) =>
             {
-                if (context.Connection.LocalPort == host.Port &&
+                if (context.Connection.LocalPort == (host.configuredPorts is null ? host.Port : host.configuredPorts[3]) &&
                     (context.Request.Path.Equals(MailboxWireHttpContract.PeerStoreRoute) ||
                      context.Request.Path.Equals(MailboxWireHttpContract.PeerTombstoneRoute)))
                     Interlocked.Increment(ref host.Requests);
