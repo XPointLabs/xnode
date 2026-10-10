@@ -18,4 +18,25 @@ internal static class MailboxNativeRecovery
         if ((File.GetAttributes(path) & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0)
             throw new InvalidDataException("Mailbox recovery requires a regular native file.");
     }
+
+    internal static void RequireNewDirectory(string path, string? ownerLock, CancellationToken token)
+    {
+        // Refusal only, including links in ancestors. A new blob owner need
+        // not have created its directory yet; absence is not an I/O denial.
+        for (string? ancestor = path; ancestor is not null; ancestor = Path.GetDirectoryName(ancestor))
+        {
+            try { RequireDirectory(ancestor, token); }
+            catch (FileNotFoundException) { }
+            catch (DirectoryNotFoundException) { }
+        }
+        try { RequireDirectory(path, token); }
+        catch (FileNotFoundException) { return; }
+        catch (DirectoryNotFoundException) { return; }
+        foreach (var entry in Directory.EnumerateFileSystemEntries(path))
+        {
+            RequireFile(entry, token);
+            if (ownerLock is null || Path.GetFileName(entry) != ownerLock || new FileInfo(entry).Length != 0)
+                throw new InvalidDataException("New mailbox enrollment cannot adopt existing native custody.");
+        }
+    }
 }

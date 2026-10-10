@@ -4,6 +4,17 @@ namespace XNode.Core.Mailbox.Client;
 
 public sealed partial class DurableMailboxCapabilityReplayJournal
 {
+    internal void ValidateNewNativeScope(CancellationToken token)
+    {
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            if (_document.AcceptedTimeHighWatermarkUnixSeconds != 0 || _document.Records.Count != 0)
+                throw new InvalidDataException("New mailbox enrollment cannot adopt native client replay.");
+            MailboxNativeRecovery.RequireNewDirectory(_directory, ".replay.lock", token);
+        }
+    }
+
     internal void ValidateNativeRecovery(IReadOnlyDictionary<string, string> outcomes, CancellationToken token)
     {
         lock (_gate)

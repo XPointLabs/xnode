@@ -207,6 +207,30 @@ public sealed class CurrentMailboxHostCompositionTests
     [InlineData("interrupted-operation")]
     [InlineData("interrupted-custody")]
     [InlineData("unknown-custody")]
+    [InlineData("native-blob-tmp")]
+    [InlineData("native-blob-deleted")]
+    [InlineData("native-blob-unknown")]
+    [InlineData("native-blob-directory")]
+    [InlineData("native-mutation-tmp")]
+    [InlineData("native-mutation-deleted")]
+    [InlineData("native-mutation-unknown")]
+    [InlineData("native-mutation-directory")]
+    [InlineData("native-peer-tmp")]
+    [InlineData("native-peer-deleted")]
+    [InlineData("native-peer-unknown")]
+    [InlineData("native-peer-directory")]
+    [InlineData("native-client-tmp")]
+    [InlineData("native-client-deleted")]
+    [InlineData("native-client-unknown")]
+    [InlineData("native-client-directory")]
+    [InlineData("native-outcome-tmp")]
+    [InlineData("native-outcome-deleted")]
+    [InlineData("native-outcome-unknown")]
+    [InlineData("native-outcome-directory")]
+    [InlineData("native-operation-tmp")]
+    [InlineData("native-operation-deleted")]
+    [InlineData("native-operation-unknown")]
+    [InlineData("native-operation-directory")]
     [InlineData("signing-key")]
     [InlineData("cancelled")]
     public async Task ActualFactoryOwnsBothRolesAndOperationsAcrossColdReopenWithoutReaderEnrollment(string scenario)
@@ -250,9 +274,40 @@ public sealed class CurrentMailboxHostCompositionTests
             if (scenario == "signing-key") node.Ed25519PrivateKey = Convert.ToHexString(Enumerable.Repeat((byte)0x77, 32).ToArray());
             var keyHashes = Directory.GetFiles(options.DataProtectionKeysDirectory).ToDictionary(path => Path.GetFileName(path)!,
                 path => SHA256.HashData(File.ReadAllBytes(path)));
+            string? nativeLeftover = null;
+            var nativeDirectory = false;
+            if (scenario.StartsWith("native-", StringComparison.Ordinal))
+            {
+                var parts = scenario.Split('-');
+                var store = parts[1] switch
+                {
+                    "blob" => mailbox.DirectoryName,
+                    "mutation" => mailbox.PeerMutationDirectoryName,
+                    "peer" => mailbox.PeerReplayDirectoryName,
+                    "client" => new DurableMailboxCapabilityReplayJournalOptions().DirectoryName,
+                    "outcome" => new MailboxClientCanonicalOutcomeStoreOptions().DirectoryName,
+                    "operation" => CurrentMailboxHostComposition.OperationDirectory,
+                    _ => throw new InvalidOperationException("Unknown native fixture store.")
+                };
+                var directory = Path.Combine(node.DataDirectory, store);
+                security.SecureDirectory(directory);
+                nativeLeftover = Path.Combine(directory, "interrupted." + parts[2]);
+                nativeDirectory = parts[2] == "directory";
+                if (nativeDirectory) security.SecureDirectory(nativeLeftover);
+                else
+                {
+                    File.WriteAllBytes(nativeLeftover, [0x55]);
+                    security.SecureFile(nativeLeftover);
+                }
+            }
             await using (var first = Open())
             {
                 var receiver = first.GetRequiredService<CurrentMailboxReplicaReceiver>();
+                if (nativeLeftover is not null)
+                {
+                    if (nativeDirectory) Assert.True(Directory.Exists(nativeLeftover));
+                    else Assert.Equal(new byte[] { 0x55 }, File.ReadAllBytes(nativeLeftover));
+                }
                 first.GetRequiredService<CurrentMailboxReplicationCoordinator>().RequireReceiver(receiver);
                 Assert.NotNull(await Record.ExceptionAsync(() => receiver.InitializeHostAsync().AsTask()));
                 Assert.Empty(Directory.GetFiles(options.IndependentCustodyDirectory, "enrollment.bin", SearchOption.AllDirectories));
@@ -295,6 +350,21 @@ public sealed class CurrentMailboxHostCompositionTests
                     Assert.Equal(scenario == "interrupted-custody" ? 1 : 0,
                         Directory.GetFiles(options.IndependentCustodyDirectory, "checkpoint.bin", SearchOption.AllDirectories).Length);
                     if (interrupted is not null) Assert.Equal(new byte[] { 0x55 }, File.ReadAllBytes(interrupted));
+                    if (nativeLeftover is not null)
+                    {
+                        if (nativeDirectory) Assert.True(Directory.Exists(nativeLeftover));
+                        else Assert.Equal(new byte[] { 0x55 }, File.ReadAllBytes(nativeLeftover));
+                        Assert.False(File.Exists(Path.Combine(node.DataDirectory,
+                            CurrentMailboxHostComposition.OperationDirectory, "operations.json")));
+                        Assert.NotNull(await Record.ExceptionAsync(() => receiver.EnrollNewHostAsync(deposit, retrieve).AsTask()));
+                        // No configured proof source is registered here. The
+                        // actual command must reject native leftovers before
+                        // resolving/acquiring either network provider.
+                        Assert.IsType<InvalidDataException>(await Record.ExceptionAsync(() =>
+                            CurrentMailboxEnrollmentCommand.EnrollConfiguredAsync(first, deposit, retrieve, CancellationToken.None).AsTask()));
+                        Assert.Empty(Directory.GetFiles(options.IndependentCustodyDirectory, "enrollment.bin", SearchOption.AllDirectories));
+                        Assert.Empty(Directory.GetFiles(options.IndependentCustodyDirectory, "floor.bin", SearchOption.AllDirectories));
+                    }
                     Assert.NotNull(await Record.ExceptionAsync(() => receiver.InitializeHostAsync().AsTask()));
                     Assert.Equal(keyHashes.Count, Directory.GetFiles(options.DataProtectionKeysDirectory).Length);
                     foreach (var key in Directory.GetFiles(options.DataProtectionKeysDirectory))

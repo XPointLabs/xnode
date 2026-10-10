@@ -142,7 +142,7 @@ public sealed partial class DurableMailboxCapabilityReplayJournal
                     "Mailbox replay journal exceeds its configured capacity.");
             }
 
-            DeleteAbandonedTemporaryFiles();
+            // Reader construction is not authority to discard interrupted custody.
         }
         catch
         {
@@ -852,14 +852,6 @@ public sealed partial class DurableMailboxCapabilityReplayJournal
 
         decoded = Convert.FromHexString(value);
         return decoded.AsSpan().IndexOfAnyExcept((byte)0) >= 0;
-    }
-
-    private void DeleteAbandonedTemporaryFiles()
-    {
-        foreach (var temporary in Directory.EnumerateFiles(_directory, "*.tmp"))
-        {
-            File.Delete(temporary);
-        }
     }
 
     private void ThrowIfDisposed()

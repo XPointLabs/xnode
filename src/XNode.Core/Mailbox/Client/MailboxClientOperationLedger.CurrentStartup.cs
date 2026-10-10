@@ -4,6 +4,21 @@ namespace XNode.Core.Mailbox.Client;
 
 public sealed partial class MailboxClientOperationLedger
 {
+    // Denial-only provisioning check, never a substitute for current host/time
+    // validation or protected enrollment of the actual operation document.
+    internal async Task ValidateNewNativeScopeAsync(CancellationToken token)
+    {
+        ThrowIfDisposed();
+        var custody = _currentCustody ?? throw new InvalidOperationException("Current operation custody is required.");
+        await _gate.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            custody.RequireNewScope(_path);
+            RequireAbsentCurrentDocument(token);
+        }
+        finally { _gate.Release(); }
+    }
+
     internal async Task ValidateNewCurrentScopeAsync(ReadOnlyMemory<byte> localNode,
         VerifiedMailboxHostAuthorityV2 host, CancellationToken token)
     {
@@ -15,16 +30,15 @@ public sealed partial class MailboxClientOperationLedger
         {
             await host.EnsureCurrentAsync(token).ConfigureAwait(false);
             custody.RequireNewScope(_path);
-            RequireAbsentCurrentDocument();
+            RequireAbsentCurrentDocument(token);
             token.ThrowIfCancellationRequested();
         }
         finally { _gate.Release(); }
     }
 
-    private void RequireAbsentCurrentDocument()
+    private void RequireAbsentCurrentDocument(CancellationToken token)
     {
-        if (File.Exists(_path) || Directory.Exists(_path) || Directory.EnumerateFiles(_directory, "*.tmp").Any())
-            throw new InvalidDataException("Only a genuinely new operation scope can be explicitly enrolled.");
+        MailboxNativeRecovery.RequireNewDirectory(_directory, ".adapter.lock", token);
     }
 
     internal async Task EnrollNewCurrentAsync(ReadOnlyMemory<byte> localNode,
@@ -38,7 +52,7 @@ public sealed partial class MailboxClientOperationLedger
         {
             _ = await lease.CheckAsync(token).ConfigureAwait(false);
             custody.RequireNewScope(_path);
-            RequireAbsentCurrentDocument();
+            RequireAbsentCurrentDocument(token);
             var empty = new MailboxClientLedgerDocument(SchemaVersion, 0, 0,
                 new(StringComparer.Ordinal), new(StringComparer.Ordinal), new(StringComparer.Ordinal));
             // The actual empty document precedes protected enrollment. Readers

@@ -84,7 +84,7 @@ public sealed partial class MailboxPeerMutationStore : IDisposable
         try
         {
             _security.SecureFile(leasePath);
-            PurgeTemporaryFiles();
+            // Opening a reader cannot erase interrupted native custody.
             LoadAndValidateIndex();
         }
         catch
@@ -532,19 +532,6 @@ public sealed partial class MailboxPeerMutationStore : IDisposable
                 // failure. Reflect the actual file even when temp cleanup fails.
                 if (File.Exists(finalPath)) IndexForRetrieve(finalPath, Read(finalPath));
             }
-        }
-    }
-
-    private void PurgeTemporaryFiles()
-    {
-        foreach (var path in Directory.EnumerateFiles(_directory, "*.tmp"))
-        {
-            File.Delete(path);
-        }
-
-        foreach (var path in Directory.EnumerateFiles(_directory, "*.deleted"))
-        {
-            File.Delete(path);
         }
     }
 

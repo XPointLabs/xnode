@@ -5,6 +5,20 @@ namespace XNode.Core.Mailbox;
 
 public sealed partial class MailboxPeerMutationStore
 {
+    internal async Task ValidateNewNativeScopeAsync(CancellationToken token)
+    {
+        await _gate.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            if (_recordCount != 0 || _retrievePaths.Count != 0 || _retrieveIndex.Count != 0 || _collectionQueue.Count != 0)
+                throw new InvalidDataException("New mailbox enrollment cannot adopt native mutations.");
+            MailboxNativeRecovery.RequireNewDirectory(_directory, ".lease", token);
+            await _blobStore.ValidateNewNativeScopeAsync(token).ConfigureAwait(false);
+        }
+        finally { _gate.Release(); }
+    }
+
     internal async Task ValidateCurrentRecoveryAsync(MailboxCurrentOperationLease lease, CancellationToken token)
     {
         await _gate.WaitAsync(token).ConfigureAwait(false);

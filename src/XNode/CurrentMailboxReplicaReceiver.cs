@@ -28,6 +28,17 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
         ReadOnlyMemory<byte> retrieveInitialSnapshot, CancellationToken token = default) =>
         admission.EnrollNewHostAsync(this, depositInitialSnapshot, retrieveInitialSnapshot, token);
 
+    internal async ValueTask ValidateNewNativeScopeAsync(CurrentMailboxAdmission owner, CancellationToken token)
+    {
+        if (!ReferenceEquals(owner, admission))
+            throw new InvalidOperationException("Enrollment must use the receiver's native admission owner.");
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
+        admission.ValidateNewNativeScope(token);
+        await operationLedger.ValidateNewNativeScopeAsync(token).ConfigureAwait(false);
+        await mutations.ValidateNewNativeScopeAsync(token).ConfigureAwait(false);
+        replay.ValidateNewNativeScope(token);
+    }
+
     internal async ValueTask ValidateEnrollmentSigningCustodyAsync(CurrentMailboxAdmission owner,
         VerifiedMailboxHostAuthorityV2 host, CancellationToken token)
     {

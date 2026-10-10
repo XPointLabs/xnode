@@ -1190,7 +1190,14 @@ additional command-line switches and reset options reject.
 
 Before writing either protected role, the command validates both signed inputs,
 actual signing custody and that the operation document and its independent root
-are genuinely new. Unknown or interrupted protection rejects. Writers repeat
+are genuinely new. It also requires empty native blob, mutation, peer/client
+replay and canonical-outcome custody, apart from the actual empty owner locks.
+The native-state refusal runs before proof acquisition and is repeated after
+authority callbacks, before role enrollment. Even a valid empty replay document,
+an unknown file or an empty child directory is existing state, not new custody.
+Opening the replay/mutation/outcome readers no longer deletes `.tmp`/`.deleted`
+files: interrupted files are preserved, never adopted by enrollment.
+Unknown or interrupted protection rejects. Writers repeat
 their checks, then enroll both roles and the existing operation document and
 perform normal host recovery. There is a 30-second cooperative command budget.
 The operation is not a multi-file transaction: any failure can leave partial

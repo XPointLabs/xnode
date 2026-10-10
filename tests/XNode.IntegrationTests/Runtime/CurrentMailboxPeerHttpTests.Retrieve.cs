@@ -97,7 +97,12 @@ public sealed partial class CurrentMailboxPeerHttpTests
                     Enumerable.Repeat((byte)0x57, 32).ToArray())
             });
             var peer = PeerForClient(f, client, checked((ulong)index));
-            Assert.Equal(MailboxPeerQuorumStatus.Durable, (await f.Coordinator.StoreClientAsync(client, peer)).Status);
+            var stored = await f.Coordinator.StoreClientAsync(client, peer);
+            Assert.True(stored.Status == MailboxPeerQuorumStatus.Durable,
+                $"Initial Store={stored.Status}; item={index}; peer calls={f.PeerClient.Calls}; " +
+                $"failure={f.PeerClient.Failure}; elapsed-ms={f.PeerClient.ElapsedMilliseconds}; " +
+                $"cancelled={f.PeerClient.Cancelled}; HTTP requests={f.RemoteHost.Requests}; " +
+                $"status={f.RemoteHost.LastStatus}; bytes={f.RemoteHost.LastBytes}; {f.RemoteHost.Diagnostics}.");
         }
         var first = DecodePage((await f.Recipient.Receiver.RetrieveClientAsync(RetrieveFrame(f, maximum: 1))).ToArray(), f);
         Assert.Equal(2UL, Assert.Single(first.Items).Cursor); Assert.True(first.HasMore);
@@ -111,7 +116,12 @@ public sealed partial class CurrentMailboxPeerHttpTests
         Assert.Equal(2, f.RemoteHost.Requests);
 
         // Resume the actual original intent, then the unchanged admitted read.
-        Assert.Equal(MailboxPeerQuorumStatus.Durable, (await f.Coordinator.StoreClientAsync(pending, f.Ledger!)).Status);
+        var resumed = await f.Coordinator.StoreClientAsync(pending, f.Ledger!);
+        Assert.True(resumed.Status == MailboxPeerQuorumStatus.Durable,
+            $"Pending Store recovery={resumed.Status}; peer calls={f.PeerClient.Calls}; " +
+            $"failure={f.PeerClient.Failure}; elapsed-ms={f.PeerClient.ElapsedMilliseconds}; " +
+            $"cancelled={f.PeerClient.Cancelled}; HTTP requests={f.RemoteHost.Requests}; " +
+            $"status={f.RemoteHost.LastStatus}; bytes={f.RemoteHost.LastBytes}; {f.RemoteHost.Diagnostics}.");
         var next = DecodePage((await f.Sender.Receiver.RetrieveClientAsync(continuation)).ToArray(), f);
         Assert.Equal(3UL, Assert.Single(next.Items).Cursor); Assert.False(next.HasMore);
         var fresh = DecodePage((await f.Sender.Receiver.RetrieveClientAsync(

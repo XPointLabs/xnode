@@ -51,7 +51,13 @@ configured source and native graph, without running listeners/hosted services.
 The command preflights both signed role genesis records, the actual descriptor
 key and genuinely new operation custody before the first protected write. The
 operation owner rejects every non-lock entry in a new protected scope, including
-unknown/partial records. Actual writers recheck; there is no multi-file atomic
+unknown/partial records. Its replaceable operation directory likewise rejects
+every non-lock entry, not just `operations.json` and `.tmp`. The same command
+checks actual empty blob/mutation/replay/outcome owners before network acquisition
+and repeats the refusal before role writes. Reader construction preserves
+interrupted native files rather than erasing evidence of prior custody.
+These denial-only checks do not independently anchor the other native stores
+against coordinated cold loss/rollback. Actual writers recheck; there is no multi-file atomic
 commit, restart enrollment or repair fallback. See the single operator procedure
 in [operator.md](operator.md#current-mailbox-host-composition-candidate).
 

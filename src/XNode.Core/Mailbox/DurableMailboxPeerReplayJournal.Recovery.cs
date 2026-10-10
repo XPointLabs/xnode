@@ -2,6 +2,17 @@ namespace XNode.Core.Mailbox;
 
 public sealed partial class DurableMailboxPeerReplayJournal
 {
+    internal void ValidateNewNativeScope(CancellationToken token)
+    {
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            if (_recordCount != 0 || _partitionCounts.Count != 0 || _collectionQueue.Count != 0)
+                throw new InvalidDataException("New mailbox enrollment cannot adopt native peer replay.");
+            MailboxNativeRecovery.RequireNewDirectory(_directory, ".lease", token);
+        }
+    }
+
     internal void ValidateNativeRecovery(CancellationToken token)
     {
         lock (_gate)

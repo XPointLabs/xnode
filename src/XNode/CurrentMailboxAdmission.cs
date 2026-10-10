@@ -23,6 +23,8 @@ internal sealed partial class CurrentMailboxAdmission(
     private readonly MailboxClientVerifiedHolderLimiter holderLimiter = new();
     internal ReadOnlyMemory<byte> LocalNodeId => node.ToArray();
 
+    internal void ValidateNewNativeScope(CancellationToken token) => runtime.ValidateNewNativeScope(token);
+
     internal void ValidateNativeRecovery(HostScope scope, CancellationToken token)
     {
         if (!ReferenceEquals(scope.Owner, this))

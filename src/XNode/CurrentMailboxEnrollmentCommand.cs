@@ -50,12 +50,14 @@ internal static class CurrentMailboxEnrollmentCommand
         // Own and reject both bounded inputs before any network or custody callback.
         var ownedDeposit = MailboxGrantRevocationV1Codec.Decode(deposit.Span).CanonicalBytes.ToArray();
         var ownedRetrieve = MailboxGrantRevocationV1Codec.Decode(retrieve.Span).CanonicalBytes.ToArray();
+        var receiver = services.GetRequiredService<CurrentMailboxReplicaReceiver>();
+        await receiver.ValidateNewNativeScopeAsync(services.GetRequiredService<CurrentMailboxAdmission>(), token)
+            .ConfigureAwait(false);
         _ = await services.GetRequiredService<DeepIdV2DirectoryProofRuntime>()
             .RestoreHeadAsync(token).ConfigureAwait(false);
         await services.GetRequiredService<DeepIdV2NetworkPlacementRuntime>()
             .AcquireObservationAsync(token).ConfigureAwait(false);
-        await services.GetRequiredService<CurrentMailboxReplicaReceiver>()
-            .EnrollNewHostAsync(ownedDeposit, ownedRetrieve, token).ConfigureAwait(false);
+        await receiver.EnrollNewHostAsync(ownedDeposit, ownedRetrieve, token).ConfigureAwait(false);
     }
 
     internal static (byte[] Deposit, byte[] Retrieve) ReadInputs(string[] args)

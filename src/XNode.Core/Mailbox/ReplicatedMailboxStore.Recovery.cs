@@ -4,6 +4,18 @@ namespace XNode.Core.Mailbox;
 
 public sealed partial class ReplicatedMailboxStore
 {
+    internal async Task ValidateNewNativeScopeAsync(CancellationToken token)
+    {
+        await _gate.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            if (_storedBlobCount > 0)
+                throw new InvalidDataException("New mailbox enrollment cannot adopt stored blobs.");
+            MailboxNativeRecovery.RequireNewDirectory(_rootDirectory, null, token);
+        }
+        finally { _gate.Release(); }
+    }
+
     // Expiry does not make persisted corruption valid. The callback joins every
     // extant blob to its mutation; it does not admit expired objects for reads.
     internal async Task ValidateCurrentRecoveryAsync(Action<EncryptedMailboxBlob> requireMutation,

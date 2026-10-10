@@ -301,7 +301,7 @@ public sealed partial class MailboxClientCanonicalOutcomeStore : IDisposable
 
         try
         {
-            PurgeAbandonedFiles();
+            // Preserve interrupted files until an explicitly authorized lifecycle action.
             LoadAndValidateIndex();
         }
         catch (Exception exception) when (
@@ -1201,19 +1201,6 @@ public sealed partial class MailboxClientCanonicalOutcomeStore : IDisposable
         {
             _reservedCanonicalBytes -= active.MaximumCanonicalBytes;
             _reservedFileBytes -= active.ReservedFileBytes;
-        }
-    }
-
-    private void PurgeAbandonedFiles()
-    {
-        foreach (var path in Directory.EnumerateFiles(_directory, "*.tmp"))
-        {
-            File.Delete(path);
-        }
-
-        foreach (var path in Directory.EnumerateFiles(_directory, "*.deleted"))
-        {
-            File.Delete(path);
         }
     }
 

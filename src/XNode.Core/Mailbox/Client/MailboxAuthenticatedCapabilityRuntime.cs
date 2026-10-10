@@ -232,6 +232,12 @@ public sealed class MailboxAuthenticatedCapabilityRuntime
         _replay.ValidateNativeRecovery(outcomes, token);
     }
 
+    internal void ValidateNewNativeScope(CancellationToken token)
+    {
+        _outcomes.ValidateNewNativeScope(token);
+        _replay.ValidateNewNativeScope(token);
+    }
+
     public MailboxAuthenticatedRuntimeReservation Verify(
         ReadOnlyMemory<byte> canonicalMau2)
     {

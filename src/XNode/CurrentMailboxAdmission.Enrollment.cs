@@ -18,6 +18,7 @@ internal sealed partial class CurrentMailboxAdmission
         await enrollmentGate.WaitAsync(token).ConfigureAwait(false);
         try
         {
+            await receiver.ValidateNewNativeScopeAsync(this, token).ConfigureAwait(false);
             var authority = await source.ReadPublicationAuthorityAsync(token).ConfigureAwait(false);
             var host = await MailboxHostAuthorityV2Verifier.VerifyAsync(authority.Network, authority.Authority,
                 authority.MailboxAuthority.ExactPma2, authority.TrustedTime, token).ConfigureAwait(false);
@@ -30,6 +31,7 @@ internal sealed partial class CurrentMailboxAdmission
             await retrieve.ValidateNewEnrollmentAsync(host, retrieveBytes, token).ConfigureAwait(false);
 
             await receiver.ValidateEnrollmentSigningCustodyAsync(this, host, token).ConfigureAwait(false);
+            await receiver.ValidateNewNativeScopeAsync(this, token).ConfigureAwait(false);
             await deposit.EnrollAsync(host, depositBytes, token).ConfigureAwait(false);
             await retrieve.EnrollAsync(host, retrieveBytes, token).ConfigureAwait(false);
             _ = await EnrollNewOperationsAsync(receiver.OperationLedger, token).ConfigureAwait(false);
