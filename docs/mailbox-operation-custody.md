@@ -9,8 +9,8 @@ not a fully enabled current service graph or physical E2E.
 
 ## Local contract
 
-The schema-7 `operations.json` remains the only complete Store/ACK intent,
-quorum and allocator document. Schema6 and earlier reject without migration.
+The schema-8 `operations.json` remains the only complete Store/ACK intent,
+quorum and allocator document. Schema7 and earlier reject without migration.
 No peer bytes, mailbox identifiers or cursor table are duplicated. The same
 independently anchored document now also contains required `clientReplayFloors`:
 existing protocol replay-scope hash -> highest counter, exact claim digest and
@@ -32,6 +32,26 @@ completed result fails closed, even after simultaneous replay/outcome loss.
 Floors are not collected by readers or current working-set compaction. The
 later lifecycle/retirement stage must retain their independent guarantees;
 this change does not activate neutral expiry collection for current owners.
+
+The same protected document requires bounded `peerReplayFloors`, keyed by the
+existing PRQ2 replay-scope hash. Facts contain only replay identity, mutation
+target/stable Store/tombstone and optional canonical response SHA-256 digests,
+the replay retention boundary and a mutation-completed bit. No complete peer
+request/response, nonce, mailbox/cursor table or payload is copied. Capacity is
+separate from business slots, bounded by the existing entry limit, and checked
+before native replay reservation; exhaustion is backpressure, never eviction.
+
+Native Pending precedes protecting its exact fact, which precedes mutation.
+Mutation completion is protected before receipt construction; native response
+completion is followed by protecting its exact digest before release. A known
+Pending may have matching native effects ahead after a crash, but cannot change
+immutable facts or manufacture a missing reservation. Unanchored native replay
+or rollback of an anchored completed fact stays unready. Readiness and actual
+client/peer admission join these facts to native replay and mutation custody;
+blob integrity, native tombstones and independent receipt signatures remain
+mandatory. Readers cannot erase or adopt facts, and these facts do not activate
+current working-set expiry collection/retirement. Coordinated rollback of the
+independent root and matching data remains outside this local guarantee.
 
 `FileMailboxOperationCustody` uses the existing ASP.NET Core Data Protection
 provider. Its independent directory must not overlap node data or traverse
@@ -76,9 +96,12 @@ every non-lock entry, not just `operations.json` and `.tmp`. The same command
 checks actual empty blob/mutation/replay/outcome owners before network acquisition
 and repeats the refusal before role writes. Reader construction preserves
 interrupted native files rather than erasing evidence of prior custody.
-These enrollment checks do not independently anchor every peer mutation/blob
-store against coordinated cold loss/rollback. Client replay now joins the
-protected schema7 floors described above. Actual writers recheck; there is no multi-file atomic
+Client and peer replay now join the protected schema8 facts described above.
+Current receiver construction binds the native peer owners to protected custody:
+neutral mutation initialization/writes and explicit peer collection reject;
+current mutation/replay admission does not run neutral expiry collection.
+Owned horizon-safe retirement remains S04; bounded capacity exhaustion refuses
+new work rather than erasing independent history. Actual writers recheck; there is no multi-file atomic
 commit, restart enrollment or repair fallback. See the single operator procedure
 in [operator.md](operator.md#current-mailbox-host-composition-candidate).
 
@@ -114,6 +137,18 @@ label is not snapshot authentication. Every current save uses:
 2. flush the independent protected pending transition;
 3. replace/flush/read-back the operation document;
 4. commit/read-back the protected root.
+
+Client and peer recovery join the same authenticated operation snapshot under
+the ledger lock. Peer floor, mutation index and blob validation then share one
+fresh mutation inventory under its native owner lock; it is not reused at the
+next boundary. Its internal blob scan is read-only and remains inside that
+owner's live pre/post checks; it releases no separate capability or response.
+Store prefix inspection is denial-only and precedes the fresh
+client/peer join before replay reservation. A returned upper time is obtained
+after the joins, never copied from before their callbacks. Prepare/Commit own
+their fresh lease checks around the actual durable effects; their callers do
+not add an identical check with no intervening callback. Both MGR roles remain
+held and validated, including the grant role's before/after serial checks.
 
 If the pending next document is already installed, verified startup finalizes
 the protected commit. If the predecessor is still installed, only the named,

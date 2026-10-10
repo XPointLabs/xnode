@@ -38,7 +38,9 @@ internal sealed partial class CurrentMailboxAdmission(
         MailboxAuthenticatedOperation operation,
         Func<Request, CancellationToken, ValueTask<T>> action, CancellationToken token = default,
         MailboxClientOperationLedger? operationLedger = null, MailboxPeerMutationStore? storeMutations = null,
-        Action<GrantScope>? requireSigningCustody = null)
+        Action<GrantScope>? requireSigningCustody = null,
+        Func<IReadOnlyDictionary<string, MailboxCurrentPeerReplayFloor>, MailboxCurrentOperationLease,
+            CancellationToken, Task>? validatePeerCustody = null)
     {
         ArgumentNullException.ThrowIfNull(action);
         // The decoder bounds and owns request bytes before any external callback.
@@ -66,14 +68,18 @@ internal sealed partial class CurrentMailboxAdmission(
                     throw new CurrentMailboxHolderRateLimitException();
                 if (operationLedger is not null)
                 {
-                    await operationLedger.InitializeCurrentAsync(node, scope.Host, scope.Lease, ct,
-                        runtime.ValidateCurrentNativeRecovery).ConfigureAwait(false);
                     if (operation == MailboxAuthenticatedOperation.Store && storeMutations is not null)
                     {
                         await operationLedger.EnsureCurrentStorePrefixAsync(
                             MailboxAuthenticatedRequestTranscript.DecodeStoreBody(decoded.Binding.CanonicalRequest.Span),
                             scope.Host, scope.Lease, storeMutations, ct).ConfigureAwait(false);
                     }
+                    // Prefix inspection is denial-only: no mutation, replay,
+                    // receipt or HTTP. Join a fresh authenticated snapshot AFTER
+                    // its callbacks and BEFORE the first client reservation.
+                    await operationLedger.InitializeCurrentAsync(node, scope.Host, scope.Lease, ct,
+                        runtime.ValidateCurrentNativeRecovery, validatePeerCustody is null ? null :
+                            (floors, peerToken) => validatePeerCustody(floors, scope.Lease, peerToken)).ConfigureAwait(false);
                 }
                 var upper = await scope.Lease.CheckAsync(ct).ConfigureAwait(false);
                 var policy = new MailboxAuthenticatedVerificationPolicy
@@ -92,11 +98,13 @@ internal sealed partial class CurrentMailboxAdmission(
                         null, scope.Lease, ct).ConfigureAwait(false);
                 async ValueTask<ulong> CheckRequestAsync(CancellationToken checkToken)
                 {
-                    var now = await scope.Lease.CheckAsync(checkToken).ConfigureAwait(false);
                     requireSigningCustody?.Invoke(scope);
-                    if (operationLedger is not null)
-                        await operationLedger.InitializeCurrentAsync(node, scope.Host, scope.Lease, checkToken,
-                            runtime.ValidateCurrentNativeRecovery).ConfigureAwait(false);
+                    var now = operationLedger is null
+                        ? await scope.Lease.CheckAsync(checkToken).ConfigureAwait(false)
+                        : await operationLedger.InitializeCurrentAsync(node, scope.Host, scope.Lease, checkToken,
+                            runtime.ValidateCurrentNativeRecovery, validatePeerCustody is null ? null :
+                                (floors, peerToken) => validatePeerCustody(floors, scope.Lease, peerToken)).ConfigureAwait(false);
+                    requireSigningCustody?.Invoke(scope);
                     return now;
                 }
                 async ValueTask RecordCompletionAsync(ReadOnlyMemory<byte> outcome, CancellationToken completionToken)
@@ -145,16 +153,18 @@ internal sealed partial class CurrentMailboxAdmission(
             return true;
         }, token);
 
-    internal Task InitializeHostOperationsAsync(MailboxClientOperationLedger ledger, HostScope scope, CancellationToken token)
+    internal Task InitializeHostOperationsAsync(MailboxClientOperationLedger ledger, HostScope scope, CancellationToken token,
+        Func<IReadOnlyDictionary<string, MailboxCurrentPeerReplayFloor>, CancellationToken, Task>? validatePeer = null)
     {
         if (!ReferenceEquals(scope.Owner, this)) throw new InvalidOperationException("Recovery scope differs.");
-        return ledger.InitializeCurrentAsync(node, scope.Host, scope.Lease, token, runtime.ValidateCurrentNativeRecovery);
+        return ledger.InitializeCurrentAsync(node, scope.Host, scope.Lease, token, runtime.ValidateCurrentNativeRecovery, validatePeer);
     }
 
-    internal Task InitializeGrantOperationsAsync(MailboxClientOperationLedger ledger, GrantScope scope, CancellationToken token)
+    internal Task<ulong> InitializeGrantOperationsAsync(MailboxClientOperationLedger ledger, GrantScope scope, CancellationToken token,
+        Func<IReadOnlyDictionary<string, MailboxCurrentPeerReplayFloor>, CancellationToken, Task>? validatePeer = null)
     {
         if (!ReferenceEquals(scope.Owner, this)) throw new InvalidOperationException("Operation scope differs.");
-        return ledger.InitializeCurrentAsync(node, scope.Host, scope.Lease, token, runtime.ValidateCurrentNativeRecovery);
+        return ledger.InitializeCurrentAsync(node, scope.Host, scope.Lease, token, runtime.ValidateCurrentNativeRecovery, validatePeer);
     }
 
     internal ValueTask<bool> EnrollNewOperationsAsync(MailboxClientOperationLedger ledger, CancellationToken token = default) =>
@@ -196,8 +206,11 @@ internal sealed partial class CurrentMailboxAdmission(
                 var roleLease = grant?.Domain == MailboxCapabilityDomain.Deposit ? depositLease : retrieveLease;
                 async ValueTask<ulong> CheckAsync(CancellationToken checkToken)
                 {
+                    using var measurement = CurrentMailboxDiagnostics.Measure("lease-check");
                     RequireActive(); checkToken.ThrowIfCancellationRequested();
-                    var current = await source.ReadPublicationAuthorityAsync(checkToken).ConfigureAwait(false);
+                    DeepIdV2ContactStoreAuthority current;
+                    using (CurrentMailboxDiagnostics.Measure("authority-source"))
+                        current = await source.ReadPublicationAuthorityAsync(checkToken).ConfigureAwait(false);
                     RequireActive();
                     if (!Fixed(current.Network.NetworkId.Span, host.NetworkId.Span) ||
                         !current.Network.BindsProjection(host.ProjectionReference) ||
@@ -205,14 +218,22 @@ internal sealed partial class CurrentMailboxAdmission(
                         !Fixed(current.Authority.AuthorityCoreReference.Span, authority.Authority.AuthorityCoreReference.Span) ||
                         !Fixed(current.MailboxAuthority.CoreHash.Span, authority.MailboxAuthority.CoreHash.Span))
                         throw new CryptographicException("Current mailbox authority changed during the operation.");
-                    var currentHost = await MailboxHostAuthorityV2Verifier.VerifyAsync(current.Network, current.Authority,
-                        current.MailboxAuthority.ExactPma2, current.TrustedTime, checkToken).ConfigureAwait(false);
+                    VerifiedMailboxHostAuthorityV2 currentHost;
+                    using (CurrentMailboxDiagnostics.Measure("host-verify"))
+                        currentHost = await MailboxHostAuthorityV2Verifier.VerifyAsync(current.Network, current.Authority,
+                            current.MailboxAuthority.ExactPma2, current.TrustedTime, checkToken).ConfigureAwait(false);
                     RequireActive();
                     await RequireGrantCurrentAsync(currentHost, checkToken).ConfigureAwait(false);
                     RequireActive();
-                    await depositLease.EnsureCurrentAsync(checkToken).ConfigureAwait(false);
+                    // The grant-specific Protocol method checks its role's
+                    // actual protected floor before AND after serial validation.
+                    // Check the other role separately; do not read the grant
+                    // role a third time immediately before that same boundary.
+                    if (grant?.Domain != MailboxCapabilityDomain.Deposit)
+                        await depositLease.EnsureCurrentAsync(checkToken).ConfigureAwait(false);
                     RequireActive();
-                    await retrieveLease.EnsureCurrentAsync(checkToken).ConfigureAwait(false);
+                    if (grant?.Domain != MailboxCapabilityDomain.Retrieve)
+                        await retrieveLease.EnsureCurrentAsync(checkToken).ConfigureAwait(false);
                     RequireActive();
                     if (exactGrant is not null)
                     {

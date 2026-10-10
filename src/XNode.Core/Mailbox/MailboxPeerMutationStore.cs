@@ -43,6 +43,9 @@ public sealed partial class MailboxPeerMutationStore : IDisposable
     private readonly PriorityQueue<string, ulong> _collectionQueue = new();
     private int _recordCount;
     private int _disposed;
+    private int _protectedCurrentOwner;
+
+    internal void RequireProtectedCurrentOwner() => Interlocked.Exchange(ref _protectedCurrentOwner, 1);
 
     public MailboxPeerMutationStore(
         string dataDirectory,
@@ -96,6 +99,8 @@ public sealed partial class MailboxPeerMutationStore : IDisposable
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
+        if (Volatile.Read(ref _protectedCurrentOwner) != 0)
+            throw new InvalidOperationException("Protected current mutations require owned recovery and retirement.");
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -204,15 +209,16 @@ public sealed partial class MailboxPeerMutationStore : IDisposable
         CancellationToken cancellationToken, MailboxCurrentOperationLease? lease = null)
     {
         ArgumentNullException.ThrowIfNull(verified);
+        if (Volatile.Read(ref _protectedCurrentOwner) != 0 && lease is null)
+            throw new InvalidOperationException("Protected current mutations require their native operation lease.");
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             ObjectDisposedException.ThrowIf(_disposed != 0, this);
             await CheckCurrentAsync(lease, cancellationToken).ConfigureAwait(false);
-            _ = await CollectExpiredUnderGateAsync(
-                verified.ReplayClaim.ReservedAtUnixSeconds,
-                _options.MaxPeerMutationGcBatch,
-                cancellationToken, lease).ConfigureAwait(false);
+            if (Volatile.Read(ref _protectedCurrentOwner) == 0)
+                _ = await CollectExpiredUnderGateAsync(verified.ReplayClaim.ReservedAtUnixSeconds,
+                    _options.MaxPeerMutationGcBatch, cancellationToken, lease).ConfigureAwait(false);
             await CheckCurrentAsync(lease, cancellationToken).ConfigureAwait(false);
             return verified.Request.Operation == MailboxPeerReplicationOperation.Store
                 ? await StoreUnderGateAsync(verified, cancellationToken, lease).ConfigureAwait(false)
@@ -230,6 +236,8 @@ public sealed partial class MailboxPeerMutationStore : IDisposable
         CancellationToken cancellationToken = default)
     {
         ValidateBatch(maximumRecords);
+        if (Volatile.Read(ref _protectedCurrentOwner) != 0)
+            throw new InvalidOperationException("Protected current peer mutations require owned retirement.");
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -395,10 +403,9 @@ public sealed partial class MailboxPeerMutationStore : IDisposable
             return;
         }
 
-        _ = await CollectExpiredUnderGateAsync(
-            nowUnixSeconds,
-            _options.MaxPeerMutationGcBatch,
-            cancellationToken, lease).ConfigureAwait(false);
+        if (Volatile.Read(ref _protectedCurrentOwner) == 0)
+            _ = await CollectExpiredUnderGateAsync(nowUnixSeconds,
+                _options.MaxPeerMutationGcBatch, cancellationToken, lease).ConfigureAwait(false);
         if (_recordCount >= _options.MaxPeerMutationRecords)
         {
             throw new MailboxPeerMutationCapacityException();

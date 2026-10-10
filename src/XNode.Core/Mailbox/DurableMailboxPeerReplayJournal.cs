@@ -23,6 +23,9 @@ public sealed partial class DurableMailboxPeerReplayJournal : IMailboxPeerReplay
     private readonly PriorityQueue<string, ulong> _collectionQueue = new();
     private int _recordCount;
     private int _disposed;
+    private int _protectedCurrentOwner;
+
+    internal void RequireProtectedCurrentOwner() => Interlocked.Exchange(ref _protectedCurrentOwner, 1);
 
     public DurableMailboxPeerReplayJournal(
         string dataDirectory,
@@ -77,9 +80,8 @@ public sealed partial class DurableMailboxPeerReplayJournal : IMailboxPeerReplay
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed != 0, this);
-            _ = CollectExpiredUnderGate(
-                claim.ReservedAtUnixSeconds,
-                _options.MaxPeerReplayGcBatch);
+            if (Volatile.Read(ref _protectedCurrentOwner) == 0)
+                _ = CollectExpiredUnderGate(claim.ReservedAtUnixSeconds, _options.MaxPeerReplayGcBatch);
             var scope = Hex(claim.ScopeKey.Span);
             var path = RecordPath(scope);
             var current = File.Exists(path) ? Read(path).Snapshot() : null;
@@ -159,6 +161,8 @@ public sealed partial class DurableMailboxPeerReplayJournal : IMailboxPeerReplay
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            if (Volatile.Read(ref _protectedCurrentOwner) != 0)
+                throw new InvalidOperationException("Protected current peer replay requires owned retirement.");
             return CollectExpiredUnderGate(nowUnixSeconds, maximumRecords);
         }
     }

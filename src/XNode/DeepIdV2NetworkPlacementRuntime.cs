@@ -338,27 +338,34 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
             var observed = observational ? Volatile.Read(ref observation) ??
                 throw new CryptographicException("No acquired DID2 network observation is available.") : null;
             if (!observational && observesConfiguredAccount) Volatile.Write(ref observation, null);
-            var previous = await floor.ReadAsync(cancellationToken).ConfigureAwait(false);
+            DeepIdV2NetworkFloor? previous;
+            using (CurrentMailboxDiagnostics.Measure("network-floor-read"))
+                previous = await floor.ReadAsync(cancellationToken).ConfigureAwait(false);
             if (observed is not null && !FileDeepIdV2NetworkFloorStore.Same(observed.Floor, previous))
                 throw new CryptographicException("The observed DID2 network floor changed.");
             var freshness = observed?.Freshness ?? await proofs.ReadCurrentAsync(did2, cancellationToken).ConfigureAwait(false);
             if (freshness.CurrentCheckpoint is null)
                 throw new CryptographicException("DID2 network authority requires a current account checkpoint.");
-            var authority = authoritySource.ReadCurrent();
+            VerifiedXPointNetworkAuthority authority;
+            using (CurrentMailboxDiagnostics.Measure("authority-lineage"))
+                authority = authoritySource.ReadCurrent();
             if (observed is not null)
             {
                 if (!SameAuthority(observed.Authority, authority))
                     throw new CryptographicException("The observed DID2 authority changed.");
-                await proofs.ValidateObservedAsync(freshness, cancellationToken).ConfigureAwait(false);
+                using (CurrentMailboxDiagnostics.Measure("proof-observe"))
+                    await proofs.ValidateObservedAsync(freshness, cancellationToken).ConfigureAwait(false);
             }
             using var exact = artifacts.ReadCurrent();
             var time = new OnionTrustedTimeAuthority(clock);
-            var network = previous is null
-                ? await OnionNetworkContextVerifier.VerifyAsync(authority, freshness, exact.Policies,
-                    exact.Views, exact.Heads, exact.Nodes, exact.Projections, null, time, cancellationToken).ConfigureAwait(false)
-                : await OnionNetworkContextVerifier.VerifyFromProtectedHistoryAsync(authority, freshness,
-                    exact.Policies, exact.Views, exact.Heads, exact.Nodes, exact.Projections,
-                    previous.History, time, cancellationToken).ConfigureAwait(false);
+            VerifiedOnionNetworkContext network;
+            using (CurrentMailboxDiagnostics.Measure("network-verify"))
+                network = previous is null
+                    ? await OnionNetworkContextVerifier.VerifyAsync(authority, freshness, exact.Policies,
+                        exact.Views, exact.Heads, exact.Nodes, exact.Projections, null, time, cancellationToken).ConfigureAwait(false)
+                    : await OnionNetworkContextVerifier.VerifyFromProtectedHistoryAsync(authority, freshness,
+                        exact.Policies, exact.Views, exact.Heads, exact.Nodes, exact.Projections,
+                        previous.History, time, cancellationToken).ConfigureAwait(false);
             network.EnsureCurrent();
             var issuer = await VerifyMailboxAuthorityAsync(network, authority, freshness, exact,
                 cancellationToken).ConfigureAwait(false);

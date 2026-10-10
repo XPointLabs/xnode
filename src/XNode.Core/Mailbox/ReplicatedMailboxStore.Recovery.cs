@@ -18,13 +18,17 @@ public sealed partial class ReplicatedMailboxStore
 
     // Expiry does not make persisted corruption valid. The callback joins every
     // extant blob to its mutation; it does not admit expired objects for reads.
+    // This is an internal read-only subscan of the mutation owner's recovery
+    // join. That owner brackets the complete scan/callbacks with live checks
+    // before returning any recovered authority. No blob/state mutation, public
+    // response or independently usable capability is released by this helper.
     internal async Task ValidateCurrentRecoveryAsync(Action<EncryptedMailboxBlob> requireMutation,
         MailboxCurrentOperationLease lease, CancellationToken token)
     {
         await _gate.WaitAsync(token).ConfigureAwait(false);
         try
         {
-            _ = await lease.CheckAsync(token).ConfigureAwait(false);
+            lease.RequireActive(); token.ThrowIfCancellationRequested();
             try { MailboxNativeRecovery.RequireDirectory(_rootDirectory, token); }
             catch (FileNotFoundException) { return; } // new, still-empty blob owner
             catch (DirectoryNotFoundException) { return; }
@@ -61,7 +65,7 @@ public sealed partial class ReplicatedMailboxStore
             }
             if (_storedBlobCount >= 0 && _storedBlobCount != blobs)
                 throw new InvalidDataException("Mailbox recovery blob count differs from native custody.");
-            _ = await lease.CheckAsync(token).ConfigureAwait(false);
+            lease.RequireActive(); token.ThrowIfCancellationRequested();
         }
         catch (JsonException error)
         {

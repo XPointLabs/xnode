@@ -2,6 +2,39 @@ namespace XNode.IntegrationTests.Runtime;
 
 public sealed partial class CurrentMailboxPeerHttpTests
 {
+    private sealed class NativeTiming : IDisposable
+    {
+        private readonly System.Diagnostics.Metrics.MeterListener listener = new();
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string,
+            (int Count, double Total, double Maximum)> phases = new(StringComparer.Ordinal);
+        internal NativeTiming()
+        {
+            listener.InstrumentPublished = (instrument, observer) =>
+            {
+                if (instrument.Meter.Name == CurrentMailboxDiagnostics.MeterName && instrument.Name == "phase.duration")
+                    observer.EnableMeasurementEvents(instrument);
+            };
+            listener.SetMeasurementEventCallback<double>((_, duration, tags, _) =>
+            {
+                string? phase = null;
+                foreach (var tag in tags)
+                    if (tag.Key == "phase") phase = tag.Value as string;
+                if (phase is null) return;
+                phases.AddOrUpdate(phase, (1, duration, duration), (_, prior) =>
+                    (prior.Count + 1, prior.Total + duration, Math.Max(prior.Maximum, duration)));
+            });
+            listener.Start();
+        }
+        internal void Reset() => phases.Clear();
+        internal void Write(Xunit.Abstractions.ITestOutputHelper output)
+        {
+            foreach (var phase in phases.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+                output.WriteLine($"Native phase={phase.Key}; count={phase.Value.Count}; " +
+                    $"total-ms={phase.Value.Total:F1}; max-ms={phase.Value.Maximum:F1}");
+        }
+        public void Dispose() => listener.Dispose();
+    }
+
     [Fact]
     public async Task RequestBodyObservationPreservesBytesEofAndInnerOwnership()
     {

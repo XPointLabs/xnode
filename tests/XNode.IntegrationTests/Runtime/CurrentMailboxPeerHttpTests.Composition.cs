@@ -29,6 +29,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
 
     private async Task CompleteRegisteredCycleAsync(bool actualProgram, bool configuredProgram = false)
     {
+        using var timing = new NativeTiming();
         var hosts = new List<Host>();
         var owners = new List<RegisteredPeer>();
         DeepIdV2PublicationAuthorityFixture? signed = null;
@@ -122,8 +123,27 @@ public sealed partial class CurrentMailboxPeerHttpTests
             async Task<byte[]> Dispatch(RegisteredPeer peer, OnionOperation operation, byte[] request)
             {
                 if (configuredProgram)
-                    return await configured!.DispatchOnionAsync(peer, owners, operation, request,
-                        replicas[0].NodeId, replicas[1].NodeId);
+                {
+                    timing.Reset();
+                    var started = System.Diagnostics.Stopwatch.GetTimestamp();
+                    var proofs = configured!.ProofRequests;
+                    try
+                    {
+                        return await configured.DispatchOnionAsync(peer, owners, operation, request,
+                            replicas[0].NodeId, replicas[1].NodeId);
+                    }
+                    finally
+                    {
+                        timing.Write(output);
+                        output.WriteLine($"Configured {operation}: elapsed-ms=" +
+                            $"{(long)System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds}; " +
+                            $"proof requests={configured.ProofRequests - proofs}; " +
+                            $"peer requests={hosts.Sum(h => h.Requests)}; " +
+                            $"statuses={string.Join(',', hosts.Select(h => h.LastStatus))}; " +
+                            $"byte counts={string.Join(',', hosts.Select(h => h.LastBytes))}; " +
+                            $"peer stages={string.Join(" | ", hosts.Select(h => $"status={h.LastPeerStatus}; {h.Diagnostics}"))}.");
+                    }
+                }
                 var result = await ((ILocalNativeMailboxExitDispatcher)peer.Services.GetRequiredService<NativeMailboxExitDispatcher>())
                     .DispatchAsync(operation, request, default);
                 Assert.True(result.Certainty == NativeMailboxDispatchCertainty.Completed,

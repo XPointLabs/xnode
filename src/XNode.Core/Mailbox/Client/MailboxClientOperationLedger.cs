@@ -52,7 +52,8 @@ internal sealed class MailboxClientLedgerDocument
         Dictionary<string, ulong> nextCursorByMailbox,
         Dictionary<string, MailboxClientLedgerOperation> operations,
         Dictionary<string, MailboxClientLedgerAckOperation> ackOperations,
-        Dictionary<string, MailboxCurrentClientReplayFloor> clientReplayFloors)
+        Dictionary<string, MailboxCurrentClientReplayFloor> clientReplayFloors,
+        Dictionary<string, MailboxCurrentPeerReplayFloor> peerReplayFloors)
     {
         SchemaVersion = schemaVersion;
         NextCoordinatorSequence = nextCoordinatorSequence;
@@ -61,6 +62,7 @@ internal sealed class MailboxClientLedgerDocument
         Operations = operations;
         AckOperations = ackOperations;
         ClientReplayFloors = clientReplayFloors;
+        PeerReplayFloors = peerReplayFloors;
     }
 
     public int SchemaVersion { get; set; }
@@ -71,6 +73,8 @@ internal sealed class MailboxClientLedgerDocument
     public Dictionary<string, MailboxClientLedgerAckOperation> AckOperations { get; set; }
     [JsonRequired]
     public Dictionary<string, MailboxCurrentClientReplayFloor> ClientReplayFloors { get; set; }
+    [JsonRequired]
+    public Dictionary<string, MailboxCurrentPeerReplayFloor> PeerReplayFloors { get; set; }
 }
 
 internal sealed record MailboxClientLedgerOperation(
@@ -100,7 +104,7 @@ internal sealed record MailboxClientLedgerOperation(
 
 public sealed partial class MailboxClientOperationLedger : IDisposable
 {
-    private const int SchemaVersion = 7;
+    private const int SchemaVersion = 8;
     internal const long MaximumDocumentBytes = 768L * 1024 * 1024;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _directory;
@@ -271,7 +275,6 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (lease is not null) _ = await lease.CheckAsync(cancellationToken).ConfigureAwait(false);
             var document = await LoadAsync(cancellationToken, lease).ConfigureAwait(false);
             // Current requests never collect other operations using host UTC or
             // their short-lived grant. Protected retention/GC is a separate owner.
@@ -590,6 +593,7 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
                 new(StringComparer.Ordinal),
                 new(StringComparer.Ordinal),
                 new(StringComparer.Ordinal),
+                new(StringComparer.Ordinal),
                 new(StringComparer.Ordinal));
         }
 
@@ -639,6 +643,9 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
             document.ClientReplayFloors = new(
                 document.ClientReplayFloors ?? throw new InvalidDataException("Mailbox client replay floors are missing."),
                 StringComparer.Ordinal);
+            document.PeerReplayFloors = new(
+                document.PeerReplayFloors ?? throw new InvalidDataException("Mailbox peer replay floors are missing."),
+                StringComparer.Ordinal);
             ValidateDocument(document);
             return document;
         }
@@ -653,6 +660,7 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
         if (document.SchemaVersion != SchemaVersion
             || LedgerEntryCost(document) > _maxEntries
             || document.ClientReplayFloors.Count > _maxEntries
+            || document.PeerReplayFloors.Count > _maxEntries
             || document.NextCursorByMailbox.Count > _maxCursorAuthorities)
         {
             throw new InvalidDataException("Mailbox client operation ledger schema is invalid.");
@@ -665,6 +673,12 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
             if (floor.HighestCounter == 0 || floor.CanonicalOutcomeDigest is null)
                 throw new InvalidDataException("Mailbox client replay floor is malformed.");
             if (floor.CanonicalOutcomeDigest.Length != 0) _ = DecodeLowerHex(floor.CanonicalOutcomeDigest, 32);
+        }
+
+        foreach (var pair in document.PeerReplayFloors)
+        {
+            _ = DecodeLowerHex(pair.Key, 32);
+            ValidatePeerFloor(pair.Value ?? throw new InvalidDataException("Mailbox peer replay floor is null."));
         }
 
         var cursors = new HashSet<string>(StringComparer.Ordinal);
@@ -939,7 +953,9 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
                     throw new MailboxClientLedgerCapacityException();
             }
 
-            if (lease is not null) _ = await lease.CheckAsync(cancellationToken).ConfigureAwait(false);
+            // Prepare/Commit each start with their own fresh live check. Do not
+            // duplicate it with no callback/effect between these two boundaries.
+            if (lease is not null && enrolling) _ = await lease.CheckAsync(cancellationToken).ConfigureAwait(false);
             if (_currentCustody is not null && !enrolling)
             {
                 // Prepare can fail after its durable native write. Preserve the
@@ -950,7 +966,7 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
             await ReplaceAtomicallyAsync(temporary, cancellationToken).ConfigureAwait(false);
             _security.SecureFile(_path);
             _durability.FlushFileAndParentDirectory(_path);
-            if (lease is not null) _ = await lease.CheckAsync(cancellationToken).ConfigureAwait(false);
+            if (lease is not null && enrolling) _ = await lease.CheckAsync(cancellationToken).ConfigureAwait(false);
             if (_currentCustody is not null && !enrolling)
                 await _currentCustody.CommitAsync(_path, lease!, cancellationToken).ConfigureAwait(false);
         }

@@ -235,13 +235,15 @@ public sealed partial class CurrentMailboxPeerHttpTests
     [InlineData(4)]
     [InlineData(5)]
     [InlineData(6)]
+    [InlineData(7)]
     public async Task CurrentStoreRejectsIncompatibleIntentLedgerWithoutRepair(int schema)
     {
         await using var f = await Fixture.CreateAsync(); f.OpenLedger();
         var client = f.ClientStoreFrame(); f.RemoteHost.DropNext = true;
         _ = await f.Coordinator.StoreClientAsync(client, f.Ledger!);
         var path = f.LedgerFile; f.Ledger!.Dispose(); f.Ledger = null;
-        var old = File.ReadAllText(path).Replace("\"schemaVersion\":7", $"\"schemaVersion\":{schema}", StringComparison.Ordinal);
+        var old = File.ReadAllText(path).Replace("\"schemaVersion\":8", $"\"schemaVersion\":{schema}", StringComparison.Ordinal);
+        Assert.NotEqual(File.ReadAllText(path), old);
         File.WriteAllText(path, old); f.OpenLedger();
         await Assert.ThrowsAsync<InvalidDataException>(() => f.Coordinator.StoreClientAsync(client, f.Ledger!).AsTask());
         Assert.Equal(old, File.ReadAllText(path)); Assert.Equal(1, f.RemoteHost.Requests);
@@ -305,7 +307,25 @@ public sealed partial class CurrentMailboxPeerHttpTests
     {
         await using var f = await Fixture.CreateAsync();
         var client = f.ClientStoreFrame(); var peer = f.Recipient.Frame(MailboxPeerReplicationOperation.Store);
-        var first = await f.Coordinator.StoreClientAsync(client, peer).AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+        using var cancellation = new CancellationTokenSource();
+        var attempt = f.Coordinator.StoreClientAsync(client, peer, cancellation.Token).AsTask();
+        MailboxPeerQuorumResult first;
+        try { first = await attempt.WaitAsync(TimeSpan.FromSeconds(10)); }
+        catch (TimeoutException)
+        {
+            // WaitAsync alone does not cancel the native operation. Drain this
+            // exact attempt before fixture disposal/next test, preserving the
+            // original deadline failure rather than turning it into a retry.
+            cancellation.Cancel();
+            var completion = await Record.ExceptionAsync(async () => await attempt);
+            output.WriteLine($"Timed out initial Store; completion={completion?.GetType().Name}; " +
+                $"peer calls={f.PeerClient.Calls}; {f.RemoteHost.Diagnostics}.");
+            throw;
+        }
+        output.WriteLine($"Initial Store={first.Status}; durable replicas={first.DurableReplicaCount}; " +
+            $"peer calls={f.PeerClient.Calls}; failure={f.PeerClient.Failure}; elapsed-ms={f.PeerClient.ElapsedMilliseconds}; " +
+            $"cancelled={f.PeerClient.Cancelled}; HTTP requests={f.RemoteHost.Requests}; " +
+            $"status={f.RemoteHost.LastStatus}; bytes={f.RemoteHost.LastBytes}; {f.RemoteHost.Diagnostics}.");
         Assert.Equal(MailboxPeerQuorumStatus.Durable, first.Status);
         Assert.Equal(1, f.Sender.Node.Replay.Diagnostics.CompletedCount);
         f.Signed.Sample = 101; f.Reopen();
@@ -654,7 +674,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
             }
             catch { await f.DisposeAsync(); throw; }
         }
-        internal void OpenRecipientLedger(int maximumEntries = 100_000)
+        internal void OpenRecipientLedger(int maximumEntries = 100_000, IMailboxDurabilityBarrier? durability = null)
         {
             Recipient.CloseOperations();
             recipientCustody?.Dispose(); recipientCustody = OpenCustody(Recipient);
@@ -664,7 +684,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
                 MaxOperationEntries = maximumEntries,
                 MaxCursorAuthorities = Math.Min(4096, maximumEntries),
                 MaxConcurrentSingleFlights = Math.Min(1024, maximumEntries)
-            }, recipientCustody, clock: new NoUtcIntentClock());
+            }, recipientCustody, clock: new NoUtcIntentClock(), durability: durability);
             Recipient.AttachOperations(RecipientLedger);
             Bind();
         }

@@ -1,7 +1,51 @@
+using Deep.Protocol.DeepExtension.MailboxCapabilities;
+using XNode.Core.Mailbox.Client;
+
 namespace XNode.Core.Mailbox;
 
 public sealed partial class DurableMailboxPeerReplayJournal
 {
+    internal MailboxPeerReplaySnapshot CaptureCurrentSnapshot(MailboxPeerReplayClaim claim)
+    {
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            var snapshot = Read(RecordPath(Hex(claim.ScopeKey.Span))).Snapshot();
+            if (!snapshot.ScopeKey.Span.SequenceEqual(claim.ScopeKey.Span) ||
+                !snapshot.RequestDigest.Span.SequenceEqual(claim.RequestDigest.Span))
+                throw new InvalidDataException("Current peer replay snapshot differs from its verified claim.");
+            return snapshot;
+        }
+    }
+
+    internal void ValidateCurrentFloors(IReadOnlyDictionary<string, MailboxCurrentPeerReplayFloor> floors,
+        CancellationToken token)
+    {
+        lock (_gate)
+        {
+            ValidateNativeRecovery(token);
+            foreach (var path in Directory.EnumerateFiles(_directory, "*.json"))
+            {
+                token.ThrowIfCancellationRequested();
+                if (!floors.ContainsKey(Path.GetFileNameWithoutExtension(path)))
+                    throw new InvalidDataException("Current native peer replay has no independent fact.");
+            }
+            foreach (var (key, floor) in floors)
+            {
+                token.ThrowIfCancellationRequested();
+                var path = RecordPath(key);
+                if (!File.Exists(path)) throw new InvalidDataException("Current peer replay has lost independent history.");
+                var snapshot = Read(path).Snapshot();
+                if (Hex(snapshot.ScopeKey.Span) != key ||
+                    MailboxCurrentPeerReplayFloor.ReplayIdentity(snapshot) != floor.ReplayDigest ||
+                    snapshot.RetainUntilUnixSeconds != floor.RetainUntilUnixSeconds ||
+                    floor.ResponseDigest.Length != 0 && (snapshot.Status != MailboxPeerReplayRecordStatus.Completed ||
+                    MailboxCurrentPeerReplayFloor.Digest(snapshot.CanonicalResponse.Span) != floor.ResponseDigest))
+                    throw new InvalidDataException("Current peer replay rolled back its independent fact.");
+            }
+        }
+    }
+
     internal void ValidateNewNativeScope(CancellationToken token)
     {
         lock (_gate)

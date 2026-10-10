@@ -51,15 +51,31 @@ public sealed partial class CurrentMailboxPeerHttpTests
     {
         await using var f = await Fixture.CreateAsync();
         var path = Path.Combine(f.Recipient.Node.DataRoot, "mailbox-client-intent", "operations.json");
-        var backup = File.ReadAllBytes(path); var mutations = 0;
+        var staleBackup = File.ReadAllBytes(path); byte[]? backup = null; var mutations = 0;
         f.Recipient.Fault.Action = point =>
-        { if (point == MailboxPeerMutationFaultPoint.StoreReserved) { mutations++; File.Delete(path); } };
+        {
+            if (point == MailboxPeerMutationFaultPoint.StoreReserved)
+            {
+                mutations++; backup = File.ReadAllBytes(path); File.Delete(path);
+            }
+        };
         var exact = f.Recipient.Frame(MailboxPeerReplicationOperation.Store);
         await Assert.ThrowsAsync<InvalidDataException>(() => f.Recipient.Receiver.ReceiveAsync(exact, MailboxPeerReplicationOperation.Store).AsTask());
         Assert.Equal(1, mutations); Assert.False(File.Exists(path));
         Assert.Equal((byte)MailboxPeerReplayRecordStatus.Pending, Status(Assert.Single(f.Recipient.ReplayFiles)));
         Assert.Single(f.Recipient.MutationFiles); Assert.Equal(0, f.AllHttpRequests);
-        f.Recipient.Fault.Action = null; File.WriteAllBytes(path, backup); new MailboxStorageSecurity().SecureFile(path); f.Reopen();
+        Assert.NotNull(backup);
+        f.Recipient.Fault.Action = null;
+        // The peer fact was committed before the mutation callback. Restoring
+        // the older authentic document must fail, not repair the protected root.
+        File.WriteAllBytes(path, staleBackup); new MailboxStorageSecurity().SecureFile(path); f.Reopen();
+        var unchanged = AdmissionOwnerDigest(f.Recipient.Node.DataRoot);
+        var protection = PeerProtectionDigest(f.Recipient);
+        await Assert.ThrowsAsync<InvalidDataException>(() => f.Recipient.Receiver.ReceiveAsync(
+            exact, MailboxPeerReplicationOperation.Store).AsTask());
+        Assert.Equal(unchanged, AdmissionOwnerDigest(f.Recipient.Node.DataRoot));
+        Assert.Equal(protection, PeerProtectionDigest(f.Recipient));
+        File.WriteAllBytes(path, backup); new MailboxStorageSecurity().SecureFile(path); f.Reopen();
         _ = await f.Recipient.Receiver.ReceiveAsync(exact, MailboxPeerReplicationOperation.Store);
         Assert.Equal((byte)MailboxPeerReplayRecordStatus.Completed, Status(Assert.Single(f.Recipient.ReplayFiles)));
         Assert.Single(f.Recipient.MutationFiles); Assert.Equal(f.Recipient.Envelope, await f.Recipient.ReadBlobAsync());

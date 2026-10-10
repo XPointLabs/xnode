@@ -17,7 +17,6 @@ public sealed partial class MailboxClientOperationLedger
         await _gate.WaitAsync(token).ConfigureAwait(false);
         try
         {
-            _ = await lease.CheckAsync(token).ConfigureAwait(false);
             var document = await LoadAsync(token, lease).ConfigureAwait(false);
             // Native effects can survive loss/rollback of the allocation file.
             // They are a rejection fence, never proof of two-node settlement or
@@ -56,7 +55,6 @@ public sealed partial class MailboxClientOperationLedger
         await _gate.WaitAsync(token).ConfigureAwait(false);
         try
         {
-            _ = await lease.CheckAsync(token).ConfigureAwait(false);
             var document = await LoadAsync(token, lease).ConfigureAwait(false);
             var operation = GetOperation(document, key);
             if (string.IsNullOrEmpty(operation.PeerRequest))

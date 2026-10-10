@@ -13,8 +13,16 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
     MailboxPeerMutationStore mutations, DurableMailboxPeerReplayJournal replay,
     ReadOnlyMemory<byte> localSigningSeed, MailboxClientOperationLedger operations) : IDisposable
 {
-    private readonly MailboxClientOperationLedger operationLedger = operations ?? throw new ArgumentNullException(nameof(operations));
+    private readonly MailboxClientOperationLedger operationLedger = RequireProtectedOwners(operations, mutations, replay);
     internal MailboxClientOperationLedger OperationLedger => operationLedger;
+    private static MailboxClientOperationLedger RequireProtectedOwners(MailboxClientOperationLedger ledger,
+        MailboxPeerMutationStore mutationOwner, DurableMailboxPeerReplayJournal replayOwner)
+    {
+        ArgumentNullException.ThrowIfNull(ledger);
+        mutationOwner.RequireProtectedCurrentOwner();
+        replayOwner.RequireProtectedCurrentOwner();
+        return ledger;
+    }
     private readonly byte[] seed = CaptureSeed(localSigningSeed);
     private readonly SodiumMailboxPeerReplicationCrypto crypto = new();
     private readonly Dictionary<string, (ulong Start, int Count)> rates = new(StringComparer.Ordinal);
@@ -73,9 +81,8 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
             RequireKey();
             _ = await scope.Lease.CheckAsync(ct).ConfigureAwait(false);
             RequireKey();
-            await admission.InitializeHostOperationsAsync(operationLedger, scope, ct).ConfigureAwait(false);
-            await mutations.ValidateCurrentRecoveryAsync(scope.Lease, ct).ConfigureAwait(false);
-            replay.ValidateNativeRecovery(ct);
+            await admission.InitializeHostOperationsAsync(operationLedger, scope, ct,
+                (floors, peerToken) => ValidatePeerCustodyAsync(floors, scope.Lease, peerToken)).ConfigureAwait(false);
             admission.ValidateNativeRecovery(scope, ct);
             _ = await scope.Lease.CheckAsync(ct).ConfigureAwait(false);
             RequireKey();
@@ -91,7 +98,8 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
         if (storeLedger is not null && !ReferenceEquals(storeLedger, operationLedger))
             throw new InvalidOperationException("Current client work must use this receiver's operation owner.");
         return admission.WithRequestAsync(exactRequest, operation, action, token, operationLedger,
-            storeLedger is null ? null : mutations, RequireSigningCustody);
+            storeLedger is null ? null : mutations, RequireSigningCustody,
+            ValidatePeerCustodyAsync);
     }
 
     private void RequireSigningCustody(CurrentMailboxAdmission.GrantScope scope)
@@ -105,10 +113,20 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
             throw new CryptographicException("Current signing custody differs from its descriptor.");
     }
 
-    private async ValueTask RequireOperationCustodyAsync(CurrentMailboxAdmission.GrantScope scope, CancellationToken token)
+    private async ValueTask<ulong> RequireOperationCustodyAsync(CurrentMailboxAdmission.GrantScope scope, CancellationToken token)
     {
         RequireSigningCustody(scope);
-        await admission.InitializeGrantOperationsAsync(operationLedger, scope, token).ConfigureAwait(false);
+        return await admission.InitializeGrantOperationsAsync(operationLedger, scope, token,
+            (floors, peerToken) => ValidatePeerCustodyAsync(floors, scope.Lease, peerToken)).ConfigureAwait(false);
+    }
+
+    private async Task ValidatePeerCustodyAsync(IReadOnlyDictionary<string, MailboxCurrentPeerReplayFloor> floors,
+        MailboxCurrentOperationLease lease, CancellationToken token)
+    {
+        using (CurrentMailboxDiagnostics.Measure("peer-replay-join"))
+            replay.ValidateCurrentFloors(floors, token);
+        using (CurrentMailboxDiagnostics.Measure("peer-native-join"))
+            await mutations.ValidateCurrentRecoveryAsync(lease, token, floors).ConfigureAwait(false);
     }
 
     internal Task<bool> HasStoreCustodyAsync(CurrentMailboxAdmission.GrantScope scope,
@@ -194,9 +212,9 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
         WithPeerAsync(canonicalRequest, expectedOperation, MailboxPeerWireResponseReplicaV2.Recipient,
             async (operation, ct) =>
             {
-                if (operation.Verified.ReplayDisposition == MailboxPeerReplayDisposition.IdempotentCompleted)
-                    return operation.Verified.CachedResponse.ToArray();
-                var response = await operation.ApplyAndSignLocalAsync(ct).ConfigureAwait(false);
+                var response = operation.Verified.ReplayDisposition == MailboxPeerReplayDisposition.IdempotentCompleted
+                    ? operation.Verified.CachedResponse.ToArray()
+                    : await operation.ApplyAndSignLocalAsync(ct).ConfigureAwait(false);
                 await operation.CommitRecipientAsync(response, ct).ConfigureAwait(false);
                 return response;
             }, token);
@@ -296,21 +314,26 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
         // Authenticate the complete candidate before recovery; even a completed
         // replay cannot bypass this owner. The SAME role leases remain held
         // before rate/replay/mutation, without a synthetic client request.
-        await RequireOperationCustodyAsync(scope, ct).ConfigureAwait(false);
-        upper = await scope.Lease.CheckAsync(ct).ConfigureAwait(false);
+        upper = await RequireOperationCustodyAsync(scope, ct).ConfigureAwait(false);
         policy = policy with { NowUnixSeconds = upper };
         _ = MailboxPeerWireV2Codec.VerifyReplayCandidate(owned, policy, crypto, proofs);
+        var scopeKey = MailboxPeerReplayStateMachine.ComputeScopeKey(decoded.SenderRouterId.Span,
+            decoded.RecipientRouterId.Span, decoded.Epoch, decoded.ReplayNonce.Span);
+        await operationLedger.RequireCurrentPeerFloorCapacityAsync(scopeKey, scope.Lease, ct).ConfigureAwait(false);
         RequireRate(decoded.SenderRouterId.Span, upper);
         var verified = MailboxPeerWireV2Codec.VerifyAndReserve(owned, policy, crypto, proofs, replay);
-        _ = await scope.Lease.CheckAsync(ct).ConfigureAwait(false);
-        var result = await action(new PeerOperation(this, scope, verified, owned, localRole), ct).ConfigureAwait(false);
-        _ = await scope.Lease.CheckAsync(ct).ConfigureAwait(false);
+        var fact = await mutations.CaptureCurrentPeerFactAsync(verified,
+            replay.CaptureCurrentSnapshot(verified.ReplayClaim), scope.Lease, ct).ConfigureAwait(false);
+        await operationLedger.RecordCurrentPeerFloorAsync(scopeKey, fact,
+            verified.ReplayDisposition != MailboxPeerReplayDisposition.NewReserved, scope.Lease, ct).ConfigureAwait(false);
+        var result = await action(new PeerOperation(this, scope, verified, owned, localRole, fact), ct).ConfigureAwait(false);
         await RequireOperationCustodyAsync(scope, ct).ConfigureAwait(false);
         return result;
     }
 
     internal sealed class PeerOperation(CurrentMailboxReplicaReceiver owner, CurrentMailboxAdmission.GrantScope scope,
-        VerifiedMailboxPeerWireRequestV2 verified, byte[] exact, MailboxPeerWireResponseReplicaV2 localRole)
+        VerifiedMailboxPeerWireRequestV2 verified, byte[] exact, MailboxPeerWireResponseReplicaV2 localRole,
+        MailboxCurrentPeerReplayFloor fact)
     {
         internal VerifiedMailboxPeerWireRequestV2 Verified => verified;
         internal ReadOnlyMemory<byte> CanonicalRequest => exact.ToArray();
@@ -319,7 +342,9 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
         internal async ValueTask EnsureCurrentAsync(CancellationToken token)
         {
             ObjectDisposedException.ThrowIf(Volatile.Read(ref owner.disposed) != 0, owner);
-            _ = await scope.Lease.CheckAsync(token).ConfigureAwait(false);
+            // InitializeCurrent authenticates a fresh document and checks the
+            // lease both before native reads and after all joins. An extra check
+            // immediately before that same boundary adds no protected evidence.
             await owner.RequireOperationCustodyAsync(scope, token).ConfigureAwait(false);
             ObjectDisposedException.ThrowIf(Volatile.Read(ref owner.disposed) != 0, owner);
         }
@@ -328,7 +353,8 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
             await EnsureCurrentAsync(token).ConfigureAwait(false);
             var mutation = await owner.Mutations.ApplyCurrentAsync(verified, scope.Lease, token).ConfigureAwait(false);
             if (!string.IsNullOrEmpty(mutation.Error)) throw new InvalidDataException("Current peer durable mutation was rejected.");
-            var durableAt = await scope.Lease.CheckAsync(token).ConfigureAwait(false);
+            var durableAt = await owner.operationLedger.RecordCurrentPeerFloorAsync(verified.ReplayClaim.ScopeKey,
+                fact with { MutationCompleted = true }, true, scope.Lease, token).ConfigureAwait(false);
             var receipt = MailboxPeerWireV2Codec.CreateUnsignedDurableReplicaResponseAfterPersistence(verified,
                 localRole, mutation.Disposition, verified.ReplayClaim.ReservedAtUnixSeconds, durableAt);
             var result = MailboxReceiptV2Codec.EncodeReplica(owner.crypto.SignReplicaResponse(receipt, owner.seed));
@@ -339,7 +365,11 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
         {
             await EnsureCurrentAsync(token).ConfigureAwait(false);
             _ = MailboxPeerWireV2Codec.VerifyReplicaResponse(response.Span, verified, owner.crypto);
-            owner.Replay.CompleteAtomically(verified.ReplayClaim, response);
+            if (verified.ReplayDisposition != MailboxPeerReplayDisposition.IdempotentCompleted)
+                owner.Replay.CompleteAtomically(verified.ReplayClaim, response);
+            await owner.operationLedger.RecordCurrentPeerFloorAsync(verified.ReplayClaim.ScopeKey,
+                fact with { MutationCompleted = true, ResponseDigest = MailboxCurrentPeerReplayFloor.Digest(response.Span) },
+                true, scope.Lease, token).ConfigureAwait(false);
             await EnsureCurrentAsync(token).ConfigureAwait(false);
         }
         internal async ValueTask<ReadOnlyMemory<byte>> CreateQuorumAsync(ReadOnlyMemory<byte> local,

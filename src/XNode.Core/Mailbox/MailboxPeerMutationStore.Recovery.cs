@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
+using XNode.Core.Mailbox.Client;
 
 namespace XNode.Core.Mailbox;
 
@@ -19,7 +20,8 @@ public sealed partial class MailboxPeerMutationStore
         finally { _gate.Release(); }
     }
 
-    internal async Task ValidateCurrentRecoveryAsync(MailboxCurrentOperationLease lease, CancellationToken token)
+    internal async Task ValidateCurrentRecoveryAsync(MailboxCurrentOperationLease lease, CancellationToken token,
+        IReadOnlyDictionary<string, MailboxCurrentPeerReplayFloor>? floors = null)
     {
         await _gate.WaitAsync(token).ConfigureAwait(false);
         try
@@ -28,6 +30,7 @@ public sealed partial class MailboxPeerMutationStore
             _ = await lease.CheckAsync(token).ConfigureAwait(false);
             MailboxNativeRecovery.RequireDirectory(_directory, token);
             var unmatched = new Dictionary<string, PersistedMutation>(StringComparer.Ordinal);
+            var records = new Dictionary<string, PersistedMutation>(StringComparer.Ordinal);
             var count = 0;
             foreach (var path in Directory.EnumerateFiles(_directory, "*.json"))
             {
@@ -35,6 +38,7 @@ public sealed partial class MailboxPeerMutationStore
                     throw new InvalidDataException("Mailbox recovery mutation inventory exceeds its bound.");
                 MailboxNativeRecovery.RequireFile(path, token);
                 var record = Read(path);
+                records.Add(Path.GetFileNameWithoutExtension(path), record);
                 var scope = RetrieveScope(record);
                 if (Path.GetFileNameWithoutExtension(path) != RecordKey(record.Epoch, record.MailboxId, record.EnvelopeDigest) ||
                     !_retrievePaths.TryGetValue(path, out var indexed) || indexed != (scope, record.Cursor) ||
@@ -45,6 +49,10 @@ public sealed partial class MailboxPeerMutationStore
             }
             if (count != _recordCount || count != _retrievePaths.Count)
                 throw new InvalidDataException("Mailbox recovery mutation custody is missing.");
+            // Join independent facts and blobs to the SAME freshly read native
+            // records while holding this mutation owner, not two inventories
+            // separated by a gate release and another authority callback.
+            if (floors is not null) ValidateCurrentFloorRecords(floors, records, token);
             await _blobStore.ValidateCurrentRecoveryAsync(blob =>
             {
                 token.ThrowIfCancellationRequested();

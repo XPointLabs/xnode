@@ -101,6 +101,7 @@ internal sealed class FileMailboxOperationCustody : IMailboxOperationCustody, ID
     public async ValueTask VerifyAsync(string operationFile, MailboxCurrentOperationLease lease,
         Func<string, CancellationToken, Task> validate, CancellationToken token)
     {
+        using var measurement = CurrentMailboxDiagnostics.Measure("operation-verify");
         RequirePath(operationFile); _ = await lease.CheckAsync(token).ConfigureAwait(false);
         var state = ReadState(); var actual = await HashAsync(operationPath, token).ConfigureAwait(false);
         if (state.Next is null)
@@ -139,6 +140,7 @@ internal sealed class FileMailboxOperationCustody : IMailboxOperationCustody, ID
     public async ValueTask PrepareAsync(string operationFile, string temporaryFile,
         MailboxCurrentOperationLease lease, CancellationToken token)
     {
+        using var measurement = CurrentMailboxDiagnostics.Measure("operation-prepare");
         RequirePath(operationFile); _ = await lease.CheckAsync(token).ConfigureAwait(false);
         var state = ReadState();
         if (state.Next is not null || state.Generation == ulong.MaxValue)
@@ -159,6 +161,7 @@ internal sealed class FileMailboxOperationCustody : IMailboxOperationCustody, ID
 
     public async ValueTask CommitAsync(string operationFile, MailboxCurrentOperationLease lease, CancellationToken token)
     {
+        using var measurement = CurrentMailboxDiagnostics.Measure("operation-commit");
         RequirePath(operationFile); _ = await lease.CheckAsync(token).ConfigureAwait(false);
         var state = ReadState(); var next = state.Next ?? throw new InvalidDataException("Mailbox operation transition is missing.");
         RequireDigest(await HashAsync(operationPath, token).ConfigureAwait(false), next.Hash, next.Length);

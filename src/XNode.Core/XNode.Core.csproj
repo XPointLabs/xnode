@@ -12,6 +12,9 @@
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(DeepProtocolSourceCutover)' == 'true'">
+    <!-- Foreign Protocol projects are absent from XNode.slnx. Preserve this
+         project's actual Configuration without customizing discovery anchors. -->
+    <ShouldUnsetParentConfigurationAndPlatform>false</ShouldUnsetParentConfigurationAndPlatform>
     <RestorePackagesWithLockFile>false</RestorePackagesWithLockFile>
     <RestoreLockedMode>false</RestoreLockedMode>
     <NuGetLockFilePath>$(BaseIntermediateOutputPath)source-cutover\packages.lock.json</NuGetLockFilePath>
@@ -28,8 +31,15 @@
   </ItemGroup>
 
   <ItemGroup Condition="'$(DeepProtocolSourceCutover)' == 'true'">
-    <ProjectReference Include="..\..\..\deep-protocol\src\Deep.Protocol\Deep.Protocol.csproj" />
-    <ProjectReference Include="..\..\..\deep-protocol\src\Deep.Protocol.MembershipRoutes\Deep.Protocol.MembershipRoutes.csproj" />
+    <!-- Solution traversal needs the override for foreign children. Ordinary
+         project publish already preserves Configuration; adding a global
+         property there creates distinct instances sharing the same outputs. -->
+    <ProjectReference Include="..\..\..\deep-protocol\src\Deep.Protocol\Deep.Protocol.csproj">
+      <AdditionalProperties Condition="'$(BuildingSolutionFile)' == 'true'">ShouldUnsetParentConfigurationAndPlatform=false</AdditionalProperties>
+    </ProjectReference>
+    <ProjectReference Include="..\..\..\deep-protocol\src\Deep.Protocol.MembershipRoutes\Deep.Protocol.MembershipRoutes.csproj">
+      <AdditionalProperties Condition="'$(BuildingSolutionFile)' == 'true'">ShouldUnsetParentConfigurationAndPlatform=false</AdditionalProperties>
+    </ProjectReference>
   </ItemGroup>
 
   <ItemGroup>

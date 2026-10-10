@@ -14,6 +14,8 @@
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(DeepProtocolSourceCutover)' == 'true'">
+    <!-- Preserve Release for this project's foreign Protocol references only. -->
+    <ShouldUnsetParentConfigurationAndPlatform>false</ShouldUnsetParentConfigurationAndPlatform>
     <RestorePackagesWithLockFile>false</RestorePackagesWithLockFile>
     <RestoreLockedMode>false</RestoreLockedMode>
     <NuGetLockFilePath>$(BaseIntermediateOutputPath)source-cutover\packages.lock.json</NuGetLockFilePath>
@@ -30,8 +32,12 @@
   </ItemGroup>
 
   <ItemGroup Condition="'$(DeepProtocolSourceCutover)' == 'true'">
-    <ProjectReference Include="..\..\..\deep-protocol\src\Deep.Protocol\Deep.Protocol.csproj" />
-    <ProjectReference Include="..\..\..\deep-protocol\src\Deep.Protocol.MembershipRoutes\Deep.Protocol.MembershipRoutes.csproj" />
+    <ProjectReference Include="..\..\..\deep-protocol\src\Deep.Protocol\Deep.Protocol.csproj">
+      <AdditionalProperties Condition="'$(BuildingSolutionFile)' == 'true'">ShouldUnsetParentConfigurationAndPlatform=false</AdditionalProperties>
+    </ProjectReference>
+    <ProjectReference Include="..\..\..\deep-protocol\src\Deep.Protocol.MembershipRoutes\Deep.Protocol.MembershipRoutes.csproj">
+      <AdditionalProperties Condition="'$(BuildingSolutionFile)' == 'true'">ShouldUnsetParentConfigurationAndPlatform=false</AdditionalProperties>
+    </ProjectReference>
   </ItemGroup>
 
   <ItemGroup>

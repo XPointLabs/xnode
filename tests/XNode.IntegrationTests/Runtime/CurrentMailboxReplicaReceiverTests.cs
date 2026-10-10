@@ -275,6 +275,9 @@ public sealed class CurrentMailboxReplicaReceiverTests
         private readonly BlindedPlacementId placement = new(Bytes(32, 0x55));
         internal string[] ReplayFiles => Directory.GetFiles(Path.Combine(Node.DataRoot, options.PeerReplayDirectoryName), "*.json");
         internal string[] MutationFiles => Directory.GetFiles(Path.Combine(Node.DataRoot, options.PeerMutationDirectoryName), "*.json");
+        internal int CollectNeutralPeerReplay() => replay.CollectExpired(ulong.MaxValue, 1);
+        internal Task<int> CollectNeutralPeerMutations() => mutations.CollectExpiredAsync(ulong.MaxValue, 1);
+        internal Task InitializeNeutralPeerMutations() => mutations.InitializeAsync();
         internal static async Task<Fixture> CreateAsync(DeepIdV2PublicationAuthorityFixture? signed = null,
             int localReplicaIndex = 1, ulong envelopeExpiry = 1_150)
         {

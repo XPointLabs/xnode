@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Diagnostics;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -19,6 +20,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
     {
         private WebApplicationFactory<Program>? program;
         internal int ApiPort;
+        internal int LastPeerStatus;
         private string? certificateRoot;
         internal string? certificatePath;
 
@@ -98,11 +100,35 @@ public sealed partial class CurrentMailboxPeerHttpTests
         {
             app.Use(async (context, continuation) =>
             {
-                if (context.Connection.LocalPort == (host.configuredPorts is null ? host.Port : host.configuredPorts[3]) &&
+                var peer = context.Connection.LocalPort == (host.configuredPorts is null ? host.Port : host.configuredPorts[3]) &&
                     (context.Request.Path.Equals(MailboxWireHttpContract.PeerStoreRoute) ||
-                     context.Request.Path.Equals(MailboxWireHttpContract.PeerTombstoneRoute)))
+                     context.Request.Path.Equals(MailboxWireHttpContract.PeerTombstoneRoute));
+                if (peer)
+                {
                     Interlocked.Increment(ref host.Requests);
-                await continuation(context);
+                    var original = context.Request.Body;
+                    using var observed = new ObservedRequestBody(original, host);
+                    var started = Stopwatch.GetTimestamp();
+                    host.BodyBytes = host.EndReads = host.LastPeerStatus = 0;
+                    host.HandlerFailure = null; host.RequestCancelled = context.RequestAborted.IsCancellationRequested;
+                    host.Phase = "endpoint-enter";
+                    using var cancellation = context.RequestAborted.Register(() => Volatile.Write(ref host.RequestCancelled, true));
+                    context.Request.Body = observed;
+                    try
+                    {
+                        await continuation(context);
+                        host.LastPeerStatus = context.Response.StatusCode;
+                        host.Phase = "endpoint-returned";
+                    }
+                    catch (Exception error) { host.HandlerFailure = error.GetType().Name; throw; }
+                    finally
+                    {
+                        context.Request.Body = original;
+                        Interlocked.Exchange(ref host.HandlerMilliseconds,
+                            checked((long)Stopwatch.GetElapsedTime(started).TotalMilliseconds));
+                    }
+                }
+                else await continuation(context);
                 host.LastStatus = context.Response.StatusCode;
                 host.LastBytes = checked((int)(context.Response.ContentLength ?? 0));
             });

@@ -21,7 +21,6 @@ public sealed partial class MailboxClientOperationLedger
         await _gate.WaitAsync(token).ConfigureAwait(false);
         try
         {
-            _ = await lease.CheckAsync(token).ConfigureAwait(false);
             var document = await LoadAsync(token, lease).ConfigureAwait(false);
             if (document.ClientReplayFloors.TryGetValue(key, out var prior))
             {
@@ -37,7 +36,8 @@ public sealed partial class MailboxClientOperationLedger
                 throw new MailboxClientLedgerCapacityException();
             document.ClientReplayFloors[key] = new(claim.ReplayCounter, digest, outcome);
             await SaveAsync(document, token, lease).ConfigureAwait(false);
-            _ = await lease.CheckAsync(token).ConfigureAwait(false);
+            // Save's protected Commit checks the live lease after read-back;
+            // successful current saves perform no cleanup callback afterwards.
         }
         finally { _gate.Release(); }
     }

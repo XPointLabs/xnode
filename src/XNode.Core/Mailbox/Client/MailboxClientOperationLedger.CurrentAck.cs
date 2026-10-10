@@ -17,7 +17,6 @@ public sealed partial class MailboxClientOperationLedger
         await _gate.WaitAsync(token).ConfigureAwait(false);
         try
         {
-            _ = await lease.CheckAsync(token).ConfigureAwait(false);
             var document = await LoadAsync(token, lease).ConfigureAwait(false);
             if (document.AckOperations.TryGetValue(key, out var existing))
             {
@@ -77,7 +76,6 @@ public sealed partial class MailboxClientOperationLedger
         await _gate.WaitAsync(token).ConfigureAwait(false);
         try
         {
-            _ = await lease.CheckAsync(token).ConfigureAwait(false);
             var document = await LoadAsync(token, lease).ConfigureAwait(false); var operation = GetAckOperation(document, key);
             var index = FindAckItem(operation, cursor); var item = operation.Items[index];
             if (string.IsNullOrEmpty(item.PeerRequest)) throw new InvalidDataException("Current ACK intent is missing.");

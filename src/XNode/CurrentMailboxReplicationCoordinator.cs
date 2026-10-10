@@ -135,8 +135,7 @@ internal sealed partial class CurrentMailboxReplicationCoordinator(CurrentMailbo
         ReadOnlyMemory<byte> quorum;
         try { quorum = await current.CreateQuorumAsync(localReceipt, remote.Value, ct).ConfigureAwait(false); }
         catch (MailboxPeerReplicationException) { return new(MailboxPeerQuorumStatus.PartialFailure, ReadOnlyMemory<byte>.Empty, 1); }
-        if (current.Verified.ReplayDisposition != MailboxPeerReplayDisposition.IdempotentCompleted)
-            await current.CommitRecipientAsync(remote.Value, ct).ConfigureAwait(false);
+        await current.CommitRecipientAsync(remote.Value, ct).ConfigureAwait(false);
         return new(MailboxPeerQuorumStatus.Durable, quorum, 2);
     }
     private static TimeSpan CaptureTimeout(ReplicatedMailboxOptions options)

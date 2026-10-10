@@ -6,7 +6,7 @@ namespace XNode.IntegrationTests.Runtime;
 public sealed partial class CurrentMailboxPeerHttpTests
 {
     // These existing seams target Store/ACK intent/settlement transitions, not
-    // the independent client replay-floor writes added to the same document.
+    // the independent client/peer replay-floor writes in the same document.
     // Every write still uses the real barrier; only fault selection is semantic.
     private static bool IsBusinessWrite(string temporary, string current)
     {
@@ -14,6 +14,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
         {
             var document = JsonNode.Parse(File.ReadAllBytes(path))!.AsObject();
             Assert.True(document.Remove("clientReplayFloors"));
+            Assert.True(document.Remove("peerReplayFloors"));
             return document;
         }
         return !JsonNode.DeepEquals(Read(temporary), Read(current));

@@ -158,8 +158,8 @@ quorum journal, public wire field, authority adapter or activation switch.
 The current internal Store producer now owns a durable random nonce and complete
 signed peer frame in the existing operation ledger before any peer effect.
 Reopening retains those exact bytes; known replay or existing mutation custody
-without its intent rejects instead of reminting. The local ledger is schema 7;
-older schemas 3/4/5/6 or malformed state reject without migration or automatic reset.
+without its intent rejects instead of reminting. The current private generation
+and predecessor refusal are defined solely in [operation custody](mailbox-operation-custody.md).
 The same independently anchored document now retains current client replay
 scope/counter/claim floors and completed outcome digests for Store/Retrieve/ACK.
 Reservation floors precede operation effects; completion digests precede a
@@ -186,6 +186,13 @@ operation custody loss. Missing/malformed local operation data at the current
 peer HTTP endpoint returns bodyless 503, preserving state. Only an
 authenticated pending replacement can recover exact bytes. Unknown pre-plan
 writes still cannot remint a known request. The actual startup/readiness hook now
+also joins independently protected peer facts to native replay/mutations,
+detecting coordinated cold peer-file loss and authentic pre-ACK rollback on
+either replica. Known Pending effects can finish only their authenticated exact
+retry. Neutral peer collection cannot erase these facts or native history;
+owned retirement remains a later-stage gate. Preserve operation data, protected
+root and provider key ring as one consistent recovery set; never erase them to
+make an old deployed document enrollable. The startup/readiness hook
 uses this same non-enrolling recovery; it does not qualify global recovery,
 retirement or deployed provisioning. The linked owner
 defines the consistent backup and local anti-rollback limits.
@@ -1340,3 +1347,15 @@ fail closed; no migration, automatic reset or silent deletion is provided. This
 source change does not alter registered node keys, protected authority floors,
 production volumes, certbot or other colocated services. An explicit scoped data
 reset, if needed for activation, is a separate operator step.
+
+### Current mailbox resource observations
+
+The optional `XPoint.XNode.CurrentMailbox` meter exposes `phase.duration` in
+milliseconds with closed phase names only. No exporter is enabled by this
+change. Measurements contain no node/account/mailbox IDs, selectors, payloads,
+paths, capabilities or keys and add no Activity context or outgoing headers.
+They measure local resource cost, not trusted authority time or delivery proof.
+Durations are inclusive and can overlap across phases and hosts; do not sum
+them as one request's CPU time. Native test diagnostics reset at dispatch, after
+setup, and keep failed receipts. Current source, replay/custody, deadline and
+release qualification rules are unchanged by instrumentation.

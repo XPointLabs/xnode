@@ -54,7 +54,8 @@ public sealed partial class MailboxClientOperationLedger
             custody.RequireNewScope(_path);
             RequireAbsentCurrentDocument(token);
             var empty = new MailboxClientLedgerDocument(SchemaVersion, 0, 0,
-                new(StringComparer.Ordinal), new(StringComparer.Ordinal), new(StringComparer.Ordinal), new(StringComparer.Ordinal));
+                new(StringComparer.Ordinal), new(StringComparer.Ordinal), new(StringComparer.Ordinal),
+                new(StringComparer.Ordinal), new(StringComparer.Ordinal));
             // The actual empty document precedes protected enrollment. Readers
             // cannot retry interrupted provisioning or install a fresh root.
             await SaveAsync(empty, token, lease, enrolling: true).ConfigureAwait(false);
@@ -64,9 +65,10 @@ public sealed partial class MailboxClientOperationLedger
         finally { _gate.Release(); }
     }
 
-    internal async Task InitializeCurrentAsync(ReadOnlyMemory<byte> localNode,
+    internal async Task<ulong> InitializeCurrentAsync(ReadOnlyMemory<byte> localNode,
         VerifiedMailboxHostAuthorityV2 host, MailboxCurrentOperationLease lease, CancellationToken token,
-        Action<IReadOnlyDictionary<string, MailboxCurrentClientReplayFloor>, CancellationToken>? validateReplay = null)
+        Action<IReadOnlyDictionary<string, MailboxCurrentClientReplayFloor>, CancellationToken>? validateReplay = null,
+        Func<IReadOnlyDictionary<string, MailboxCurrentPeerReplayFloor>, CancellationToken, Task>? validatePeer = null)
     {
         ThrowIfDisposed(); lease.RequireActive();
         (_currentCustody ?? throw new InvalidOperationException("Current operation custody is required."))
@@ -76,7 +78,12 @@ public sealed partial class MailboxClientOperationLedger
         {
             var document = await LoadAsync(token, lease).ConfigureAwait(false);
             validateReplay?.Invoke(document.ClientReplayFloors, token);
-            _ = await lease.CheckAsync(token).ConfigureAwait(false);
+            // Both joins use this exact authenticated snapshot under the same
+            // owner lock. Do not reload it just to validate the peer facts, and
+            // never carry this snapshot across another admission/callback fence.
+            if (validatePeer is not null)
+                await validatePeer(document.PeerReplayFloors, token).ConfigureAwait(false);
+            return await lease.CheckAsync(token).ConfigureAwait(false);
         }
         finally { _gate.Release(); }
     }
