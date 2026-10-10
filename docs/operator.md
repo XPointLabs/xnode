@@ -117,9 +117,14 @@ Partial quorum, callback/expiry or custody failures suppress success and retain
 exact unknown work; an exception is not proof of absence of a remote effect.
 Program now registers one current owner graph for explicitly configured local
 mailbox custody. Do not enable the retired provider as a bridge. Program runs current
-host-only operation recovery at startup and afresh in `/health/ready`; an enabled
+host-only native recovery at startup and afresh in `/health/ready`; an enabled
 mailbox without the actual current receiver/coordinator stays unready. This hook
-does not qualify global historical data recovery. See the custody configuration
+now rereads the mutation/blob inventory, peer replay and client replay/outcome
+dependencies under the same held current host/role owners. Missing live completed
+blobs, orphan/resurrected blobs, corrupt records, missing indexed custody and a
+completed replay without its exact canonical outcome keep readiness closed.
+These checks do not collect, repair, re-enroll or dispatch work. Pending prefixes
+remain available for the original exact retry. See the custody configuration
 below; retained-route, signed retirement and object-horizon gates remain required.
 The dedicated peer listener no longer permits retired authority-forwarding paths.
 The retired forwarding client, HTTP handler, authentication/replay/configuration
@@ -1244,9 +1249,13 @@ MailboxAuthorityForwarding sections reject, including empty sections. There are
 no retired client, closure or forwarding HTTP handlers in Program. Do not use
 the old survival-mailbox authority generators for this graph.
 
-Readiness checks actual current host/role/operation custody afresh and returns
-sanitized state, never a cached success flag. This narrow check is not a full
-historical blob/replay/retained-route recovery scan. Unified retention, signed
+Readiness checks actual current host/role/operation and native mailbox custody
+afresh and returns sanitized state, never a cached success flag. Native file
+scans are bounded and cancellable within the existing health budget; expiry is
+checked with the held host lease, not host UTC or a synthetic client grant.
+This is not proof against coordinated cold rollback/loss of otherwise consistent
+replay and mutation files: their independent protected checkpoint coverage still
+requires closure. It also does not qualify retained-route recovery. Unified retention, signed
 retirement, issuer renewal, complete provisioning and shipping composition
 remain activation requirements under the
 [implementation plan](../../docs/architecture/IMPLEMENTATION-PLAN-V1.md).

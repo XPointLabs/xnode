@@ -63,6 +63,9 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
             _ = await scope.Lease.CheckAsync(ct).ConfigureAwait(false);
             RequireKey();
             await operationLedger.InitializeCurrentAsync(LocalNodeId, scope.Host, scope.Lease, ct).ConfigureAwait(false);
+            await mutations.ValidateCurrentRecoveryAsync(scope.Lease, ct).ConfigureAwait(false);
+            replay.ValidateNativeRecovery(ct);
+            admission.ValidateNativeRecovery(scope, ct);
             _ = await scope.Lease.CheckAsync(ct).ConfigureAwait(false);
             RequireKey();
             return true;

@@ -11,7 +11,7 @@ public enum MailboxPutDisposition
 
 public sealed record MailboxPutResult(MailboxPutDisposition Disposition, string Error = "");
 
-public sealed class ReplicatedMailboxStore
+public sealed partial class ReplicatedMailboxStore
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _rootDirectory;

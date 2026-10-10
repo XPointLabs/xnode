@@ -23,6 +23,15 @@ internal sealed partial class CurrentMailboxAdmission(
     private readonly MailboxClientVerifiedHolderLimiter holderLimiter = new();
     internal ReadOnlyMemory<byte> LocalNodeId => node.ToArray();
 
+    internal void ValidateNativeRecovery(HostScope scope, CancellationToken token)
+    {
+        if (!ReferenceEquals(scope.Owner, this))
+            throw new InvalidOperationException("Native recovery requires this admission owner.");
+        scope.Lease.RequireActive();
+        runtime.ValidateNativeRecovery(token);
+        scope.Lease.RequireActive();
+    }
+
     internal async ValueTask<T> WithRequestAsync<T>(ReadOnlyMemory<byte> exactRequest,
         MailboxAuthenticatedOperation operation,
         Func<Request, CancellationToken, ValueTask<T>> action, CancellationToken token = default,

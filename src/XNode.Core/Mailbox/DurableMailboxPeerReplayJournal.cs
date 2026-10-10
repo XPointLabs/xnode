@@ -9,7 +9,7 @@ namespace XNode.Core.Mailbox;
 /// Exclusive, crash-safe PRQ2 replay journal. Persisted records contain only protocol digests and
 /// replay timing state; router ids, nonces and mailbox ids are never used as filenames or logs.
 /// </summary>
-public sealed class DurableMailboxPeerReplayJournal : IMailboxPeerReplayJournal, IDisposable
+public sealed partial class DurableMailboxPeerReplayJournal : IMailboxPeerReplayJournal, IDisposable
 {
     private const int SchemaVersion = 1;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);

@@ -80,6 +80,35 @@ public sealed class DurableMailboxCapabilityReplayJournalTests : IDisposable
     }
 
     [Fact]
+    public void NativeReplayLoadBoundPreservesMaximumNeutralOutcomeOnColdOpen()
+    {
+        var claim = Claim(counter: 1, claimByte: 0x23);
+        var options = new DurableMailboxCapabilityReplayJournalOptions { MaximumScopes = 1 };
+        var outcome = Bytes(0x92, MailboxAuthenticatedCapabilityLimits.MaximumCachedOutcomeLength);
+        using (var journal = new DurableMailboxCapabilityReplayJournal(_directory, options))
+        {
+            Assert.Equal(MailboxCapabilityAtomicReplayState.NewReserved, Evaluate(journal, claim).State);
+            journal.CompleteAtomically(claim, outcome);
+        }
+        using var reopened = new DurableMailboxCapabilityReplayJournal(_directory, options);
+        var replay = Evaluate(reopened, claim);
+        Assert.Equal(MailboxCapabilityAtomicReplayState.CompletedSame, replay.State);
+        Assert.Equal(outcome, replay.CachedOutcome.ToArray());
+    }
+
+    [Fact]
+    public void NativeReplayLoadRejectsOversizedDocumentWithoutRepair()
+    {
+        var options = new DurableMailboxCapabilityReplayJournalOptions { MaximumScopes = 1 };
+        using (var journal = new DurableMailboxCapabilityReplayJournal(_directory, options)) { }
+        var path = Path.Combine(_directory, options.DirectoryName, "replay.json");
+        var length = 2049L + MailboxAuthenticatedCapabilityLimits.MaximumCachedOutcomeLength * 8;
+        using (var stream = new FileStream(path, FileMode.Create, FileAccess.Write)) stream.SetLength(length);
+        Assert.Throws<InvalidDataException>(() => new DurableMailboxCapabilityReplayJournal(_directory, options));
+        Assert.Equal(length, new FileInfo(path).Length);
+    }
+
+    [Fact]
     public void CorruptJournalAndConcurrentOwner_FailClosed()
     {
         using (var owner = Journal())

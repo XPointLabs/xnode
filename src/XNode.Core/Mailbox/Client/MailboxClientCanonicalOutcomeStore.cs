@@ -196,7 +196,7 @@ internal interface IMailboxClientCanonicalOutcomeFaultInjector
     void Inject(MailboxClientCanonicalOutcomeFaultPoint point);
 }
 
-public sealed class MailboxClientCanonicalOutcomeStore : IDisposable
+public sealed partial class MailboxClientCanonicalOutcomeStore : IDisposable
 {
     public const int HeaderLength = 128;
 

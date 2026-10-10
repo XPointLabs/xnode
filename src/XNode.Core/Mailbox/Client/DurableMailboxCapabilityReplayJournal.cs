@@ -70,7 +70,7 @@ internal sealed record MailboxExpiredReplayCollectionItem(
 /// domain-separated hash produced by the protocol state machine; raw operation, capability,
 /// mailbox and issuer identifiers are never persisted or emitted as diagnostics.
 /// </summary>
-public sealed class DurableMailboxCapabilityReplayJournal
+public sealed partial class DurableMailboxCapabilityReplayJournal
     : IMailboxCapabilityReplayJournal, IDisposable
 {
     private const int SchemaVersion = 3;
@@ -500,11 +500,19 @@ public sealed class DurableMailboxCapabilityReplayJournal
 
         try
         {
+            // The neutral primitive still permits the protocol's full cached
+            // outcome bound; current runtime completion stores a digest instead.
+            const int maximumRecordBytes = 1024 + MailboxAuthenticatedCapabilityLimits.MaximumCachedOutcomeLength * 8;
+            if (new FileInfo(_path).Length > checked((long)_maximumScopes * maximumRecordBytes + 1024))
+                throw new InvalidDataException("Mailbox replay journal exceeds its native bound.");
+            using var stream = File.OpenRead(_path);
             var document = JsonSerializer.Deserialize<MailboxCapabilityReplayJournalDocument>(
-                File.ReadAllBytes(_path),
+                stream,
                 JsonOptions)
                 ?? throw new InvalidDataException("Mailbox replay journal is empty.");
             Validate(document);
+            if (document.Records.Count > _maximumScopes)
+                throw new InvalidDataException("Mailbox replay journal exceeds its scope bound.");
             return document;
         }
         catch (Exception exception) when (
