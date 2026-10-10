@@ -32,8 +32,8 @@ internal sealed partial class DeepIdV2PublicationAuthorityFixture : IDisposable,
     internal static readonly byte[] Boot = Bytes(16, 0xf3);
     internal static readonly byte[] Service = Bytes(32, 0x35);
     // This is an epoch-transition fixture, not a sub-five-second latency test.
-    // The independently signed proof is still freshness-bounded to30 seconds;
-    // the original projection expires well before the live1500 policy.
+    // DTT1 issuance spans30 seconds; directory freshness and network leases
+    // are independently verified. The projection expires before the live1500 policy.
     internal const ulong ShortMailboxProjectionExpiry = 1_200;
     private readonly byte[] service;
     internal sealed record TransportOrigin(IPAddress Address, ushort Port, ReadOnlyMemory<byte> CurrentSpki, ReadOnlyMemory<byte> NextSpki);
@@ -87,6 +87,8 @@ internal sealed partial class DeepIdV2PublicationAuthorityFixture : IDisposable,
     private DeepIdV2DirectoryProofMaterial proofMaterial = null!;
     private VerifiedDeepIdV2DirectoryQuery proofQuery = null!;
     private AccountDirectoryProtectedLkg initialDirectoryFloor = null!;
+    internal ReadOnlyMemory<byte> ExactDirectoryGenesis { get; private set; }
+    internal ReadOnlyMemory<byte> DirectoryGenesisCoreHash => initialDirectoryFloor.CoreHash;
     private ReadOnlyMemory<byte> exactDirectoryHead;
     private AuthoredAccountDirectoryHeadMutation directoryMutation = null!;
 
@@ -190,6 +192,7 @@ internal sealed partial class DeepIdV2PublicationAuthorityFixture : IDisposable,
             new byte[38], new byte[32]);
         proofMaterial = material; exactDirectoryHead = head.ExactAdh1; directoryMutation = head;
         initialDirectoryFloor = genesis.ProtectedHead;
+        ExactDirectoryGenesis = genesis.ExactAdh1;
         proofQuery = VerifiedDeepIdV2DirectoryQuery.VerifyDid2(lookup, Publisher);
         Freshness = DeepIdV2DirectoryCurrentProofVerifier.VerifyRequestedDid2(
             bootstrap.Authority, proof.ExactAdh1, proof.ExactDtt1, proof.ExactAdp1V2,
@@ -416,20 +419,54 @@ internal sealed partial class DeepIdV2PublicationAuthorityFixture : IDisposable,
         return DeepIdV2CurrentContactAuthorizationVerifier.Verify(Freshness, dca, Boot, Sample);
     }
 
-    private async Task RefreshDirectoryProofAsync(ulong sample, ulong proofTime)
+    private async Task RefreshDirectoryProofAsync(ulong sample, ulong proofTime, ulong? proofExpiresAt = null)
     {
         Sample = sample;
         using var w1 = new TestSigner(0x30); using var w2 = new TestSigner(0x31); using var w3 = new TestSigner(0x32);
         using var pq = DeepMlDsa65CandidateVerifierFactory.OpenForCurrentProcess();
         var nonce = Bytes(32, 0xf4);
         var request = new AccountDirectoryProofAuthoringRequest(Network, nonce, Boot, sample,
-            exactDirectoryHead.Span, View.Span, proofTime, 5, proofTime, proofTime + 30,
+            exactDirectoryHead.Span, View.Span, proofTime, 5, proofTime, proofExpiresAt ?? proofTime + 30,
             AccountDirectoryDtt1IssuanceEpoch.Derive(Authority, proofTime, 5), 2);
         var proof = await DeepIdV2DirectoryProofAuthor.IssueGenesisAsync(Authority, request, proofMaterial,
             [w1, w2, w3], 1, pq);
         Freshness = DeepIdV2DirectoryCurrentProofVerifier.VerifyRequestedDid2(Authority,
             proof.ExactAdh1, proof.ExactDtt1, proof.ExactAdp1V2, nonce, proofQuery,
             new(Boot, sample, sample, sample), initialDirectoryFloor, 1, 2, pq);
+    }
+
+    internal async Task<VerifiedOnionNetworkContext> VerifyNetworkAtAsync(ulong sample, ulong proofTime)
+    {
+        // The near-expiry scenario keeps the original signed view's1500 end.
+        await RefreshDirectoryProofAsync(sample, proofTime, Math.Min(proofTime + 30, 1_500));
+        return await OnionNetworkContextVerifier.VerifyAsync(Authority, Freshness,
+            [Policy], [View], [Head], Descriptors, [Projection], null, new(this), default);
+    }
+
+    // Raw, nonce-bound server response. Configured consumers must independently
+    // verify it through their HTTP reader and persistent directory/network floors.
+    internal async Task<byte[]> AuthorHttpProofAsync(DeepIdV2DirectoryProofWireRequest query)
+    {
+        if (!query.DeepId.CanonicalBytes.Span.SequenceEqual(Publisher.CanonicalBytes.Span) ||
+            !query.NetworkId.Span.SequenceEqual(Network))
+            throw new CryptographicException("Unrelated test proof request.");
+        using var w1 = new TestSigner(0x30); using var w2 = new TestSigner(0x31); using var w3 = new TestSigner(0x32);
+        using var pq = DeepMlDsa65CandidateVerifierFactory.OpenForCurrentProcess();
+        var caller = query.Lookup.MinimumAdhGeneration == initialDirectoryFloor.LogGeneration &&
+            query.Lookup.MinimumAdhHash.Span.SequenceEqual(initialDirectoryFloor.CoreHash.Span)
+            ? initialDirectoryFloor
+            : query.Lookup.MinimumAdhGeneration == directoryMutation.ProtectedHead.LogGeneration &&
+                query.Lookup.MinimumAdhHash.Span.SequenceEqual(directoryMutation.ProtectedHead.CoreHash.Span)
+                ? directoryMutation.ProtectedHead
+                : throw new CryptographicException("Unrelated test directory floor.");
+        var material = DeepIdV2DirectoryProofMaterialAuthor.Create(directoryMutation.ProtectedHead,
+            directoryMutation.ExactAllTransitions, [proofMaterial.CurrentCheckpoint!], query.DirectoryLeafKey.Span, caller);
+        var request = new AccountDirectoryProofAuthoringRequest(Network, query.Nonce.Span,
+            query.BootId.Span, query.ClientMonotonicSendSample, exactDirectoryHead.Span, View.Span,
+            1_100, 5, 1_100, 1_130, AccountDirectoryDtt1IssuanceEpoch.Derive(Authority, 1_100, 5), 2);
+        var issued = await DeepIdV2DirectoryProofAuthor.IssueGenesisAsync(Authority, request,
+            material, [w1, w2, w3], 1, pq);
+        return DeepIdV2DirectoryProofWireCodec.EncodeResponse(query, issued);
     }
 
     internal TestSigner Node(ReadOnlySpan<byte> id)

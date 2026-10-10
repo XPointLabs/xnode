@@ -472,6 +472,7 @@ public sealed class PrivacyRoutingRuntimeTests
         Assert.Equal(
             typeof(VerifiedOnionNextHopTransport),
             forward.GetParameters()[0].ParameterType);
+        Assert.Equal(typeof(VerifiedOnionNetworkContext), forward.GetParameters()[1].ParameterType);
     }
 
     [Fact]
@@ -711,6 +712,7 @@ public sealed class PrivacyRoutingRuntimeTests
 
         public Task<PrivacyForwardResult> ForwardAsync(
             VerifiedOnionNextHopTransport nextHop,
+            VerifiedOnionNetworkContext network,
             ReadOnlyMemory<byte> innerFrame,
             CancellationToken cancellationToken)
         {

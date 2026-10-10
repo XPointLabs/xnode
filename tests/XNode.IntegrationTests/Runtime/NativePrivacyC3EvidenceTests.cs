@@ -355,6 +355,7 @@ public sealed class NativePrivacyC3EvidenceTests
 
         public Task<PrivacyForwardResult> ForwardAsync(
             VerifiedOnionNextHopTransport nextHop,
+            VerifiedOnionNetworkContext network,
             ReadOnlyMemory<byte> innerFrame,
             CancellationToken cancellationToken)
         {

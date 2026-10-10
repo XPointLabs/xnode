@@ -772,7 +772,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
     private sealed partial class Host : IAsyncDisposable
     {
         private WebApplication app = null!;
-        private X509Certificate2 certificate = null!;
+        internal X509Certificate2 certificate = null!;
         internal int Port, Requests, LastStatus, LastBytes;
         internal byte[] Pin = [];
         internal CurrentMailboxPeerHttpEndpoint? Endpoint;
@@ -835,7 +835,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
             return host;
         }
 
-        private static Host CreateCertificate(bool forProgram = false)
+        internal static Host CreateCertificate(bool forProgram = false)
         {
             var host = new Host(); using var key = RSA.Create(2048);
             var request = new CertificateRequest("CN=localhost", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
@@ -870,6 +870,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
         }
         public async ValueTask DisposeAsync()
         {
+            ReleaseConfiguredReservations();
             if (program is not null) await program.DisposeAsync();
             if (app is not null) { await app.StopAsync(); await app.DisposeAsync(); }
             certificate?.Dispose();

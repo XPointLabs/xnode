@@ -7,6 +7,7 @@ using Deep.Protocol.DeepExtension.PrivacyRouting;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.DataProtection.KeyManagement;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Configuration;
 using XNode.Core;
 using XNode.Core.Mailbox;
 using XNode.Core.Mailbox.Client;
@@ -20,25 +21,48 @@ public sealed partial class CurrentMailboxPeerHttpTests
     [InlineData(false)]
     [InlineData(true)]
     public async Task ActualRegisteredOwnersCompleteNativeStoreRetrieveAckAndColdExactRetryOverPinnedHttp(bool actualProgram)
+        => await CompleteRegisteredCycleAsync(actualProgram);
+
+    [Fact]
+    public async Task ConfiguredProgramSourcesEnrollRecoverAndCompleteStoreRetrieveAckOverPinnedHttp()
+        => await CompleteRegisteredCycleAsync(actualProgram: true, configuredProgram: true);
+
+    private async Task CompleteRegisteredCycleAsync(bool actualProgram, bool configuredProgram = false)
     {
         var hosts = new List<Host>();
         var owners = new List<RegisteredPeer>();
         DeepIdV2PublicationAuthorityFixture? signed = null;
+        ConfiguredAuthority? configured = null;
         try
         {
-            for (var i = 0; i < 3; i++) hosts.Add(actualProgram ? await Host.CreateProgramAsync() : await Host.CreateAsync());
+            for (var i = 0; i < 3; i++) hosts.Add(configuredProgram ? Host.ReserveConfiguredProgram()
+                : actualProgram ? await Host.CreateProgramAsync() : await Host.CreateAsync());
             signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync(distinctNodeIdentities: true,
                 transportOrigins: hosts.Select(h => new DeepIdV2PublicationAuthorityFixture.TransportOrigin(
                     IPAddress.Loopback, checked((ushort)h.Port), h.Pin, SHA256.HashData(h.Pin))).ToArray());
+            if (configuredProgram) configured = await ConfiguredAuthority.CreateAsync(signed);
             var host = await MailboxGrantRevocationStoreTests.Host(signed);
             var deposit = MailboxGrantRevocationStoreTests.Grant(signed, host, MailboxCapabilityDomain.Deposit, 0x51);
             var retrieve = MailboxGrantRevocationStoreTests.Grant(signed, host, MailboxCapabilityDomain.Retrieve, 0x52);
             var replicas = await host.ResolveGrantReplicasAsync(deposit);
-            foreach (var replica in replicas)
+            var ownedReplicas = replicas.ToList();
+            if (configuredProgram)
+                foreach (var id in signed.NodeIds)
+                    if (!ownedReplicas.Any(replica => replica.NodeId.Span.SequenceEqual(id.Span)))
+                        ownedReplicas.Add(await host.ResolveReplicaAsync(id));
+            foreach (var replica in ownedReplicas)
             {
                 var http = hosts.Single(h => h.Port == replica.Transport.Port);
-                var peer = new RegisteredPeer(signed, replica.NodeId.ToArray(), http.Port);
+                var peer = new RegisteredPeer(signed, replica.NodeId.ToArray(), http.Port, configured, http, hosts);
                 owners.Add(peer);
+                if (configuredProgram)
+                {
+                    await CurrentMailboxEnrollmentCommand.EnrollConfiguredAsync(peer.Services,
+                        MailboxGrantRevocationStoreTests.Snapshot(signed),
+                        MailboxGrantRevocationStoreTests.Snapshot(signed, MailboxCapabilityDomain.Retrieve), default);
+                    await peer.StartConfiguredProgramAsync();
+                    continue;
+                }
                 await peer.Services.GetRequiredKeyedService<FileMailboxGrantRevocationStore>(MailboxCapabilityDomain.Deposit)
                     .EnrollAsync(host, MailboxGrantRevocationStoreTests.Snapshot(signed));
                 await peer.Services.GetRequiredKeyedService<FileMailboxGrantRevocationStore>(MailboxCapabilityDomain.Retrieve)
@@ -77,6 +101,8 @@ public sealed partial class CurrentMailboxPeerHttpTests
                     new ByteArrayContent([])))
                     Assert.Equal(HttpStatusCode.NotFound, result.StatusCode);
                 Assert.Equal(proofReads, signed.ProofReads);
+                // A configured host retains its independent refresh workers;
+                // their legitimate HTTP proof reads are not caused by these rejected requests.
                 Assert.Equal(3, hosts.Sum(h => h.Requests));
             }
             var rejectedRequests = hosts.Sum(h => h.Requests);
@@ -95,6 +121,9 @@ public sealed partial class CurrentMailboxPeerHttpTests
                 });
             async Task<byte[]> Dispatch(RegisteredPeer peer, OnionOperation operation, byte[] request)
             {
+                if (configuredProgram)
+                    return await configured!.DispatchOnionAsync(peer, owners, operation, request,
+                        replicas[0].NodeId, replicas[1].NodeId);
                 var result = await ((ILocalNativeMailboxExitDispatcher)peer.Services.GetRequiredService<NativeMailboxExitDispatcher>())
                     .DispatchAsync(operation, request, default);
                 Assert.True(result.Certainty == NativeMailboxDispatchCertainty.Completed,
@@ -115,7 +144,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
             Assert.False(quorum.FirstReplica.ReplicaId.Span.SequenceEqual(quorum.SecondReplica.ReplicaId.Span));
             var read = Present(MailboxAuthenticatedRequestTranscript.ForRetrieve(body.Epoch,
                 Repeated(16, 0x71), body.MailboxId, body.PlacementId, 0, 10, []), retrieve);
-            foreach (var owner in owners)
+            foreach (var owner in owners.Take(2))
             {
                 var item = Assert.Single(Page(await Dispatch(owner, OnionOperation.Retrieve, read)).Items);
                 Assert.Equal(body.Ciphertext.ToArray(), item.Envelope.Ciphertext.ToArray());
@@ -131,21 +160,30 @@ public sealed partial class CurrentMailboxPeerHttpTests
             foreach (var owner in owners)
             {
                 await owner.ReopenAsync();
-                hosts.Single(h => h.Port == owner.Port).Endpoint = owner.Services.GetRequiredService<CurrentMailboxPeerHttpEndpoint>();
+                if (!configuredProgram)
+                    hosts.Single(h => h.Port == owner.Port).Endpoint = owner.Services.GetRequiredService<CurrentMailboxPeerHttpEndpoint>();
                 await owner.Services.GetRequiredService<CurrentMailboxReplicaReceiver>().InitializeHostAsync();
+                if (configuredProgram) await owner.AssertConfiguredReadyAsync();
             }
             signed.Sample = 101;
             Assert.Equal(stored, await Dispatch(owners[0], OnionOperation.Store, store));
             Assert.Equal(acknowledged, await Dispatch(owners[0], OnionOperation.Acknowledge, ack));
             var freshRead = Present(MailboxAuthenticatedRequestTranscript.ForRetrieve(body.Epoch,
                 Repeated(16, 0x72), body.MailboxId, body.PlacementId, 0, 10, []), retrieve, 2);
-            foreach (var owner in owners) Assert.Empty(Page(await Dispatch(owner, OnionOperation.Retrieve, freshRead)).Items);
+            foreach (var owner in owners.Take(2)) Assert.Empty(Page(await Dispatch(owner, OnionOperation.Retrieve, freshRead)).Items);
             Assert.Equal(requests, hosts.Sum(h => h.Requests));
+            if (configuredProgram)
+            {
+                Assert.True(configured!.ProofRequests >= owners.Count * 2); // independently acquired after each cold host start
+                Assert.Equal(0, signed.ProofReads); // no verified fixture-source shortcut
+                foreach (var owner in owners) await owner.AssertConfiguredAuthorityLossAsync();
+            }
         }
         finally
         {
             foreach (var http in hosts) await http.DisposeAsync();
             foreach (var owner in owners) await owner.DisposeAsync();
+            if (configured is not null) await configured.DisposeAsync();
             signed?.Dispose();
         }
     }
@@ -159,11 +197,17 @@ public sealed partial class CurrentMailboxPeerHttpTests
         private readonly RouterNodeOptions node;
         private readonly ReplicatedMailboxOptions mailbox = new() { Enabled = true };
         private readonly CurrentMailboxCustodyConfiguration configuration;
-        internal ServiceProvider Services { get; private set; }
+        private ServiceProvider? ownedServices;
+        private readonly ConfiguredAuthority? configured;
+        private readonly Host? configuredHost;
+        private readonly Dictionary<string, string?>? programConfiguration;
+        internal IServiceProvider Services { get; private set; }
         internal int Port { get; }
-        internal RegisteredPeer(DeepIdV2PublicationAuthorityFixture signed, byte[] id, int port)
+        internal RegisteredPeer(DeepIdV2PublicationAuthorityFixture signed, byte[] id, int port,
+            ConfiguredAuthority? configured = null, Host? http = null, IReadOnlyList<Host>? hosts = null)
         {
             this.signed = signed; Port = port;
+            this.configured = configured; configuredHost = http;
             node = new() { DataDirectory = Path.Combine(root, "data"), RouterId = Convert.ToHexString(id),
                 Ed25519PrivateKey = Convert.ToHexString(signed.Node(id).Seed), PrivacyPeerH2ListenUrl = "https://127.0.0.1:" + port };
             var keys = Path.Combine(root, "keys");
@@ -180,12 +224,25 @@ public sealed partial class CurrentMailboxPeerHttpTests
                 MailboxAuthorityCoreHashHex = Convert.ToHexString(ContactCodec.Decode(ProtocolMagic.PMA2, signed.MailboxAuthority.Span).CoreHash.Span).ToLowerInvariant(),
                 IndependentCustodyDirectory = Path.Combine(root, "custody"), DataProtectionKeysDirectory = keys
             }.Validate(node, mailbox)!;
-            Services = Open();
+            if (configured is not null)
+                programConfiguration = configured.CreateConfiguration(root, node, configuration, http!, hosts!);
+            Services = ownedServices = Open();
         }
         private ServiceProvider Open()
         {
             var services = new ServiceCollection();
-            services.AddSingleton<IDeepIdV2ContactStoreAuthoritySource>(signed);
+            services.AddSingleton(node);
+            if (configured is null) services.AddSingleton<IDeepIdV2ContactStoreAuthoritySource>(signed);
+            else
+            {
+                var input = new Microsoft.Extensions.Configuration.ConfigurationBuilder()
+                    .AddInMemoryCollection(programConfiguration!).Build();
+                services.AddDeepIdV2DirectoryProof(input.GetSection("DeepIdV2DirectoryProof")
+                    .Get<DeepIdV2DirectoryProofOptions>()!.ValidateAndLoad(node, true)!);
+                services.AddDeepIdV2NetworkPlacement(input.GetSection("DeepIdV2NetworkPlacement")
+                    .Get<DeepIdV2NetworkPlacementOptions>()!.ValidateAndLoad(true, true)!);
+                configured.ConfigureTestDependencies(services);
+            }
             services.AddSingleton<IOnionMonotonicClock>(signed);
             services.AddSingleton<IMailboxStorageSecurity, MailboxStorageSecurity>();
             services.AddSingleton<IMailboxDurabilityBarrier, MailboxDurabilityBarrier>();
@@ -193,10 +250,45 @@ public sealed partial class CurrentMailboxPeerHttpTests
             services.AddCurrentMailboxHost(configuration, node, mailbox);
             return services.BuildServiceProvider();
         }
-        internal async Task ReopenAsync() { await Services.DisposeAsync(); Services = Open(); }
+        internal async Task ReopenAsync()
+        {
+            if (configured is null) { await ownedServices!.DisposeAsync(); Services = ownedServices = Open(); }
+            else { await configuredHost!.CloseConfiguredProgramAsync(); await StartConfiguredProgramAsync(); }
+        }
+        internal async Task StartConfiguredProgramAsync()
+        {
+            if (ownedServices is not null) { await ownedServices.DisposeAsync(); ownedServices = null; }
+            Services = configuredHost!.StartConfiguredProgram(programConfiguration!, configured!);
+            await AssertConfiguredReadyAsync();
+        }
+        internal async Task AssertConfiguredReadyAsync()
+        {
+            Assert.IsType<DeepIdV2NetworkPlacementRuntime>(Services.GetRequiredService<IDeepIdV2ContactStoreAuthoritySource>());
+            await Services.GetRequiredService<CurrentMailboxReplicaReceiver>().InitializeHostAsync();
+            var recovery = await Services.GetRequiredService<CurrentMailboxHostRecovery>().CheckAsync();
+            Assert.True(recovery.Recovered, recovery.State);
+            using var client = new HttpClient();
+            using var result = await client.GetAsync("http://127.0.0.1:" + configuredHost!.ApiPort + "/health/ready");
+            Assert.Equal(HttpStatusCode.OK, result.StatusCode);
+        }
+        internal async Task AssertConfiguredAuthorityLossAsync()
+        {
+            // Admission must not reacquire proof or repair a damaged signed source.
+            var path = programConfiguration!["DeepIdV2NetworkPlacement:ExactMailboxAuthorityPaths:0"]!;
+            var original = File.ReadAllBytes(path); File.WriteAllBytes(path, [1]);
+            try
+            {
+                Assert.False((await Services.GetRequiredService<CurrentMailboxHostRecovery>().CheckAsync()).Recovered);
+                using var client = new HttpClient();
+                using var result = await client.GetAsync("http://127.0.0.1:" + configuredHost!.ApiPort + "/health/ready");
+                Assert.Equal(HttpStatusCode.ServiceUnavailable, result.StatusCode);
+                Assert.Equal(new byte[] { 1 }, File.ReadAllBytes(path));
+            }
+            finally { File.WriteAllBytes(path, original); }
+        }
         public async ValueTask DisposeAsync()
         {
-            await Services.DisposeAsync();
+            if (ownedServices is not null) await ownedServices.DisposeAsync();
             if (Directory.Exists(root)) Directory.Delete(root, true);
         }
     }

@@ -5,6 +5,94 @@ S02 is the sole active stage after the
 This checkpoint is source/composition evidence, not runtime activation,
 whole-stage acceptance or physical Windows/Android E2E.
 
+## Configured Program / descriptor-bound HTTP forwarding batch
+
+This source batch extends the registered-native business cycle to three
+actual configured Program hosts. The fixture provisions the actual graph with
+the existing enrollment command boundary, then closes that provider before
+starting Program on the same persistent directories. No endpoint/current-source
+replacement or hosted-service removal is used. Directory responses are raw
+nonce/request/floor-bound signed packages over real HTTPS, independently checked
+by `DeepIdV2DirectoryProofRuntime`; network authority/closure and protected floors
+are the configured file/native owners. Only the monotonic clock and trust of a
+test-owned loopback TLS certificate are test dependencies. The client enters the
+actual entry runtime; both onward onion hops and mailbox replication use the real
+Program HTTP endpoints/descriptor-pinned clients. Xray is disabled in this source
+fixture: it is not carrier, deployed or physical-device qualification.
+
+This exposed a product defect hidden by earlier ID-equals-key fixtures:
+`PrivacyPeerAuthenticator` treated RouterId as an Ed25519 public key at signing
+and verification. Forwarding now carries the receive binding's verified network
+context; local signing custody and inbound signatures resolve the exact identity
+key from the current XND1. The HTTP transcript/headers are unchanged; no extra
+key configuration, compatibility overload or ID-as-key fallback was added.
+Missing verified authority rejects before peer replay acceptance. The existing
+UTC peer timestamp remains a bounded transport replay check, not grant authority.
+
+Focused09 completed native0 under explicit Desktop5.1/SDK10.0.301 with a matching
+warnings-as-errors solution build0/zero warnings. Result49/0/0, exact49 names,
+case keys and executions. Includes configured enrollment/readiness,
+Store/Retrieve/ACK through three signed hosts/two native stores, cold restart and
+exact retry without resurrection, corrupt authority readiness503, distinct-ID/key
+authentication and hostile body/identity/recipient/signature/nonce/time/expired
+network refusals. The verified fixture-source shortcut is never read in the
+configured cycle. Standalone expiry matrix8/0/0 on the same binaries is diagnostic.
+The negative expiry case uses a genuine late signed proof, unchanged1500 view end,
+and its actual one-second lease; existing signed epochs/expiry assertions are not
+extended. Receipt:
+`artifacts/s02-configured-program-20261010/focused-09/nikit_SURFACE-LT_2026-10-10_12_23_16_net10.0.trx`.
+SHA256 `AF838EC446A7973819A3A296D6BF8DD58EF72BE14FD0964411100E0C3CDE2CCB`.
+
+Original focused FAILs remain in01/03/04/05/06/07: the new raw proof server initially
+ignored the restored directory floor; released port reservations could be reused
+before host startup;04 exposed the actual identity/key defect. The new expiry
+test initially confused fixture sample/DTT issuance duration with the minted
+elapsed-time lease, then attempted issuance past the original signed view end.
+The server now builds proof material against an exact known signed caller floor;
+ports remain held during the ceremony, and late test issuance ends at1500.
+No historical failing receipt is relabelled PASS. Selected source/current-run
+secret scan passes21 files/0 findings; the existing global artifact scan still
+fails46 unrelated raw/diagnostic artifact checks, and no upload was performed.
+
+Matching canonical `artifacts/test-gate-20261010/node-configured-program-full-01`
+finished Completed/native0 through explicit Desktop5.1.26100.9457/SDK10.0.301.
+Started `2026-10-10T07:27:42.1242586Z`, finished `2026-10-10T07:57:21.1713236Z`.
+The predeclared references are the three previous `node-new-host-full-02/full`
+TRX plus focused09, with no allowed FAIL/skips. Build/preflight/test/qualification0,
+zero build warnings/errors,1423/0/0, exact1423 required cases and2129 unchanged
+inputs; FullAccepted=true. Integration1061, ProfileGenerator107, unit255.
+Full receipts (in `full/`):
+
+| TRX filename | SHA256 |
+| --- | --- |
+| `nikit_SURFACE-LT_2026-10-10_12_28_35_net10.0.trx` | `0AD955011AECA95D4FFF496453FFDF4BA7065EB44AD414059F202F93CD862383` |
+| `nikit_SURFACE-LT_2026-10-10_12_55_18_net10.0.trx` | `0FC8CF5612F78BB4E000BE9F09B1A2514D7861C2E36E14880167CD9253E4340A` |
+| `nikit_SURFACE-LT_2026-10-10_12_55_42_net10.0.trx` | `C15C4CCD39E8D4478D71C7291A97F799975F2975BE7CE335EF67282C8FBE015D` |
+
+Separate current transport checks finished native0 through explicit portable
+PowerShell7.5.4. External/no-mock smoke in
+`deep-devops/artifacts/s02-configured-program-20261010/smoke-01` reports no
+hard/soft runtime failures or warnings, running/nonmocked Xray and requiredNoMock.
+Its three existing BuildKit InvalidDefaultArgInFrom notices are build notices,
+not runtime-gate warnings. `runtime.gate.json` SHA256:
+`07DE80E7CA69CA4B2CBE1408DA8DA554F6442B7CE0A5617DE9533DF96A69BD8E`.
+Three-node rehearsal `20261010T075933893Z-e58c3ba4cc5c` has three distinct,
+real/nondegraded Xray routers, Registry count3/reconciliation issues0 and three
+expected privacy-contact503 refusals without configured authority. Its
+`test-results/multi-node-topology.json` SHA256:
+`A796172783372593B963D7F2B2218E36DD5C56385491C640937FF432FF68FED8`.
+Post-terminal label inspection found no containers/volumes from either
+test-owned disposable project; the separate `deep-dev` stack remains running6.
+Only those disposable stacks/data were removed, not production or developer data.
+
+This qualifies the source batch and Development transport, not whole S02 or
+shipping/device delivery. Current retained-route/selected-exit and independent
+native cold-loss/rollback closure still need the exact stage review. In particular,
+the configured positive enters the actual entry runtime in-process, not the public
+client HTTPS/carrier endpoint; cached-index readback is not an independent cold
+anti-rollback anchor. Neither gap is closed by a full test count. No production
+state, release, main branch or physical Windows/Android claim is changed.
+
 ## Current source build and focused result
 
 Inputs: Node `c000dc1`, Protocol `9700e76`, Shared `c79c0a8` (documentation-only

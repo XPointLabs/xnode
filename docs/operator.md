@@ -143,7 +143,12 @@ The matching
 exercises genuinely separate node IDs and immutable descriptor identity keys
 through the current producer and native consumer, not fabricated rotation.
 Signing custody must match that actual descriptor key; a node ID is never
-a key or signing seed. Two-store loopback HTTP evidence is not deployed, onion or physical
+a key or signing seed. This also applies to HTTP onion peer authentication:
+the forwarding runtime supplies its verified network context; signing custody
+and inbound signatures resolve the identity key from the current signed XND1.
+Missing current authority rejects before peer replay acceptance. Configured
+peer IDs/pins do not authorize an identity key, and there is no ID-as-key fallback.
+Two-store loopback HTTP evidence is not deployed, onion or physical
 client delivery evidence. Internal client Store now binds captured MAU3 to the
 exact peer request under the same native admission owner and persists final
 canonical MQR3 in the existing outcome store. Retry after advancing time/reopen

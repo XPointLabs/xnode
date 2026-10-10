@@ -182,7 +182,7 @@ public sealed class PrivacyRoutingRuntime
             if (opened is OpenedOnionRelay relay)
             {
                 effectStarted = true;
-                return await ForwardAsync(relay, cancellationToken)
+                return await ForwardAsync(relay, binding.Network, cancellationToken)
                     .ConfigureAwait(false);
             }
 
@@ -239,10 +239,12 @@ public sealed class PrivacyRoutingRuntime
 
     private async Task<PrivacyRuntimeResult> ForwardAsync(
         OpenedOnionRelay relay,
+        VerifiedOnionNetworkContext network,
         CancellationToken cancellationToken)
     {
         var forwarded = await peerClient.ForwardAsync(
                 relay.NextHop,
+                network,
                 relay.InnerFrame,
                 cancellationToken)
             .ConfigureAwait(false);
@@ -257,6 +259,15 @@ public sealed class PrivacyRoutingRuntime
             _ => PrivacyRuntimeResult.Of(
                 PrivacyRuntimeOutcome.OutcomeUnknownAfterForward)
         };
+    }
+
+    internal async ValueTask<VerifiedOnionNetworkContext> GetCurrentPeerNetworkAsync(CancellationToken token)
+    {
+        if (productionCapability is null || !configuration.Enabled)
+            throw new InvalidOperationException("Current signed peer authority is unavailable.");
+        var binding = await productionCapability.GetCurrentAsync(token).ConfigureAwait(false);
+        binding.Network.EnsureCurrent();
+        return binding.Network;
     }
 
     private async Task<PrivacyRuntimeResult> DispatchAndSealAsync(

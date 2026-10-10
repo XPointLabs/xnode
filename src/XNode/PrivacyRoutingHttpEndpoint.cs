@@ -3,6 +3,8 @@ using System.Net;
 using Deep.Protocol.DeepExtension.ManagedIngress;
 using Microsoft.AspNetCore.Http.Features;
 using XNode.Core;
+using System.Security.Cryptography;
+using Deep.Protocol.DeepExtension.PrivacyRouting;
 
 namespace XNode;
 
@@ -120,7 +122,19 @@ public static class PrivacyRoutingHttpEndpoint
             try
             {
                 var frame = await ReadBodyAsync(context.Request, deadline.Token);
+                VerifiedOnionNetworkContext network;
+                try
+                {
+                    network = await runtime.GetCurrentPeerNetworkAsync(deadline.Token).ConfigureAwait(false);
+                }
+                catch (Exception error) when (error is IOException or InvalidDataException or CryptographicException
+                    or InvalidOperationException or FormatException or OnionBoundaryException or HttpRequestException or TimeoutException)
+                {
+                    return Failure(StatusCodes.Status503ServiceUnavailable, ManagedIngressErrorClass.Unavailable,
+                        ManagedIngressOutcomeCertainty.BeforeForward, retryable: true, retryAfterSeconds: 1);
+                }
                 if (!PrivacyPeerAuthenticator.Verify(
+                        network,
                         authentication,
                         node.GetRouterId(),
                         frame,

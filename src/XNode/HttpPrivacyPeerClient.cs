@@ -32,6 +32,7 @@ public interface IPrivacyPeerClient
 {
     Task<PrivacyForwardResult> ForwardAsync(
         VerifiedOnionNextHopTransport nextHop,
+        VerifiedOnionNetworkContext network,
         ReadOnlyMemory<byte> innerFrame,
         CancellationToken cancellationToken);
 }
@@ -54,6 +55,7 @@ public sealed class HttpPrivacyPeerClient : IPrivacyPeerClient
 
     public async Task<PrivacyForwardResult> ForwardAsync(
         VerifiedOnionNextHopTransport nextHop,
+        VerifiedOnionNetworkContext network,
         ReadOnlyMemory<byte> innerFrame,
         CancellationToken cancellationToken)
     {
@@ -71,6 +73,7 @@ public sealed class HttpPrivacyPeerClient : IPrivacyPeerClient
             _ = ManagedIngressH2Contract.ValidateOpaqueFrame(innerFrame.Span);
             var recipient = RouterId.FromBytes(nextHop.NodeId.Span);
             var authentication = PrivacyPeerAuthenticator.Sign(
+                network,
                 _node.GetRouterId(),
                 recipient,
                 _node.GetEd25519PrivateKey(),

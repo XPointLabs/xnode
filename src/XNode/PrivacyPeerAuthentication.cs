@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using Rebex.Security.Cryptography;
 using XNode.Core;
+using Deep.Protocol.DeepExtension.PrivacyRouting;
 
 namespace XNode;
 
@@ -25,12 +26,15 @@ public static class PrivacyPeerAuthenticator
     private static ReadOnlySpan<byte> Magic => "DPA1"u8;
 
     public static PrivacyPeerAuthenticationHeaders Sign(
+        VerifiedOnionNetworkContext network,
         RouterId sender,
         RouterId recipient,
         string senderPrivateKeySeedHex,
         ReadOnlySpan<byte> frame,
         DateTimeOffset now)
     {
+        ArgumentNullException.ThrowIfNull(network);
+        network.EnsureCurrent();
         var timestamp = now.ToUnixTimeMilliseconds();
         var nonce = RandomNumberGenerator.GetBytes(16);
         var seed = PrivacyRoutingOptions.DecodeHex32(
@@ -40,10 +44,11 @@ public static class PrivacyPeerAuthenticator
         {
             var signer = new Ed25519();
             signer.FromSeed(seed);
-            if (RouterId.FromBytes(signer.GetPublicKey()) != sender)
+            if (!CryptographicOperations.FixedTimeEquals(signer.GetPublicKey(),
+                network.ResolveNodeIdentityPublicKey(sender.ToBytes()).Span))
             {
                 throw new InvalidOperationException(
-                    "Privacy peer signing key does not match the local router identity.");
+                    "Privacy peer signing key does not match the signed node descriptor.");
             }
 
             var signature = signer.SignMessage(BuildTranscript(
@@ -62,6 +67,7 @@ public static class PrivacyPeerAuthenticator
     }
 
     public static bool Verify(
+        VerifiedOnionNetworkContext network,
         PrivacyPeerAuthenticationHeaders headers,
         RouterId expectedRecipient,
         ReadOnlySpan<byte> frame,
@@ -69,6 +75,7 @@ public static class PrivacyPeerAuthenticator
         out RouterId sender,
         out byte[] nonce)
     {
+        ArgumentNullException.ThrowIfNull(network);
         sender = default;
         nonce = [];
         if (!RouterId.TryParse(headers.SenderRouterId, out sender)
@@ -88,6 +95,7 @@ public static class PrivacyPeerAuthenticator
 
         try
         {
+            network.EnsureCurrent();
             var signedAt = DateTimeOffset.FromUnixTimeMilliseconds(
                 headers.TimestampUnixMilliseconds);
             if ((now - signedAt).Duration() > MaximumClockSkew)
@@ -98,7 +106,7 @@ public static class PrivacyPeerAuthenticator
             nonce = Convert.FromHexString(headers.Nonce);
             var signature = Convert.FromHexString(headers.Signature);
             var verifier = new Ed25519();
-            verifier.FromPublicKey(sender.ToBytes());
+            verifier.FromPublicKey(network.ResolveNodeIdentityPublicKey(sender.ToBytes()).ToArray());
             return verifier.VerifyMessage(
                 BuildTranscript(
                     sender,
@@ -110,7 +118,7 @@ public static class PrivacyPeerAuthenticator
         }
         catch (Exception exception) when (
             exception is ArgumentException or ArgumentOutOfRangeException
-                or InvalidOperationException)
+                or InvalidOperationException or OnionBoundaryException or CryptographicException)
         {
             nonce = [];
             return false;

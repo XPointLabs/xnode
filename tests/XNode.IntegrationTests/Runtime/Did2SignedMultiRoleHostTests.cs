@@ -151,6 +151,7 @@ public sealed class Did2SignedMultiRoleHostTests
         internal int Calls { get; private set; }
         internal List<PrivacyRuntimeOutcome> Outcomes { get; } = [];
         public async Task<PrivacyForwardResult> ForwardAsync(VerifiedOnionNextHopTransport nextHop,
+            VerifiedOnionNetworkContext network,
             ReadOnlyMemory<byte> frame, CancellationToken cancellationToken)
         {
             Calls++;
