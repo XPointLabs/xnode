@@ -140,8 +140,8 @@ Receipts under the run's `full` directory:
 | `nikit_SURFACE-LT_2026-10-10_09_20_07_net10.0.trx` | `08A0EC8F191AC838BD0DAE696418AD15DB57231BD44A7417F8A07E60C9E6A145` |
 | `nikit_SURFACE-LT_2026-10-10_09_20_33_net10.0.trx` | `B6448A37E7842A96CF9CD89659C762A5FBFA712E6497F64B38AB80754383BF2F` |
 
-The separate external/no-mock smoke is terminal native0; the multi-node
-rehearsal is still required. The existing
+The separate external/no-mock smoke and multi-node rehearsal are both terminal
+native0. The existing
 Shared/Protocol full receipts are not rerun or relabelled by this Node batch.
 This full qualifies the current implementation package, not the outstanding
 independent cold-protection/provisioning boundaries or whole-stage acceptance.
@@ -162,3 +162,23 @@ services and real Xray. It does not provision current production mailbox
 authority or prove contacts/messages/attachments/groups on installed devices.
 Only its own `deep-integration` containers/volumes were removed by the script;
 the existing `deep-dev` stack was preserved.
+Runtime gate SHA256:
+`1CCDE50A06ED3DB5CBC2498C28B7EC9CE18A759D600EBD57C3A2A9139AFD09C9`.
+
+## Three-node no-mock rehearsal
+
+PowerShell7.5.4, `deep-devops/scripts/multi-node-rehearsal.ps1` without
+`-AllowMockRouter`. Terminal native0; run
+`deep-devops/artifacts/rehearsals/multi-node/20261010T043622503Z-e8ad5309923d`.
+The source-cutover image was rebuilt. All three distinct routers run real Xray,
+register with the isolated Registry and have no reconciliation issues.
+Each rejects privacy contact with503 without verified authority; this tests
+honest unavailability, not successful current mailbox/onion delivery.
+The script removed only its own `deep-multi-node-rehearsal` containers/volumes.
+The pre-existing `deep-dev` stack was not restarted or reset.
+Topology receipt SHA256:
+`BB4BB981C3B946A2B510399C785793FCF0D056299C0E76AECC2D709E9C6506E4`.
+
+This completes the required external transport/topology checks for Node source
+commit `1c38f45`. It does not accept S02, qualify production authority or count
+as any of the four required physical device flows.
