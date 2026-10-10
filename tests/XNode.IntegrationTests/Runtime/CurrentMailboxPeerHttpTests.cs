@@ -634,7 +634,8 @@ public sealed partial class CurrentMailboxPeerHttpTests
                 return true;
             });
         }
-        internal static async Task<Fixture> CreateAsync(bool wrongPin = false, ulong envelopeExpiry = 1_150)
+        internal static async Task<Fixture> CreateAsync(bool wrongPin = false, ulong envelopeExpiry = 1_150,
+            bool shortMailboxProjection = false)
         {
             var f = new Fixture();
             try
@@ -644,7 +645,8 @@ public sealed partial class CurrentMailboxPeerHttpTests
                     IPAddress.Loopback, checked((ushort)host.Port), wrongPin ? SHA256.HashData(host.Pin) : host.Pin, SHA256.HashData(host.Pin))).ToArray();
                 // The next pin must remain distinct even in the intentionally wrong-current-pin case.
                 if (wrongPin) origins = origins.Select(origin => origin with { NextSpki = SHA256.HashData(origin.NextSpki.Span) }).ToArray();
-                f.Signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync(transportOrigins: origins, distinctNodeIdentities: true);
+                f.Signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync(transportOrigins: origins,
+                    distinctNodeIdentities: true, shortMailboxProjection: shortMailboxProjection);
                 f.Recipient = await Peer.CreateAsync(f.Signed, 1, envelopeExpiry);
                 f.Sender = await Peer.CreateAsync(f.Signed, 0, envelopeExpiry);
                 f.Ledger = f.Sender.Operations; f.RecipientLedger = f.Recipient.Operations;

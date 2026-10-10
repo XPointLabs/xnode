@@ -27,7 +27,10 @@ internal sealed partial class CurrentMailboxReplicationCoordinator
                     throw new InvalidOperationException("Current ACK already has an active execution.");
                 var maximum = MailboxWireHttpContract.Acknowledge.MaximumResponseBytes;
                 if (recovered is null) await request.ReserveOutcomeCapacityAsync(maximum, ct).ConfigureAwait(false);
-                var intent = await ledger.ReserveCurrentAckAsync(body, scope.Host.MembershipCommitment,
+                // Retained reads/ACK keep the authenticated original object
+                // projection. The independently current host still owns time,
+                // revocation and selection verification, not this intent key.
+                var intent = await ledger.ReserveCurrentAckAsync(body, scope.Grant.MembershipCommitment,
                     scope.Replicas.Select(replica => replica.NodeId).ToArray(), scope.Lease,
                     async inner =>
                     {

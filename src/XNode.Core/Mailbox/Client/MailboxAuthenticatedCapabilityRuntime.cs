@@ -61,7 +61,7 @@ public sealed class RejectAllMailboxCapabilityRevocationPolicy
 }
 
 public sealed record MailboxAuthenticatedRuntimeStatus(
-    bool StrictMau2Decoder,
+    bool StrictMau3Decoder,
     bool Ed25519Verifier,
     bool DurableAtomicReplay,
     bool DurableCanonicalOutcomes,
@@ -177,7 +177,7 @@ public sealed class MailboxAuthenticatedRuntimeReservation
 }
 
 /// <summary>
-/// Native MAU2 verification and durable replay reservation boundary. This type performs no
+/// Native MAU3 verification and durable replay reservation boundary. This type performs no
 /// mailbox storage or replica fanout. Completed replay records contain only a digest; the exact
 /// canonical response is recovered from the separate durable outcome store.
 /// </summary>
@@ -215,7 +215,7 @@ public sealed class MailboxAuthenticatedCapabilityRuntime
         {
             var ready = _authority.IsConfigured && _revocations.IsConfigured;
             return new(
-                StrictMau2Decoder: true,
+                StrictMau3Decoder: true,
                 Ed25519Verifier: true,
                 DurableAtomicReplay: true,
                 DurableCanonicalOutcomes: true,
@@ -246,9 +246,9 @@ public sealed class MailboxAuthenticatedCapabilityRuntime
     }
 
     public MailboxAuthenticatedRuntimeReservation Verify(
-        ReadOnlyMemory<byte> canonicalMau2)
+        ReadOnlyMemory<byte> canonicalMau3)
     {
-        var decoded = MailboxAuthenticatedClientRequestCodec.Decode(canonicalMau2.Span);
+        var decoded = MailboxAuthenticatedClientRequestCodec.Decode(canonicalMau3.Span);
         var grant = decoded.Presentation.Grant;
         var query = new MailboxCapabilityAuthorityQuery(
             decoded.Binding.Operation,
@@ -289,7 +289,7 @@ public sealed class MailboxAuthenticatedCapabilityRuntime
             NowUnixSeconds = replayScope.EffectiveNowUnixSeconds
         };
         var verified = MailboxAuthenticatedClientRequestCodec.Verify(
-            canonicalMau2.Span,
+            canonicalMau3.Span,
             policy,
             _crypto,
             _revocations,

@@ -2,8 +2,117 @@
 
 S02 is the sole active stage after the
 [S01 contract/API review](../../../docs/S01-CONTRACT-REVIEW-2026-10-10.md).
-This checkpoint is source/composition evidence, not runtime activation,
-whole-stage acceptance or physical Windows/Android E2E.
+S02 source/composition acceptance is recorded below and in the root review.
+This checkpoint is not production activation, shipping qualification or
+physical Windows/Android E2E.
+
+## Explicit admission boundaries and retained client ACK corrective batch
+
+Qualified source batch on top of `6cf28f6`; S02 source/composition is accepted.
+This batch does not introduce wire values, a second journal, fallback readers,
+new node keys or relaxed time/revocation/receipt checks.
+
+The native client dispatcher now has explicit negative cases for retired MAU2
+magic, altered body, a genuine wrong-role grant, holder-signed altered selector
+without issuer authorization, a genuine issuer-signed grant selecting a pair
+which excludes the local node, and PMA2 profile1. All refusals preserve the
+complete native data-root file inventory/content of both actual owners, replay/outcomes,
+intent/mutation state and peer request count. The original signed counter/body
+then succeeds. The hostile profile is raw producer input: the real Protocol
+verifier rejects the profile before root signature validation; no verified
+authority object is forged or substituted. Separate native cases cover exact
+grant expiry at the trusted upper bound, monotonic rollback and signed serial
+revocation before replay/mutation.
+
+Current runtime status is `StrictMau3Decoder`, with no MAU2 alias. The existing
+unit case is renamed from `ValidMau2_UsesEd25519AndRecoversExactDurableOutcome`
+to `ValidMau3_UsesEd25519AndRecoversExactDurableOutcome`; all assertions remain,
+with an additional exact MAU3 prefix assertion. The decoder already used MAU3;
+this is not a format change or replacement of neutral durable primitives.
+
+A new native client scenario stores on two actual owners over pinned peer
+HTTPS, advances genuine signed PMT/network/directory evidence, advances both
+protected role floors on both nodes, reads with a current Retrieve grant bound
+to the original epoch, loses the ACK response, cold-reopens and retries the
+exact saved intent. It checks original commitment/epoch, two tombstones,
+unchanged peer intent, cached exact page, a fresh empty page and no resurrection.
+The expired original Store cannot release a cached response or modify custody.
+This is native client ingress plus real peer HTTPS, not configured public H2
+or physical Windows/Android evidence.
+
+This scenario exposed a product defect: `ReserveCurrentAckAsync` received
+`scope.Host.MembershipCommitment` from the new projection, while its authored
+peer request correctly used `scope.Grant.MembershipCommitment` from the original
+projection. The strict ledger rejected the inconsistent intent before HTTP.
+The coordinator now passes the verified grant commitment; independently current
+host, time, protected floors, selected replicas and revocation stay mandatory.
+
+Matching `artifacts/s02-boundaries-20261010/focused-06` Release build finished
+native0 at `2026-10-10T12:23:51.2379128Z`, zero warnings/errors. Focused10/0/0
+finished native0 at `12:24:57.1453962Z`. Whole unit255/0/0 finished native0 at
+`12:25:53.2494550Z`. Boundary TRX SHA256
+`47D2C28889EA34B50D08769552958BCC65F0C65061B3B60A3669B182118415E8`;
+unit TRX SHA256
+`BA939C245A6C30D6621CCC87F8CC04EC2791592658AEFA2AC898FF4F50C292DC`.
+The common `Read-TestGateReceipt` verifies all255 prior unit case names after
+exactly the reviewed rename and every other stable case key: missing0/differences0.
+No assertions or other cases were removed. The next full references old qualified
+Integration1069/Profile107 plus these new whole-unit255 and boundary10 receipts,
+not the retired unit method name, with no allowed FAIL/skips.
+
+`artifacts/test-gate-20261010/node-current-boundaries-full-01` started at
+`2026-10-10T12:27:36.5920660Z` and finished at `2026-10-10T13:06:07.5222342Z`,
+Desktop5.1.26100.9457/SDK10.0.301. Build/preflight/test/qualification exits0,
+zero build warnings/errors,1441/0/0, exact1441 cases,2136 unchanged inputs and
+FullAccepted=true. Integration1079/Profile107/unit255 all pass. The common
+receipt reader confirms all24 cases from the twelve named S02 review groups.
+The input count differs from prior full03 solely because seven prior reference
+TRX inputs were replaced with four matching references and two test source files
+were added; no other executable/source inputs were removed.
+
+Matching full TRX SHA256, in Integration/Profile/unit order:
+`BC50105710B5A0EE19A9C0AF7FB40312D21B482B791BE4799F0BADB0BD74440A`,
+`246EB8B01A95079A11DD8511FF3EADC1B98DF81B568C5AE416B1F4BA1E66CA98`,
+`EAB0588C79F8C56E608C2EB9616C1A3C804F80C59869B132639DC581F824F6B6`.
+Fresh external no-mock smoke in
+`deep-devops/artifacts/s02-boundaries-20261010/smoke-01` finished native0;
+`runtime.gate.json` at `2026-10-10T13:07:47.2004272Z` has hard/soft failures0,
+runtime warnings0, RequireRouterNoMock=true and actual running, nonmocked Xray.
+SHA256 `FDF4B60B4258587DF9AFDBDABECEBDDB7D5F369BB1D462D92FB5FC9571F6AE7D`.
+Three existing BuildKit InvalidDefaultArgInFrom warnings belong to service
+Dockerfile defaults, not the native source build or runtime gate.
+
+Serial three-node rehearsal finished native0. Receipt
+`deep-devops/artifacts/rehearsals/multi-node/20261010T130816429Z-00b4771325e1/test-results/multi-node-topology.json`
+at `2026-10-10T13:09:06.699Z` has status=ok, three distinct real/nonmocked Xray
+nodes, Registry count3 and reconciliation issues0. SHA256
+`01C1598DDCB24849EB4A5B8A4F9EC7BE8CB31D3F10F9E3C7397A5EC2D8ECEB38`.
+Expected privacy503 proves fail-closed without configured verified authority,
+not message delivery. Both disposable stacks/volumes were cleaned by their
+own scripts; all six existing deep-dev containers remain running.
+
+The root requirement review and these matching full/transport receipts accept
+S02 as the current-only native/configured node source/composition stage.
+Peer-wide loss/rollback, shipping activation, actual issuer/owned-client join,
+physical contacts/messages/files/groups and the remaining release DAG stay open.
+
+Selected changed source/docs plus both passing TRX:11 files, findings0/native0
+(`artifacts/s02-boundaries-20261010/selected-scan-02.json`). The first scan also
+included the default root artifacts and rejected46 pre-existing raw/binary items;
+the explicit selected scan is not a global security PASS or an exemption for
+those files. Raw diagnostics remain local, excluded from approved uploads.
+Matching full and fresh transport are accepted; S02 source/composition review is complete.
+
+Preserved diagnostic failures: focused01 failed6 cases before dispatch because
+the new digest helper tried opening an exclusive `.replay.lock`; the corrected
+helper checks known empty lock inventory/length without bypassing ownership and
+hashes all durable records. Focused02 had6 PASS/3 FAIL because post-refusal blob
+inspection reused intentionally invalid authority; initial empty stores and
+unchanged full native digests now prove preservation without that invalid read.
+Focused03 passed9/0/0/native0. Focused04 build rejected three missing required
+zero-valued NextEpoch window fields; no tests launched. Focused05 build0 and
+9 PASS/1 FAIL exposed the retained ACK product defect above. None is reclassified
+as a full PASS; raw diagnostics remain local and are not approved upload evidence.
 
 ## Public HTTPS/H2 entry and independent client replay floor batch
 

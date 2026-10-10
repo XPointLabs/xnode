@@ -20,9 +20,10 @@ public sealed class MailboxAuthenticatedCapabilityRuntimeTests : IDisposable
     }
 
     [Fact]
-    public void ValidMau2_UsesEd25519AndRecoversExactDurableOutcome()
+    public void ValidMau3_UsesEd25519AndRecoversExactDurableOutcome()
     {
         var fixture = Frame();
+        Assert.Equal("MAU3"u8.ToArray(), fixture.Encoded[..4]);
         using var journal = new DurableMailboxCapabilityReplayJournal(_directory);
         var runtime = Runtime(fixture, journal);
 
@@ -49,7 +50,7 @@ public sealed class MailboxAuthenticatedCapabilityRuntimeTests : IDisposable
             replay.RecoveredOutcome?.Terminal);
         Assert.Equal(stored.CanonicalBytes.ToArray(), replay.RecoveredOutcome?.CanonicalBytes.ToArray());
         Assert.True(runtime.Status.Ready);
-        Assert.True(runtime.Status.StrictMau2Decoder);
+        Assert.True(runtime.Status.StrictMau3Decoder);
         Assert.True(runtime.Status.Ed25519Verifier);
         Assert.True(runtime.Status.DurableAtomicReplay);
         Assert.True(runtime.Status.DurableCanonicalOutcomes);

@@ -580,6 +580,9 @@ internal sealed partial class DeepIdV2PublicationAuthorityFixture : IDisposable,
     internal int PublicationReads { get; private set; }
 
 #if !DEEP_REGISTRY_MGR1_FIXTURE
+    // Hostile raw producer input only; the normal verified source is unchanged.
+    internal ReadOnlyMemory<byte>? PublicationMailboxAuthorityOverride { get; set; }
+
     public ValueTask<DeepIdV2ContactStoreAuthority> ReadPublicationAuthorityAsync(CancellationToken cancellationToken)
     {
         PublicationReads++;
@@ -587,7 +590,7 @@ internal sealed partial class DeepIdV2PublicationAuthorityFixture : IDisposable,
         if (RejectProof) throw new CryptographicException("Current test DID2 proof unavailable.");
         return ValueTask.FromResult(new DeepIdV2ContactStoreAuthority(NetworkContext,
             Authority, Freshness, new OnionTrustedTimeAuthority(this),
-            MailboxAuthorityV2Verifier.Verify(Authority, MailboxAuthority.Span,
+            MailboxAuthorityV2Verifier.Verify(Authority, (PublicationMailboxAuthorityOverride ?? MailboxAuthority).Span,
                 Freshness.TrustedLowerUnixSeconds, Freshness.TrustedUpperUnixSeconds)));
     }
 #endif
