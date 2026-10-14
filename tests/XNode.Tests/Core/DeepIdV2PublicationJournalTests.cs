@@ -16,6 +16,44 @@ public sealed partial class DeepIdV2PublicationJournalTests
     private static readonly byte[] Operation = Bytes(32, 0x12);
     private static readonly byte[] View = Bytes(32, 0x13);
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    public void ViewRenewal_ColdResumePreservesExactInventoryAndReceipt(int lastOldPhase)
+    {
+        using var fixture = new Fixture();
+        var aggregate = Aggregate();
+        var original = Sequence(aggregate, View);
+        var nextView = Bytes(32, 0x73);
+        var renewed = Sequence(aggregate, nextView);
+        using (var journal = fixture.Open())
+            foreach (var fragment in original.Take(lastOldPhase + 1))
+                _ = journal.Stage(fragment);
+        var retainedManifest = File.ReadAllBytes(Path.Combine(fixture.DirectoryPath, "manifest.xpp1"));
+        using (var journal = fixture.Open(nextView))
+        {
+            Assert.Equal(PublicationStageDisposition.WrongScope, journal.Stage(original[0]).Disposition);
+            foreach (var fragment in renewed)
+                Assert.Contains(journal.Stage(fragment).Disposition, new[] {
+                    PublicationStageDisposition.Staged, PublicationStageDisposition.ExactReplay,
+                    PublicationStageDisposition.CandidateReady });
+            Assert.Equal(aggregate, journal.ReadCommitted()!.Candidate!.CanonicalBytes.ToArray());
+            Assert.Equal(PublicationStageDisposition.ExactReplay, journal.Stage(renewed[^1]).Disposition);
+        }
+        Assert.Equal(retainedManifest, File.ReadAllBytes(Path.Combine(fixture.DirectoryPath, "manifest.xpp1")));
+        var signer = PublicKeyAuth.GenerateKeyPair(Bytes(32, 0xa8));
+        byte[] receipt;
+        using (var store = fixture.OpenInventoryStore(signer.PublicKey))
+            receipt = store.CommitAuthorized(DeepIdV2PreKeyPublicationCodec.Decode(aggregate), 200,
+                input => PublicKeyAuth.SignDetached(input, signer.PrivateKey)).CanonicalBytes.ToArray();
+        using (var store = fixture.OpenInventoryStore(signer.PublicKey))
+            Assert.Equal(receipt, store.CommitAuthorized(DeepIdV2PreKeyPublicationCodec.Decode(aggregate), 300,
+                _ => throw new InvalidOperationException("Renewed carriage cannot re-sign an exact commit."))
+                .CanonicalBytes.ToArray());
+    }
+
     [Fact]
     public void InventoryCommit_ExactReplayAcrossRestartReturnsSignedBytesWithoutResigning()
     {
@@ -326,7 +364,7 @@ public sealed partial class DeepIdV2PublicationJournalTests
     }
 
     [Fact]
-    public void ChunkFromDifferentView_LatchesForkBeforeAnyChunkIsWritten()
+    public void ChunkFromDifferentView_IsRejectedWithoutMutationOrPoisoningInventory()
     {
         using var fixture = new Fixture();
         var aggregate = Aggregate();
@@ -337,11 +375,13 @@ public sealed partial class DeepIdV2PublicationJournalTests
         using var journal = fixture.Open();
         Assert.Equal(PublicationStageDisposition.Staged,
             journal.Stage(first[0]).Disposition);
-        Assert.Equal(PublicationStageDisposition.ForkLatched,
+        Assert.Equal(PublicationStageDisposition.WrongScope,
             journal.Stage(changedView[1]).Disposition);
         Assert.False(File.Exists(Path.Combine(fixture.DirectoryPath,
             "chunk-000.xpp1")));
-        Assert.Throws<InvalidDataException>(() => journal.ReadCommitted());
+        Assert.Null(journal.ReadCommitted());
+        Assert.Equal(PublicationStageDisposition.Staged,
+            journal.Stage(first[1]).Disposition);
     }
 
     [Fact]
@@ -620,8 +660,8 @@ public sealed partial class DeepIdV2PublicationJournalTests
         internal string DirectoryPath { get; } = System.IO.Path.Combine(
             System.IO.Path.GetTempPath(), "xnode-did2-journal-" + Guid.NewGuid().ToString("N"));
 
-        internal DeepIdV2PublicationJournal Open() =>
-            new(DirectoryPath, Network, Operation, View,
+        internal DeepIdV2PublicationJournal Open(byte[]? currentView = null) =>
+            new(DirectoryPath, Network, Operation, currentView ?? View,
                 Bytes(32, 0x14), Bytes(32, 0x35));
 
         internal DeepIdV2InventoryCommitStore OpenInventoryStore(

@@ -88,8 +88,11 @@ internal sealed class DeepIdV2PublicationJournal : IDisposable
         if (!Fixed(incoming.NetworkId.Span, networkId) ||
             !Fixed(incoming.PublicationOperationId.Span, operationId))
             return new(PublicationStageDisposition.WrongScope);
-        if (!Fixed(incoming.ViewHash.Span, viewHash) ||
-            !Fixed(incoming.PlacementHash.Span, placementHash))
+        // An out-of-date carriage view cannot mutate or poison an existing
+        // immutable operation. The caller independently mints this current view.
+        if (!Fixed(incoming.ViewHash.Span, viewHash))
+            return new(PublicationStageDisposition.WrongScope);
+        if (!Fixed(incoming.PlacementHash.Span, placementHash))
             return File.Exists(Path("manifest.xpp1"))
                 ? LatchFork()
                 : new(PublicationStageDisposition.WrongScope);
@@ -166,7 +169,7 @@ internal sealed class DeepIdV2PublicationJournal : IDisposable
     {
         var stored = ReadManifestOrDetectOrphans();
         if (stored is not null)
-            return Fixed(stored.CanonicalBytes.Span, incoming.CanonicalBytes.Span)
+            return SameLogicalFragment(stored, incoming)
                 ? new(PublicationStageDisposition.ExactReplay)
                 : LatchFork();
         if (!ManifestBindsServiceCapability(incoming))
@@ -186,7 +189,7 @@ internal sealed class DeepIdV2PublicationJournal : IDisposable
         var name = ChunkName(incoming.ChunkIndex);
         var stored = Read(name, Xpp1V2FragmentPhase.Chunk);
         if (stored is not null)
-            return Fixed(stored.CanonicalBytes.Span, incoming.CanonicalBytes.Span)
+            return SameLogicalFragment(stored, incoming)
                 ? new(PublicationStageDisposition.ExactReplay)
                 : LatchFork();
         if (File.Exists(Path("commit.xpp1")))
@@ -205,7 +208,7 @@ internal sealed class DeepIdV2PublicationJournal : IDisposable
         var stored = Read("commit.xpp1", Xpp1V2FragmentPhase.Commit);
         if (stored is not null)
         {
-            if (!Fixed(stored.CanonicalBytes.Span, incoming.CanonicalBytes.Span))
+            if (!SameLogicalFragment(stored, incoming))
                 return LatchFork();
             // Re-read through the committed-state gate so a damaged durable
             // chunk is quarantined even when the process has not restarted.
@@ -346,7 +349,6 @@ internal sealed class DeepIdV2PublicationJournal : IDisposable
             var result = DeepIdV2BoundedPreKeyPublicationCodec.Decode(File.ReadAllBytes(path));
             if (result.Phase != phase || !Fixed(result.NetworkId.Span, networkId) ||
                 !Fixed(result.PublicationOperationId.Span, operationId) ||
-                !Fixed(result.ViewHash.Span, viewHash) ||
                 !Fixed(result.PlacementHash.Span, placementHash) ||
                 (phase == Xpp1V2FragmentPhase.Manifest &&
                  !ManifestBindsServiceCapability(result)))
@@ -379,8 +381,19 @@ internal sealed class DeepIdV2PublicationJournal : IDisposable
     private static bool HeadersMatch(ParsedXpp1V2Fragment manifest,
         ParsedXpp1V2Fragment fragment)
     {
-        foreach (var tag in new[] { 2, 3, 4, 5, 6, 7, 8, 11 })
+        foreach (var tag in new[] { 2, 3, 5, 6, 7, 8, 11 })
             if (!Fixed(manifest.Field(tag).Span, fragment.Field(tag).Span))
+                return false;
+        return true;
+    }
+
+    private static bool SameLogicalFragment(ParsedXpp1V2Fragment stored,
+        ParsedXpp1V2Fragment incoming)
+    {
+        // Only carriage-view metadata may differ. Neither this comparison nor
+        // stored historical bytes authorize incoming current network work.
+        for (var tag = 1; tag <= 12; tag++)
+            if (tag != 4 && !Fixed(stored.Field(tag).Span, incoming.Field(tag).Span))
                 return false;
         return true;
     }
