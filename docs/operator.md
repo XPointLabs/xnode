@@ -1255,6 +1255,13 @@ It uses the existing strict Registry HTTPS client: no redirect, decompression,
 TLS bypass or direct shipping-client fallback. Fixture-owned source graphs do
 not enable this worker. Existing production source restrictions are unchanged.
 
+Only the exact side-effect-free control GET retries HTTP429/503: at most four
+attempts, with jitter when no Retry-After is supplied. All requests, delays and
+body reads share the original five-second deadline. A server backoff beyond
+that budget fails rather than retrying early; stop/caller cancellation prevents
+another attempt. Redirects, framing/signature errors, other HTTP statuses and
+uncertain mailbox mutations never enter this retry path. Quotas are unchanged.
+
 Both protected role floors must restore before a remote read. Refresh verifies
 a fresh signed target under the actual complete current host, then installs one
 verified successor at a time through the same native owner and read-back. A

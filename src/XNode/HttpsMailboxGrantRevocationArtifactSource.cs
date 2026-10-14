@@ -49,14 +49,7 @@ internal sealed class HttpsMailboxGrantRevocationArtifactSource : IMailboxGrantR
         var endpoint = new Uri(origin, path);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadline.CancelAfter(TimeSpan.FromSeconds(5));
-        using var request = new HttpRequestMessage(HttpMethod.Get, endpoint);
-        request.Headers.Accept.Add(new(MediaType)); request.Headers.CacheControl = new() { NoStore = true };
-        using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token).ConfigureAwait(false);
-        if (response.RequestMessage?.RequestUri is not { } actual ||
-            Uri.Compare(actual, endpoint, UriComponents.AbsoluteUri, UriFormat.UriEscaped, StringComparison.Ordinal) != 0)
-            throw new InvalidDataException("Mailbox control endpoint changed.");
-        if (response.StatusCode is HttpStatusCode.TooManyRequests or HttpStatusCode.ServiceUnavailable)
-            throw new IOException("Mailbox signed control is unavailable.");
+        using var response = await SendControlAsync(endpoint, deadline.Token).ConfigureAwait(false);
         var media = response.Content.Headers.ContentType;
         var length = response.Content.Headers.ContentLength;
         if (response.StatusCode != HttpStatusCode.OK || media?.MediaType != MediaType || media.Parameters.Count != 0 ||
@@ -82,5 +75,37 @@ internal sealed class HttpsMailboxGrantRevocationArtifactSource : IMailboxGrantR
             return record.CanonicalBytes.ToArray();
         }
         finally { CryptographicOperations.ZeroMemory(body); }
+    }
+
+    private async Task<HttpResponseMessage> SendControlAsync(Uri endpoint, CancellationToken ct)
+    {
+        // Only this side-effect-free, exact control GET may retry. All attempts,
+        // body reads and delays share FetchAsync's original five-second budget.
+        // Neither client grant issuance nor uncertain mailbox mutations use it.
+        for (var attempt = 0; ; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+            using var request = new HttpRequestMessage(HttpMethod.Get, endpoint);
+            request.Headers.Accept.Add(new(MediaType)); request.Headers.CacheControl = new() { NoStore = true };
+            var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+            try
+            {
+                if (response.RequestMessage?.RequestUri is not { } actual ||
+                    Uri.Compare(actual, endpoint, UriComponents.AbsoluteUri, UriFormat.UriEscaped, StringComparison.Ordinal) != 0)
+                    throw new InvalidDataException("Mailbox control endpoint changed.");
+                if (response.StatusCode is not (HttpStatusCode.TooManyRequests or HttpStatusCode.ServiceUnavailable))
+                    return response;
+                if (attempt == 3) throw new IOException("Mailbox signed control is unavailable.");
+                var delay = response.Headers.RetryAfter?.Delta ??
+                    (response.Headers.RetryAfter?.Date is { } date ? date - DateTimeOffset.UtcNow :
+                        TimeSpan.FromMilliseconds(Random.Shared.Next(250, 751) * (attempt + 1)));
+                // Never shorten a long server backoff or extend the caller's budget.
+                if (delay < TimeSpan.Zero) delay = TimeSpan.Zero;
+                if (delay > TimeSpan.FromSeconds(5)) throw new IOException("Mailbox signed control is unavailable.");
+                response.Dispose();
+                await Task.Delay(delay, ct).ConfigureAwait(false);
+            }
+            catch { response.Dispose(); throw; }
+        }
     }
 }

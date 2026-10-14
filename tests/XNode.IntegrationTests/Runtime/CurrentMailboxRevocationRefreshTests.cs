@@ -157,16 +157,129 @@ public sealed class CurrentMailboxRevocationRefreshTests
         Assert.Equal(1, handler.Calls);
     }
 
+    [Theory]
+    [InlineData(429)]
+    [InlineData(503)]
+    public async Task TransientControlReadRetriesExactGetThenNativeOwnerVerifies(int status)
+    {
+        await using var f = await CurrentMailboxAdmissionTests.Fixture.CreateAsync(MailboxAuthenticatedOperation.Retrieve);
+        var deposit = (await f.Deposit.ReadProtectedAsync()).ToArray();
+        var retrieve = (await f.Retrieve.ReadProtectedAsync()).ToArray();
+        using var handler = new Records(new()
+        {
+            [(MailboxCapabilityDomain.Deposit, 1)] = deposit,
+            [(MailboxCapabilityDomain.Retrieve, 1)] = retrieve
+        }) { TransientStatus = (HttpStatusCode)status, TransientResponses = 2 };
+        using var client = new HttpClient(handler);
+        await f.Admission.RefreshRevocationsAsync(new HttpsMailboxGrantRevocationArtifactSource(client, "https://registry.example/"), default);
+        Assert.Equal(4, handler.Calls);
+        Assert.Equal(handler.Paths[0], handler.Paths[1]); Assert.Equal(handler.Paths[1], handler.Paths[2]);
+        Assert.Equal(deposit, (await f.Deposit.ReadProtectedAsync()).ToArray());
+        Assert.Equal(retrieve, (await f.Retrieve.ReadProtectedAsync()).ToArray());
+    }
+
+    [Theory]
+    [InlineData(429)]
+    [InlineData(503)]
+    public async Task PersistentControlCongestionHasFourAttemptLimitWithoutFloorMutation(int status)
+    {
+        await using var f = await CurrentMailboxAdmissionTests.Fixture.CreateAsync(MailboxAuthenticatedOperation.Retrieve);
+        var deposit = (await f.Deposit.ReadProtectedAsync()).ToArray();
+        var retrieve = (await f.Retrieve.ReadProtectedAsync()).ToArray();
+        using var handler = new Records([]) { TransientStatus = (HttpStatusCode)status, TransientResponses = 10 };
+        using var client = new HttpClient(handler);
+        await Assert.ThrowsAsync<IOException>(() => f.Admission.RefreshRevocationsAsync(
+            new HttpsMailboxGrantRevocationArtifactSource(client, "https://registry.example/"), default).AsTask());
+        Assert.Equal(4, handler.Calls); Assert.Single(handler.Paths.Distinct());
+        Assert.Equal(deposit, (await f.Deposit.ReadProtectedAsync()).ToArray());
+        Assert.Equal(retrieve, (await f.Retrieve.ReadProtectedAsync()).ToArray());
+    }
+
+    [Fact]
+    public async Task ChangedEndpointOnTransientResponseRejectsBeforeRetry()
+    {
+        using var handler = new Records([]) { TransientResponses = 10, Fault = "redirect" };
+        using var client = new HttpClient(handler);
+        await Assert.ThrowsAsync<InvalidDataException>(() => new HttpsMailboxGrantRevocationArtifactSource(client, "https://registry.example/")
+            .FetchAsync(DeepIdV2PublicationAuthorityFixture.Network, ValidPolicyReference(), MailboxCapabilityDomain.Deposit, 1, default).AsTask());
+        Assert.Equal(1, handler.Calls);
+    }
+
+    [Fact]
+    public async Task InvalidSignatureAfterTransientReadCannotAdvanceEitherFloor()
+    {
+        await using var f = await CurrentMailboxAdmissionTests.Fixture.CreateAsync(MailboxAuthenticatedOperation.Retrieve);
+        var deposit = (await f.Deposit.ReadProtectedAsync()).ToArray();
+        var retrieve = (await f.Retrieve.ReadProtectedAsync()).ToArray();
+        var invalid = Snapshot(f.Signed, generation: 2, prior: deposit); invalid[^1] ^= 1;
+        using var handler = new Records(new() { [(MailboxCapabilityDomain.Deposit, 2)] = invalid }) { TransientResponses = 1 };
+        using var client = new HttpClient(handler);
+        await Assert.ThrowsAsync<CryptographicException>(() => f.Admission.RefreshRevocationsAsync(
+            new HttpsMailboxGrantRevocationArtifactSource(client, "https://registry.example/"), default).AsTask());
+        Assert.Equal(2, handler.Calls);
+        Assert.Equal(deposit, (await f.Deposit.ReadProtectedAsync()).ToArray());
+        Assert.Equal(retrieve, (await f.Retrieve.ReadProtectedAsync()).ToArray());
+    }
+
+    [Fact]
+    public async Task LongServerBackoffRejectsWithoutEarlyRetry()
+    {
+        using var handler = new Records([]) { TransientResponses = 10, RetryAfter = TimeSpan.FromSeconds(30) };
+        using var client = new HttpClient(handler);
+        await Assert.ThrowsAsync<IOException>(() => new HttpsMailboxGrantRevocationArtifactSource(client, "https://registry.example/")
+            .FetchAsync(DeepIdV2PublicationAuthorityFixture.Network, ValidPolicyReference(), MailboxCapabilityDomain.Deposit, 1, default).AsTask());
+        Assert.Equal(1, handler.Calls);
+    }
+
+    [Fact]
+    public async Task CancellationDuringControlBackoffDoesNotLaunchAnotherRead()
+    {
+        using var canceled = new CancellationTokenSource();
+        using var handler = new Records([]) { TransientResponses = 10, AfterTransient = canceled.Cancel };
+        using var client = new HttpClient(handler);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => new HttpsMailboxGrantRevocationArtifactSource(client, "https://registry.example/")
+            .FetchAsync(DeepIdV2PublicationAuthorityFixture.Network, ValidPolicyReference(), MailboxCapabilityDomain.Deposit, 1, canceled.Token).AsTask());
+        Assert.Equal(1, handler.Calls);
+    }
+
+    [Fact]
+    public async Task RetryDelayRemainsInsideOriginalWholeReadDeadline()
+    {
+        using var handler = new Records([]) { TransientResponses = 10, RetryAfter = TimeSpan.FromSeconds(3) };
+        using var client = new HttpClient(handler);
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => new HttpsMailboxGrantRevocationArtifactSource(client, "https://registry.example/")
+            .FetchAsync(DeepIdV2PublicationAuthorityFixture.Network, ValidPolicyReference(), MailboxCapabilityDomain.Deposit, 1, default).AsTask());
+        Assert.Equal(2, handler.Calls); Assert.True(elapsed.Elapsed < TimeSpan.FromSeconds(8));
+    }
+
+    private static byte[] ValidPolicyReference() => [.. "PMA2"u8, 0, 1, .. Enumerable.Repeat((byte)1, 32)];
+
     private sealed class Records(Dictionary<(MailboxCapabilityDomain Role, ulong Generation), byte[]> records) : HttpMessageHandler
     {
         internal int Calls;
         internal string? Fault;
+        internal HttpStatusCode TransientStatus = HttpStatusCode.TooManyRequests;
+        internal int TransientResponses;
+        internal TimeSpan RetryAfter = TimeSpan.Zero;
+        internal Action? AfterTransient;
+        internal List<string> Paths { get; } = [];
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             ct.ThrowIfCancellationRequested(); Calls++;
             if (Fault == "network") throw new HttpRequestException();
             Assert.Equal(HttpMethod.Get, request.Method); Assert.Null(request.Content);
             Assert.Equal(HttpsMailboxGrantRevocationArtifactSource.MediaType, Assert.Single(request.Headers.Accept).MediaType);
+            Assert.True(request.Headers.CacheControl!.NoStore);
+            Paths.Add(request.RequestUri!.AbsoluteUri);
+            if (Calls <= TransientResponses)
+            {
+                var transient = new HttpResponseMessage(TransientStatus) { RequestMessage = request };
+                transient.Headers.RetryAfter = new(RetryAfter);
+                if (Fault == "redirect") transient.RequestMessage = new(HttpMethod.Get, "https://other.example/");
+                AfterTransient?.Invoke();
+                return Task.FromResult(transient);
+            }
             var parts = request.RequestUri!.AbsolutePath.Split('/');
             var role = (MailboxCapabilityDomain)byte.Parse(parts[^2], System.Globalization.CultureInfo.InvariantCulture);
             var generation = parts[^1] == "latest" ? records.Keys.Where(key => key.Role == role).Max(key => key.Generation) :
