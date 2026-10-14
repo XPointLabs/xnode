@@ -27,10 +27,36 @@ Existing malformed framing, expired-floor catch-up and worker-survival cases
 remain. Focused01 was an incorrect package-lane invocation and failed compilation;
 it is retained. Focused02 passed24 before the final two hostile cases were added.
 
-Canonical Node full is running at
+Canonical Node full **accepted1508/0/0**, exact1508-case mapping, all native
+stages0 and2185 unchanged inputs. Run:
 `artifacts/test-gate-20261015/s05-control-read-full-01/`, using the three prior
-accepted full receipts plus focused03. Its build passed with zero warnings/errors;
-pending full/qualification must not be represented as accepted source.
+accepted full receipts plus focused03. Windows PowerShell5.1/SDK10.0.301;
+build zero warnings/errors, genuine preflight passed, unfiltered full then
+qualification completed2026-10-14T20:49:45Z. The IntegrationTests receipt is
+1144/0/0; ProfileGenerator107/0/0; Unit257/0/0. Receipt SHA256, respectively:
+
+- `FAA4520783E50D6C053DF564FE3956DAAC7CF3173FF0430DF528933193CB558F`;
+- `2088224CFEA0EEFF175E16F62C37977E0EA606DCD6E35BAC392C967C2DC67076`;
+- `CD809337BD4D9469690C0AFF1463F1692ABAA46F3AA9A1FB75972E7A97943BCA`.
+
+Qualification SHA256:
+`44334A52431E010B6D66313692FB3F38C2D6653B2A0B1FCDD88347E8DB95BDCD`;
+terminal SHA256:
+`616ABC530471AE639FD1843793B57A94897E0BACB187A83FFF35D6CC17F4B12C`.
+Required managed-external no-mock smoke02 passed native0 (10/0 contract cases,
+runtime snapshot failed checks0) under PowerShell7; its disposable project was
+cleaned up. Log SHA256:
+`2240F8C9BF5FB752DB63917D7F309C05F1BA1E2FEBF85890FEE9F862A0F510B2`;
+runtime snapshot SHA256:
+`9DC80BF2EF2CE4DD77B10D7644DF33C7CD0D437AB609FDA4AAFC4A72312EC28C`.
+Three-node rehearsal01 also passed native0, registry node count3, reconciliation
+issues0 and the explicit fail-closed-without-verified-authority boundary. Runs:
+`deep-devops/artifacts/s05-control-read-transport-20261015/` and
+`deep-devops/artifacts/rehearsals/multi-node/20261014T205602756Z-0043de2a62f8/`.
+These fixtures/transport snapshots are not current DID2 delivery or physical
+acceptance. The first smoke invocation used the wrong shell and failed before
+Docker; its receipt is retained. The lifecycle runbook requires PowerShell7,
+independently of the canonical source-gate interpreter.
 
 ## Actual local runtime evidence
 
