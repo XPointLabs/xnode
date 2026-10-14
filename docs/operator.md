@@ -328,6 +328,15 @@ node key. No mailbox issuer key is installed on XNode. Both selected stores
 independently attest their current durable publication/role lookup; exact retry
 preserves the original result deadline. Existing observer, proof/network floor,
 V2 staging and candidate environment guards still apply.
+Repeated observation callbacks may reuse the already verified immutable network
+context for less than one second, only while its original lease is live and the
+complete source digest, authority and protected network floor remain identical.
+This is an in-memory resource optimization, not a cached readiness permission:
+the directory floor/proof, clock, issuer, revocation and final source/floor fences
+still execute on every callback. Cache hits do not renew signed or monotonic
+lifetimes. Source changes or elapsed resource budget require full verification;
+stop, lost floor, expired proof and rollback remain fail-closed. No state layout,
+wire value, replica deadline or acquisition permission changes.
 The forwarding node ID is an opaque descriptor identity, not its Ed25519 public
 key. The grant client requires the locally verified ResolveInvite placement for
 the exact locator and checks its signing seed against that descriptor before
@@ -1350,6 +1359,34 @@ reset, if needed for activation, is a separate operator step.
 
 ### Current mailbox resource observations
 
+Custody readers still validate links/reparse points on every protected read,
+including every ancestor; no path trust is cached across callbacks. On Windows,
+the existing `File.GetAttributes` path suppresses only file/directory-not-found
+exceptions; access, device-not-ready and other I/O failures still throw.
+Neither `Exists` nor an ambiguous attribute sentinel is a trust check.
+Enumeration checks the directory ancestry once and each entry itself;
+the full path and file security are checked again before each protected read.
+Protected enrollment, anchor, floor and Data Protection validation are unchanged.
+The Windows DID2 head reader uses attributes/type checks for each path and
+ancestor up to its exact configured trust root rather than opening each
+ordinary entry again to resolve `LinkTarget`. Missing/wrong-type/reparse/error
+paths still reject; Linux retains its existing link checks. Every read repeats
+the checks, with no path or floor-trust cache. The shared ancestry helper
+normalizes once per call and walks parent strings, keeping the same attribute
+queries and missing-file exception distinction.
+Windows native replacement keeps its original10/20/40ms fast retries and now
+allows four further80/160/320/640ms backoffs for errors5/32/33 only (1270ms total).
+It retries the same flushed temporary file and native move, never changes ACLs,
+recreates bytes, treats a missing source as success or removes uncertain intent.
+Exhaustion/read-only protection still fails. Peer/ingress and authority deadlines
+are unchanged; expiry or cancellation after a replacement still suppresses release.
+An exact same-floor replay performs no write. Cancellation or a current-clock
+verification failure still rejects that replay, but does not latch an otherwise
+intact custody owner as an uncertain commit. Once any replacement is attempted,
+an interrupted/failed completion remains faulted until operator recovery;
+authenticated signed conflicts still latch. No failed verification releases
+admission authority or resets a floor.
+
 The optional `XPoint.XNode.CurrentMailbox` meter exposes `phase.duration` in
 milliseconds with closed phase names only. No exporter is enabled by this
 change. Measurements contain no node/account/mailbox IDs, selectors, payloads,
@@ -1359,3 +1396,11 @@ Durations are inclusive and can overlap across phases and hosts; do not sum
 them as one request's CPU time. Native test diagnostics reset at dispatch, after
 setup, and keep failed receipts. Current source, replay/custody, deadline and
 release qualification rules are unchanged by instrumentation.
+Registry's whole-process phase listener is disabled by default, including in
+canonical full tests. The disposable Registry wrapper's `-NativePhaseTrace`
+switch sets `DEEP_TEST_NATIVE_PHASE_TRACE=1` only for an explicit filtered
+diagnostic invocation; full qualification rejects this switch before provider
+creation. Ambient diagnostic flags are cleared/restored with the other test
+inputs. It changes observations, never authority,
+deadlines or assertions. Do not interpret concurrent full-suite aggregates as
+per-request measurements.

@@ -234,12 +234,14 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
     DeepIdV2NetworkAuthorityFileSource authoritySource,
     DeepIdV2NetworkClosureFileSource artifacts,
     FileDeepIdV2NetworkFloorStore floor,
-    IOnionMonotonicClock clock) : IDeepIdV2PreKeyPlacementSource, IDeepIdV2ReceiveNetworkSource,
+    IOnionMonotonicClock clock, TimeProvider? resourceTimeProvider = null) : IDeepIdV2PreKeyPlacementSource, IDeepIdV2ReceiveNetworkSource,
     IDeepIdV2PreKeyClaimPlacementSource, IDeepIdV2ContactStoreAuthoritySource
 {
     private readonly SemaphoreSlim gate = new(1, 1);
+    private readonly TimeProvider resourceClock = resourceTimeProvider ?? TimeProvider.System;
     private sealed record Observation(VerifiedDeepIdV2DirectoryFreshness Freshness,
-        VerifiedXPointNetworkAuthority Authority, DeepIdV2NetworkFloor Floor, OnionMonotonicReading Reading);
+        VerifiedXPointNetworkAuthority Authority, DeepIdV2NetworkFloor Floor, OnionMonotonicReading Reading,
+        VerifiedOnionNetworkContext Network, byte[] SourceDigest, long NetworkVerifiedAt);
     private Observation? observation;
     private int stopped;
 
@@ -357,15 +359,33 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
                     await proofs.ValidateObservedAsync(freshness, cancellationToken).ConfigureAwait(false);
             }
             using var exact = artifacts.ReadCurrent();
+            var sourceDigest = ComputeSourceDigest(exact);
             var time = new OnionTrustedTimeAuthority(clock);
             VerifiedOnionNetworkContext network;
-            using (CurrentMailboxDiagnostics.Measure("network-verify"))
-                network = previous is null
-                    ? await OnionNetworkContextVerifier.VerifyAsync(authority, freshness, exact.Policies,
-                        exact.Views, exact.Heads, exact.Nodes, exact.Projections, null, time, cancellationToken).ConfigureAwait(false)
-                    : await OnionNetworkContextVerifier.VerifyFromProtectedHistoryAsync(authority, freshness,
-                        exact.Policies, exact.Views, exact.Heads, exact.Nodes, exact.Projections,
-                        previous.History, time, cancellationToken).ConfigureAwait(false);
+            var verifiedAt = observed?.NetworkVerifiedAt ?? 0;
+            var cacheElapsed = observed is null ? TimeSpan.MaxValue : resourceClock.GetElapsedTime(observed.NetworkVerifiedAt);
+            if (observed is not null && CryptographicOperations.FixedTimeEquals(sourceDigest, observed.SourceDigest) &&
+                cacheElapsed >= TimeSpan.Zero && cacheElapsed < TimeSpan.FromSeconds(1))
+            {
+                // Reuse only a previously minted immutable context, not a
+                // trust boolean. Both protected floors, current proof, raw
+                // authority/sources, clock, issuer and release fencing are
+                // still checked by this operation. Its original lease must
+                // remain live; cache hits never refresh either lifetime.
+                using (CurrentMailboxDiagnostics.Measure("network-context-reuse"))
+                    network = observed.Network;
+            }
+            else
+            {
+                using (CurrentMailboxDiagnostics.Measure("network-verify"))
+                    network = previous is null
+                        ? await OnionNetworkContextVerifier.VerifyAsync(authority, freshness, exact.Policies,
+                            exact.Views, exact.Heads, exact.Nodes, exact.Projections, null, time, cancellationToken).ConfigureAwait(false)
+                        : await OnionNetworkContextVerifier.VerifyFromProtectedHistoryAsync(authority, freshness,
+                            exact.Policies, exact.Views, exact.Heads, exact.Nodes, exact.Projections,
+                            previous.History, time, cancellationToken).ConfigureAwait(false);
+                verifiedAt = resourceClock.GetTimestamp();
+            }
             network.EnsureCurrent();
             var issuer = await VerifyMailboxAuthorityAsync(network, authority, freshness, exact,
                 cancellationToken).ConfigureAwait(false);
@@ -419,9 +439,9 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
             if (Volatile.Read(ref stopped) != 0)
                 throw new InvalidOperationException("The DID2 network source stopped before capability release.");
             if (!observational && observesConfiguredAccount)
-                Volatile.Write(ref observation, new(freshness, authority, committed, finalIssuer.Reading));
+                Volatile.Write(ref observation, new(freshness, authority, committed, finalIssuer.Reading, network, sourceDigest, verifiedAt));
             else if (observed is not null)
-                Volatile.Write(ref observation, observed with { Reading = finalIssuer.Reading });
+                Volatile.Write(ref observation, observed with { Reading = finalIssuer.Reading, Network = network, SourceDigest = sourceDigest, NetworkVerifiedAt = verifiedAt });
             return (network, freshness, authority, finalIssuer.Policy);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -445,6 +465,24 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
         CryptographicOperations.FixedTimeEquals(left.AuthorityCoreReference.Span, right.AuthorityCoreReference.Span) &&
         CryptographicOperations.FixedTimeEquals(left.Dts1PolicyCoreReference.Span, right.Dts1PolicyCoreReference.Span) &&
         CryptographicOperations.FixedTimeEquals(left.TimeSourcePolicyHash.Span, right.TimeSourcePolicyHash.Span);
+
+    // Private resource-cache key only, never a wire hash or authority. Closed
+    // group/count/length framing prevents series or record-boundary ambiguity.
+    private static byte[] ComputeSourceDigest(DeepIdV2NetworkClosureArtifacts exact)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        Span<byte> length = stackalloc byte[4];
+        foreach (var group in new[] { exact.Policies, exact.Views, exact.Heads, exact.Nodes, exact.Projections, exact.MailboxAuthorities })
+        {
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(length, checked((uint)group.Count)); hash.AppendData(length);
+            foreach (var bytes in group)
+            {
+                System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(length, checked((uint)bytes.Length));
+                hash.AppendData(length); hash.AppendData(bytes.Span);
+            }
+        }
+        return hash.GetHashAndReset();
+    }
 
     private async ValueTask<(VerifiedMailboxAuthorityV2 Policy, OnionMonotonicReading Reading)>
         VerifyMailboxAuthorityAsync(VerifiedOnionNetworkContext network,

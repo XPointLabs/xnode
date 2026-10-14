@@ -8,6 +8,31 @@ public sealed class MailboxDurabilityBarrierTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public void WindowsDelayedNativeLock_PreservesExactBytesAndCompletesAfterTheFormerRetryWindow(bool lockTemporary)
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        WithFiles((temporary, final) =>
+        {
+            using var held = new FileStream(lockTemporary ? temporary : final,
+                FileMode.Open, FileAccess.Read, FileShare.Read);
+            var delays = new List<int>();
+            var barrier = new MailboxDurabilityBarrier(delay =>
+            {
+                delays.Add(delay);
+                Assert.Equal(new byte[] { 1, 2, 3 }, File.ReadAllBytes(final));
+                Assert.Equal(new byte[] { 4, 5, 6 }, File.ReadAllBytes(temporary));
+                if (delays.Count == 4) held.Dispose();
+            });
+            barrier.ReplaceFile(temporary, final);
+            Assert.Equal(4, delays.Count);
+            Assert.Equal(new byte[] { 4, 5, 6 }, File.ReadAllBytes(final));
+            Assert.False(File.Exists(temporary));
+        });
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public void WindowsTransientNativeLock_ReplacesOnlyTheOriginalTemporaryFile(bool lockTemporary)
     {
         if (!OperatingSystem.IsWindows()) return;
@@ -46,7 +71,7 @@ public sealed class MailboxDurabilityBarrierTests
             var barrier = new MailboxDurabilityBarrier(delays.Add);
             var error = Assert.Throws<Win32Exception>(() => barrier.ReplaceFile(temporary, final));
             Assert.Contains(error.NativeErrorCode, new[] { 5, 32, 33 });
-            Assert.Equal(new[] { 10, 20, 40 }, delays);
+            Assert.Equal(new[] { 10, 20, 40, 80, 160, 320, 640 }, delays);
             Assert.Equal(new byte[] { 1, 2, 3 }, File.ReadAllBytes(final));
             Assert.Equal(new byte[] { 4, 5, 6 }, File.ReadAllBytes(temporary));
         });
@@ -66,7 +91,7 @@ public sealed class MailboxDurabilityBarrierTests
                 var barrier = new MailboxDurabilityBarrier(delays.Add);
                 var error = Assert.Throws<Win32Exception>(() => barrier.ReplaceFile(temporary, final));
                 Assert.Equal(5, error.NativeErrorCode);
-                Assert.Equal(new[] { 10, 20, 40 }, delays);
+                Assert.Equal(new[] { 10, 20, 40, 80, 160, 320, 640 }, delays);
                 Assert.True(File.GetAttributes(final).HasFlag(FileAttributes.ReadOnly));
                 Assert.Equal(new byte[] { 1, 2, 3 }, File.ReadAllBytes(final));
                 Assert.Equal(new byte[] { 4, 5, 6 }, File.ReadAllBytes(temporary));

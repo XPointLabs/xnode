@@ -16,6 +16,29 @@ namespace XNode.IntegrationTests.Runtime;
 public sealed partial class MailboxGrantRevocationStoreTests
 {
     [Theory]
+    [InlineData("enrollment", false)]
+    [InlineData("anchor", false)]
+    [InlineData("floor", false)]
+    [InlineData("enrollment", true)]
+    [InlineData("anchor", true)]
+    [InlineData("floor", true)]
+    public async Task WarmProtectedReadRejectsRecordLinkIncludingDanglingTarget(string record, bool dangling)
+    {
+        using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var files = new Custody(signed);
+        var host = await Host(signed);
+        await using var store = files.Open();
+        await store.EnrollAsync(host, Snapshot(signed));
+        _ = await store.ReadProtectedAsync();
+        var path = files.PathFor(record);
+        var target = Path.Combine(files.Root, "linked-record.bin");
+        if (!dangling) File.Copy(path, target);
+        File.Delete(path);
+        File.CreateSymbolicLink(path, target);
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() => store.ReadProtectedAsync().AsTask());
+    }
+
+    [Theory]
     [InlineData(MailboxCapabilityDomain.Deposit)]
     [InlineData(MailboxCapabilityDomain.Retrieve)]
     public async Task LateNewScopePinsCurrentTailAndKeepsInitialFloorAcrossColdAdvance(MailboxCapabilityDomain role)
@@ -374,9 +397,10 @@ public sealed partial class MailboxGrantRevocationStoreTests
             File.WriteAllBytes(Floor, provider.CreateProtector("Deep.XNode.MGR1.Floor.v1", scope).Protect(exact));
             File.WriteAllBytes(Anchor, provider.CreateProtector("Deep.XNode.MGR1.Anchor.v1", scope).Protect(exact));
         }
-        internal FileMailboxGrantRevocationStore Open(IMailboxDurabilityBarrier? barrier = null, string? custody = null)
+        internal FileMailboxGrantRevocationStore Open(IMailboxDurabilityBarrier? barrier = null, string? custody = null,
+            IMailboxStorageSecurity? storageSecurity = null)
         {
-            var security = new MailboxStorageSecurity(); security.SecureDirectory(Keys); security.SecureDirectory(Data);
+            var security = storageSecurity ?? new MailboxStorageSecurity(); security.SecureDirectory(Keys); security.SecureDirectory(Data);
             var provider = DataProtectionProvider.Create(new DirectoryInfo(Keys), builder => builder.SetApplicationName("XPoint.XNode.MGR1.NativeTests.v1"));
             return new(Data, custody ?? Path.Combine(Root, "custody"), nodeId ?? Bytes(32, 0x70), signed.NetworkContext.NetworkId.Span,
                 Reference(signed), role, provider, security, barrier ?? new MailboxDurabilityBarrier());

@@ -231,7 +231,10 @@ public sealed class MailboxDurabilityBarrier : IMailboxDurabilityBarrier
                 if (MoveFileEx(temporaryPath, finalPath,
                         MoveFileReplaceExisting | MoveFileWriteThrough)) return;
                 var error = Marshal.GetLastPInvokeError();
-                if (error is not (5 or 32 or 33) || attempt == 3 || !File.Exists(temporaryPath))
+                // Preserve the original fast10/20/40ms retries, but tolerate
+                // reader/filter holds longer than70ms. Seven exponential waits
+                // total1270ms; sustained denial remains an uncertain failure.
+                if (error is not (5 or 32 or 33) || attempt == 7 || !File.Exists(temporaryPath))
                     throw new Win32Exception(error);
                 RetryDelay(10 << attempt);
             }

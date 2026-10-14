@@ -135,13 +135,20 @@ internal sealed class FileMailboxGrantRevocationStore : IAsyncDisposable
                 throw;
             }
             cancellationToken.ThrowIfCancellationRequested();
+            var writeAttempted = false;
             try
             {
                 if (!Fixed(prior, owned))
-                { Write(anchorPath, owned, anchorProtection); Write(floorPath, owned, floorProtection); }
+                {
+                    writeAttempted = true;
+                    Write(anchorPath, owned, anchorProtection); Write(floorPath, owned, floorProtection);
+                }
                 await VerifyReadBackAsync(plan, cancellationToken).ConfigureAwait(false);
             }
-            catch { faulted = true; throw; }
+            // Exact replay has no write uncertainty. A clock/cancellation
+            // failure still rejects verification, but must not poison intact
+            // custody. Any attempted write remains conservatively faulted.
+            catch { if (writeAttempted) faulted = true; throw; }
         }
         finally { gate.Release(); }
     }
@@ -166,14 +173,18 @@ internal sealed class FileMailboxGrantRevocationStore : IAsyncDisposable
             }
             cancellationToken.ThrowIfCancellationRequested();
             var reader = new LeasedReader(this);
+            var writeAttempted = false;
             try
             {
                 if (!Fixed(prior, owned))
-                { Write(anchorPath, owned, anchorProtection); Write(floorPath, owned, floorProtection); }
+                {
+                    writeAttempted = true;
+                    Write(anchorPath, owned, anchorProtection); Write(floorPath, owned, floorProtection);
+                }
                 await MailboxGrantRevocationV1Verifier.VerifyHistoricalCommitAsync(plan, RequireFloor(), reader,
                     cancellationToken).ConfigureAwait(false);
             }
-            catch { faulted = true; throw; }
+            catch { if (writeAttempted) faulted = true; throw; }
             finally { reader.Close(); }
         }
         finally { gate.Release(); }
@@ -275,10 +286,16 @@ internal sealed class FileMailboxGrantRevocationStore : IAsyncDisposable
     private byte[] RequireFloor() => ReadCore() ?? throw new InvalidDataException("MGR1 requires explicit new-scope enrollment or operator recovery.");
     private byte[]? ReadCore()
     {
+        using var measurement = CurrentMailboxDiagnostics.Measure("revocation-floor-read");
         RejectLinks(directory);
         foreach (var entry in Directory.EnumerateFileSystemEntries(directory))
         {
-            RejectLinks(entry);
+            // The directory's complete ancestry was just checked. Validate
+            // each enumerated entry itself without repeating that entire walk
+            // for every sibling. Read() still rechecks the complete path before
+            // every protected read/security callback; nothing is cached.
+            if ((File.GetAttributes(entry) & FileAttributes.ReparsePoint) != 0)
+                throw new UnauthorizedAccessException("MGR1 custody cannot traverse links.");
             if (Directory.Exists(entry) || Path.GetFileName(entry) is not
                 ("writer.lock" or "floor.bin" or "anchor.bin" or "enrollment.bin" or "fault.bin"))
                 throw new InvalidDataException("MGR1 custody contains an unknown/partial record.");
@@ -312,7 +329,11 @@ internal sealed class FileMailboxGrantRevocationStore : IAsyncDisposable
         var bytes = new byte[checked((int)stream.Length)]; stream.ReadExactly(bytes);
         if (stream.ReadByte() != -1) throw new InvalidDataException("MGR1 protected record changed while reading.");
         byte[]? plain = null;
-        try { plain = protection.Unprotect(bytes); return Capture(plain); }
+        try
+        {
+            using (CurrentMailboxDiagnostics.Measure("revocation-unprotect")) plain = protection.Unprotect(bytes);
+            using (CurrentMailboxDiagnostics.Measure("revocation-decode")) return Capture(plain);
+        }
         finally { CryptographicOperations.ZeroMemory(bytes); if (plain is not null) CryptographicOperations.ZeroMemory(plain); }
     }
 

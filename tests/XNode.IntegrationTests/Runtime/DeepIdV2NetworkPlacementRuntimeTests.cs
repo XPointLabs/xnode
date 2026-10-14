@@ -12,6 +12,35 @@ namespace XNode.IntegrationTests.Runtime;
 public sealed class DeepIdV2NetworkPlacementRuntimeTests
 {
     [Fact]
+    public async Task BriefVerifiedContextReuseDoesNotRenewProofOrProtectedFloors()
+    {
+        using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var files = new Assets(signed); using var floor = files.OpenFloor();
+        var resources = new ResourceClock();
+        var source = files.Source(floor, resourceTimeProvider: resources);
+        var acquired = await RefreshAsync(source, signed); var retained = await floor.ReadAsync(default);
+        var reused = await source.ReadPublicationAuthorityAsync(default);
+        Assert.Same(acquired, reused.Network); Assert.Same(signed.Freshness, reused.Freshness);
+        Assert.Equal(1, signed.ProofReads); Assert.Equal(2, signed.ObservationChecks);
+        resources.Timestamp = resources.TimestampFrequency * 2;
+        var reverified = await source.ReadPublicationAuthorityAsync(default);
+        Assert.NotSame(acquired, reverified.Network); Assert.Same(signed.Freshness, reverified.Freshness);
+        Assert.Equal(1, signed.ProofReads); Assert.Equal(4, signed.ObservationChecks);
+        Assert.True(FileDeepIdV2NetworkFloorStore.Same(retained, await floor.ReadAsync(default)));
+        signed.RejectProof = true;
+        await Assert.ThrowsAsync<CryptographicException>(() => source.ReadPublicationAuthorityAsync(default).AsTask());
+        signed.RejectProof = false;
+        await Assert.ThrowsAsync<CryptographicException>(() => source.ReadPublicationAuthorityAsync(default).AsTask());
+        Assert.Equal(1, signed.ProofReads);
+    }
+
+    private sealed class ResourceClock : TimeProvider
+    {
+        internal long Timestamp { get; set; }
+        public override long GetTimestamp() => Timestamp;
+    }
+
+    [Fact]
     public async Task IndependentObserverFreshVerificationPersistsFloorAndSurvivesRestart()
     {
         using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
@@ -343,7 +372,7 @@ public sealed class DeepIdV2NetworkPlacementRuntimeTests
         internal FileDeepIdV2NetworkFloorStore OpenFloor(Action? afterFloorWrite = null) => new(Path.Combine(root, "node-state"),
             protector, new MailboxStorageSecurity(), new ObservedDurability(afterFloorWrite));
         internal DeepIdV2NetworkPlacementRuntime Source(FileDeepIdV2NetworkFloorStore floor,
-            bool observer = true, bool atomic = false, bool duplicateIssuer = false)
+            bool observer = true, bool atomic = false, bool duplicateIssuer = false, TimeProvider? resourceTimeProvider = null)
         {
             var issuerPaths = new[] { mailboxAuthority };
             if (duplicateIssuer)
@@ -359,7 +388,7 @@ public sealed class DeepIdV2NetworkPlacementRuntimeTests
                         issuerPaths.Select(path => (ReadOnlyMemory<byte>)File.ReadAllBytes(path)).ToArray())), this.observer)
                 : new DeepIdV2NetworkClosureFileSource([policy], [view], [head], nodes, [projection],
                     issuerPaths, observer ? this.observer : "");
-            return new(signed, new(signed.GenesisPin, [authority], [time]), source, floor, signed);
+            return new(signed, new(signed.GenesisPin, [authority], [time]), source, floor, signed, resourceTimeProvider);
         }
         public void Dispose() => Directory.Delete(root, recursive: true);
     }

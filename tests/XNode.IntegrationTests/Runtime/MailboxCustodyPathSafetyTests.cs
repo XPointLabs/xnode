@@ -1,7 +1,26 @@
 namespace XNode.IntegrationTests.Runtime;
 
-public sealed class MailboxCustodyPathSafetyTests
+public sealed class MailboxCustodyPathSafetyTests(Xunit.Abstractions.ITestOutputHelper output)
 {
+    [Fact]
+    public void RepeatedDeepWalksStillRejectAChangedAncestor()
+    {
+        using var files = new Paths();
+        var ancestor = Path.Combine(files.Root, "ancestor");
+        Directory.CreateDirectory(ancestor);
+        var path = Path.Combine(ancestor, "a", "b", "c", "d", "floor.bin");
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        for (var index = 0; index < 2_048; index++)
+            MailboxCustodyPathSafety.RejectLinks(path, "Rejected linked custody.");
+        output.WriteLine($"Fresh ancestry walks=2048; elapsed-ms={watch.ElapsedMilliseconds}");
+        var target = Path.Combine(files.Root, "target");
+        Directory.CreateDirectory(target);
+        Directory.Delete(ancestor);
+        Directory.CreateSymbolicLink(ancestor, target);
+        Assert.Throws<UnauthorizedAccessException>(() =>
+            MailboxCustodyPathSafety.RejectLinks(path, "Rejected linked custody."));
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

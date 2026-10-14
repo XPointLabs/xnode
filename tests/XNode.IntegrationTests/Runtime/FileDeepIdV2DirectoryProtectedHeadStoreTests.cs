@@ -9,6 +9,27 @@ namespace XNode.IntegrationTests.Runtime;
 
 public sealed class FileDeepIdV2DirectoryProtectedHeadStoreTests
 {
+    [Theory]
+    [InlineData("tip", false)]
+    [InlineData("tip", true)]
+    [InlineData("anchor", false)]
+    [InlineData("anchor", true)]
+    [InlineData("index", false)]
+    [InlineData("index", true)]
+    public async Task WarmRetainedReadRejectsLinkedRecordIncludingDanglingTarget(string record, bool dangling)
+    {
+        using var fixture = await Fixture.CreateAsync();
+        using var store = fixture.Open();
+        await store.RestoreAsync(fixture.Authority, default);
+        _ = await store.ReadRetainedAsync(fixture.Authority, default);
+        var path = record == "tip" ? fixture.TipPath : record == "anchor" ? fixture.AnchorPath : fixture.LatestPath;
+        var target = Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(fixture.AnchorPath))!, "link-target.bin");
+        if (!dangling) File.Copy(path, target);
+        File.Delete(path);
+        File.CreateSymbolicLink(path, target);
+        await Assert.ThrowsAsync<InvalidDataException>(() => store.ReadRetainedAsync(fixture.Authority, default).AsTask());
+    }
+
     [Fact]
     public async Task RetainedReadCannotInitializeEmptyHeadCustody()
     {

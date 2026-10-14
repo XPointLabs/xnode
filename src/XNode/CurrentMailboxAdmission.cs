@@ -261,6 +261,7 @@ internal sealed partial class CurrentMailboxAdmission(
 
                 async ValueTask RequireGrantCurrentAsync(VerifiedMailboxHostAuthorityV2 actualHost, CancellationToken checkToken)
                 {
+                    using var measurement = CurrentMailboxDiagnostics.Measure("grant-context-check");
                     if (exactGrant is null) await actualHost.EnsureCurrentAsync(checkToken).ConfigureAwait(false);
                     else if (grant!.Domain == MailboxCapabilityDomain.Retrieve)
                     {
