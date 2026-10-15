@@ -1479,3 +1479,15 @@ tests because the native module helper was invoked outside its module scope.
 The original failures remain. Current unfiltered source qualification, peer
 regressions and physical mailbox recovery are open; runtime instrumentation
 activation is for local diagnosis, not release acceptance.
+
+Further focused diagnostics preserve the original refusals. Run
+`configured-peer-timing-05` (hash-bound existing binary) failed in configured
+startup readiness before Store. Run`configured-peer-timing-06` compiled the
+test project against its already built references and retains measurements even
+when setup fails; it is not an unfiltered source gate. Its Store returned504
+after15571ms:107 authority-source readings totaled9597ms,354 revocation floor
+readings5480ms, while22 network verifications totaled48ms and106 host verifications
+23ms. These inclusive phases span concurrent owned hosts and cannot be summed
+as request CPU time. Repeated file/source/floor work is the next measured
+optimization target, not a longer crypto cache, dropped currentness checks or
+increased deadline. The same run remains1FAIL/0PASS/0skip/native1.

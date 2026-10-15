@@ -213,6 +213,11 @@ public sealed partial class CurrentMailboxPeerHttpTests
         }
         finally
         {
+            // Preserve resource observations when setup/readiness fails before
+            // the first Dispatch; these inclusive totals are not request CPU
+            // time, trusted time or successful recovery evidence.
+            output.WriteLine("Final native observation scope (includes setup unless Dispatch reset it):");
+            timing.Write(output);
             foreach (var http in hosts) await http.DisposeAsync();
             foreach (var owner in owners) await owner.DisposeAsync();
             if (configured is not null) await configured.DisposeAsync();
