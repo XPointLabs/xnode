@@ -372,6 +372,15 @@ retained authority, renewed issuance or physical Retrieve/ACK. See the
 
 ## Private DID2 coordination backend candidate
 
+The matched [DR-0124](../../docs/survival-program/decisions/DR-0124-publication-winner-readback.md)
+consumer adds target4 completed-publication winner READ. Gateway placement,
+request view/window and calling-node peer authentication are current; the
+enclosed response retains its original signed publication bytes. This path
+never reaches an InviteStore mutation or authorizes a new generation. It uses
+the existing configured private Registry origin and node key; no extra secret,
+floor reset or journal change is needed. Upgrade Registry/client/gateway as a
+matched candidate and retain physical verification as an activation gate.
+
 Coordination consumers must rebuild/repin with Registry and clients under
 [DR77](../../docs/survival-program/decisions/DR-0077-did2-route-successor-coordination.md).
 The route response retains its actual signed issuance head; the enclosed current

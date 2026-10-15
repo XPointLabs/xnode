@@ -15,6 +15,37 @@ namespace XNode.IntegrationTests.Runtime;
 // socket TLS, ONION, publication or physical delivery authority is claimed.
 public sealed class ContactCoordinationBackendClientTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task WinnerReadUsesItsExactPrivateTargetAndRejectsSubstitutedResponse(bool corrupt)
+    {
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync(distinctNodeIdentities: true, authorContactPublication: true);
+        var request = fixture.ContactWinnerReadRequest;
+        var original = ContactPublicationAuthorityWireCodec.EncodeResponse(fixture.ContactOwnedRequest,
+            new(Network, fixture.ContactOwnedRequest.RequestNonce.Span, fixture.ContactPublication.CanonicalBytes.Span));
+        var calls = 0;
+        var client = Client(() => new Handler(async (message, ct) =>
+        {
+            calls++;
+            Assert.Equal("https://authority.example" + DeepIdV2PublicationWinnerReadWireCodec.EndpointPath, message.RequestUri!.AbsoluteUri);
+            Assert.Equal(DeepIdV2PublicationWinnerReadWireCodec.RequestMediaType, message.Content!.Headers.ContentType!.ToString());
+            var exact = await message.Content.ReadAsByteArrayAsync(ct);
+            Assert.Equal(request.CanonicalBytes.ToArray(), exact);
+            Assert.True(ContactCoordinationPeerAuthentication.Verify(Headers(message), Network,
+                ContactCoordinationTarget.PublicationWinnerRead, exact, DateTimeOffset.UtcNow));
+            var response = DeepIdV2PublicationWinnerReadWireCodec.EncodeResponse(request, original);
+            if (corrupt) response[24] ^= 1;
+            var result = new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(response) };
+            result.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(DeepIdV2PublicationWinnerReadWireCodec.ResponseMediaType);
+            return result;
+        }), fixture);
+        var pending = client.SendAsync(ContactCoordinationTarget.PublicationWinnerRead, request.CanonicalBytes, fixture.NetworkContext, default).AsTask();
+        if (corrupt) await Assert.ThrowsAsync<IOException>(() => pending);
+        else Assert.Equal(original, DeepIdV2PublicationWinnerReadWireCodec.DecodeResponse(request, await pending));
+        Assert.Equal(1, calls);
+    }
+
     private static readonly byte[] Network = B(16, 0x11);
     private static readonly byte[] Seed = B(32, 0x73);
 
@@ -98,7 +129,7 @@ public sealed class ContactCoordinationBackendClientTests
         using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync(distinctNodeIdentities: true);
         var count = 0;
         var client = Client(() => { count++; return new Handler((_, _) => throw new InvalidOperationException()); }, fixture);
-        await Assert.ThrowsAsync<ArgumentException>(() => client.SendAsync((ContactCoordinationTarget)4, Request(), fixture.NetworkContext, default).AsTask());
+        await Assert.ThrowsAsync<ArgumentException>(() => client.SendAsync((ContactCoordinationTarget)255, Request(), fixture.NetworkContext, default).AsTask());
         await Assert.ThrowsAsync<ArgumentException>(() => client.SendAsync(ContactCoordinationTarget.Route, new byte[1_000_000], fixture.NetworkContext, default).AsTask());
         await Assert.ThrowsAsync<ArgumentException>(() => client.SendAsync(ContactCoordinationTarget.Route, Request(B(16, 0x12)), fixture.NetworkContext, default).AsTask());
         foreach (var mode in new[] { "wrong-key", "node-id-as-seed", "public-key-as-node", "unknown-node" })

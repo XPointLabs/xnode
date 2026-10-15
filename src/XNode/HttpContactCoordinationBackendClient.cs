@@ -65,6 +65,9 @@ internal sealed class HttpContactCoordinationBackendClient
             ContactCoordinationTarget.PublicationLease => (DeepIdV2PublicationLeaseWireCodec.RequestBytes, DeepIdV2PublicationLeaseWireCodec.RequestBytes,
                 DeepIdV2PublicationLeaseWireCodec.MinimumResponseBytes, DeepIdV2PublicationLeaseWireCodec.MaximumResponseBytes,
                 DeepIdV2PublicationLeaseWireCodec.EndpointPath, DeepIdV2PublicationLeaseWireCodec.RequestMediaType, DeepIdV2PublicationLeaseWireCodec.ResponseMediaType),
+            ContactCoordinationTarget.PublicationWinnerRead => (DeepIdV2PublicationWinnerReadWireCodec.RequestBytes, DeepIdV2PublicationWinnerReadWireCodec.RequestBytes,
+                DeepIdV2PublicationWinnerReadWireCodec.MinimumResponseBytes, DeepIdV2PublicationWinnerReadWireCodec.MaximumResponseBytes,
+                DeepIdV2PublicationWinnerReadWireCodec.EndpointPath, DeepIdV2PublicationWinnerReadWireCodec.RequestMediaType, DeepIdV2PublicationWinnerReadWireCodec.ResponseMediaType),
             _ => throw new ArgumentException("Unknown private coordination target.", nameof(target)),
         };
         if (exactRequest.Length < limits.Item1 || exactRequest.Length > limits.Item2)
@@ -73,6 +76,7 @@ internal sealed class HttpContactCoordinationBackendClient
         ContactRouteAuthorityWireRequest? route = null;
         ContactPublicationAuthorityWireRequest? publication = null;
         PublicationLeaseWireRequest? lease = null;
+        PublicationWinnerReadWireRequest? winnerRead = null;
         ContactCoordinationPeerHeaders authentication;
         try
         {
@@ -81,6 +85,7 @@ internal sealed class HttpContactCoordinationBackendClient
                 ContactCoordinationTarget.Route => (route = ContactRouteAuthorityWireCodec.DecodeRequest(body)).NetworkId,
                 ContactCoordinationTarget.Publication => (publication = ContactPublicationAuthorityWireCodec.DecodeRequest(body)).NetworkId,
                 ContactCoordinationTarget.PublicationLease => (lease = DeepIdV2PublicationLeaseWireCodec.DecodeRequest(body)).NetworkId,
+                ContactCoordinationTarget.PublicationWinnerRead => (winnerRead = DeepIdV2PublicationWinnerReadWireCodec.DecodeRequest(body)).NetworkId,
                 _ => throw new ArgumentException("Unknown private coordination target.")
             };
             if (!CryptographicOperations.FixedTimeEquals(requestNetwork.Span, network))
@@ -152,7 +157,8 @@ internal sealed class HttpContactCoordinationBackendClient
                 attemptToken.ThrowIfCancellationRequested();
                 if (route is not null) _ = ContactRouteAuthorityWireCodec.DecodeResponse(route, result);
                 else if (publication is not null) _ = ContactPublicationAuthorityWireCodec.DecodeResponse(publication, result);
-                else _ = DeepIdV2PublicationLeaseWireCodec.DecodeResponse(lease!, result);
+                else if (lease is not null) _ = DeepIdV2PublicationLeaseWireCodec.DecodeResponse(lease, result);
+                else _ = DeepIdV2PublicationWinnerReadWireCodec.DecodeResponse(winnerRead!, result);
                 verifiedNetwork.EnsureCurrent();
                 return result;
             }

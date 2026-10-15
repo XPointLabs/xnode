@@ -75,6 +75,7 @@ internal sealed partial class DeepIdV2PublicationAuthorityFixture : IDisposable,
     internal Xpu1Request ContactPublication { get; private set; } = null!;
     internal ReadOnlyMemory<byte> ContactDispatch { get; private set; }
     internal PublicationLeaseWireRequest ContactLeaseRequest { get; private set; } = null!;
+    internal PublicationWinnerReadWireRequest ContactWinnerReadRequest { get; private set; } = null!;
     internal ReadOnlyMemory<byte> AlternateContactDispatch { get; private set; }
     internal ReadOnlyMemory<byte> SuccessorContactDispatch { get; private set; }
 
@@ -379,6 +380,7 @@ internal sealed partial class DeepIdV2PublicationAuthorityFixture : IDisposable,
                 var authorized = await DeepIdV2PublicationAuthorityAuthor.AuthorThresholdAsync(
                     route, candidate.WireRequest, witnesses);
                 ContactRoute = route; ContactObject = contact; ContactOwnedRequest = candidate.WireRequest;
+                ContactWinnerReadRequest = await DeepIdV2PublicationWinnerReadAuthor.AuthorRequestAsync(route, contact, ContactOwnedRequest, secrets);
                 ContactPublication = Xpu1Codec.Decode(authorized.ExactXpu1.Span);
                 var alternate = await DeepIdV2PublicationAuthorityAuthor.AuthorThresholdAsync(
                     route, candidate.WireRequest, witnesses[..2]);
