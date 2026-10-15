@@ -121,9 +121,14 @@ public sealed class MailboxStorageSecurity : IMailboxStorageSecurity
     }
 
     [SupportedOSPlatform("windows")]
-    private static SecurityIdentifier GetServiceSid() =>
-        WindowsIdentity.GetCurrent().User
-        ?? throw new InvalidOperationException("The XNode service account SID is unavailable.");
+    private static SecurityIdentifier GetServiceSid()
+    {
+        // Query the current (possibly impersonated) identity on every check,
+        // but do not leave its duplicated token handle to the finalizer queue.
+        using var identity = WindowsIdentity.GetCurrent();
+        return identity.User
+            ?? throw new InvalidOperationException("The XNode service account SID is unavailable.");
+    }
 
     [SupportedOSPlatform("windows")]
     private static void VerifyWindowsAcl(FileSystemSecurity security, SecurityIdentifier serviceSid)

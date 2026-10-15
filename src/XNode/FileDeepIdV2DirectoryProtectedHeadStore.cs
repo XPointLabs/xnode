@@ -328,19 +328,22 @@ internal sealed class FileDeepIdV2DirectoryProtectedHeadStore :
     {
         ValidatePath(path, expectFile: true);
         security.ValidateSecureFile(path);
-        var length = new FileInfo(path).Length;
-        if (length is < HeaderBytes or > MaximumProtectedBytes)
-            throw new InvalidDataException("A DID2 head floor record has an invalid length.");
-        var protectedBytes = File.ReadAllBytes(path);
-        var plaintext = protector.Unprotect(protectedBytes);
+        var protectedBytes = BoundedFileRead.Read(path, HeaderBytes, MaximumProtectedBytes,
+            "A DID2 head floor record has an invalid length.");
+        byte[]? plaintext = null;
         try
         {
+            plaintext = protector.Unprotect(protectedBytes);
             if (plaintext.Length is < HeaderBytes or > MaximumProtectedBytes)
                 throw new InvalidDataException(
                     "The unprotected DID2 head floor record exceeds its bound.");
             return FloorRecord.Decode(plaintext);
         }
-        finally { CryptographicOperations.ZeroMemory(plaintext); }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(protectedBytes);
+            if (plaintext is not null) CryptographicOperations.ZeroMemory(plaintext);
+        }
     }
 
     private void WriteTip(FloorRecord record)

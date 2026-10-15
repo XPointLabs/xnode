@@ -115,6 +115,7 @@ internal sealed class DeepIdV2NetworkClosureFileSource
 
     internal DeepIdV2NetworkClosureArtifacts ReadCurrent()
     {
+        using var measurement = CurrentMailboxDiagnostics.Measure("network-source-files");
         if (publicBundlePath is not null)
         {
             using var stream = new FileStream(publicBundlePath, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
@@ -134,30 +135,24 @@ internal sealed class DeepIdV2NetworkClosureFileSource
             });
         }
         var groups = new byte[paths.Length][][];
-        long total = 0;
+        var budget = new BoundedFileRead.ByteBudget(MaximumClosureBytes,
+            "DID2 network closure exceeds its total byte bound.");
+        byte[][]? records = null;
         try
         {
+            records = DeepIdV2NetworkAuthorityFileSource.ReadExactMany(paths.SelectMany(static group => group).ToArray(), budget);
+            var offset = 0;
             for (var group = 0; group < paths.Length; group++)
             {
-                groups[group] = new byte[paths[group].Length][];
-                for (var index = 0; index < paths[group].Length; index++)
-                {
-                    var exact = DeepIdV2NetworkAuthorityFileSource.ReadExact(
-                        paths[group][index]);
-                    groups[group][index] = exact;
-                    total = checked(total + exact.Length);
-                    if (total > MaximumClosureBytes)
-                        throw new InvalidDataException(
-                            "DID2 network closure exceeds its total byte bound.");
-                }
+                groups[group] = records.AsSpan(offset, paths[group].Length).ToArray();
+                offset += paths[group].Length;
             }
             return new DeepIdV2NetworkClosureArtifacts(groups);
         }
         catch
         {
-            foreach (var exact in groups.Where(static group => group is not null)
-                         .SelectMany(static group => group))
-                if (exact is not null) CryptographicOperations.ZeroMemory(exact);
+            if (records is not null)
+                foreach (var exact in records) CryptographicOperations.ZeroMemory(exact);
             throw;
         }
     }

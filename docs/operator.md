@@ -1491,3 +1491,27 @@ readings5480ms, while22 network verifications totaled48ms and106 host verificati
 as request CPU time. Repeated file/source/floor work is the next measured
 optimization target, not a longer crypto cache, dropped currentness checks or
 increased deadline. The same run remains1FAIL/0PASS/0skip/native1.
+
+The current file-read source candidate acquires bounded bytes through one
+read-only handle, including an actual EOF probe and the original size limits;
+path/ACL, protection, independent-anchor and all final release checks remain.
+It closes each queried Windows identity token rather than retaining it until GC.
+Public file inputs alone can be read in ordered groups of at most four concurrent
+reads. Every path is checked afresh; allocation reserves the same aggregate byte
+budget before allocating, all workers finish before verification, and a failure
+clears the whole frame and rethrows a typed source-order error. There is no
+snapshot/currentness cache, background read job, new journal or longer lifetime.
+Private protected floor reads remain sequential. Native admission consumes the
+final checked upper returned by its existing InitializeCurrent boundary instead
+of immediately repeating the same boundary without an intervening callback.
+
+Source receipts in the same artifact prefix: `file-read-slice-07` passed25/failed2,
+`file-read-slice-08` passed47/failed2,`file-read-slice-09` passed79/failed1
+(all0skip/native1). `file-read-slice-10` passed85/0/0,
+native0, including configured three-hop Store/Retrieve/ACK/cold exact retry,
+prior peer-recovery failures and source/floor/ACL/expiry refusals. Its successful
+configured Store took13881ms and peer handling4114ms: margin remains small.
+Same-binary `file-read-business-repeat-11` then failed3/passed1/0skip/native1, including
+Store504 and peer deadlines. **This candidate is not stably qualified**, and the
+single85-case PASS does not replace that failure, final full/rehearsal gates or
+physical device acceptance. No deadline was raised and no refusal was waived.

@@ -134,12 +134,11 @@ internal sealed class FileDeepIdV2NetworkFloorStore : IDisposable
 
     private DecodedRecord? Read(string path, bool anchor)
     {
+        RejectLinks(path);
         if (!File.Exists(path)) return null;
-        RejectLinks(path); security.ValidateSecureFile(path);
-        var info = new FileInfo(path);
-        if (info.Length is < 1 or > MaximumHistoryBytes + HeaderBytes + 1_024)
-            throw new InvalidDataException("The protected network floor exceeds its closed byte bound.");
-        var protectedBytes = File.ReadAllBytes(path);
+        security.ValidateSecureFile(path);
+        var protectedBytes = BoundedFileRead.Read(path, 1, MaximumHistoryBytes + HeaderBytes + 1_024,
+            "The protected network floor exceeds its closed byte bound.");
         return DecodeProtected(protectedBytes, anchor, protector);
     }
 
@@ -230,8 +229,14 @@ internal sealed class FileDeepIdV2NetworkFloorStore : IDisposable
         var current = path;
         while (current.Length >= root.Length)
         {
-            if ((File.Exists(current) || Directory.Exists(current)) &&
-                (File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
+            // One fresh metadata query describes the entry itself (including
+            // dangling links). Exists + GetAttributes repeated the same I/O
+            // for every ancestor and could hide errors as a missing entry.
+            FileAttributes attributes;
+            try { attributes = File.GetAttributes(current); }
+            catch (FileNotFoundException) { current = Path.GetDirectoryName(current) ?? string.Empty; continue; }
+            catch (DirectoryNotFoundException) { current = Path.GetDirectoryName(current) ?? string.Empty; continue; }
+            if ((attributes & FileAttributes.ReparsePoint) != 0)
                 throw new UnauthorizedAccessException("Network custody cannot traverse links.");
             current = Path.GetDirectoryName(current) ?? string.Empty;
         }

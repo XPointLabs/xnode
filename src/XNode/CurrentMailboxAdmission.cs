@@ -66,6 +66,7 @@ internal sealed partial class CurrentMailboxAdmission(
                 if (!holderLimiter.TryAccept(grant.HolderPublicKey.Span, operation,
                     checked((ulong)(Stopwatch.GetTimestamp() / Stopwatch.Frequency))))
                     throw new CurrentMailboxHolderRateLimitException();
+                ulong upper;
                 if (operationLedger is not null)
                 {
                     if (operation == MailboxAuthenticatedOperation.Store && storeMutations is not null)
@@ -77,11 +78,15 @@ internal sealed partial class CurrentMailboxAdmission(
                     // Prefix inspection is denial-only: no mutation, replay,
                     // receipt or HTTP. Join a fresh authenticated snapshot AFTER
                     // its callbacks and BEFORE the first client reservation.
-                    await operationLedger.InitializeCurrentAsync(node, scope.Host, scope.Lease, ct,
+                    upper = await operationLedger.InitializeCurrentAsync(node, scope.Host, scope.Lease, ct,
                         runtime.ValidateCurrentNativeRecovery, validatePeerCustody is null ? null :
                             (floors, peerToken) => validatePeerCustody(floors, scope.Lease, peerToken)).ConfigureAwait(false);
                 }
-                var upper = await scope.Lease.CheckAsync(ct).ConfigureAwait(false);
+                else upper = await scope.Lease.CheckAsync(ct).ConfigureAwait(false);
+                // InitializeCurrent returns its final current upper AFTER the
+                // protected replay joins. No callback/I/O intervenes before
+                // native verification; do not discard it and repeat that same
+                // complete source/floor boundary immediately afterwards.
                 var policy = new MailboxAuthenticatedVerificationPolicy
                 {
                     NetworkId = scope.Host.NetworkId, Epoch = scope.Grant.Epoch,

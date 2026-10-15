@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Runtime.ExceptionServices;
 using Deep.Protocol.XPointNetworkV1;
 
 namespace XNode;
@@ -37,16 +38,13 @@ internal sealed class DeepIdV2NetworkAuthorityFileSource
 
     internal VerifiedXPointNetworkAuthority ReadCurrent()
     {
-        var authorities = new List<byte[]>(authorityPaths.Length);
-        var policies = new List<byte[]>(timePolicyPaths.Length);
+        var exact = ReadExactMany(authorityPaths.Concat(timePolicyPaths).ToArray());
         try
         {
-            foreach (var path in authorityPaths) authorities.Add(ReadExact(path));
-            foreach (var path in timePolicyPaths) policies.Add(ReadExact(path));
             var verified = XPointNetworkAuthorityVerifier.Verify(pin,
-                authorities.Select(static bytes =>
+                exact.Take(authorityPaths.Length).Select(static bytes =>
                     (ReadOnlyMemory<byte>)bytes).ToArray(),
-                policies.Select(static bytes =>
+                exact.Skip(authorityPaths.Length).Select(static bytes =>
                     (ReadOnlyMemory<byte>)bytes).ToArray());
             if (!CryptographicOperations.FixedTimeEquals(
                     verified.NetworkId.Span, pin.NetworkId.Span))
@@ -56,7 +54,7 @@ internal sealed class DeepIdV2NetworkAuthorityFileSource
         }
         finally
         {
-            foreach (var artifact in authorities.Concat(policies))
+            foreach (var artifact in exact)
                 CryptographicOperations.ZeroMemory(artifact);
         }
     }
@@ -71,8 +69,11 @@ internal sealed class DeepIdV2NetworkAuthorityFileSource
         return Path.GetFullPath(path);
     }
 
-    internal static byte[] ReadExact(string path)
+    internal static byte[] ReadExact(string path) => ReadExact(path, null);
+
+    private static byte[] ReadExact(string path, BoundedFileRead.ByteBudget? budget)
     {
+        using var measurement = CurrentMailboxDiagnostics.Measure("authority-record-file");
         var root = Path.GetPathRoot(path) ?? throw new InvalidDataException(
             "DID2 authority artifact has no filesystem root.");
         var current = root;
@@ -85,26 +86,43 @@ internal sealed class DeepIdV2NetworkAuthorityFileSource
                 throw new CryptographicException(
                     "DID2 authority artifact path contains a link.");
         }
-        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
-            FileShare.Read, bufferSize: 4096, FileOptions.SequentialScan);
-        var length = stream.Length;
-        if (length is < 1 or > MaximumArtifactBytes)
-            throw new InvalidDataException(
-                "DID2 authority artifact exceeds its closed bound.");
-        var bytes = new byte[(int)length];
+        return BoundedFileRead.Read(path, 1, MaximumArtifactBytes,
+            "DID2 authority artifact exceeds its closed bound.", budget);
+    }
+
+    internal static byte[][] ReadExactMany(IReadOnlyList<string> paths, BoundedFileRead.ByteBudget? budget = null)
+    {
+        // At most six already bounded 4096-record closure groups. This is an
+        // acquisition count bound, not a larger protocol or byte limit.
+        if (paths.Count > 6 * 4096) throw new ArgumentException("The file-source group exceeds its closed count bound.");
+        var result = new byte[paths.Count][];
         try
         {
-            stream.ReadExactly(bytes);
-            if (stream.ReadByte() == -1 && stream.Length == length)
-                return bytes;
+            // Only independent, read-only public artifacts are acquired in
+            // parallel. Each keeps its own fresh full path checks and handle.
+            // Four reads at most; all finish before verification or release.
+            for (var first = 0; first < paths.Count; first += 4)
+            {
+                var start = first;
+                var count = Math.Min(4, paths.Count - start);
+                if (count == 1) { result[start] = ReadExact(paths[start], budget); continue; }
+                var errors = new ExceptionDispatchInfo?[count];
+                Parallel.For(0, count, new ParallelOptions { MaxDegreeOfParallelism = 4 }, offset =>
+                {
+                    try { result[start + offset] = ReadExact(paths[start + offset], budget); }
+                    catch (Exception error) { errors[offset] = ExceptionDispatchInfo.Capture(error); }
+                });
+                // Preserve a typed first-in-source-order refusal, never an
+                // AggregateException or a partial successful source frame.
+                foreach (var error in errors) error?.Throw();
+            }
+            return result;
         }
         catch
         {
-            CryptographicOperations.ZeroMemory(bytes);
+            foreach (var bytes in result)
+                if (bytes is not null) CryptographicOperations.ZeroMemory(bytes);
             throw;
         }
-        CryptographicOperations.ZeroMemory(bytes);
-        throw new InvalidDataException(
-            "DID2 authority artifact changed while being read.");
     }
 }

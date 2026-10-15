@@ -8,6 +8,32 @@ namespace XNode.IntegrationTests.Runtime;
 /// <summary>Real signed DID2/NETCODEC plus protected filesystem custody; not TLS/device evidence.</summary>
 public sealed class DeepIdV2NetworkFloorTests
 {
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task WarmReadRejectsLinkedFloorOrAnchorEvenWhenTargetIsMissing(bool anchor, bool dangling)
+    {
+        using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var files = new Custody();
+        using var store = files.Open();
+        await store.CommitVerifiedAsync(null, signed.NetworkContext, default);
+        _ = await store.ReadAsync(default);
+        var path = anchor ? files.Anchor : files.Floor;
+        var retainedPath = anchor ? files.Floor : files.Anchor;
+        var retained = File.ReadAllBytes(retainedPath);
+        var target = Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(path))!, "linked-target.bin");
+        if (!dangling) File.Copy(path, target);
+        File.Delete(path);
+        File.CreateSymbolicLink(path, target);
+
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() => store.ReadAsync(default).AsTask());
+        Assert.NotNull(new FileInfo(path).LinkTarget);
+        Assert.True(retained.AsSpan().SequenceEqual(File.ReadAllBytes(retainedPath)));
+        Assert.Equal(!dangling, File.Exists(target));
+    }
+
     [Fact]
     public async Task RestartReverifiesHistoryAndEqualTipIsIdempotent()
     {

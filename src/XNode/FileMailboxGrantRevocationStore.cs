@@ -294,9 +294,10 @@ internal sealed class FileMailboxGrantRevocationStore : IAsyncDisposable
             // each enumerated entry itself without repeating that entire walk
             // for every sibling. Read() still rechecks the complete path before
             // every protected read/security callback; nothing is cached.
-            if ((File.GetAttributes(entry) & FileAttributes.ReparsePoint) != 0)
+            var attributes = File.GetAttributes(entry);
+            if ((attributes & FileAttributes.ReparsePoint) != 0)
                 throw new UnauthorizedAccessException("MGR1 custody cannot traverse links.");
-            if (Directory.Exists(entry) || Path.GetFileName(entry) is not
+            if ((attributes & FileAttributes.Directory) != 0 || Path.GetFileName(entry) is not
                 ("writer.lock" or "floor.bin" or "anchor.bin" or "enrollment.bin" or "fault.bin"))
                 throw new InvalidDataException("MGR1 custody contains an unknown/partial record.");
         }
@@ -323,11 +324,11 @@ internal sealed class FileMailboxGrantRevocationStore : IAsyncDisposable
     private byte[]? Read(string path, IDataProtector protection)
     {
         if (!File.Exists(path)) return null;
-        RejectLinks(path); security.ValidateSecureFile(path);
-        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-        if (stream.Length is < 1 or > MaximumProtectedBytes) throw new InvalidDataException("MGR1 protected record exceeds its closed bound.");
-        var bytes = new byte[checked((int)stream.Length)]; stream.ReadExactly(bytes);
-        if (stream.ReadByte() != -1) throw new InvalidDataException("MGR1 protected record changed while reading.");
+        using (CurrentMailboxDiagnostics.Measure("revocation-path-check")) RejectLinks(path);
+        using (CurrentMailboxDiagnostics.Measure("revocation-security-check")) security.ValidateSecureFile(path);
+        byte[] bytes;
+        using (CurrentMailboxDiagnostics.Measure("revocation-file-read"))
+            bytes = BoundedFileRead.Read(path, 1, MaximumProtectedBytes, "MGR1 protected record exceeds its closed bound.");
         byte[]? plain = null;
         try
         {
