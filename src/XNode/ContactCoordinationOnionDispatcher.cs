@@ -89,11 +89,9 @@ internal sealed class ContactCoordinationOnionDispatcher(
         diagnostic.Check = CurrentnessCheck.Projection;
         if (!Fixed(request.NetworkId.Span, current.Network.NetworkId.Span))
             throw new CryptographicException("Coordination belongs to another network.");
-        if (request.Target is ContactCoordinationTarget.PublicationLease or ContactCoordinationTarget.PublicationWinnerRead)
+        if (request.Target == ContactCoordinationTarget.PublicationCurrent)
         {
-            var view = request.Target == ContactCoordinationTarget.PublicationLease
-                ? DeepIdV2PublicationLeaseWireCodec.DecodeRequest(request.ExactBody.Span).ViewHash
-                : DeepIdV2PublicationWinnerReadWireCodec.DecodeRequest(request.ExactBody.Span).ViewHash;
+            var view = DeepIdV2PublicationCurrentWireCodec.DecodeRequest(request.ExactBody.Span).ViewHash;
             if (current.Network.ProtectedLkg is not { } floor ||
                 !Fixed(view.Span, floor.ViewCoreReference.Span[6..]))
                 throw new CryptographicException("Current publication coordination requires the exact current view.");
@@ -122,8 +120,7 @@ internal sealed class ContactCoordinationOnionDispatcher(
             ContactCoordinationTarget.Route => BinaryPrimitives.ReadUInt64BigEndian(ContactCodec.Decode("XRA1",
                 ContactRouteAuthorityWireCodec.DecodeRequest(body.Span).ExactXra1.Span).Field(12).Span),
             ContactCoordinationTarget.Publication => ContactPublicationAuthorityWireCodec.DecodeRequest(body.Span).IssuedAtUnixSeconds,
-            ContactCoordinationTarget.PublicationLease => DeepIdV2PublicationLeaseWireCodec.DecodeRequest(body.Span).IssuedAtUnixSeconds,
-            ContactCoordinationTarget.PublicationWinnerRead => DeepIdV2PublicationWinnerReadWireCodec.DecodeRequest(body.Span).IssuedAtUnixSeconds,
+            ContactCoordinationTarget.PublicationCurrent => DeepIdV2PublicationCurrentWireCodec.DecodeRequest(body.Span).IssuedAtUnixSeconds,
             _ => throw new CryptographicException("Unknown coordination target.")
         };
         diagnostic.Check = CurrentnessCheck.IssuedLowerBound;
@@ -134,7 +131,7 @@ internal sealed class ContactCoordinationOnionDispatcher(
             throw new CryptographicException("Coordination does not cover the complete current trusted interval.");
         diagnostic.Check = CurrentnessCheck.PlacementExpiry;
         if (upper >= placement.ValidUntilUnixSeconds ||
-            (request.Target is ContactCoordinationTarget.Publication or ContactCoordinationTarget.PublicationLease or ContactCoordinationTarget.PublicationWinnerRead &&
+            (request.Target is ContactCoordinationTarget.Publication or ContactCoordinationTarget.PublicationCurrent &&
                 request.ExpiresAtUnixSeconds > placement.ValidUntilUnixSeconds))
             throw new CryptographicException("Coordination does not cover the complete current trusted interval.");
         diagnostic.Check = CurrentnessCheck.Network;

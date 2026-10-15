@@ -74,8 +74,7 @@ internal sealed partial class DeepIdV2PublicationAuthorityFixture : IDisposable,
     internal byte[] Xps { get; private set; } = [];
     internal Xpu1Request ContactPublication { get; private set; } = null!;
     internal ReadOnlyMemory<byte> ContactDispatch { get; private set; }
-    internal PublicationLeaseWireRequest ContactLeaseRequest { get; private set; } = null!;
-    internal PublicationWinnerReadWireRequest ContactWinnerReadRequest { get; private set; } = null!;
+    internal PublicationCurrentWireRequest ContactCurrentRequest { get; private set; } = null!;
     internal ReadOnlyMemory<byte> AlternateContactDispatch { get; private set; }
     internal ReadOnlyMemory<byte> SuccessorContactDispatch { get; private set; }
 
@@ -380,23 +379,24 @@ internal sealed partial class DeepIdV2PublicationAuthorityFixture : IDisposable,
                 var authorized = await DeepIdV2PublicationAuthorityAuthor.AuthorThresholdAsync(
                     route, candidate.WireRequest, witnesses);
                 ContactRoute = route; ContactObject = contact; ContactOwnedRequest = candidate.WireRequest;
-                ContactWinnerReadRequest = await DeepIdV2PublicationWinnerReadAuthor.AuthorRequestAsync(route, contact, ContactOwnedRequest, secrets);
                 ContactPublication = Xpu1Codec.Decode(authorized.ExactXpu1.Span);
                 var alternate = await DeepIdV2PublicationAuthorityAuthor.AuthorThresholdAsync(
                     route, candidate.WireRequest, witnesses[..2]);
                 AlternateContactPublication = Xpu1Codec.Decode(alternate.ExactXpu1.Span);
                 async Task<ReadOnlyMemory<byte>> LeaseAsync(VerifiedDeepIdV2ContactRouteClosure ownerRoute,
                     AuthoredDeepIdV2ContactObject ownerContact, ContactPublicationAuthorityWireRequest ownerRequest,
-                    ReadOnlyMemory<byte> exactXpu)
+                    ReadOnlyMemory<byte> exactXpu, VerifiedDeepIdV2PublicationIssuerPredecessor? issuerPredecessor = null)
                 {
-                    var intent = await DeepIdV2PublicationCommitVerifier.VerifyOwnedRetainedIntentAsync(ownerRoute,
+                    _ = await DeepIdV2PublicationCommitVerifier.VerifyOwnedRetainedIntentAsync(ownerRoute,
                         ownerContact, ownerRequest, exactXpu);
                     var issuerIntent = await DeepIdV2PublicationCommitVerifier.VerifyIssuerRetainedIntentAsync(ownerRoute,
                         ownerRequest, exactXpu);
-                    var fresh = await DeepIdV2PublicationLeaseAuthor.AuthorRequestAsync(intent, secrets);
-                    if (exactXpu.Span.SequenceEqual(ContactPublication.CanonicalBytes.Span)) ContactLeaseRequest = fresh;
-                    var signed = await DeepIdV2PublicationLeaseAuthor.AuthorThresholdAsync(issuerIntent, fresh, witnesses);
-                    _ = await DeepIdV2PublicationLeaseAuthor.VerifyOwnedResponseAsync(intent, fresh, signed.CanonicalBytes);
+                    var fresh = await DeepIdV2PublicationCurrentAuthor.AuthorOwnedRequestAsync(ownerRoute, ownerContact, ownerRequest, secrets);
+                    if (exactXpu.Span.SequenceEqual(ContactPublication.CanonicalBytes.Span)) ContactCurrentRequest = fresh;
+                    var submission = await DeepIdV2PublicationCurrentAuthor.VerifyIssuerRequestAsync(ownerRoute, fresh, issuerPredecessor);
+                    var signed = await DeepIdV2PublicationCurrentAuthor.AuthorLeaseAsync(submission, issuerIntent, witnesses);
+                    _ = await DeepIdV2PublicationCurrentAuthor.VerifyOwnedResponseAsync(ownerRoute, ownerContact, ownerRequest, fresh,
+                        DeepIdV2PublicationCurrentWireCodec.EncodeResponse(fresh, signed.CanonicalBytes.Span));
                     return signed.CanonicalBytes;
                 }
                 ContactDispatch = await LeaseAsync(route, contact, candidate.WireRequest, authorized.ExactXpu1);
@@ -444,8 +444,10 @@ internal sealed partial class DeepIdV2PublicationAuthorityFixture : IDisposable,
                             var nextAuthorization = await DeepIdV2PublicationAuthorityAuthor.AuthorThresholdSuccessorAsync(
                                 SuccessorContactRoute, nextPublication.WireRequest, oldPublication, witnesses);
                             SuccessorContactPublication = Xpu1Codec.Decode(nextAuthorization.ExactXpu1.Span);
+                            var issuerPredecessor = await DeepIdV2PublicationCommitVerifier.VerifyIssuerPredecessorAsync(current,
+                                network, Authority, candidate.WireRequest, authorized.ExactXpu1, committed, time);
                             SuccessorContactDispatch = await LeaseAsync(SuccessorContactRoute, SuccessorContactObject,
-                                nextPublication.WireRequest, nextAuthorization.ExactXpu1);
+                                nextPublication.WireRequest, nextAuthorization.ExactXpu1, issuerPredecessor);
                         }
                         finally { CryptographicOperations.ZeroMemory(resolver); }
                     }

@@ -16,23 +16,23 @@ namespace XNode.IntegrationTests.Runtime;
 public sealed class ContactCoordinationOnionDispatcherTests
 {
     [Fact]
-    public async Task FreshPublicationLeaseUsesCurrentViewGatewayAndAuthenticatedPairedPrivateTarget()
+    public async Task CurrentPublicationUsesCurrentViewGatewayAndAuthenticatedPairedPrivateTarget()
     {
         using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync(authorContactPublication: true);
-        var request = fixture.ContactLeaseRequest;
+        var request = fixture.ContactCurrentRequest;
         var placement = ContactServicePlacementFactory.Create(fixture.NetworkContext,
             ContactServiceRequestKind.CoordinateContact, request.GatewayShard);
         var signer = fixture.Node(placement.RankedReplicaNodeIds[0].Span);
         var node = new RouterNodeOptions { RouterId = Convert.ToHexStringLower(placement.RankedReplicaNodeIds[0].Span),
             Ed25519PrivateKey = Convert.ToHexStringLower(signer.Seed) };
-        var response = DeepIdV2PublicationLeaseWireCodec.EncodeResponse(request, fixture.ContactDispatch.Span);
+        var response = DeepIdV2PublicationCurrentWireCodec.EncodeResponse(request, fixture.ContactDispatch.Span);
         var calls = 0;
         var backend = new HttpContactCoordinationBackendClient(new("https://authority.example/"),
             DeepIdV2PublicationAuthorityFixture.Network, node, new SystemClock(), () => new Handler(async (message, ct) =>
             {
                 calls++;
-                Assert.Equal(DeepIdV2PublicationLeaseWireCodec.EndpointPath, message.RequestUri!.AbsolutePath);
-                Assert.Equal(DeepIdV2PublicationLeaseWireCodec.RequestMediaType, message.Content!.Headers.ContentType!.ToString());
+                Assert.Equal(DeepIdV2PublicationCurrentWireCodec.EndpointPath, message.RequestUri!.AbsolutePath);
+                Assert.Equal(DeepIdV2PublicationCurrentWireCodec.RequestMediaType, message.Content!.Headers.ContentType!.ToString());
                 var exact = await message.Content.ReadAsByteArrayAsync(ct);
                 Assert.Equal(request.CanonicalBytes.ToArray(), exact);
                 var headers = new ContactCoordinationPeerHeaders(
@@ -41,20 +41,20 @@ public sealed class ContactCoordinationOnionDispatcherTests
                     message.Headers.GetValues(ContactCoordinationPeerAuthentication.NonceHeader).Single(),
                     message.Headers.GetValues(ContactCoordinationPeerAuthentication.SignatureHeader).Single());
                 Assert.True(ContactCoordinationPeerAuthentication.Verify(headers, request.NetworkId.Span,
-                    ContactCoordinationTarget.PublicationLease, exact, DateTimeOffset.UtcNow));
+                    ContactCoordinationTarget.PublicationCurrent, exact, DateTimeOffset.UtcNow));
                 var reply = new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(response) };
-                reply.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(DeepIdV2PublicationLeaseWireCodec.ResponseMediaType);
+                reply.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(DeepIdV2PublicationCurrentWireCodec.ResponseMediaType);
                 return reply;
             }));
         var dispatcher = new ContactCoordinationOnionDispatcher(fixture, backend, node, fixture, new DiagnosticLogger());
-        var wrapped = ContactCoordinationOnionCodec.EncodeRequest(ContactCoordinationTarget.PublicationLease, request.CanonicalBytes.Span);
+        var wrapped = ContactCoordinationOnionCodec.EncodeRequest(ContactCoordinationTarget.PublicationCurrent, request.CanonicalBytes.Span);
         var verified = OnionTerminalPayloadVerifierV1.VerifyRequest(fixture.NetworkContext, OnionOperation.ContactResolve, wrapped);
         var result = await dispatcher.DispatchAsync(verified, default);
         Assert.True(result.Success); Assert.Equal(1, calls);
         Assert.Equal(response, ContactCoordinationOnionCodec.DecodeResponse(
             ContactCoordinationOnionCodec.DecodeRequest(wrapped), result.CanonicalBody.Span));
-        var wrongView = request.CanonicalBytes.ToArray(); wrongView[192] ^= 1;
-        wrapped = ContactCoordinationOnionCodec.EncodeRequest(ContactCoordinationTarget.PublicationLease, wrongView);
+        var wrongView = request.CanonicalBytes.ToArray(); wrongView[128] ^= 1;
+        wrapped = ContactCoordinationOnionCodec.EncodeRequest(ContactCoordinationTarget.PublicationCurrent, wrongView);
         verified = OnionTerminalPayloadVerifierV1.VerifyRequest(fixture.NetworkContext, OnionOperation.ContactResolve, wrapped);
         Assert.Equal(NativeMailboxDispatchCertainty.RejectedBeforeForward, (await dispatcher.DispatchAsync(verified, default)).Certainty);
         Assert.Equal(1, calls);
@@ -79,15 +79,21 @@ public sealed class ContactCoordinationOnionDispatcherTests
             new(request.NetworkId.Span, request.RequestNonce.Span, route.Route.Selection.CanonicalBytes.Span,
                 route.Route.Route.CanonicalBytes.Span, route.Route.Successor.CanonicalBytes.Span,
                 fixture.Freshness.ExactAdh1.Span));
-        var publicationBody = ContactPublicationAuthorityWireCodec.EncodeRequest(fixture.ContactOwnedRequest);
-        Assert.Equal(4, BinaryPrimitives.ReadUInt16BigEndian(publicationBody));
-        var publicationResponse = ContactPublicationAuthorityWireCodec.EncodeResponse(fixture.ContactOwnedRequest,
-            new(fixture.ContactOwnedRequest.NetworkId.Span, fixture.ContactOwnedRequest.RequestNonce.Span,
-                fixture.ContactPublication.CanonicalBytes.Span));
+        var publicationBody = fixture.ContactCurrentRequest.CanonicalBytes.ToArray();
+        Assert.Equal(1, BinaryPrimitives.ReadUInt16BigEndian(publicationBody));
+        var publicationResponse = DeepIdV2PublicationCurrentWireCodec.EncodeResponse(fixture.ContactCurrentRequest, fixture.ContactDispatch.Span);
         var placement = ContactServicePlacementFactory.Create(fixture.NetworkContext,
-            ContactServiceRequestKind.CoordinateContact, route.Route.Authorization.Field(6));
-        var signer = fixture.Node(placement.RankedReplicaNodeIds[0].Span);
-        var node = new RouterNodeOptions { RouterId = Convert.ToHexStringLower(placement.RankedReplicaNodeIds[0].Span),
+            ContactServiceRequestKind.CoordinateContact, ContactCodec.Decode("XRA1", request.ExactXra1.Span).Field(6));
+        var publicationGateway = ContactServicePlacementFactory.Create(fixture.NetworkContext,
+            ContactServiceRequestKind.CoordinateContact, fixture.ContactCurrentRequest.GatewayShard);
+        // The fresh submission has its own random gateway shard; do not assume
+        // it selects the predecessor's first replica. Both pairs in this
+        // three-node fixture share at least one genuinely selected receiver.
+        var common = placement.RankedReplicaNodeIds.Where(id => publicationGateway.RankedReplicaNodeIds
+            .Any(other => id.Span.SequenceEqual(other.Span))).ToArray();
+        Assert.NotEmpty(common);
+        var signer = fixture.Node(common[0].Span);
+        var node = new RouterNodeOptions { RouterId = Convert.ToHexStringLower(common[0].Span),
             Ed25519PrivateKey = Convert.ToHexStringLower(signer.Seed) };
         var calls = 0; var rejectAfterForward = false; var corruptPair = false;
         var backend = new HttpContactCoordinationBackendClient(new("https://authority.example/"),
@@ -96,7 +102,7 @@ public sealed class ContactCoordinationOnionDispatcherTests
                 calls++;
                 var exact = await message.Content!.ReadAsByteArrayAsync(ct);
                 var target = message.RequestUri!.AbsolutePath == "/api/v2/contact-route-authority" ?
-                    ContactCoordinationTarget.Route : ContactCoordinationTarget.Publication;
+                    ContactCoordinationTarget.Route : ContactCoordinationTarget.PublicationCurrent;
                 Assert.Equal(target == ContactCoordinationTarget.Route ? routeBody : publicationBody, exact);
                 var headers = new ContactCoordinationPeerHeaders(
                     message.Headers.GetValues(ContactCoordinationPeerAuthentication.NodeHeader).Single(),
@@ -112,23 +118,23 @@ public sealed class ContactCoordinationOnionDispatcherTests
                 if (corruptPair) body[24] ^= 1;
                 var result = new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(body) };
                 result.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(target == ContactCoordinationTarget.Route ?
-                    ContactRouteAuthorityWireCodec.ResponseMediaType : ContactPublicationAuthorityWireCodec.ResponseMediaType);
+                    ContactRouteAuthorityWireCodec.ResponseMediaType : DeepIdV2PublicationCurrentWireCodec.ResponseMediaType);
                 return result;
             }));
         var logger = new DiagnosticLogger();
         var dispatcher = new ContactCoordinationOnionDispatcher(fixture, backend, node, fixture, logger);
         foreach (var (target, body, response) in new[] {
             (ContactCoordinationTarget.Route, routeBody, routeResponse),
-            (ContactCoordinationTarget.Publication, publicationBody, publicationResponse) })
+            (ContactCoordinationTarget.PublicationCurrent, publicationBody, publicationResponse) })
         {
             var exact = ContactCoordinationOnionCodec.EncodeRequest(target, body);
             var parsed = ContactCoordinationOnionCodec.DecodeRequest(exact);
             Assert.Equal(body, parsed.ExactBody.ToArray());
-            Assert.Equal(route.Route.Authorization.Field(5).ToArray(), parsed.ProjectionReference.ToArray());
+            Assert.Equal(target == ContactCoordinationTarget.Route ? route.Route.Authorization.Field(5).ToArray() : [], parsed.ProjectionReference.ToArray());
             var verified = OnionTerminalPayloadVerifierV1.VerifyRequest(fixture.NetworkContext,
                 OnionOperation.ContactResolve, exact);
             var result = await dispatcher.DispatchAsync(verified, default);
-            Assert.True(result.Success);
+            Assert.True(result.Success, string.Join(" | ", logger.Entries));
             Assert.Equal(response, ContactCoordinationOnionCodec.DecodeResponse(parsed, result.CanonicalBody.Span));
             var count = calls;
             foreach (var mutation in new[] { "version", "body-version", "reserved", "target", "length", "trailing", "short" })
@@ -148,7 +154,9 @@ public sealed class ContactCoordinationOnionDispatcherTests
             RejectCanonical(() => OnionTerminalPayloadVerifierV1.VerifyRequest(
                 fixture.NetworkContext, OnionOperation.Store, exact));
             var crossNetwork = exact.ToArray(); crossNetwork[ContactCoordinationOnionCodec.HeaderBytes + 8] ^= 1;
-            Assert.Throws<CryptographicException>(() => ContactCoordinationOnionCodec.DecodeRequest(crossNetwork));
+            if (target == ContactCoordinationTarget.Route)
+                Assert.Throws<CryptographicException>(() => ContactCoordinationOnionCodec.DecodeRequest(crossNetwork));
+            else Assert.Throws<FormatException>(() => ContactCoordinationOnionCodec.DecodeRequest(crossNetwork));
             var wrappedResponse = ContactCoordinationOnionCodec.EncodeResponse(parsed, response);
             wrappedResponse[6] = target == ContactCoordinationTarget.Route ? (byte)2 : (byte)1;
             Assert.Throws<FormatException>(() => ContactCoordinationOnionCodec.DecodeResponse(parsed, wrappedResponse));

@@ -1,5 +1,17 @@
 # Operator Guide
 
+## Current publication coordination cutover
+
+[DR-0125](../../docs/survival-program/decisions/DR-0125-current-publication-submission.md)
+owns the replacement of separate reusable lease/read coordination. XNode forwards
+the exact current submission only to its configured authenticated private issuer,
+validates current view/gateway and paired response, and keeps unknown completion
+after forwarding ambiguous. Retired targets reject before forwarding; raw
+publication coordination is one-time only. XPL/store persistence and original
+receipt identities are unchanged. Coordinate the producer/consumer upgrade;
+do not reset node keys, resolver custody or retained volumes. Activation and
+physical delivery remain unqualified until new runtime/device evidence exists.
+
 ## Current native mailbox admission candidate
 
 The S01 retained-route storage candidate now commits private read-route custody

@@ -18,31 +18,29 @@ public sealed class ContactCoordinationBackendClientTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task WinnerReadUsesItsExactPrivateTargetAndRejectsSubstitutedResponse(bool corrupt)
+    public async Task CurrentPublicationUsesItsExactPrivateTargetAndRejectsSubstitutedResponse(bool corrupt)
     {
         using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync(distinctNodeIdentities: true, authorContactPublication: true);
-        var request = fixture.ContactWinnerReadRequest;
-        var original = ContactPublicationAuthorityWireCodec.EncodeResponse(fixture.ContactOwnedRequest,
-            new(Network, fixture.ContactOwnedRequest.RequestNonce.Span, fixture.ContactPublication.CanonicalBytes.Span));
+        var request = fixture.ContactCurrentRequest;
         var calls = 0;
         var client = Client(() => new Handler(async (message, ct) =>
         {
             calls++;
-            Assert.Equal("https://authority.example" + DeepIdV2PublicationWinnerReadWireCodec.EndpointPath, message.RequestUri!.AbsoluteUri);
-            Assert.Equal(DeepIdV2PublicationWinnerReadWireCodec.RequestMediaType, message.Content!.Headers.ContentType!.ToString());
+            Assert.Equal("https://authority.example" + DeepIdV2PublicationCurrentWireCodec.EndpointPath, message.RequestUri!.AbsoluteUri);
+            Assert.Equal(DeepIdV2PublicationCurrentWireCodec.RequestMediaType, message.Content!.Headers.ContentType!.ToString());
             var exact = await message.Content.ReadAsByteArrayAsync(ct);
             Assert.Equal(request.CanonicalBytes.ToArray(), exact);
             Assert.True(ContactCoordinationPeerAuthentication.Verify(Headers(message), Network,
-                ContactCoordinationTarget.PublicationWinnerRead, exact, DateTimeOffset.UtcNow));
-            var response = DeepIdV2PublicationWinnerReadWireCodec.EncodeResponse(request, original);
+                ContactCoordinationTarget.PublicationCurrent, exact, DateTimeOffset.UtcNow));
+            var response = DeepIdV2PublicationCurrentWireCodec.EncodeResponse(request, fixture.ContactDispatch.Span);
             if (corrupt) response[24] ^= 1;
             var result = new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(response) };
-            result.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(DeepIdV2PublicationWinnerReadWireCodec.ResponseMediaType);
+            result.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(DeepIdV2PublicationCurrentWireCodec.ResponseMediaType);
             return result;
         }), fixture);
-        var pending = client.SendAsync(ContactCoordinationTarget.PublicationWinnerRead, request.CanonicalBytes, fixture.NetworkContext, default).AsTask();
+        var pending = client.SendAsync(ContactCoordinationTarget.PublicationCurrent, request.CanonicalBytes, fixture.NetworkContext, default).AsTask();
         if (corrupt) await Assert.ThrowsAsync<IOException>(() => pending);
-        else Assert.Equal(original, DeepIdV2PublicationWinnerReadWireCodec.DecodeResponse(request, await pending));
+        else Assert.Equal(fixture.ContactDispatch.ToArray(), DeepIdV2PublicationCurrentWireCodec.DecodeResponse(request, await pending).CanonicalBytes.ToArray());
         Assert.Equal(1, calls);
     }
 
