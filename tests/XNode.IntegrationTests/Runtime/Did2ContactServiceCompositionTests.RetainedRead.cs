@@ -268,7 +268,7 @@ public sealed partial class Did2ContactServiceCompositionTests
         internal async Task PublishAsync()
         {
             var result = await Providers[0].GetRequiredService<IContactServiceOpaqueDispatcher>().DispatchAsync(
-                ContactServiceOperation.PublishDcr, Fixture.ContactPublication.CanonicalBytes, default);
+                ContactServiceOperation.PublishDcr, Fixture.ContactDispatch, default);
             _ = await DeepIdV2PublicationCommitVerifier.VerifyCommittedAsync(Fixture.ContactRoute, Fixture.ContactObject,
                 Fixture.ContactOwnedRequest, Fixture.ContactPublication.CanonicalBytes, result);
         }
