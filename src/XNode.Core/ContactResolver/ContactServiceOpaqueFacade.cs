@@ -5,6 +5,7 @@ using Deep.Protocol.ContactV1;
 using Deep.Protocol.MessagingWire;
 using XNode.Core.ContactPreKey;
 using XNode.Core.Mailbox;
+using Microsoft.Extensions.Logging;
 
 namespace XNode.Core.ContactResolver;
 
@@ -83,6 +84,7 @@ internal sealed class ContactServiceOpaqueFacade : IDisposable
     private readonly ContactPublicationAuthorizationSaga publicationAuthorizationSaga;
     private readonly SemaphoreSlim[] publicationAuthorizationGates;
     private readonly IClock clock;
+    private readonly ILogger<ContactServiceOpaqueFacade>? logger;
     private readonly Deep.Protocol.DeepExtension.PrivacyRouting.VerifiedOnionNetworkContext network;
     private bool disposed;
 
@@ -190,7 +192,8 @@ internal sealed class ContactServiceOpaqueFacade : IDisposable
         IContactRequestContextVerifier requestContexts,
         IContactPublicationAuthorizationVerifier publicationAuthorizations,
         ContactPublicationAuthorizationSaga publicationAuthorizationSaga,
-        IClock? clock = null)
+        IClock? clock = null,
+        ILogger<ContactServiceOpaqueFacade>? logger = null)
     {
         this.network = network ?? throw new ArgumentNullException(nameof(network));
         network.EnsureCurrent();
@@ -209,6 +212,7 @@ internal sealed class ContactServiceOpaqueFacade : IDisposable
             ?? throw new ArgumentNullException(nameof(publicationAuthorizationSaga));
         publicationAuthorizationGates = CreateAuthorizationGates();
         this.clock = clock ?? new SystemClock();
+        this.logger = logger;
         resolverCoordinator = new(
             bindings[0].Binding.ResolverReplica,
             bindings[1].Binding.ResolverReplica);
@@ -322,6 +326,8 @@ internal sealed class ContactServiceOpaqueFacade : IDisposable
                 or InvalidOperationException
                 or CryptographicException)
             {
+                logger?.LogWarning("Contact publication incomplete: phase=reservation, failure={FailureType}.",
+                    exception.GetType().Name);
                 return Xpo1Codec.Encode(exact.Span, Xpo1Status.OutcomeUnknown,
                     ContactServiceMutationOutcome.OutcomeUnknown, Now(), RetryAfterSeconds,
                     ContactServicePaddingClass.Bytes256, []);
@@ -352,6 +358,9 @@ internal sealed class ContactServiceOpaqueFacade : IDisposable
             authorization, request, cancellationToken).ConfigureAwait(false);
         var result = await resolver.PublishDcrAsync(new ContactResolverPublishRequest(
             opaque), cancellationToken).ConfigureAwait(false);
+        if (result.Status == ContactResolverApplicationStatus.OutcomeUnknown)
+            logger?.LogWarning("Contact publication incomplete: phase=replica-write, status={Status}, durableReplicas={DurableReplicas}.",
+                result.Status, result.DurableReplicaCount);
 
         var status = result.Status switch
         {
@@ -397,6 +406,8 @@ internal sealed class ContactServiceOpaqueFacade : IDisposable
                 or InvalidOperationException
                 or CryptographicException)
             {
+                logger?.LogWarning("Contact publication incomplete: phase=commit-receipts, failure={FailureType}.",
+                    exception.GetType().Name);
                 status = Xpo1Status.OutcomeUnknown;
                 outcome = ContactServiceMutationOutcome.OutcomeUnknown;
                 payload = [];

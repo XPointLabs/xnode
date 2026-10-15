@@ -145,16 +145,33 @@ public sealed partial class Did2ContactServiceCompositionTests
     public async Task CandidateMapsExactlyOneReplicaEndpointOnlyWhenEnabled(bool enabled)
     {
         var builder = WebApplication.CreateBuilder();
-        builder.Services.AddContactServiceBoundary(new());
+        var plan = builder.Services.AddContactServiceBoundary(new());
         builder.Services.AddSingleton(new RouterNodeOptions());
         builder.Services.AddSingleton<IClock, SystemClock>();
         builder.Services.AddSingleton<IContactReplicaCommandReceiver, RejectUninvokedReceiver>();
         await using var app = builder.Build();
-        app.MapDeepIdV2ContactReplicaEndpoint(enabled, 4443);
+        app.MapContactReplicaEndpoint(plan, 4443, did2ReplicaStageEnabled: enabled);
         var endpoints = ((IEndpointRouteBuilder)app).DataSources.SelectMany(source => source.Endpoints)
             .OfType<RouteEndpoint>().ToArray();
         if (enabled) Assert.Equal(ContactReplicaHttpContract.Route, Assert.Single(endpoints).RoutePattern.RawText);
         else Assert.Empty(endpoints);
+    }
+
+    [Fact]
+    public async Task CurrentResolverAndInventoryStagingShareOneReplicaEndpoint()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.Services.AddContactServiceBoundary(new());
+        builder.Services.AddSingleton(new RouterNodeOptions());
+        builder.Services.AddSingleton<IClock, SystemClock>();
+        builder.Services.AddSingleton<IContactReplicaCommandReceiver, RejectUninvokedReceiver>();
+        var plan = ContactServiceHostCompositionPlan.CreateForDeferredAuthorities(
+            new() { RuntimeActivation = true, MapReplicaEndpoint = true });
+        await using var app = builder.Build();
+        app.MapContactReplicaEndpoint(plan, 4443, did2ReplicaStageEnabled: true);
+        var endpoints = ((IEndpointRouteBuilder)app).DataSources.SelectMany(source => source.Endpoints)
+            .OfType<RouteEndpoint>().Where(endpoint => endpoint.RoutePattern.RawText == ContactReplicaHttpContract.Route).ToArray();
+        Assert.Single(endpoints);
     }
 
     [Theory]
@@ -202,6 +219,8 @@ public sealed partial class Did2ContactServiceCompositionTests
                 var uncertain = Xpo1Codec.Decode((await dispatcher.DispatchAsync(ContactServiceOperation.PublishDcr,
                     publication.CanonicalBytes, default)).Span, publication.CanonicalBytes.Span);
                 Assert.Equal(Xpo1Status.OutcomeUnknown, uncertain.Status);
+                Assert.Contains("Contact publication incomplete: phase=replica-write, status=OutcomeUnknown, durableReplicas=1.",
+                    state.PublicationFailures);
                 if (wrongPin)
                 {
                     Assert.Equal(0, state.Requests);
@@ -502,6 +521,7 @@ public sealed partial class Did2ContactServiceCompositionTests
         }.Validate(node, true)!;
         if (fresh) ProvisionResolverTestKeys(resolverCustody.DataProtectionKeysDirectory);
         var services = new ServiceCollection(); services.AddLogging();
+        services.AddSingleton<ILogger<ContactServiceOpaqueFacade>>(new PublicationLogger(state));
         services.AddSingleton(node); services.AddSingleton<IOnionMonotonicClock>(fixture);
         services.AddSingleton<IDeepIdV2ContactStoreAuthoritySource>(publicationSource ?? fixture);
         services.AddSingleton<IDeepIdV2PreKeyPlacementSource>(fixture);
@@ -575,6 +595,7 @@ public sealed partial class Did2ContactServiceCompositionTests
         internal Dictionary<RouterId, ContactPeerHost> Hosts { get; } = [];
         internal int LastPeerStatus;
         internal string LastTransportFailure = "none";
+        internal System.Collections.Concurrent.ConcurrentQueue<string> PublicationFailures { get; } = new();
         internal bool WrongPin;
         internal int Requests, GrantCalls, GrantSignatures;
         internal bool LoseNextPublish, LostAfterExecution, LoseNextGrant;
@@ -639,6 +660,14 @@ public sealed partial class Did2ContactServiceCompositionTests
         }
         public async ValueTask DisposeAsync()
         { if (app is not null) { await app.StopAsync(); await app.DisposeAsync(); } certificate?.Dispose(); }
+    }
+
+    private sealed class PublicationLogger(PeerState state) : ILogger<ContactServiceOpaqueFacade>
+    {
+        public IDisposable? BeginScope<TState>(TState value) where TState : notnull => null;
+        public bool IsEnabled(LogLevel level) => true;
+        public void Log<TState>(LogLevel level, EventId eventId, TState value, Exception? exception,
+            Func<TState, Exception?, string> formatter) => state.PublicationFailures.Enqueue(formatter(value, exception));
     }
 
     private sealed class TransportLogger(PeerState state) : ILogger<HttpContactReplicaPeerClient>

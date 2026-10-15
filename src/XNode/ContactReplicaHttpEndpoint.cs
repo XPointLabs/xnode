@@ -7,21 +7,6 @@ namespace XNode;
 
 internal static class ContactReplicaHttpEndpoint
 {
-    internal static async Task<IResult> HandleAsync(
-        HttpContext context,
-        ContactServiceHostCompositionPlan plan,
-        ContactServicePersistenceOptions options,
-        ContactReplicaReplayGuard replayGuard,
-        ContactReplicaRequestReceiver receiver,
-        IContactServicePlacementAuthoritySource placements,
-        RouterNodeOptions node,
-        IClock clock,
-        int peerListenerPort,
-        CancellationToken cancellationToken) => await HandleCoreAsync(
-            context, plan.MapReplicaEndpoint, options, replayGuard,
-            receiver, placements, node, clock, peerListenerPort, cancellationToken)
-            .ConfigureAwait(false);
-
     internal static async Task<IResult> HandleCoreAsync(
         HttpContext context,
         bool enabled,
@@ -162,14 +147,21 @@ internal static class ContactReplicaHttpEndpoint
     }
 }
 
-internal static class DeepIdV2ContactReplicaEndpointMapping
+internal static class ContactReplicaEndpointMapping
 {
-    internal static IEndpointRouteBuilder MapDeepIdV2ContactReplicaEndpoint(
-        this IEndpointRouteBuilder endpoints, bool enabled,
-        int peerListenerPort)
+    internal static IEndpointRouteBuilder MapContactReplicaEndpoint(
+        this IEndpointRouteBuilder endpoints,
+        ContactServiceHostCompositionPlan plan,
+        int peerListenerPort,
+        bool did2ReplicaStageEnabled = false)
     {
         ArgumentNullException.ThrowIfNull(endpoints);
+        ArgumentNullException.ThrowIfNull(plan);
+        // One route owns both current resolver and bounded inventory staging.
+        // Both flags being enabled must not register competing HTTP endpoints.
+        var enabled = plan.MapReplicaEndpoint || did2ReplicaStageEnabled;
         if (!enabled) return endpoints;
+
         endpoints.MapPost(ContactReplicaHttpContract.Route, (
             HttpContext context,
             ContactServicePersistenceOptions options,
@@ -181,43 +173,6 @@ internal static class DeepIdV2ContactReplicaEndpointMapping
             CancellationToken cancellationToken) =>
             ContactReplicaHttpEndpoint.HandleCoreAsync(context, enabled,
                 options, replay, receiver, placements, node, clock, peerListenerPort,
-                cancellationToken));
-        return endpoints;
-    }
-}
-
-internal static class ContactReplicaEndpointMapping
-{
-    internal static IEndpointRouteBuilder MapContactReplicaEndpoint(
-        this IEndpointRouteBuilder endpoints,
-        ContactServiceHostCompositionPlan plan,
-        int peerListenerPort)
-    {
-        ArgumentNullException.ThrowIfNull(endpoints);
-        ArgumentNullException.ThrowIfNull(plan);
-        if (!plan.MapReplicaEndpoint)
-        {
-            return endpoints;
-        }
-
-        endpoints.MapPost(ContactReplicaHttpContract.Route, (
-            HttpContext context,
-            ContactServicePersistenceOptions options,
-            ContactReplicaReplayGuard replay,
-            ContactReplicaRequestReceiver receiver,
-            IContactServicePlacementAuthoritySource placements,
-            RouterNodeOptions node,
-            IClock clock,
-            CancellationToken cancellationToken) => ContactReplicaHttpEndpoint.HandleAsync(
-                context,
-                plan,
-                options,
-                replay,
-                receiver,
-                placements,
-                node,
-                clock,
-                peerListenerPort,
                 cancellationToken));
         return endpoints;
     }

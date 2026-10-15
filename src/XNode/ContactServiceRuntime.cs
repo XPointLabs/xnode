@@ -278,6 +278,7 @@ internal sealed partial class ProductionContactServiceOpaqueDispatcher :
     private readonly IMailboxGrantAuthorityClient mailboxGrantAuthority;
     private readonly IClock clock;
     private readonly ProtectedRetainedMailboxReadAuthority? retainedReads;
+    private readonly ILogger<ContactServiceOpaqueFacade>? publicationLogger;
     private readonly SemaphoreSlim[] executionGates = Enumerable.Range(0, 64)
         .Select(static _ => new SemaphoreSlim(1, 1))
         .ToArray();
@@ -290,7 +291,8 @@ internal sealed partial class ProductionContactServiceOpaqueDispatcher :
         IContactReplicaPeerClient peerClient,
         IMailboxGrantAuthorityClient mailboxGrantAuthority,
         IClock clock,
-        ProtectedRetainedMailboxReadAuthority? retainedReads = null)
+        ProtectedRetainedMailboxReadAuthority? retainedReads = null,
+        ILogger<ContactServiceOpaqueFacade>? publicationLogger = null)
     {
         this.node = node ?? throw new ArgumentNullException(nameof(node));
         this.authorities = authorities ?? throw new ArgumentNullException(nameof(authorities));
@@ -300,6 +302,7 @@ internal sealed partial class ProductionContactServiceOpaqueDispatcher :
             ?? throw new ArgumentNullException(nameof(mailboxGrantAuthority));
         this.clock = clock ?? throw new ArgumentNullException(nameof(clock));
         this.retainedReads = retainedReads;
+        this.publicationLogger = publicationLogger;
     }
 
     public async ValueTask<ReadOnlyMemory<byte>> DispatchAsync(
@@ -349,7 +352,7 @@ internal sealed partial class ProductionContactServiceOpaqueDispatcher :
                 new ExactContactRequestContextVerifier(placement),
                 authorities.PublicationAuthorizations,
                 local.AuthorizationSaga,
-                clock);
+                clock, publicationLogger);
             return await facade.DispatchAsync(
                 (ContactServiceFacadeOperation)operation,
                 canonicalRequest,

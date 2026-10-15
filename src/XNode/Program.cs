@@ -612,9 +612,8 @@ app.MapPost(MailboxWireHttpContract.PeerTombstoneRoute, (
         listenerPlan.PrivacyPeerPort,
         cancellationToken));
 
-app.MapContactReplicaEndpoint(contactServicePlan, listenerPlan.PrivacyPeerPort);
-app.MapDeepIdV2ContactReplicaEndpoint(did2ReplicaStageEnabled,
-    listenerPlan.PrivacyPeerPort);
+app.MapContactReplicaEndpoint(contactServicePlan, listenerPlan.PrivacyPeerPort,
+    did2ReplicaStageEnabled);
 app.MapGroupControlReplicaEndpoint(
     groupControlServicePlan,
     listenerPlan.PrivacyPeerPort);
