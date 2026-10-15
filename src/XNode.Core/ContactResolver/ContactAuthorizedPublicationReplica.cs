@@ -23,11 +23,17 @@ internal sealed class ContactAuthorizedPublicationReplica
     }
 
     internal async ValueTask<ContactResolverMutationResult> PublishAsync(
-        Xpu1Request request,
+        ReadOnlyMemory<byte> exactDispatch,
+        CancellationToken cancellationToken) => await PublishAsync(
+            ContactPublicationDispatchRequest.Decode(exactDispatch.Span), cancellationToken).ConfigureAwait(false);
+
+    internal async ValueTask<ContactResolverMutationResult> PublishAsync(
+        ContactPublicationDispatchRequest dispatch,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(request);
-        var authorization = await verifier.VerifyAsync(request, cancellationToken)
+        ArgumentNullException.ThrowIfNull(dispatch);
+        var request = dispatch.OriginalRequest;
+        var authorization = await dispatch.VerifyAsync(verifier, cancellationToken)
             .ConfigureAwait(false);
         ContactServiceOpaqueFacade.ValidatePublicationAuthorization(authorization, request);
         var now = checked((ulong)clock.UtcNow.ToUnixTimeSeconds());

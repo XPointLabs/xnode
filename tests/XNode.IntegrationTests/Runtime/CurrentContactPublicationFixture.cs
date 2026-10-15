@@ -19,6 +19,8 @@ public sealed class CurrentContactPublicationFixture : IAsyncLifetime
     internal CurrentContactPublicationFixture(bool oneTime) { this.oneTime = oneTime; }
     internal Xpu1Request Request => ceremony.ContactPublication;
     internal Xpu1Request AlternateRequest => ceremony.AlternateContactPublication;
+    internal ReadOnlyMemory<byte> Dispatch(ReadOnlySpan<byte> original) =>
+        ceremony.Dispatch(Xpu1Codec.Decode(original));
     internal ContactServicePlacementCapability Placement { get; private set; } = null!;
     internal ContactServicePlacementCapability ClaimPlacement { get; private set; } = null!;
     internal IContactPublicationAuthorizationVerifier Verifier { get; private set; } = null!;

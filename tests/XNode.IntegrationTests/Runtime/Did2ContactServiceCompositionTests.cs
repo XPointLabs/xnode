@@ -217,7 +217,7 @@ public sealed partial class Did2ContactServiceCompositionTests
                 Assert.IsType<DeepIdV2ContactOnionDispatcher>(dispatcher);
                 state.LoseNextPublish = true;
                 var uncertain = Xpo1Codec.Decode((await dispatcher.DispatchAsync(ContactServiceOperation.PublishDcr,
-                    publication.CanonicalBytes, default)).Span, publication.CanonicalBytes.Span);
+                    fixture.ContactDispatch, default)).Span, publication.CanonicalBytes.Span);
                 Assert.Equal(Xpo1Status.OutcomeUnknown, uncertain.Status);
                 Assert.Contains("Contact publication incomplete: phase=replica-write, status=OutcomeUnknown, durableReplicas=1.",
                     state.PublicationFailures);
@@ -236,7 +236,7 @@ public sealed partial class Did2ContactServiceCompositionTests
                 providers = nodes.Select(node => Compose(node, nodes, fixture, options, peers, state, grantHttp)).ToArray();
                 for (var i = 0; i < nodes.Length; i++) peers.Add(nodes[i].GetRouterId(), providers[i]);
                 dispatcher = providers[0].GetRequiredService<IContactServiceOpaqueDispatcher>();
-                var exact = await dispatcher.DispatchAsync(ContactServiceOperation.PublishDcr, publication.CanonicalBytes, default);
+                var exact = await dispatcher.DispatchAsync(ContactServiceOperation.PublishDcr, fixture.ContactDispatch, default);
                 var commit = await DeepIdV2PublicationCommitVerifier.VerifyCommittedAsync(fixture.ContactRoute,
                     fixture.ContactObject, fixture.ContactOwnedRequest, publication.CanonicalBytes, exact);
                 Assert.Equal(exact.ToArray(), commit.ExactXpo1.ToArray());
@@ -326,7 +326,7 @@ public sealed partial class Did2ContactServiceCompositionTests
                 Assert.Equal(before, state.Requests);
                 fixture.Sample = 500;
                 await Assert.ThrowsAsync<ContactServiceUnavailableException>(() => dispatcher.DispatchAsync(
-                    ContactServiceOperation.PublishDcr, publication.CanonicalBytes, default).AsTask());
+                    ContactServiceOperation.PublishDcr, fixture.ContactDispatch, default).AsTask());
                 Assert.Equal(before, state.Requests);
             }
             finally { foreach (var provider in providers) await provider.DisposeAsync(); }

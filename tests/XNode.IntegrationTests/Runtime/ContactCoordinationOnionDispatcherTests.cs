@@ -15,6 +15,51 @@ namespace XNode.IntegrationTests.Runtime;
 // HTTP handler and proof/clock retrieval are in-process. No socket/device claim.
 public sealed class ContactCoordinationOnionDispatcherTests
 {
+    [Fact]
+    public async Task FreshPublicationLeaseUsesCurrentViewGatewayAndAuthenticatedPairedPrivateTarget()
+    {
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync(authorContactPublication: true);
+        var request = fixture.ContactLeaseRequest;
+        var placement = ContactServicePlacementFactory.Create(fixture.NetworkContext,
+            ContactServiceRequestKind.CoordinateContact, request.GatewayShard);
+        var signer = fixture.Node(placement.RankedReplicaNodeIds[0].Span);
+        var node = new RouterNodeOptions { RouterId = Convert.ToHexStringLower(placement.RankedReplicaNodeIds[0].Span),
+            Ed25519PrivateKey = Convert.ToHexStringLower(signer.Seed) };
+        var response = DeepIdV2PublicationLeaseWireCodec.EncodeResponse(request, fixture.ContactDispatch.Span);
+        var calls = 0;
+        var backend = new HttpContactCoordinationBackendClient(new("https://authority.example/"),
+            DeepIdV2PublicationAuthorityFixture.Network, node, new SystemClock(), () => new Handler(async (message, ct) =>
+            {
+                calls++;
+                Assert.Equal(DeepIdV2PublicationLeaseWireCodec.EndpointPath, message.RequestUri!.AbsolutePath);
+                Assert.Equal(DeepIdV2PublicationLeaseWireCodec.RequestMediaType, message.Content!.Headers.ContentType!.ToString());
+                var exact = await message.Content.ReadAsByteArrayAsync(ct);
+                Assert.Equal(request.CanonicalBytes.ToArray(), exact);
+                var headers = new ContactCoordinationPeerHeaders(
+                    message.Headers.GetValues(ContactCoordinationPeerAuthentication.NodeHeader).Single(),
+                    message.Headers.GetValues(ContactCoordinationPeerAuthentication.TimestampHeader).Single(),
+                    message.Headers.GetValues(ContactCoordinationPeerAuthentication.NonceHeader).Single(),
+                    message.Headers.GetValues(ContactCoordinationPeerAuthentication.SignatureHeader).Single());
+                Assert.True(ContactCoordinationPeerAuthentication.Verify(headers, request.NetworkId.Span,
+                    ContactCoordinationTarget.PublicationLease, exact, DateTimeOffset.UtcNow));
+                var reply = new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(response) };
+                reply.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(DeepIdV2PublicationLeaseWireCodec.ResponseMediaType);
+                return reply;
+            }));
+        var dispatcher = new ContactCoordinationOnionDispatcher(fixture, backend, node, fixture, new DiagnosticLogger());
+        var wrapped = ContactCoordinationOnionCodec.EncodeRequest(ContactCoordinationTarget.PublicationLease, request.CanonicalBytes.Span);
+        var verified = OnionTerminalPayloadVerifierV1.VerifyRequest(fixture.NetworkContext, OnionOperation.ContactResolve, wrapped);
+        var result = await dispatcher.DispatchAsync(verified, default);
+        Assert.True(result.Success); Assert.Equal(1, calls);
+        Assert.Equal(response, ContactCoordinationOnionCodec.DecodeResponse(
+            ContactCoordinationOnionCodec.DecodeRequest(wrapped), result.CanonicalBody.Span));
+        var wrongView = request.CanonicalBytes.ToArray(); wrongView[192] ^= 1;
+        wrapped = ContactCoordinationOnionCodec.EncodeRequest(ContactCoordinationTarget.PublicationLease, wrongView);
+        verified = OnionTerminalPayloadVerifierV1.VerifyRequest(fixture.NetworkContext, OnionOperation.ContactResolve, wrapped);
+        Assert.Equal(NativeMailboxDispatchCertainty.RejectedBeforeForward, (await dispatcher.DispatchAsync(verified, default)).Certainty);
+        Assert.Equal(1, calls);
+    }
+
     [Theory]
     [InlineData(false, false)]
     [InlineData(true, false)]
@@ -92,7 +137,7 @@ public sealed class ContactCoordinationOnionDispatcherTests
                 if (mutation == "version") invalid[5] = 1;
                 if (mutation == "body-version") invalid[ContactCoordinationOnionCodec.HeaderBytes + 1] = 2;
                 if (mutation == "reserved") invalid[7] = 1;
-                if (mutation == "target") invalid[6] = 3;
+                if (mutation == "target") invalid[6] = 4;
                 if (mutation == "length") invalid[11] ^= 1;
                 if (mutation == "trailing") invalid = invalid.Append((byte)0).ToArray();
                 if (mutation == "short") invalid = invalid[..8];

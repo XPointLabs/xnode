@@ -89,7 +89,14 @@ internal sealed class ContactCoordinationOnionDispatcher(
         diagnostic.Check = CurrentnessCheck.Projection;
         if (!Fixed(request.NetworkId.Span, current.Network.NetworkId.Span))
             throw new CryptographicException("Coordination belongs to another network.");
-        current.Network.RequireCurrentMailboxAssignment(current.Authority, request.ProjectionReference);
+        if (request.Target == ContactCoordinationTarget.PublicationLease)
+        {
+            var lease = DeepIdV2PublicationLeaseWireCodec.DecodeRequest(request.ExactBody.Span);
+            if (current.Network.ProtectedLkg is not { } floor ||
+                !Fixed(lease.ViewHash.Span, floor.ViewCoreReference.Span[6..]))
+                throw new CryptographicException("Publication lease coordination requires the exact current view.");
+        }
+        else current.Network.RequireCurrentMailboxAssignment(current.Authority, request.ProjectionReference);
         diagnostic.Check = CurrentnessCheck.Placement;
         var placement = ContactServicePlacementFactory.Create(current.Network,
             ContactServiceRequestKind.CoordinateContact, request.GatewayShard);
@@ -108,10 +115,14 @@ internal sealed class ContactCoordinationOnionDispatcher(
         var lower = checked(current.Freshness.TrustedLowerUnixSeconds + elapsed);
         var upper = checked(current.Freshness.TrustedUpperUnixSeconds + elapsed);
         var body = request.ExactBody;
-        var issued = request.Target == ContactCoordinationTarget.Route ?
-            BinaryPrimitives.ReadUInt64BigEndian(ContactCodec.Decode("XRA1",
-                ContactRouteAuthorityWireCodec.DecodeRequest(body.Span).ExactXra1.Span).Field(12).Span) :
-            ContactPublicationAuthorityWireCodec.DecodeRequest(body.Span).IssuedAtUnixSeconds;
+        var issued = request.Target switch
+        {
+            ContactCoordinationTarget.Route => BinaryPrimitives.ReadUInt64BigEndian(ContactCodec.Decode("XRA1",
+                ContactRouteAuthorityWireCodec.DecodeRequest(body.Span).ExactXra1.Span).Field(12).Span),
+            ContactCoordinationTarget.Publication => ContactPublicationAuthorityWireCodec.DecodeRequest(body.Span).IssuedAtUnixSeconds,
+            ContactCoordinationTarget.PublicationLease => DeepIdV2PublicationLeaseWireCodec.DecodeRequest(body.Span).IssuedAtUnixSeconds,
+            _ => throw new CryptographicException("Unknown coordination target.")
+        };
         diagnostic.Check = CurrentnessCheck.IssuedLowerBound;
         if (lower < issued)
             throw new CryptographicException("Coordination does not cover the complete current trusted interval.");
@@ -120,7 +131,8 @@ internal sealed class ContactCoordinationOnionDispatcher(
             throw new CryptographicException("Coordination does not cover the complete current trusted interval.");
         diagnostic.Check = CurrentnessCheck.PlacementExpiry;
         if (upper >= placement.ValidUntilUnixSeconds ||
-            (request.Target == ContactCoordinationTarget.Publication && request.ExpiresAtUnixSeconds > placement.ValidUntilUnixSeconds))
+            (request.Target is ContactCoordinationTarget.Publication or ContactCoordinationTarget.PublicationLease &&
+                request.ExpiresAtUnixSeconds > placement.ValidUntilUnixSeconds))
             throw new CryptographicException("Coordination does not cover the complete current trusted interval.");
         diagnostic.Check = CurrentnessCheck.Network;
         current.Network.EnsureCurrent();
@@ -134,6 +146,11 @@ internal sealed class ContactCoordinationOnionDispatcher(
         CryptographicException => "cryptographic",
         FormatException or ArgumentException => "canonical",
         InvalidOperationException => "state",
+        IOException when error.Data["Deep.ContactCoordination.HttpStatus"] is int status => status switch
+        {
+            400 => "http-bad-request", 401 => "http-unauthorized", 404 => "http-rejected",
+            429 => "http-rate-limited", 503 => "http-unavailable", _ => "http-other"
+        },
         IOException => "io",
         OverflowException => "arithmetic",
         _ => throw new InvalidOperationException("Unclassified coordination rejection.")

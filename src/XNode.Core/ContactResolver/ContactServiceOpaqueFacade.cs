@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
 using Deep.Protocol.ContactV1;
+using Deep.Protocol.ContactV2;
 using Deep.Protocol.MessagingWire;
 using XNode.Core.ContactPreKey;
 using XNode.Core.Mailbox;
@@ -41,6 +42,9 @@ internal interface IContactRequestContextVerifier
 
 internal interface IContactPublicationAuthorizationVerifier
 {
+    ValueTask<VerifiedXpa1PublicationAuthorization> VerifyLeaseAsync(
+        ParsedDeepIdV2PublicationLease lease, CancellationToken cancellationToken);
+
     ValueTask<VerifiedXpa1PublicationAuthorization> VerifyAsync(
         Xpu1Request request,
         CancellationToken cancellationToken);
@@ -49,6 +53,14 @@ internal interface IContactPublicationAuthorizationVerifier
 internal sealed class RejectAllContactPublicationAuthorizationVerifier
     : IContactPublicationAuthorizationVerifier
 {
+    public ValueTask<VerifiedXpa1PublicationAuthorization> VerifyLeaseAsync(
+        ParsedDeepIdV2PublicationLease lease, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return ValueTask.FromException<VerifiedXpa1PublicationAuthorization>(
+            new InvalidOperationException("No contact publication authority is composed."));
+    }
+
     public ValueTask<VerifiedXpa1PublicationAuthorization> VerifyAsync(
         Xpu1Request request,
         CancellationToken cancellationToken)
@@ -233,7 +245,7 @@ internal sealed class ContactServiceOpaqueFacade : IDisposable
         return operation switch
         {
             ContactServiceFacadeOperation.PublishDcr =>
-                await PublishAsync(Xpu1Codec.Decode(canonicalRequest.Span), canonicalRequest, cancellationToken)
+                await PublishAsync(ContactPublicationDispatchRequest.Decode(canonicalRequest.Span), cancellationToken)
                     .ConfigureAwait(false),
             ContactServiceFacadeOperation.ResolveDcr =>
                 await ResolveAsync(Xiq1Codec.Decode(canonicalRequest.Span), canonicalRequest, cancellationToken)
@@ -271,18 +283,20 @@ internal sealed class ContactServiceOpaqueFacade : IDisposable
     }
 
     private async Task<byte[]> PublishAsync(
-        Xpu1Request request,
-        ReadOnlyMemory<byte> exact,
+        ContactPublicationDispatchRequest dispatch,
         CancellationToken cancellationToken)
     {
-        if (Expired(request))
+        var request = dispatch.OriginalRequest;
+        var exact = request.CanonicalBytes;
+        if (dispatch.ExpiresAtUnixSeconds <= Now() || dispatch.IssuedAtUnixSeconds > Now())
         {
             return Xpo1Codec.Encode(exact.Span, Xpo1Status.Expired,
                 ContactServiceMutationOutcome.None, Now(), 0,
                 ContactServicePaddingClass.Bytes256, []);
         }
 
-        var context = await VerifyContextAsync(request, cancellationToken).ConfigureAwait(false);
+        var context = await VerifyContextAsync(dispatch.NetworkId, dispatch.ViewHash,
+            dispatch.PlacementHash, cancellationToken).ConfigureAwait(false);
         if (context.Status != ContactRequestContextStatus.Accepted)
         {
             var contextStatus = context.Status == ContactRequestContextStatus.StaleView
@@ -302,13 +316,11 @@ internal sealed class ContactServiceOpaqueFacade : IDisposable
             VerifiedXpa1PublicationAuthorization authorization;
             try
             {
-                authorization = await publicationAuthorizations
-                    .VerifyAsync(request, cancellationToken)
+                authorization = await dispatch.VerifyAsync(publicationAuthorizations, cancellationToken)
                     .ConfigureAwait(false);
                 ValidatePublicationAuthorization(authorization, request);
             }
-            catch (Exception exception) when (exception is Xpa1PublicationAuthorizationException
-                or ContactPublicationAuthorizationBindingException)
+            catch (CryptographicException)
             {
                 return Xpo1Codec.Encode(exact.Span, Xpo1Status.Unauthorized,
                     ContactServiceMutationOutcome.None, Now(), 0,
@@ -1237,15 +1249,20 @@ internal sealed class ContactServiceOpaqueFacade : IDisposable
 
     private async ValueTask<ContactRequestContextResult> VerifyContextAsync(
         ContactServiceRequestRecord request,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken) => await VerifyContextAsync(request.NetworkId,
+            request.ViewHash, request.PlacementHash, cancellationToken).ConfigureAwait(false);
+
+    private async ValueTask<ContactRequestContextResult> VerifyContextAsync(
+        ReadOnlyMemory<byte> networkId, ReadOnlyMemory<byte> viewHash,
+        ReadOnlyMemory<byte> placementHash, CancellationToken cancellationToken)
     {
         network.EnsureCurrent();
-        if (!Fixed(request.NetworkId.Span, network.NetworkId.Span))
+        if (!Fixed(networkId.Span, network.NetworkId.Span))
             return new(ContactRequestContextStatus.Unavailable, ReadOnlyMemory<byte>.Empty);
         var result = await requestContexts.VerifyAsync(
-            request.NetworkId,
-            request.ViewHash,
-            request.PlacementHash,
+            networkId,
+            viewHash,
+            placementHash,
             cancellationToken).ConfigureAwait(false);
         network.EnsureCurrent();
         return result;

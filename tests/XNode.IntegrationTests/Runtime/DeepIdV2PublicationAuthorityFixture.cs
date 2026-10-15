@@ -73,6 +73,20 @@ internal sealed partial class DeepIdV2PublicationAuthorityFixture : IDisposable,
     internal byte[] Dca { get; private set; } = [];
     internal byte[] Xps { get; private set; } = [];
     internal Xpu1Request ContactPublication { get; private set; } = null!;
+    internal ReadOnlyMemory<byte> ContactDispatch { get; private set; }
+    internal PublicationLeaseWireRequest ContactLeaseRequest { get; private set; } = null!;
+    internal ReadOnlyMemory<byte> AlternateContactDispatch { get; private set; }
+    internal ReadOnlyMemory<byte> SuccessorContactDispatch { get; private set; }
+
+    internal ReadOnlyMemory<byte> Dispatch(Xpu1Request request)
+    {
+        var exact = request.CanonicalBytes.Span;
+        var dispatch = exact.SequenceEqual(ContactPublication.CanonicalBytes.Span) ? ContactDispatch :
+            AlternateContactPublication is not null && exact.SequenceEqual(AlternateContactPublication.CanonicalBytes.Span) ? AlternateContactDispatch :
+            SuccessorContactPublication is not null && exact.SequenceEqual(SuccessorContactPublication.CanonicalBytes.Span) ? SuccessorContactDispatch :
+            throw new InvalidDataException("No signed lease exists for this exact fixture intent.");
+        return dispatch.ToArray();
+    }
     internal VerifiedDeepIdV2ContactRouteClosure ContactRoute { get; private set; } = null!;
     internal ContactRouteAuthorityWireRequest RouteSuccessorRequest { get; private set; } = null!;
     internal ContactRouteAuthorityWireResponse RouteSuccessorResponse { get; private set; } = null!;
@@ -346,6 +360,7 @@ internal sealed partial class DeepIdV2PublicationAuthorityFixture : IDisposable,
                             route, oneTimeRequest.WireRequest, witnesses);
                         ContactOwnedRequest = oneTimeRequest.WireRequest;
                         ContactPublication = Xpu1Codec.Decode(oneTimeAuthorization.ExactXpu1.Span);
+                        ContactDispatch = ContactPublication.CanonicalBytes;
                     }
                     return;
                 }
@@ -368,6 +383,22 @@ internal sealed partial class DeepIdV2PublicationAuthorityFixture : IDisposable,
                 var alternate = await DeepIdV2PublicationAuthorityAuthor.AuthorThresholdAsync(
                     route, candidate.WireRequest, witnesses[..2]);
                 AlternateContactPublication = Xpu1Codec.Decode(alternate.ExactXpu1.Span);
+                async Task<ReadOnlyMemory<byte>> LeaseAsync(VerifiedDeepIdV2ContactRouteClosure ownerRoute,
+                    AuthoredDeepIdV2ContactObject ownerContact, ContactPublicationAuthorityWireRequest ownerRequest,
+                    ReadOnlyMemory<byte> exactXpu)
+                {
+                    var intent = await DeepIdV2PublicationCommitVerifier.VerifyOwnedRetainedIntentAsync(ownerRoute,
+                        ownerContact, ownerRequest, exactXpu);
+                    var issuerIntent = await DeepIdV2PublicationCommitVerifier.VerifyIssuerRetainedIntentAsync(ownerRoute,
+                        ownerRequest, exactXpu);
+                    var fresh = await DeepIdV2PublicationLeaseAuthor.AuthorRequestAsync(intent, secrets);
+                    if (exactXpu.Span.SequenceEqual(ContactPublication.CanonicalBytes.Span)) ContactLeaseRequest = fresh;
+                    var signed = await DeepIdV2PublicationLeaseAuthor.AuthorThresholdAsync(issuerIntent, fresh, witnesses);
+                    _ = await DeepIdV2PublicationLeaseAuthor.VerifyOwnedResponseAsync(intent, fresh, signed.CanonicalBytes);
+                    return signed.CanonicalBytes;
+                }
+                ContactDispatch = await LeaseAsync(route, contact, candidate.WireRequest, authorized.ExactXpu1);
+                AlternateContactDispatch = await LeaseAsync(route, contact, candidate.WireRequest, alternate.ExactXpu1);
                 if (authorRouteSuccessor)
                 {
                     var predecessor = await DeepIdV2ContactRouteVerifier.VerifyPredecessorAsync(current, network,
@@ -411,6 +442,8 @@ internal sealed partial class DeepIdV2PublicationAuthorityFixture : IDisposable,
                             var nextAuthorization = await DeepIdV2PublicationAuthorityAuthor.AuthorThresholdSuccessorAsync(
                                 SuccessorContactRoute, nextPublication.WireRequest, oldPublication, witnesses);
                             SuccessorContactPublication = Xpu1Codec.Decode(nextAuthorization.ExactXpu1.Span);
+                            SuccessorContactDispatch = await LeaseAsync(SuccessorContactRoute, SuccessorContactObject,
+                                nextPublication.WireRequest, nextAuthorization.ExactXpu1);
                         }
                         finally { CryptographicOperations.ZeroMemory(resolver); }
                     }
@@ -692,7 +725,7 @@ internal sealed partial class DeepIdV2PublicationAuthorityFixture : IDisposable,
     internal sealed class TestSigner : IDisposable,
         IXPointNetworkBootstrapRootSigner, IXPointNetworkWitnessSigner,
         IAccountDirectoryAdh1WitnessSigner, IContactRouteAuthorityWitnessSigner,
-        IXpa1PublicationAuthorizationWitnessSigner
+        IXpa1PublicationAuthorizationWitnessSigner, IDeepIdV2PublicationLeaseWitnessSigner
     {
         private readonly byte marker;
         private readonly KeyPair key;
@@ -734,6 +767,8 @@ internal sealed partial class DeepIdV2PublicationAuthorityFixture : IDisposable,
             Sign(request.SigningInput, signature64, cancellationToken);
         public ValueTask<ReadOnlyMemory<byte>> SignXpa1Async(ReadOnlyMemory<byte> input,
             CancellationToken cancellationToken) => SignWitness(input, cancellationToken);
+        public ValueTask<ReadOnlyMemory<byte>> SignPublicationLeaseAsync(PublicationLeaseSigningRequest request,
+            CancellationToken cancellationToken) => SignWitness(request.SigningInput, cancellationToken);
         private ValueTask<int> Sign(ReadOnlyMemory<byte> input, Memory<byte> destination,
             CancellationToken cancellationToken)
         {

@@ -35,22 +35,22 @@ internal static class ContactReplicaPayloadCodec
 
     internal static byte[] EncodeAuthorizedPublish(ReadOnlySpan<byte> exactXpu1)
     {
-        if (exactXpu1.Length is < 1 or > 93_032)
+        if (exactXpu1.Length is < 1 or > Deep.Protocol.ContactV2.DeepIdV2PublicationLeaseCodec.MaximumBytes)
         {
             throw new ArgumentOutOfRangeException(nameof(exactXpu1));
         }
-        _ = Xpu1Codec.Decode(exactXpu1);
+        _ = ContactPublicationDispatchRequest.Decode(exactXpu1);
         var writer = new PayloadWriter();
         writer.Lp32(exactXpu1);
         return writer.ToArray();
     }
 
-    internal static Xpu1Request DecodeAuthorizedPublish(ReadOnlySpan<byte> payload)
+    internal static ContactPublicationDispatchRequest DecodeAuthorizedPublish(ReadOnlySpan<byte> payload)
     {
         var reader = new PayloadReader(payload);
-        var exact = reader.Lp32(93_032).ToArray();
+        var exact = reader.Lp32(Deep.Protocol.ContactV2.DeepIdV2PublicationLeaseCodec.MaximumBytes).ToArray();
         reader.End();
-        return Xpu1Codec.Decode(exact);
+        return ContactPublicationDispatchRequest.Decode(exact);
     }
 
     internal static byte[] Encode(OpaqueDcrResolveRequest request)

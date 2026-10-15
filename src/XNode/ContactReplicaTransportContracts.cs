@@ -299,7 +299,7 @@ internal sealed class AuthenticatedRemoteContactServiceReplica :
             throw new InvalidOperationException(
                 "Remote XPU1 publication requires the exact canonical authorized service request.");
         }
-        var exactXpu1 = Deep.Protocol.ContactV1.Xpu1Codec.Decode(exactServiceRequest);
+        var exactXpu1 = ContactPublicationDispatchRequest.Decode(exactServiceRequest).OriginalRequest;
         if (!Fixed(exactXpu1.RequestHash.Span, request.RequestHash)
             || !Fixed(exactXpu1.LocatorHash.Span, request.LocatorHash)
             || !Fixed(exactXpu1.ObjectCiphertextHash.Span, request.ObjectCiphertextHash)

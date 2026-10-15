@@ -1,4 +1,6 @@
 using Deep.Protocol.ContactV1;
+using System.Buffers.Binary;
+using Deep.Protocol.ContactV2;
 using XNode.Core;
 using XNode.Core.ContactResolver;
 using XNode.Core.Mailbox;
@@ -12,6 +14,58 @@ public sealed class ContactAuthorizedPublicationReplicaTests : IDisposable
         "xnode-contact-authorized-replica-" + Guid.NewGuid().ToString("N"));
 
     [Fact]
+    public async Task StandaloneReusableRequestRejectsBeforeAuthorityCallbackOrMutation()
+    {
+        using var ceremony = await DeepIdV2PublicationAuthorityFixture.CreateAsync(authorContactPublication: true);
+        var verifier = new NeverCalledVerifier();
+        using var runtime = Open(verifier);
+        await Assert.ThrowsAsync<System.Security.Cryptography.CryptographicException>(async () =>
+            await runtime.Service.PublishAsync(ceremony.ContactPublication.CanonicalBytes, default));
+        Assert.Equal(0, verifier.Calls);
+        var absent = await runtime.Replica.ResolveCurrentDcrAsync(ceremony.ContactPublication.LocatorHash, default);
+        Assert.Equal(ContactResolverReadDisposition.NotFound, absent.Disposition);
+    }
+
+    private sealed class NeverCalledVerifier : IContactPublicationAuthorizationVerifier
+    {
+        internal int Calls;
+        public ValueTask<VerifiedXpa1PublicationAuthorization> VerifyAsync(Xpu1Request request, CancellationToken ct)
+        { Calls++; throw new InvalidOperationException("Retired reusable dispatch reached authority."); }
+        public ValueTask<VerifiedXpa1PublicationAuthorization> VerifyLeaseAsync(
+            Deep.Protocol.ContactV2.ParsedDeepIdV2PublicationLease request, CancellationToken ct)
+        { Calls++; throw new InvalidOperationException("Unexpected lease dispatch."); }
+    }
+
+    [Fact]
+    public async Task OneTimeInviteCannotEnterReusableLeaseOrRecovery()
+    {
+        using var reusable = await DeepIdV2PublicationAuthorityFixture.CreateAsync(authorContactPublication: true);
+        using var oneTime = await DeepIdV2PublicationAuthorityFixture.CreateAsync(authorContactPublication: true, authorOneTimeObject: true);
+        var original = oneTime.ContactPublication;
+        Assert.Equal(1u, original.UsageLimit);
+        var template = reusable.ContactDispatch.ToArray();
+        using var output = new MemoryStream(); output.Write(template.AsSpan(0, 12));
+        for (var offset = 12; offset < template.Length;)
+        {
+            var tag = BinaryPrimitives.ReadUInt16BigEndian(template.AsSpan(offset));
+            var length = checked((int)BinaryPrimitives.ReadUInt32BigEndian(template.AsSpan(offset + 4)));
+            var value = tag == 2 ? original.RequestHash.ToArray() : tag == 9 ? original.CanonicalBytes.ToArray()
+                : template.AsSpan(offset + 8, length).ToArray();
+            var header = template.AsSpan(offset, 8).ToArray();
+            BinaryPrimitives.WriteUInt32BigEndian(header.AsSpan(4), checked((uint)value.Length));
+            output.Write(header); output.Write(value); offset += 8 + length;
+        }
+        var forged = output.ToArray();
+        await Assert.ThrowsAsync<System.Security.Cryptography.CryptographicException>(async () =>
+        {
+            var verifier = new NeverCalledVerifier();
+            using var runtime = Open(verifier);
+            try { await runtime.Service.PublishAsync(forged, default); }
+            finally { Assert.Equal(0, verifier.Calls); }
+        });
+    }
+
+    [Fact]
     public async Task ExactXpaReservationAndCommitSurviveReplicaRestart()
     {
         using var ceremony = await DeepIdV2PublicationAuthorityFixture.CreateAsync(authorContactPublication: true);
@@ -20,12 +74,12 @@ public sealed class ContactAuthorizedPublicationReplicaTests : IDisposable
 
         using (var first = Open(verifier))
         {
-            var committed = await first.Service.PublishAsync(request, default);
+            var committed = await first.Service.PublishAsync(ceremony.Dispatch(request), default);
             Assert.Equal(ContactResolverMutationDisposition.Committed, committed.Disposition);
         }
 
         using var restarted = Open(verifier);
-        var replay = await restarted.Service.PublishAsync(request, default);
+        var replay = await restarted.Service.PublishAsync(ceremony.Dispatch(request), default);
         Assert.Equal(ContactResolverMutationDisposition.ExactReplay, replay.Disposition);
     }
 
@@ -43,11 +97,11 @@ public sealed class ContactAuthorizedPublicationReplicaTests : IDisposable
         Assert.NotEqual(firstRequest.RequestHash.ToArray(), changedRequest.RequestHash.ToArray());
         using var runtime = Open(verifier);
 
-        _ = await runtime.Service.PublishAsync(firstRequest, default);
+        _ = await runtime.Service.PublishAsync(ceremony.Dispatch(firstRequest), default);
         await Assert.ThrowsAsync<InvalidDataException>(async () =>
-            await runtime.Service.PublishAsync(changedRequest, default));
+            await runtime.Service.PublishAsync(ceremony.Dispatch(changedRequest), default));
         await Assert.ThrowsAsync<InvalidDataException>(async () =>
-            await runtime.Service.PublishAsync(firstRequest, default));
+            await runtime.Service.PublishAsync(ceremony.Dispatch(firstRequest), default));
 
         var stored = await runtime.Replica.ResolveCurrentDcrAsync(
             firstRequest.LocatorHash,
@@ -73,11 +127,14 @@ public sealed class ContactAuthorizedPublicationReplicaTests : IDisposable
             request.ObjectCiphertext.Span, request.UsageLimit, request.EffectiveExpiresAtUnixSeconds,
             request.ExactRouteClosure.Span, forgedXpa, request.OwnerRetrieveCapability.Span));
         using var runtime = Open(verifier);
-        await Assert.ThrowsAsync<Xpa1PublicationAuthorizationException>(async () =>
-            await runtime.Service.PublishAsync(forged, default));
+        await Assert.ThrowsAsync<System.Security.Cryptography.CryptographicException>(async () =>
+            await runtime.Service.PublishAsync(forged.CanonicalBytes, default));
+        var forgedLease = ceremony.ContactDispatch.ToArray(); forgedLease[^1] ^= 1;
+        await Assert.ThrowsAsync<System.Security.Cryptography.CryptographicException>(async () =>
+            await runtime.Service.PublishAsync(forgedLease, default));
         var absent = await runtime.Replica.ResolveCurrentDcrAsync(request.LocatorHash, default);
         Assert.Equal(ContactResolverReadDisposition.NotFound, absent.Disposition);
-        var accepted = await runtime.Service.PublishAsync(request, default);
+        var accepted = await runtime.Service.PublishAsync(ceremony.Dispatch(request), default);
         Assert.Equal(ContactResolverMutationDisposition.Committed, accepted.Disposition);
     }
 

@@ -536,7 +536,7 @@ internal sealed partial class ProductionContactServiceOpaqueDispatcher :
         ContactServiceOperation operation,
         ReadOnlySpan<byte> exact) => operation switch
         {
-            ContactServiceOperation.PublishDcr => Xpu1Codec.Decode(exact),
+            ContactServiceOperation.PublishDcr => ContactPublicationDispatchRequest.Decode(exact).OriginalRequest,
             ContactServiceOperation.ResolveDcr => Xiq1Codec.Decode(exact),
             ContactServiceOperation.ClaimPreKey => Xpk1Codec.Decode(exact),
             ContactServiceOperation.WriteContactUpdate => Xuw1Codec.Decode(exact),
@@ -798,6 +798,7 @@ public sealed class PrivacyTerminalExitDispatcher : INativeMailboxExitDispatcher
         operation = body[..4] switch
         {
             var magic when magic.SequenceEqual("XPU1"u8) => ContactServiceOperation.PublishDcr,
+            var magic when magic.SequenceEqual("XPL1"u8) => ContactServiceOperation.PublishDcr,
             var magic when magic.SequenceEqual("XIQ1"u8) => ContactServiceOperation.ResolveDcr,
             var magic when magic.SequenceEqual("XPK1"u8) => ContactServiceOperation.ClaimPreKey,
             var magic when magic.SequenceEqual("XUW1"u8) => ContactServiceOperation.WriteContactUpdate,

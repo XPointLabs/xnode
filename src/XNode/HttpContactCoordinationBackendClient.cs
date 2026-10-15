@@ -62,6 +62,9 @@ internal sealed class HttpContactCoordinationBackendClient
             ContactCoordinationTarget.Publication => (ContactPublicationAuthorityWireCodec.MinimumRequestBytes, ContactPublicationAuthorityWireCodec.MaximumRequestBytes,
                 ContactPublicationAuthorityWireCodec.MinimumResponseBytes, ContactPublicationAuthorityWireCodec.MaximumResponseBytes,
                 "/api/v2/contact-publication-authority", ContactPublicationAuthorityWireCodec.RequestMediaType, ContactPublicationAuthorityWireCodec.ResponseMediaType),
+            ContactCoordinationTarget.PublicationLease => (DeepIdV2PublicationLeaseWireCodec.RequestBytes, DeepIdV2PublicationLeaseWireCodec.RequestBytes,
+                DeepIdV2PublicationLeaseWireCodec.MinimumResponseBytes, DeepIdV2PublicationLeaseWireCodec.MaximumResponseBytes,
+                DeepIdV2PublicationLeaseWireCodec.EndpointPath, DeepIdV2PublicationLeaseWireCodec.RequestMediaType, DeepIdV2PublicationLeaseWireCodec.ResponseMediaType),
             _ => throw new ArgumentException("Unknown private coordination target.", nameof(target)),
         };
         if (exactRequest.Length < limits.Item1 || exactRequest.Length > limits.Item2)
@@ -69,12 +72,17 @@ internal sealed class HttpContactCoordinationBackendClient
         var body = exactRequest.ToArray(); // Caller mutation cannot alter either signed or submitted bytes.
         ContactRouteAuthorityWireRequest? route = null;
         ContactPublicationAuthorityWireRequest? publication = null;
+        PublicationLeaseWireRequest? lease = null;
         ContactCoordinationPeerHeaders authentication;
         try
         {
-            var requestNetwork = target == ContactCoordinationTarget.Route ?
-                (route = ContactRouteAuthorityWireCodec.DecodeRequest(body)).NetworkId :
-                (publication = ContactPublicationAuthorityWireCodec.DecodeRequest(body)).NetworkId;
+            var requestNetwork = target switch
+            {
+                ContactCoordinationTarget.Route => (route = ContactRouteAuthorityWireCodec.DecodeRequest(body)).NetworkId,
+                ContactCoordinationTarget.Publication => (publication = ContactPublicationAuthorityWireCodec.DecodeRequest(body)).NetworkId,
+                ContactCoordinationTarget.PublicationLease => (lease = DeepIdV2PublicationLeaseWireCodec.DecodeRequest(body)).NetworkId,
+                _ => throw new ArgumentException("Unknown private coordination target.")
+            };
             if (!CryptographicOperations.FixedTimeEquals(requestNetwork.Span, network))
                 throw new ArgumentException("Private coordination request belongs to another network.");
             verifiedNetwork.EnsureCurrent();
@@ -130,14 +138,21 @@ internal sealed class HttpContactCoordinationBackendClient
                 using var response = await client.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, attemptToken).ConfigureAwait(false);
                 attemptToken.ThrowIfCancellationRequested();
                 verifiedNetwork.EnsureCurrent();
-                if (response.StatusCode != HttpStatusCode.OK || response.Content.Headers.ContentLength is not long length ||
+                if (response.StatusCode != HttpStatusCode.OK)
+                {
+                    var rejected = new IOException("Private coordination returned an unavailable envelope; outcome is unknown.");
+                    rejected.Data["Deep.ContactCoordination.HttpStatus"] = (int)response.StatusCode;
+                    throw rejected;
+                }
+                if (response.Content.Headers.ContentLength is not long length ||
                     length < limits.Item3 || length > limits.Item4 || response.Content.Headers.ContentEncoding.Count != 0 ||
                     !string.Equals(response.Content.Headers.ContentType?.ToString(), limits.Item7, StringComparison.Ordinal))
                     throw new IOException("Private coordination returned an unavailable or noncanonical envelope; outcome is unknown.");
                 var result = await HttpPrivacyPeerClient.ReadExactlyBoundedAsync(response.Content, checked((int)length), attemptToken).ConfigureAwait(false);
                 attemptToken.ThrowIfCancellationRequested();
                 if (route is not null) _ = ContactRouteAuthorityWireCodec.DecodeResponse(route, result);
-                else _ = ContactPublicationAuthorityWireCodec.DecodeResponse(publication!, result);
+                else if (publication is not null) _ = ContactPublicationAuthorityWireCodec.DecodeResponse(publication, result);
+                else _ = DeepIdV2PublicationLeaseWireCodec.DecodeResponse(lease!, result);
                 verifiedNetwork.EnsureCurrent();
                 return result;
             }

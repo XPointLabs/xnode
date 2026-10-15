@@ -98,7 +98,7 @@ public sealed class ContactCoordinationBackendClientTests
         using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync(distinctNodeIdentities: true);
         var count = 0;
         var client = Client(() => { count++; return new Handler((_, _) => throw new InvalidOperationException()); }, fixture);
-        await Assert.ThrowsAsync<ArgumentException>(() => client.SendAsync((ContactCoordinationTarget)3, Request(), fixture.NetworkContext, default).AsTask());
+        await Assert.ThrowsAsync<ArgumentException>(() => client.SendAsync((ContactCoordinationTarget)4, Request(), fixture.NetworkContext, default).AsTask());
         await Assert.ThrowsAsync<ArgumentException>(() => client.SendAsync(ContactCoordinationTarget.Route, new byte[1_000_000], fixture.NetworkContext, default).AsTask());
         await Assert.ThrowsAsync<ArgumentException>(() => client.SendAsync(ContactCoordinationTarget.Route, Request(B(16, 0x12)), fixture.NetworkContext, default).AsTask());
         foreach (var mode in new[] { "wrong-key", "node-id-as-seed", "public-key-as-node", "unknown-node" })

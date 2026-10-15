@@ -430,6 +430,20 @@ full default suite, socket TLS, multi-node rehearsal or physical device E2E.
 
 ## DID2 opaque contact-publication candidate
 
+The connected reusable mutation path is now the fresh `XPL1` envelope from
+[DR-0123](../../docs/survival-program/decisions/DR-0123-retained-publication-intent.md).
+Standalone reusable XPU dispatch rejects before authority/storage callbacks.
+The immutable embedded XPU still names the saga, ciphertext/CAS and both-node
+receipt tuple; a fresh lease nonce is never a second effect or replay key.
+Both the coordinating node and authenticated peer independently verify current
+lease authority, including receipt issuance. One-time usage1 genesis keeps its
+strict current XPU window and cannot enter reusable recovery. Keep the existing
+keys, volumes and saga format; this change does not authorize a reset.
+Private target3 coordination uses the configured existing HTTPS backend and
+peer allow-list, not a public Registry resolver or client fallback. An expired
+inner resource or a pending issuer row without a completed winner still fails
+closed; these require separate settlement/handover, not lease renewal.
+
 The sole XPU/XPA reader and node publication authorization now follow
 [DR-0039](../../docs/survival-program/decisions/DR-0039-did2-opaque-publication-consumer.md).
 Placement and authorization both use the independently configured DID2
@@ -437,9 +451,10 @@ observer proof, protected network floor and signed network artifacts; the old
 Contact snapshot is not a publication fallback. Missing DID2 composition
 rejects rather than reusing old proof material.
 
-Existing publication-authorization saga files are incompatible and fail closed.
-An explicit isolated QA saga reset is required; there is no automatic reset
-or migration. Preserve registered node keys and unrelated stores. The local
+Pre-DID2 publication-authorization saga files are incompatible and fail closed.
+Only those pre-cutover isolated QA roots require explicit reset; there is no
+automatic reset or migration. Current DID2 saga files and retained pending
+intents are preserved by DR-0123. Preserve registered node keys and unrelated stores. The local
 business slice verifies real DID2 signatures, opaque storage, two durable
 replica receipts, restart and exact retry after a discarded response. It is
 not socket/TLS, authenticated remote-peer, shipping client or physical-device

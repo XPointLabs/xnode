@@ -206,8 +206,9 @@ internal sealed class ContactReplicaRequestReceiver : IContactReplicaCommandRece
                 when requestKind == Deep.Protocol.XPointNetworkV1.ContactServiceRequestKind.PublishInvite
                     && operation == ContactReplicaRpcOperation.PublishDcr:
             {
-                var request = ContactReplicaPayloadCodec.DecodeAuthorizedPublish(payload.Span);
-                var authorization = await authorities.PublicationAuthorizations.VerifyAsync(request,
+                var dispatch = ContactReplicaPayloadCodec.DecodeAuthorizedPublish(payload.Span);
+                var request = dispatch.OriginalRequest;
+                var authorization = await dispatch.VerifyAsync(authorities.PublicationAuthorizations,
                     cancellationToken).ConfigureAwait(false);
                 publicationAuthorization = authorization;
                 ContactServiceOpaqueFacade.ValidatePublicationAuthorization(authorization, request);

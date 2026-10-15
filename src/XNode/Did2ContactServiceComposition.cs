@@ -82,9 +82,11 @@ internal sealed class Did2ContactResolverDispatcher(
         if (operation is not (ContactServiceOperation.PublishDcr or ContactServiceOperation.ResolveDcr) &&
             !(grantsEnabled && operation == ContactServiceOperation.AcquireMailboxGrant))
             throw new ContactServiceUnavailableException("Only DID2 contact publication/resolve is enabled here.");
+        var publication = operation == ContactServiceOperation.PublishDcr
+            ? ContactPublicationDispatchRequest.Decode(canonicalRequest.Span) : null;
         ContactServiceRequestRecord? request = operation switch
         {
-            ContactServiceOperation.PublishDcr => Xpu1Codec.Decode(canonicalRequest.Span),
+            ContactServiceOperation.PublishDcr => publication!.OriginalRequest,
             ContactServiceOperation.ResolveDcr => Xiq1Codec.Decode(canonicalRequest.Span), _ => null,
         };
         var grant = request is null ? ContactCodec.Decode("XMG2", canonicalRequest.Span) : null;
@@ -95,12 +97,12 @@ internal sealed class Did2ContactResolverDispatcher(
         try
         {
             var placement = await placements.MintAsync(kind, shard, ct).ConfigureAwait(false);
-            await RequireIntervalAsync(request, grant, ct).ConfigureAwait(false);
+            await RequireIntervalAsync(request, grant, publication, ct).ConfigureAwait(false);
             forwarded = true;
             var result = await opaque.DispatchAsync(operation, canonicalRequest, ct).ConfigureAwait(false);
             var after = await placements.MintAsync(kind, shard, ct).ConfigureAwait(false);
             ContactReplicaRequestReceiver.EnsureExactPlacement(placement, after);
-            await RequireIntervalAsync(request, grant, ct).ConfigureAwait(false);
+            await RequireIntervalAsync(request, grant, publication, ct).ConfigureAwait(false);
             ct.ThrowIfCancellationRequested(); return result;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
@@ -113,11 +115,12 @@ internal sealed class Did2ContactResolverDispatcher(
         }
     }
 
-    private async ValueTask RequireIntervalAsync(ContactServiceRequestRecord? request, ContactRecord? grant, CancellationToken ct)
+    private async ValueTask RequireIntervalAsync(ContactServiceRequestRecord? request, ContactRecord? grant,
+        ContactPublicationDispatchRequest? publication, CancellationToken ct)
     {
         var window = await time.ReadAsync(ct).ConfigureAwait(false);
-        var issued = BinaryPrimitives.ReadUInt64BigEndian(grant is null ? request!.Field(5).Span : grant.Field(9).Span);
-        var expires = BinaryPrimitives.ReadUInt64BigEndian(grant is null ? request!.Field(6).Span : grant.Field(10).Span);
+        var issued = publication?.IssuedAtUnixSeconds ?? BinaryPrimitives.ReadUInt64BigEndian(grant is null ? request!.Field(5).Span : grant.Field(9).Span);
+        var expires = publication?.ExpiresAtUnixSeconds ?? BinaryPrimitives.ReadUInt64BigEndian(grant is null ? request!.Field(6).Span : grant.Field(10).Span);
         if (window.Lower < issued || window.Upper >= expires || grant is not null && (expires <= issued || expires - issued > 120))
             throw new CryptographicException("The contact request does not cover the complete authenticated interval.");
     }

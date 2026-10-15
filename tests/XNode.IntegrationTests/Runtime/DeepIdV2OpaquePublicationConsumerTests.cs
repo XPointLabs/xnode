@@ -29,7 +29,7 @@ public sealed class DeepIdV2OpaquePublicationConsumerTests
         {
         ReadOnlyMemory<byte> commit;
         using (var publisher = OpenFacade(root, verifier, publicationPlacement, ceremony))
-            commit = await publisher.DispatchAsync(ContactServiceFacadeOperation.PublishDcr, published.CanonicalBytes, default);
+            commit = await publisher.DispatchAsync(ContactServiceFacadeOperation.PublishDcr, ceremony.Dispatch(published), default);
         var originalIdentity = ceremony.Freshness.CurrentCheckpoint!.Binding.Record.CanonicalBytes.ToArray();
         var priorHead = ceremony.Freshness.ExactAdh1.ToArray();
         var priorRecipient = ceremony.ContactRoute.Recipient;
@@ -93,7 +93,7 @@ public sealed class DeepIdV2OpaquePublicationConsumerTests
         try
         {
             using (var publisher = OpenFacade(root, verifier, publicationPlacement, ceremony))
-                _ = await publisher.DispatchAsync(ContactServiceFacadeOperation.PublishDcr, published.CanonicalBytes, default);
+                _ = await publisher.DispatchAsync(ContactServiceFacadeOperation.PublishDcr, ceremony.Dispatch(published), default);
             var query = await DeepIdV2PermanentContactResolveRequestAuthor.AuthorAsync(ceremony.ContactAddress,
                 ceremony.ContactRoute.Recipient, ceremony.NetworkContext, ceremony.Authority, new(ceremony));
             Assert.Equal(312, query.CanonicalBytes.Length);
@@ -193,25 +193,25 @@ public sealed class DeepIdV2OpaquePublicationConsumerTests
         {
             using (var runtime = Open(root, verifier))
             {
-                var result = await runtime.Service.PublishAsync(request, default);
+                var result = await runtime.Service.PublishAsync(ceremony.Dispatch(request), default);
                 Assert.Equal(ContactResolverMutationDisposition.Committed, result.Disposition);
             }
             using (var runtime = Open(root, verifier))
             {
-                var result = await runtime.Service.PublishAsync(request, default);
+                var result = await runtime.Service.PublishAsync(ceremony.Dispatch(request), default);
                 Assert.Equal(ContactResolverMutationDisposition.ExactReplay, result.Disposition);
                 var stored = await runtime.Replica.ResolveCurrentDcrAsync(request.LocatorHash, default);
                 Assert.Equal(ContactResolverReadDisposition.Current, stored.Disposition);
                 Assert.Equal(request.ObjectCiphertextHash.ToArray(), stored.Publication!.ObjectCiphertextHash);
                 ceremony.RejectProof = true;
                 await Assert.ThrowsAsync<CryptographicException>(async () =>
-                    await runtime.Service.PublishAsync(request, default));
+                    await runtime.Service.PublishAsync(ceremony.Dispatch(request), default));
                 ceremony.RejectProof = false;
                 ceremony.Sample += 120;
                 await Assert.ThrowsAsync<Xpa1PublicationAuthorizationException>(async () =>
                     await proof.EnsureCurrentAsync());
-                await Assert.ThrowsAsync<Xpa1PublicationAuthorizationException>(async () =>
-                    await runtime.Service.PublishAsync(request, default));
+                await Assert.ThrowsAsync<CryptographicException>(async () =>
+                    await runtime.Service.PublishAsync(ceremony.Dispatch(request), default));
             }
         }
         finally { Directory.Delete(root, recursive: true); }
@@ -243,7 +243,7 @@ public sealed class DeepIdV2OpaquePublicationConsumerTests
             using (var facade = OpenFacade(root, verifier, placement, ceremony))
             {
                 var first = Xpo1Codec.Decode((await facade.DispatchAsync(ContactServiceFacadeOperation.PublishDcr,
-                    request.CanonicalBytes, default)).Span, request.CanonicalBytes.Span);
+                    ceremony.Dispatch(request), default)).Span, request.CanonicalBytes.Span);
                 Assert.Equal(Xpo1Status.Committed, first.Status);
                 VerifyReceipts(first, request, placement);
                 var owned = await DeepIdV2PublicationCommitVerifier.VerifyCommittedAsync(ceremony.ContactRoute,
@@ -279,7 +279,7 @@ public sealed class DeepIdV2OpaquePublicationConsumerTests
             using (var facade = OpenFacade(root, verifier, placement, ceremony))
             {
                 var replay = Xpo1Codec.Decode((await facade.DispatchAsync(ContactServiceFacadeOperation.PublishDcr,
-                    request.CanonicalBytes, default)).Span, request.CanonicalBytes.Span);
+                    ceremony.Dispatch(request), default)).Span, request.CanonicalBytes.Span);
                 Assert.Equal(Xpo1Status.ExactReplay, replay.Status);
                 VerifyReceipts(replay, request, placement);
                 _ = await DeepIdV2PublicationCommitVerifier.VerifyCommittedAsync(ceremony.ContactRoute,
@@ -326,7 +326,7 @@ public sealed class DeepIdV2OpaquePublicationConsumerTests
                     using var publisher = OpenFacade(root, new VerifiedContactPublicationAuthorizationVerifier(owner),
                         genesisPlacement, owner);
                     var response = await publisher.DispatchAsync(ContactServiceFacadeOperation.PublishDcr,
-                        genesis.CanonicalBytes, default);
+                        owner.ContactDispatch, default);
                     Assert.Equal(Xpo1Status.Committed, Xpo1Codec.Decode(response.Span, genesis.CanonicalBytes.Span).Status);
                     return response;
                 });
@@ -339,7 +339,10 @@ public sealed class DeepIdV2OpaquePublicationConsumerTests
             Xpo1Result committed;
             using (var publisher = OpenFacade(root, verifier, placement, ceremony))
             {
-                var response = await publisher.DispatchAsync(ContactServiceFacadeOperation.PublishDcr, request.CanonicalBytes, default);
+                var onionRequest = OnionTerminalPayloadVerifierV1.VerifyRequest(ceremony.NetworkContext,
+                    OnionOperation.ContactResolve, ceremony.Dispatch(request));
+                var response = await publisher.DispatchAsync(ContactServiceFacadeOperation.PublishDcr, ceremony.Dispatch(request), default);
+                _ = OnionTerminalPayloadVerifierV1.VerifySuccess(onionRequest, response);
                 committed = Xpo1Codec.Decode(response.Span, request.CanonicalBytes.Span);
                 Assert.Equal(Xpo1Status.Committed, committed.Status);
                 VerifyReceipts(committed, request, placement);
@@ -350,7 +353,7 @@ public sealed class DeepIdV2OpaquePublicationConsumerTests
             using (var reopened = OpenFacade(root, verifier, placement, ceremony))
             {
                 var replay = Xpo1Codec.Decode((await reopened.DispatchAsync(ContactServiceFacadeOperation.PublishDcr,
-                    request.CanonicalBytes, default)).Span, request.CanonicalBytes.Span);
+                    ceremony.Dispatch(request), default)).Span, request.CanonicalBytes.Span);
                 Assert.Equal(Xpo1Status.ExactReplay, replay.Status);
                 Assert.Equal(committed.Field(19).ToArray(), replay.Field(19).ToArray());
             }
@@ -515,7 +518,7 @@ public sealed class DeepIdV2OpaquePublicationConsumerTests
             var receiver = new ContactReplicaRequestReceiver(node, new(placements, verifier), runtime, clock);
             ContactReplicaRpcCommand Command(ContactReplicaRpcOperation operation, byte[] payload) =>
                 new(placement, operation, DeepIdV2PublicationAuthorityFixture.Bytes(32, 0x53), payload);
-            var publish = ContactReplicaPayloadCodec.EncodeAuthorizedPublish(request.CanonicalBytes.Span);
+            var publish = ContactReplicaPayloadCodec.EncodeAuthorizedPublish(ceremony.Dispatch(request).Span);
             var committed = await receiver.ReceiveAsync(Command(ContactReplicaRpcOperation.PublishDcr, publish), sender, default);
             Assert.Equal(ContactResolverMutationDisposition.Committed,
                 ContactReplicaPayloadCodec.DecodeMutation(committed.Payload.Span).Disposition);
@@ -525,15 +528,19 @@ public sealed class DeepIdV2OpaquePublicationConsumerTests
                 var generation = new byte[8]; BinaryPrimitives.WriteUInt64BigEndian(generation, 1);
                 var tuple = exact.RequestHash.ToArray().Concat(exact.ObjectCiphertextHash.ToArray()).Concat(generation).ToArray();
                 return ContactReplicaPayloadCodec.EncodeReceiptRequest(new(ContactServiceReceiptKind.PublishCommit, tuple),
-                    ContactReplicaRpcOperation.PublishDcr, ContactReplicaPayloadCodec.EncodeAuthorizedPublish(exact.CanonicalBytes.Span));
+                    ContactReplicaRpcOperation.PublishDcr, ContactReplicaPayloadCodec.EncodeAuthorizedPublish(ceremony.Dispatch(exact).Span));
             }
             var valid = await receiver.ReceiveAsync(Command(ContactReplicaRpcOperation.IssueReceipt, ReceiptPayload(request)), sender, default);
             Assert.Equal(localId, ContactReplicaPayloadCodec.DecodeReceipt(valid.Payload.Span).ReplicaId.ToArray());
-            var substituted = request.CanonicalBytes.ToArray();
-            substituted[FieldOffset(substituted, 26) + request.ExactXpa1.Length - 1] ^= 1;
-            var forged = Xpu1Codec.Decode(substituted);
-            await Assert.ThrowsAsync<Xpa1PublicationAuthorizationException>(async () =>
-                await receiver.ReceiveAsync(Command(ContactReplicaRpcOperation.IssueReceipt, ReceiptPayload(forged)), sender, default));
+            var substituted = ceremony.ContactDispatch.ToArray(); substituted[^1] ^= 1;
+            var forgedEvidence = ContactReplicaPayloadCodec.EncodeAuthorizedPublish(substituted);
+            var nextCommit = new byte[8]; BinaryPrimitives.WriteUInt64BigEndian(nextCommit, 1);
+            var forgedReceipt = ContactReplicaPayloadCodec.EncodeReceiptRequest(
+                new(ContactServiceReceiptKind.PublishCommit,
+                    request.RequestHash.ToArray().Concat(request.ObjectCiphertextHash.ToArray()).Concat(nextCommit).ToArray()),
+                ContactReplicaRpcOperation.PublishDcr, forgedEvidence);
+            await Assert.ThrowsAsync<CryptographicException>(async () =>
+                await receiver.ReceiveAsync(Command(ContactReplicaRpcOperation.IssueReceipt, forgedReceipt), sender, default));
             // A second genuine threshold subset is valid, but it was never committed here.
             _ = await verifier.VerifyAsync(ceremony.AlternateContactPublication, default);
             Assert.NotEqual(request.RequestHash.ToArray(), ceremony.AlternateContactPublication.RequestHash.ToArray());
@@ -541,7 +548,7 @@ public sealed class DeepIdV2OpaquePublicationConsumerTests
                 await receiver.ReceiveAsync(Command(ContactReplicaRpcOperation.IssueReceipt,
                     ReceiptPayload(ceremony.AlternateContactPublication)), sender, default));
             ceremony.Sample += 120;
-            await Assert.ThrowsAsync<Xpa1PublicationAuthorizationException>(async () =>
+            await Assert.ThrowsAsync<CryptographicException>(async () =>
                 await receiver.ReceiveAsync(Command(ContactReplicaRpcOperation.IssueReceipt, ReceiptPayload(request)), sender, default));
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }

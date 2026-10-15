@@ -23,20 +23,20 @@ public sealed class ContactServiceOpaqueFacadeTests : IClassFixture<CurrentConta
         fixture.Context.Status = ContactRequestContextStatus.StaleView;
 
         var staleBytes = await fixture.Facade.DispatchAsync(
-            ContactServiceFacadeOperation.PublishDcr, request);
+            ContactServiceFacadeOperation.PublishDcr, PublicationAuthorizations.Dispatch(request));
         var stale = Xpo1Codec.Decode(staleBytes.Span, request);
         Assert.Equal(Xpo1Status.StaleView, stale.Status);
 
         fixture.Context.Status = ContactRequestContextStatus.Accepted;
         var committedBytes = await fixture.Facade.DispatchAsync(
-            ContactServiceFacadeOperation.PublishDcr, request);
+            ContactServiceFacadeOperation.PublishDcr, PublicationAuthorizations.Dispatch(request));
         var committed = Xpo1Codec.Decode(committedBytes.Span, request);
         Assert.Equal(Xpo1Status.Committed, committed.Status);
         Assert.Equal(ContactServiceMutationOutcome.DurablyCommitted, committed.MutationOutcome);
         await PublicationAuthorizations.VerifyCommittedAsync(committed);
 
         var replayBytes = await fixture.Facade.DispatchAsync(
-            ContactServiceFacadeOperation.PublishDcr, request);
+            ContactServiceFacadeOperation.PublishDcr, PublicationAuthorizations.Dispatch(request));
         var replay = Xpo1Codec.Decode(replayBytes.Span, request);
         Assert.Equal(Xpo1Status.ExactReplay, replay.Status);
         Assert.Equal(ContactServiceMutationOutcome.DurablyCommitted, replay.MutationOutcome);
@@ -49,7 +49,7 @@ public sealed class ContactServiceOpaqueFacadeTests : IClassFixture<CurrentConta
         using var fixture = new Fixture(PublicationAuthorizations);
         var publish = Xpu();
         var publication = await fixture.Facade.DispatchAsync(
-            ContactServiceFacadeOperation.PublishDcr, publish);
+            ContactServiceFacadeOperation.PublishDcr, PublicationAuthorizations.Dispatch(publish));
         Assert.Equal(Xpo1Status.Committed, Xpo1Codec.Decode(publication.Span, publish).Status);
         var resolve = Xiq();
 
@@ -75,7 +75,7 @@ public sealed class ContactServiceOpaqueFacadeTests : IClassFixture<CurrentConta
             var publish = oneTime.Request.CanonicalBytes.ToArray();
             Assert.Equal(1u, oneTime.Request.UsageLimit);
             var publication = await fixture.Facade.DispatchAsync(
-                ContactServiceFacadeOperation.PublishDcr, publish);
+                ContactServiceFacadeOperation.PublishDcr, oneTime.Dispatch(publish));
             var published = Xpo1Codec.Decode(publication.Span, publish);
             Assert.Equal(Xpo1Status.Committed, published.Status);
             await oneTime.VerifyCommittedAsync(published);
@@ -124,7 +124,7 @@ public sealed class ContactServiceOpaqueFacadeTests : IClassFixture<CurrentConta
         var request = Xpu();
 
         var response = await fixture.Facade.DispatchAsync(
-            ContactServiceFacadeOperation.PublishDcr, request);
+            ContactServiceFacadeOperation.PublishDcr, PublicationAuthorizations.Dispatch(request));
         var decoded = Xpo1Codec.Decode(response.Span, request);
 
         Assert.Equal(Xpo1Status.Committed, decoded.Status);
@@ -144,7 +144,7 @@ public sealed class ContactServiceOpaqueFacadeTests : IClassFixture<CurrentConta
         var request = Xpu();
 
         var response = await fixture.Facade.DispatchAsync(
-            ContactServiceFacadeOperation.PublishDcr, request);
+            ContactServiceFacadeOperation.PublishDcr, PublicationAuthorizations.Dispatch(request));
         var decoded = Xpo1Codec.Decode(response.Span, request);
 
         Assert.Equal(Xpo1Status.OutcomeUnknown, decoded.Status);
@@ -162,7 +162,7 @@ public sealed class ContactServiceOpaqueFacadeTests : IClassFixture<CurrentConta
         var request = Xpu();
 
         var response = await fixture.Facade.DispatchAsync(
-            ContactServiceFacadeOperation.PublishDcr, request);
+            ContactServiceFacadeOperation.PublishDcr, PublicationAuthorizations.Dispatch(request));
         var decoded = Xpo1Codec.Decode(response.Span, request);
 
         Assert.Equal(Xpo1Status.OutcomeUnknown, decoded.Status);
@@ -177,7 +177,7 @@ public sealed class ContactServiceOpaqueFacadeTests : IClassFixture<CurrentConta
         var request = Xpu();
 
         var response = await fixture.Facade.DispatchAsync(
-            ContactServiceFacadeOperation.PublishDcr, request);
+            ContactServiceFacadeOperation.PublishDcr, PublicationAuthorizations.Dispatch(request));
         var decoded = Xpo1Codec.Decode(response.Span, request);
 
         Assert.Equal(1, fixture.FirstAuthority.IssueCount);
@@ -193,7 +193,7 @@ public sealed class ContactServiceOpaqueFacadeTests : IClassFixture<CurrentConta
             secondBehavior: ReceiptAuthorityBehavior.WaitForCancellation);
         using var cancellation = new CancellationTokenSource();
         var pending = fixture.Facade.DispatchAsync(
-            ContactServiceFacadeOperation.PublishDcr, Xpu(), cancellation.Token).AsTask();
+            ContactServiceFacadeOperation.PublishDcr, PublicationAuthorizations.Dispatch(Xpu()), cancellation.Token).AsTask();
         try
         {
             await Task.WhenAny(pending, fixture.SecondAuthority.ReceiptEntered)
@@ -254,7 +254,7 @@ public sealed class ContactServiceOpaqueFacadeTests : IClassFixture<CurrentConta
                        new OneShotSagaFaults(ContactPublicationAuthorizationSagaFailpoint.AfterReservePersist)))
             {
                 var first = Xpo1Codec.Decode((await interrupted.DispatchAsync(
-                    ContactServiceFacadeOperation.PublishDcr, request)).Span, request);
+                    ContactServiceFacadeOperation.PublishDcr, PublicationAuthorizations.Dispatch(request))).Span, request);
                 Assert.Equal(Xpo1Status.OutcomeUnknown, first.Status);
                 Assert.Equal(ContactServiceMutationOutcome.OutcomeUnknown, first.MutationOutcome);
                 Assert.True(first.Field(19).IsEmpty);
@@ -262,7 +262,7 @@ public sealed class ContactServiceOpaqueFacadeTests : IClassFixture<CurrentConta
 
             using var recovered = CreatePathFacade(directory);
             var second = Xpo1Codec.Decode((await recovered.DispatchAsync(
-                ContactServiceFacadeOperation.PublishDcr, request)).Span, request);
+                ContactServiceFacadeOperation.PublishDcr, PublicationAuthorizations.Dispatch(request))).Span, request);
             Assert.Equal(Xpo1Status.Committed, second.Status);
             Assert.Equal(ContactServiceMutationOutcome.DurablyCommitted, second.MutationOutcome);
             Assert.False(second.Field(19).IsEmpty);
@@ -286,14 +286,14 @@ public sealed class ContactServiceOpaqueFacadeTests : IClassFixture<CurrentConta
                        new OneShotSagaFaults(ContactPublicationAuthorizationSagaFailpoint.AfterCommitPersist)))
             {
                 var first = Xpo1Codec.Decode((await interrupted.DispatchAsync(
-                    ContactServiceFacadeOperation.PublishDcr, request)).Span, request);
+                    ContactServiceFacadeOperation.PublishDcr, PublicationAuthorizations.Dispatch(request))).Span, request);
                 Assert.Equal(Xpo1Status.OutcomeUnknown, first.Status);
                 Assert.True(first.Field(19).IsEmpty);
             }
 
             using var recovered = CreatePathFacade(directory);
             var replay = Xpo1Codec.Decode((await recovered.DispatchAsync(
-                ContactServiceFacadeOperation.PublishDcr, request)).Span, request);
+                ContactServiceFacadeOperation.PublishDcr, PublicationAuthorizations.Dispatch(request))).Span, request);
             Assert.Equal(Xpo1Status.ExactReplay, replay.Status);
             Assert.Equal(ContactServiceMutationOutcome.DurablyCommitted, replay.MutationOutcome);
             Assert.False(replay.Field(19).IsEmpty);
@@ -321,11 +321,11 @@ public sealed class ContactServiceOpaqueFacadeTests : IClassFixture<CurrentConta
         Assert.NotEqual(original, changed);
 
         Assert.Equal(Xpo1Status.Committed, Xpo1Codec.Decode((await fixture.Facade.DispatchAsync(
-            ContactServiceFacadeOperation.PublishDcr, original)).Span, original).Status);
+            ContactServiceFacadeOperation.PublishDcr, PublicationAuthorizations.Dispatch(original))).Span, original).Status);
         Assert.Equal(Xpo1Status.Conflict, Xpo1Codec.Decode((await fixture.Facade.DispatchAsync(
-            ContactServiceFacadeOperation.PublishDcr, changed)).Span, changed).Status);
+            ContactServiceFacadeOperation.PublishDcr, PublicationAuthorizations.Dispatch(changed))).Span, changed).Status);
         Assert.Equal(Xpo1Status.Conflict, Xpo1Codec.Decode((await fixture.Facade.DispatchAsync(
-            ContactServiceFacadeOperation.PublishDcr, original)).Span, original).Status);
+            ContactServiceFacadeOperation.PublishDcr, PublicationAuthorizations.Dispatch(original))).Span, original).Status);
     }
 
     [Fact]
@@ -336,7 +336,7 @@ public sealed class ContactServiceOpaqueFacadeTests : IClassFixture<CurrentConta
 
         var responses = await Task.WhenAll(Enumerable.Range(0, 16).Select(async _ =>
             Xpo1Codec.Decode((await fixture.Facade.DispatchAsync(
-                ContactServiceFacadeOperation.PublishDcr, request)).Span, request)));
+                ContactServiceFacadeOperation.PublishDcr, PublicationAuthorizations.Dispatch(request))).Span, request)));
 
         Assert.Single(responses, static item => item.Status == Xpo1Status.Committed);
         Assert.Equal(15, responses.Count(static item => item.Status == Xpo1Status.ExactReplay));
@@ -353,13 +353,13 @@ public sealed class ContactServiceOpaqueFacadeTests : IClassFixture<CurrentConta
         var request = Xpu();
 
         var partial = Xpo1Codec.Decode((await fixture.Facade.DispatchAsync(
-            ContactServiceFacadeOperation.PublishDcr, request)).Span, request);
+            ContactServiceFacadeOperation.PublishDcr, PublicationAuthorizations.Dispatch(request))).Span, request);
         Assert.Equal(Xpo1Status.OutcomeUnknown, partial.Status);
         Assert.Equal(0, fixture.FirstAuthority.IssueCount);
         Assert.Equal(0, fixture.SecondAuthority.IssueCount);
 
         var recovered = Xpo1Codec.Decode((await fixture.Facade.DispatchAsync(
-            ContactServiceFacadeOperation.PublishDcr, request)).Span, request);
+            ContactServiceFacadeOperation.PublishDcr, PublicationAuthorizations.Dispatch(request))).Span, request);
         Assert.Equal(Xpo1Status.Committed, recovered.Status);
         Assert.Equal(ContactServiceMutationOutcome.DurablyCommitted, recovered.MutationOutcome);
         Assert.Equal(1, fixture.FirstAuthority.IssueCount);

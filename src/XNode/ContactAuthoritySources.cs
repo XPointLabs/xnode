@@ -80,6 +80,23 @@ internal sealed class VerifiedContactPublicationAuthorizationVerifier(
     private readonly IDeepIdV2ContactStoreAuthoritySource snapshots =
         snapshots ?? throw new ArgumentNullException(nameof(snapshots));
 
+    public async ValueTask<VerifiedXpa1PublicationAuthorization> VerifyLeaseAsync(
+        Deep.Protocol.ContactV2.ParsedDeepIdV2PublicationLease lease,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(lease);
+        cancellationToken.ThrowIfCancellationRequested();
+        var snapshot = await snapshots.ReadPublicationAuthorityAsync(cancellationToken)
+            .ConfigureAwait(false) ?? throw new InvalidOperationException(
+                "The Contact directory authority returned no current snapshot.");
+        snapshot.Network.EnsureCurrent();
+        var placement = ContactServicePlacementFactory.Create(snapshot.Network,
+            ContactServiceRequestKind.PublishInvite, lease.OriginalRequest.LocatorHash);
+        return await Deep.Protocol.ContactV2.DeepIdV2PublicationLeaseVerifier.VerifyAsync(
+            lease, snapshot.Authority, snapshot.Freshness, placement,
+            snapshot.TrustedTime, cancellationToken).ConfigureAwait(false);
+    }
+
     public async ValueTask<VerifiedXpa1PublicationAuthorization> VerifyAsync(
         Xpu1Request request,
         CancellationToken cancellationToken)
