@@ -31,6 +31,13 @@ qualification (49 contract checks/native0). A fresh canonical run is required
 for those changed captured inputs; neither the prior source full nor raw1513
 passing executions is substituted for its acceptance.
 
+Fresh canonical `full-02` is now accepted: **1513/0/0**,1513 exact mappings,
+2191 unchanged captured inputs; build/preflight/test/qualification all0 and
+FullAccepted=true. Windows PowerShell5.1/SDK10.0.301; zero compiler warnings/errors.
+The exact DR-0121 retirement and decision digest are recorded in qualification.
+This qualifies the single-endpoint source checkpoint, not later assignment/
+carriage changes, physical delivery or the release. The failed full01 is retained.
+
 Mandatory current-source managed-external no-mock smoke and three-node
 infrastructure rehearsal both completed native0; scoped stacks cleaned up.
 Receipts: DevOps `artifacts/s05-contact-diagnostic-20261015/infrastructure-01/`.
