@@ -72,7 +72,7 @@ internal sealed partial class CurrentMailboxAdmission(
                     {
                         await operationLedger.EnsureCurrentStorePrefixAsync(
                             MailboxAuthenticatedRequestTranscript.DecodeStoreBody(decoded.Binding.CanonicalRequest.Span),
-                            scope.Host, scope.Lease, storeMutations, ct).ConfigureAwait(false);
+                            scope.Grant.MembershipCommitment, scope.Host, scope.Lease, storeMutations, ct).ConfigureAwait(false);
                     }
                     // Prefix inspection is denial-only: no mutation, replay,
                     // receipt or HTTP. Join a fresh authenticated snapshot AFTER

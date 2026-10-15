@@ -87,9 +87,9 @@ internal sealed class ContactCoordinationOnionDispatcher(
         diagnostic.Check = CurrentnessCheck.Network;
         current.Network.EnsureCurrent();
         diagnostic.Check = CurrentnessCheck.Projection;
-        if (!Fixed(current.Network.NetworkId.Span, request.NetworkId.Span) ||
-            !current.Network.BindsProjection(request.ProjectionReference))
-            throw new CryptographicException("Coordination is not bound to current network projection.");
+        if (!Fixed(request.NetworkId.Span, current.Network.NetworkId.Span))
+            throw new CryptographicException("Coordination belongs to another network.");
+        current.Network.RequireCurrentMailboxAssignment(current.Authority, request.ProjectionReference);
         diagnostic.Check = CurrentnessCheck.Placement;
         var placement = ContactServicePlacementFactory.Create(current.Network,
             ContactServiceRequestKind.CoordinateContact, request.GatewayShard);
@@ -119,7 +119,8 @@ internal sealed class ContactCoordinationOnionDispatcher(
         if (upper >= request.ExpiresAtUnixSeconds)
             throw new CryptographicException("Coordination does not cover the complete current trusted interval.");
         diagnostic.Check = CurrentnessCheck.PlacementExpiry;
-        if (request.ExpiresAtUnixSeconds > placement.ValidUntilUnixSeconds)
+        if (upper >= placement.ValidUntilUnixSeconds ||
+            (request.Target == ContactCoordinationTarget.Publication && request.ExpiresAtUnixSeconds > placement.ValidUntilUnixSeconds))
             throw new CryptographicException("Coordination does not cover the complete current trusted interval.");
         diagnostic.Check = CurrentnessCheck.Network;
         current.Network.EnsureCurrent();

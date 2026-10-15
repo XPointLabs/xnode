@@ -211,7 +211,7 @@ internal sealed partial class ContactResolverOpaqueStore
     internal static ulong LastPossibleRouteAdmission(ParsedContactRouteClosure route) =>
         new[] { U64(route.Reachability.Field(17)), U64(route.Authorization.Field(13)),
             U64(route.Route.Field(18)), U64(route.Successor.Field(11)),
-            U64(route.Projection.Field(12)), U64(route.Selection.Field(9)) }.Min();
+            U64(route.Selection.Field(9)) }.Min();
 
     private static ulong U64(ReadOnlyMemory<byte> value) => BinaryPrimitives.ReadUInt64BigEndian(value.Span);
 

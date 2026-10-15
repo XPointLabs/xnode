@@ -1366,6 +1366,16 @@ reset, if needed for activation, is a separate operator step.
 
 ### Current mailbox resource observations
 
+The DR-0122 source candidate preserves the exact logical mailbox assignment
+across routine operational views. Its single normative owner is
+[CONTACT-RESOLVER](../../docs/architecture/CONTACT-RESOLVER-V1.md#36-exact-route-and-mailbox-closure).
+Rebuild/repin Protocol, Shared, Registry and XNode together before activation;
+source compilation and local storage tests do not qualify a deployed release.
+Existing registered keys, protected floors, custody formats and retained intents
+are unchanged. No automatic state reset or generation-fence release is supported.
+An expired pending publication still needs explicit bounded reconciliation,
+not an old XPA replay. Current roles, grants, time and revocation remain enforced.
+
 Custody readers still validate links/reparse points on every protected read,
 including every ancestor; no path trust is cached across callbacks. On Windows,
 the existing `File.GetAttributes` path suppresses only file/directory-not-found

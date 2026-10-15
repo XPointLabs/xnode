@@ -296,13 +296,84 @@ public sealed class DeepIdV2OpaquePublicationConsumerTests
                 // the published object/route or pretending the old proof is fresh.
                 var afterDispatch = checked(request.ExpiresAtUnixSeconds + 10);
                 var currentRoute = await ceremony.RefreshContactProofAsync(100 + afterDispatch - 1_100, afterDispatch);
-                await Assert.ThrowsAsync<CryptographicException>(async () =>
+                var expiredDispatch = await Assert.ThrowsAsync<CryptographicException>(async () =>
                     await DeepIdV2PublicationAuthorityAuthor.VerifyResponseAsync(currentRoute,
                         ceremony.ContactOwnedRequest, request.CanonicalBytes));
+                Assert.Equal("request-window", expiredDispatch.Data["Deep.ContactPublication.RequestScope"]);
+                Assert.Single(expiredDispatch.Data);
                 var historical = await DeepIdV2PublicationCommitVerifier.VerifyCommittedAsync(currentRoute,
                     ceremony.ContactObject, ceremony.ContactOwnedRequest, request.CanonicalBytes, replay.WireBytes);
                 Assert.Equal(replay.WireBytes.ToArray(), historical.ExactXpo1.ToArray());
             }
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public async Task ReusableSuccessorCommitsResolvesAndReplaysAcrossTwoStoreRestart()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "did2-successor-stores-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var ceremony = await DeepIdV2PublicationAuthorityFixture.CreateAsync(
+                authorContactPublication: true, authorRouteSuccessor: true,
+                commitForSuccessor: async owner =>
+                {
+                    var genesis = owner.ContactPublication;
+                    var genesisPlacement = await new VerifiedContactServicePlacementAuthoritySource(owner, owner)
+                        .MintAsync(ContactServiceRequestKind.PublishInvite, genesis.LocatorHash, default);
+                    using var publisher = OpenFacade(root, new VerifiedContactPublicationAuthorizationVerifier(owner),
+                        genesisPlacement, owner);
+                    var response = await publisher.DispatchAsync(ContactServiceFacadeOperation.PublishDcr,
+                        genesis.CanonicalBytes, default);
+                    Assert.Equal(Xpo1Status.Committed, Xpo1Codec.Decode(response.Span, genesis.CanonicalBytes.Span).Status);
+                    return response;
+                });
+            var request = ceremony.SuccessorContactPublication;
+            Assert.Equal(1UL, request.Generation);
+            Assert.Equal(ceremony.ContactPublication.ObjectCiphertextHash.ToArray(), request.PredecessorObjectHash.ToArray());
+            var verifier = new VerifiedContactPublicationAuthorizationVerifier(ceremony);
+            var placements = new VerifiedContactServicePlacementAuthoritySource(ceremony, ceremony);
+            var placement = await placements.MintAsync(ContactServiceRequestKind.PublishInvite, request.LocatorHash, default);
+            Xpo1Result committed;
+            using (var publisher = OpenFacade(root, verifier, placement, ceremony))
+            {
+                var response = await publisher.DispatchAsync(ContactServiceFacadeOperation.PublishDcr, request.CanonicalBytes, default);
+                committed = Xpo1Codec.Decode(response.Span, request.CanonicalBytes.Span);
+                Assert.Equal(Xpo1Status.Committed, committed.Status);
+                VerifyReceipts(committed, request, placement);
+                var verified = await DeepIdV2PublicationCommitVerifier.VerifyCommittedAsync(ceremony.SuccessorContactRoute,
+                    ceremony.SuccessorContactObject, ceremony.SuccessorContactOwnedRequest, request.CanonicalBytes, response);
+                Assert.Equal(1UL, verified.Generation);
+            }
+            using (var reopened = OpenFacade(root, verifier, placement, ceremony))
+            {
+                var replay = Xpo1Codec.Decode((await reopened.DispatchAsync(ContactServiceFacadeOperation.PublishDcr,
+                    request.CanonicalBytes, default)).Span, request.CanonicalBytes.Span);
+                Assert.Equal(Xpo1Status.ExactReplay, replay.Status);
+                Assert.Equal(committed.Field(19).ToArray(), replay.Field(19).ToArray());
+            }
+            var query = await DeepIdV2PermanentContactResolveRequestAuthor.AuthorAsync(ceremony.ContactAddress,
+                ceremony.SuccessorContactRoute.Recipient, ceremony.NetworkContext, ceremony.Authority, new(ceremony));
+            var resolvePlacement = await placements.MintAsync(ContactServiceRequestKind.ResolveInvite, query.LocatorHash, default);
+            using var resolver = OpenFacade(root, verifier, resolvePlacement, ceremony);
+            var exact = await resolver.DispatchAsync(ContactServiceFacadeOperation.ResolveDcr, query.CanonicalBytes, default);
+            var candidate = DeepIdV2PermanentContactResolveVerifier.OpenCandidate(ceremony.ContactAddress, query.CanonicalBytes, exact);
+            var resolved = await DeepIdV2PermanentContactResolveVerifier.VerifyAsync(candidate, ceremony.Freshness,
+                ceremony.NetworkContext, ceremony.Authority, new(ceremony));
+            Assert.Equal(1UL, resolved.PublicationGeneration);
+            Assert.Equal(ceremony.SuccessorContactObject.Closure.CanonicalBytes.ToArray(), resolved.Contact.CanonicalBytes.ToArray());
+            var wrongGeneration = exact.ToArray();
+            BinaryPrimitives.WriteUInt64BigEndian(wrongGeneration.AsSpan(FieldOffset(wrongGeneration, 16)), 0);
+            Assert.Throws<CryptographicException>(() => DeepIdV2PermanentContactResolveVerifier.OpenCandidate(
+                ceremony.ContactAddress, query.CanonicalBytes, wrongGeneration));
+            var wrongReceipt = exact.ToArray(); wrongReceipt[FieldOffset(wrongReceipt, 22) + 192] ^= 1;
+            var unauthenticated = DeepIdV2PermanentContactResolveVerifier.OpenCandidate(ceremony.ContactAddress,
+                query.CanonicalBytes, wrongReceipt);
+            await Assert.ThrowsAsync<CryptographicException>(async () =>
+                await DeepIdV2PermanentContactResolveVerifier.VerifyAsync(unauthenticated, ceremony.Freshness,
+                    ceremony.NetworkContext, ceremony.Authority, new(ceremony)));
         }
         finally { Directory.Delete(root, recursive: true); }
     }
@@ -324,7 +395,7 @@ public sealed class DeepIdV2OpaquePublicationConsumerTests
         Assert.Equal(request.RequestHash.ToArray(), result.RequestHash.ToArray());
         Assert.Equal(ContactServiceMutationOutcome.DurablyCommitted, result.MutationOutcome);
         Assert.Equal(request.ObjectCiphertextHash.ToArray(), result.Field(17).ToArray());
-        Assert.Equal(1ul, BinaryPrimitives.ReadUInt64BigEndian(result.Field(18).Span));
+        Assert.Equal(checked(request.Generation + 1), BinaryPrimitives.ReadUInt64BigEndian(result.Field(18).Span));
         var tuple = request.RequestHash.ToArray().Concat(request.ObjectCiphertextHash.ToArray())
             .Concat(result.Field(18).ToArray()).ToArray();
         var signingInput = ContactServiceReceiptTranscript.SigningInput(

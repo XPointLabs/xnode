@@ -80,6 +80,10 @@ internal sealed partial class DeepIdV2PublicationAuthorityFixture : IDisposable,
     internal AuthoredDeepIdV2OneTimeContactObject? OneTimeContactObject { get; private set; }
     internal ContactPublicationAuthorityWireRequest ContactOwnedRequest { get; private set; } = null!;
     internal Xpu1Request AlternateContactPublication { get; private set; } = null!;
+    internal Xpu1Request SuccessorContactPublication { get; private set; } = null!;
+    internal AuthoredDeepIdV2ContactObject SuccessorContactObject { get; private set; } = null!;
+    internal VerifiedDeepIdV2ContactRouteClosure SuccessorContactRoute { get; private set; } = null!;
+    internal ContactPublicationAuthorityWireRequest SuccessorContactOwnedRequest { get; private set; } = null!;
     internal ulong Sample { get; set; } = 100;
     internal bool RejectProof { get; set; }
     internal int ProofReads { get; private set; }
@@ -103,19 +107,23 @@ internal sealed partial class DeepIdV2PublicationAuthorityFixture : IDisposable,
         bool authorInventoryRotation = false, bool corruptFirstPreKeyBundleSignature = false,
         IReadOnlyList<TransportOrigin>? transportOrigins = null, bool distinctNodeIdentities = false,
         bool authorOneTimeObject = false, byte contactDepositMarker = 0x41,
-        byte contactPublicationMarker = 0x47, bool shortMailboxProjection = false)
+        byte contactPublicationMarker = 0x47, bool shortMailboxProjection = false,
+        Func<DeepIdV2PublicationAuthorityFixture, Task<ReadOnlyMemory<byte>>>? commitForSuccessor = null)
     {
         if (authorOneTimeObject && authorRouteSuccessor)
             throw new ArgumentException("One-time invitations do not support route successors.");
+        if (commitForSuccessor is not null && (!authorContactPublication || !authorRouteSuccessor || authorOneTimeObject))
+            throw new ArgumentException("Publication successor authoring requires a committed reusable predecessor.");
         var fixture = new DeepIdV2PublicationAuthorityFixture(serviceMarker, distinctNodeIdentities);
-        try { await fixture.AuthorAsync(authorContactPublication, networkCommitmentMarker, rootMarker, authorRouteSuccessor, lastResortReuseLimit, authorInventoryRotation, corruptFirstPreKeyBundleSignature, transportOrigins, authorOneTimeObject, contactDepositMarker, contactPublicationMarker, shortMailboxProjection); return fixture; }
+        try { await fixture.AuthorAsync(authorContactPublication, networkCommitmentMarker, rootMarker, authorRouteSuccessor, lastResortReuseLimit, authorInventoryRotation, corruptFirstPreKeyBundleSignature, transportOrigins, authorOneTimeObject, contactDepositMarker, contactPublicationMarker, shortMailboxProjection, commitForSuccessor); return fixture; }
         catch { fixture.Dispose(); throw; }
     }
 
     private async Task AuthorAsync(bool authorContactPublication, byte networkCommitmentMarker, byte rootMarker, bool authorRouteSuccessor,
         ushort lastResortReuseLimit, bool authorInventoryRotation, bool corruptFirstPreKeyBundleSignature,
         IReadOnlyList<TransportOrigin>? transportOrigins, bool authorOneTimeObject, byte contactDepositMarker,
-        byte contactPublicationMarker, bool shortMailboxProjection)
+        byte contactPublicationMarker, bool shortMailboxProjection,
+        Func<DeepIdV2PublicationAuthorityFixture, Task<ReadOnlyMemory<byte>>>? commitForSuccessor)
     {
         using var root = new TestSigner(rootMarker);
         using var w1 = new TestSigner(0x30);
@@ -312,11 +320,14 @@ internal sealed partial class DeepIdV2PublicationAuthorityFixture : IDisposable,
                 var current = DeepIdV2CurrentContactAuthorizationVerifier.Verify(Freshness,
                     authorization, Boot, Sample);
                 var time = new OnionTrustedTimeAuthority(this);
+                // Leave signed service lifetime for the tested successor; a
+                // contact cannot advance expiry beyond its unchanged XPS1.
+                var initialContactExpiry = commitForSuccessor is null ? 1_400UL : 1_300UL;
                 var advertisement = await DeepIdV2ContactRouteAuthor.AuthorAdvertisementAsync(
                     current, network, Authority, secrets, 32, Bytes(32, contactDepositMarker), Bytes(32, 0x42),
-                    ScalarMult.Base(Bytes(32, 0x43)), 1_000, 1_400, time);
+                    ScalarMult.Base(Bytes(32, 0x43)), 1_000, initialContactExpiry, time);
                 var threshold = await DeepIdV2ContactRouteAuthor.AuthorThresholdAsync(current,
-                    network, Authority, advertisement.CanonicalBytes, witnesses, 1_000, 1_400, time);
+                    network, Authority, advertisement.CanonicalBytes, witnesses, 1_000, initialContactExpiry, time);
                 var route = authorOneTimeObject
                     ? await DeepIdV2ContactRouteAuthor.CompleteOneTimeGenesisAsync(current,
                         network, Authority, secrets, advertisement.CanonicalBytes, threshold, 1, time)
@@ -373,6 +384,36 @@ internal sealed partial class DeepIdV2PublicationAuthorityFixture : IDisposable,
                     RouteSuccessorResponse = new(Network, RouteSuccessorRequest.RequestNonce.Span,
                         nextThreshold.Selection.CanonicalBytes.Span, nextThreshold.LiveRoute.CanonicalBytes.Span,
                         nextThreshold.Successor.CanonicalBytes.Span, Freshness.ExactAdh1.Span);
+                    if (commitForSuccessor is not null)
+                    {
+                        // Obtain actual durable two-store receipts while device custody is
+                        // still alive. Never fabricate a commit to authorize the successor,
+                        // or retain device secrets in the returned fixture.
+                        var committed = await commitForSuccessor(this);
+                        var resolver = ContactAddress.ResolverReadCapability.ToArray();
+                        try
+                        {
+                            var oldObject = await DeepIdV2ContactObjectAuthor.VerifyPredecessorAsync(current, network,
+                                Authority, predecessor, contact.Closure.CanonicalBytes, contact.ProtectedDcr1, resolver, time);
+                            var oldPublication = await DeepIdV2PublicationCommitVerifier.VerifyPredecessorAsync(current,
+                                network, Authority, oldObject, candidate.WireRequest, authorized.ExactXpu1, committed, time);
+                            var issuance = await DeepIdV2ContactRouteVerifier.VerifyRetainedThresholdAsync(current,
+                                network, Authority, RouteSuccessorRequest, nextThreshold, Freshness.ExactAdh1, time);
+                            SuccessorContactRoute = await DeepIdV2ContactRouteAuthor.CompleteRetainedSuccessorAsync(
+                                current, network, Authority, secrets, predecessor, issuance, 1, time);
+                            SuccessorContactObject = await DeepIdV2ContactObjectAuthor.AuthorRetainedSuccessorAsync(
+                                SuccessorContactRoute, issuance, oldObject, secrets,
+                                [DeepIdV2PreKeyServiceCodec.Decode(Xps)], "DID2 store QA", resolver);
+                            var nextPublication = await DeepIdV2PublicationAuthorityAuthor.AuthorSuccessorRequestAsync(
+                                SuccessorContactRoute, SuccessorContactObject, secrets, oldPublication,
+                                Bytes(32, 0x55), Bytes(32, 0x56));
+                            SuccessorContactOwnedRequest = nextPublication.WireRequest;
+                            var nextAuthorization = await DeepIdV2PublicationAuthorityAuthor.AuthorThresholdSuccessorAsync(
+                                SuccessorContactRoute, nextPublication.WireRequest, oldPublication, witnesses);
+                            SuccessorContactPublication = Xpu1Codec.Decode(nextAuthorization.ExactXpu1.Span);
+                        }
+                        finally { CryptographicOperations.ZeroMemory(resolver); }
+                    }
                 }
             }
         }

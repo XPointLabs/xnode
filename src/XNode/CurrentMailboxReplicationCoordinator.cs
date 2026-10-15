@@ -46,7 +46,7 @@ internal sealed partial class CurrentMailboxReplicationCoordinator(CurrentMailbo
                 // request before the first peer reservation/write. No remint on retry.
                 var requireExisting = request.ReplayDisposition != MailboxAuthenticatedReplayDisposition.NewReserved ||
                     await local.HasStoreCustodyAsync(request.Scope, envelope, ct).ConfigureAwait(false);
-                var intent = await ledger.ReserveCurrentStoreAsync(envelope, request.Scope.Host.MembershipCommitment,
+                var intent = await ledger.ReserveCurrentStoreAsync(envelope, request.Scope.Grant.MembershipCommitment,
                     request.Scope.Replicas.Select(replica => replica.NodeId).ToArray(), request.Scope.Lease,
                     (cursor, upper) => local.AuthorStoreRequest(request.Scope, client.Binding.CanonicalRequest, cursor, upper), request.Scope.Host, ct,
                     requireExisting: requireExisting).ConfigureAwait(false);
