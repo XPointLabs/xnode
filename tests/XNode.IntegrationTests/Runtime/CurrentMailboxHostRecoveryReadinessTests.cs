@@ -11,6 +11,26 @@ namespace XNode.IntegrationTests.Runtime;
 
 public sealed class CurrentMailboxHostRecoveryReadinessTests
 {
+    [Theory]
+    [InlineData("No acquired DID2 network observation is available.", "observation-missing")]
+    [InlineData("The observed DID2 network floor changed.", "observation-floor-changed")]
+    [InlineData("The observed DID2 proof no longer closes the protected floor.", "observation-head-changed")]
+    [InlineData("The observed DID2 proof is no longer current.", "observation-expired")]
+    [InlineData("The observed DID2 authority changed.", "observation-authority-changed")]
+    [InlineData("MGR1 is outside current PMA2 role/network/protected-time authority.", "revocation-context")]
+    [InlineData("Current host signing custody differs from its descriptor.", "descriptor-key")]
+    [InlineData("Current mailbox authority changed during the operation.", "authority-changed")]
+    [InlineData("Current mailbox trusted interval is unavailable.", "trusted-interval")]
+    [InlineData("private-key-path-or-payload", "cryptographic-rejection")]
+    public void RecoveryFailureReasonsAreClosedAndNeverEchoExceptionText(string message, string expected)
+    {
+        Assert.Equal(expected, CurrentMailboxHostRecovery.FailureReason(
+            new System.Security.Cryptography.CryptographicException(message)));
+        Assert.Equal("custody-or-io", CurrentMailboxHostRecovery.FailureReason(new IOException("private-data")));
+        Assert.Equal("custody-access", CurrentMailboxHostRecovery.FailureReason(new UnauthorizedAccessException("private-data")));
+        Assert.Equal("configuration-or-state", CurrentMailboxHostRecovery.FailureReason(new ArgumentException("private-data")));
+    }
+
     [Fact]
     public async Task ActualProgramDefaultRoutesHaveCurrentHealthAndNoRetiredMailboxFallback()
     {

@@ -157,7 +157,11 @@ public sealed partial class CurrentMailboxPeerHttpTests
         Assert.True(CryptographicOperations.FixedTimeEquals(original, Assert.Single(f.ExactIntents)));
         Assert.Empty(Directory.GetFiles(Path.GetDirectoryName(f.LedgerFile)!, "operations.json.*.tmp"));
         Assert.Empty(f.Sender.MutationFiles); Assert.Equal(0, f.AllHttpRequests);
-        Assert.Equal(MailboxPeerQuorumStatus.Durable, (await f.Coordinator.StoreClientAsync(request)).Status);
+        var quorum = await f.Coordinator.StoreClientAsync(request);
+        Assert.True(quorum.Status == MailboxPeerQuorumStatus.Durable,
+            $"Quorum={quorum.Status}; peer calls={f.PeerClient.Calls}; failure={f.PeerClient.Failure}; " +
+            $"elapsed-ms={f.PeerClient.ElapsedMilliseconds}; status={f.RemoteHost.LastStatus}; " +
+            $"bytes={f.RemoteHost.LastBytes}; {f.RemoteHost.Diagnostics}.");
         Assert.True(CryptographicOperations.FixedTimeEquals(original, Assert.Single(f.ExactIntents)));
         Assert.Equal(1, f.AllHttpRequests); await host.StopAsync();
     }

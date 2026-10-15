@@ -29,8 +29,11 @@ public sealed partial class CurrentMailboxPeerHttpTests
     public async Task CurrentHostRecoveryUsesOneAuthenticatedSnapshotForClientAndPeerJoin()
     {
         await using var f = await Fixture.CreateAsync(); f.OpenLedger();
-        Assert.Equal(MailboxPeerQuorumStatus.Durable,
-            (await f.Coordinator.StoreClientAsync(f.ClientStoreFrame())).Status);
+        var quorum = await f.Coordinator.StoreClientAsync(f.ClientStoreFrame());
+        Assert.True(quorum.Status == MailboxPeerQuorumStatus.Durable,
+            $"Quorum={quorum.Status}; peer calls={f.PeerClient.Calls}; failure={f.PeerClient.Failure}; " +
+            $"elapsed-ms={f.PeerClient.ElapsedMilliseconds}; status={f.RemoteHost.LastStatus}; " +
+            $"bytes={f.RemoteHost.LastBytes}; {f.RemoteHost.Diagnostics}.");
         using (var document = System.Text.Json.JsonDocument.Parse(File.ReadAllBytes(f.LedgerFile)))
         {
             Assert.NotEmpty(document.RootElement.GetProperty("clientReplayFloors").EnumerateObject());

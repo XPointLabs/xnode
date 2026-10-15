@@ -1457,3 +1457,25 @@ creation. Ambient diagnostic flags are cleared/restored with the other test
 inputs. It changes observations, never authority,
 deadlines or assertions. Do not interpret concurrent full-suite aggregates as
 per-request measurements.
+
+Current mailbox host recovery keeps the same bounded fresh check and public
+`recovered/state` response. A failed check now logs one closed denial reason
+when that reason changes; recovery clears the suppression. The logger receives
+no exception object, arbitrary exception text, stack, identifier or custody
+path. `observation-*`, `revocation-context`, `descriptor-key`, `authority-changed`,
+`trusted-interval` and generic closed categories distinguish the failing owner
+without making an unavailable host ready. `check-deadline` is a local resource
+deadline, not evidence of damaged custody or permission to re-enroll/reset.
+
+Local diagnostic qualification on2026-10-16 is **not accepted**:
+`artifacts/s05-current-publication-20261015/host-recovery-diagnostics-02/`
+ran30 cases:27 passed,3 failed,0 skipped/native1. Ten closed-reason cases and
+the recovery refusal checks passed; three existing real peer-recovery Store
+checks returned PartialFailure instead of Durable. Their assertions now include
+the existing count/type/resource diagnostics without changing the required
+Durable result, timeout or authority. Run03 stopped after test compilation with
+native-1 and no TRX; it is interrupted, not a passing retry. Run01 did not launch
+tests because the native module helper was invoked outside its module scope.
+The original failures remain. Current unfiltered source qualification, peer
+regressions and physical mailbox recovery are open; runtime instrumentation
+activation is for local diagnosis, not release acceptance.
