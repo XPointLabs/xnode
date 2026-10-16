@@ -500,10 +500,20 @@ The hosted ContactResolve terminal now reports only closed dependency-failure
 categories (`proof-rate-limit`, `proof-unavailable`, cryptographic/authorization
 rejection, custody/I/O or configuration/state). Logging is bounded to one
 warning per ten seconds per process, across categories. It never emits exception
-objects/messages, account identifiers, capabilities, payloads or origins.
+objects/messages, account identifiers, capabilities, payloads or network origins.
+The same warning now carries a bounded inner category/depth and a code-method
+label from the fixed XNode/Protocol assemblies. At most three inner links and32
+stack frames are inspected; source paths, exception Data/ToString and custom
+Message getters are not read. An unavailable/foreign code location stays
+`unavailable`. A logger failure cannot replace the original unknown completion.
 These diagnostics retain outcome-unknown behavior; they do not permit a retry,
 receipt, fallback or successful publication. The native DID2 focused runtime
 batch passes 37/37; production/device evidence is a separate requirement.
+The inner-cause extension passed the filtered diagnostic11 cases and the
+expanded133-case privacy/terminal/composition regression,0 failures/skips,
+native0 under Windows PowerShell5.1 / SDK10.0.301
+(`artifacts/s05-contact-terminal-20261016/focused-01`, `regression-02`).
+These are focused source receipts, not a full gate or physical completion.
 
 The DID2 prekey claim runtime classifies native Windows replacement errors as
 I/O uncertainty. A claim whose reservation/completion cannot be confirmed returns

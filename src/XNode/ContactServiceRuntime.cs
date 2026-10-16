@@ -772,18 +772,48 @@ public sealed class PrivacyTerminalExitDispatcher : INativeMailboxExitDispatcher
         // unbounded log traffic. This is diagnostic scheduling, not trust/time.
         if (previous != 0 && Stopwatch.GetElapsedTime(previous) < TimeSpan.FromSeconds(10)) return;
         if (Interlocked.CompareExchange(ref failureLogTimestamp, Stopwatch.GetTimestamp(), previous) != previous) return;
-        var category = exception switch
+        // A post-forward wrapper deliberately retains uncertainty. Its inner
+        // failure can still identify a code-owned diagnostic boundary, without
+        // reading Message/Data/ToString or changing that dispatch outcome.
+        try
+        {
+            var cause = exception; var depth = 0;
+            while (depth < 3 && cause.InnerException is { } inner) { cause = inner; depth++; }
+            logger.LogWarning("DID2 ContactResolve terminal could not complete ({Category}); cause={Cause}; depth={Depth}; method={CodeMethod}; completion remains unknown.",
+                ContactFailureCategory(exception), ContactFailureCategory(cause), depth, ContactFailureMethod(cause));
+        }
+        catch { /* Diagnostics must not replace the original unknown completion. */ }
+    }
+
+    private static string ContactFailureCategory(Exception exception) => exception switch
         {
             DeepIdV2DirectoryProofUnavailableException { StatusCode: System.Net.HttpStatusCode.TooManyRequests } => "proof-rate-limit",
             DeepIdV2DirectoryProofUnavailableException => "proof-unavailable",
             CryptographicException => "cryptographic-rejection",
+            FormatException or ArgumentException => "canonical-rejection",
+            OperationCanceledException => "cancelled",
+            TimeoutException => "timeout",
             UnauthorizedAccessException => "authorization-rejection",
             IOException => "custody-or-io",
             _ => "configuration-or-state"
         };
-        // No exception object/message, payload, identity, capability or origin
-        // enters logs. Classification cannot change unknown completion.
-        logger.LogWarning("DID2 ContactResolve terminal could not complete ({Category}); completion remains unknown.", category);
+
+    private static string ContactFailureMethod(Exception exception)
+    {
+        var trace = new StackTrace(exception, false);
+        for (var index = 0; index < Math.Min(trace.FrameCount, 32); index++)
+        {
+            var method = trace.GetFrame(index)?.GetMethod(); var type = method?.DeclaringType;
+            var assembly = type?.Assembly.GetName().Name;
+            if (assembly is not ("XNode" or "XNode.Core" or "Deep.Protocol" or "Deep.Protocol.MembershipRoutes")) continue;
+            var space = type?.Namespace;
+            if (space is null || !(space == "XNode" || space.StartsWith("XNode.", StringComparison.Ordinal) ||
+                space.StartsWith("Deep.Protocol.", StringComparison.Ordinal))) continue;
+            var origin = (type!.DeclaringType is { } parent ? parent.Name + "+" : "") + type.Name + "." + method!.Name;
+            if (origin.Length is > 0 and <= 240 && origin.All(ch => char.IsAsciiLetterOrDigit(ch) || "_.+<>`".Contains(ch)))
+                return origin;
+        }
+        return "unavailable";
     }
 
     internal static bool TryContactOperation(

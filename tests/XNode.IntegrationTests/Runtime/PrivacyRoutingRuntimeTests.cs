@@ -20,6 +20,11 @@ public sealed class PrivacyRoutingRuntimeTests
     [InlineData("authorization", "authorization-rejection")]
     [InlineData("io", "custody-or-io")]
     [InlineData("state", "configuration-or-state")]
+    [InlineData("wrapped-crypto", "custody-or-io")]
+    [InlineData("wrapped-canonical", "custody-or-io")]
+    [InlineData("private-getter", "custody-or-io")]
+    [InlineData("deep-chain", "custody-or-io")]
+    [InlineData("logger-failure", "custody-or-io")]
     public async Task ContactDependencyDiagnosticsAreClosedBoundedAndNeverReleaseSuccess(string failure, string expected)
     {
         using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
@@ -31,9 +36,14 @@ public sealed class PrivacyRoutingRuntimeTests
             "crypto" => new System.Security.Cryptography.CryptographicException(privateText),
             "authorization" => new UnauthorizedAccessException(privateText),
             "io" => new IOException(privateText),
+            "wrapped-crypto" => new IOException(privateText, new System.Security.Cryptography.CryptographicException(privateText)),
+            "wrapped-canonical" => new IOException(privateText, OwnedCanonicalFailure()),
+            "private-getter" => new IOException(privateText, new UnreadableContactFailure()),
+            "deep-chain" => DeepContactFailure(),
+            "logger-failure" => new IOException(privateText),
             _ => new InvalidOperationException(privateText)
         }};
-        var log = new ClosedTerminalLogger();
+        var log = new ClosedTerminalLogger { ThrowOnLog = failure == "logger-failure" };
         var terminal = Terminal(effects, log);
         var fragment = DeepIdV2BoundedPreKeyPublicationCodec.CreateSequence(
             fixture.Publication.CanonicalBytes.Span, fixture.Placement.ViewHash.Span,
@@ -48,10 +58,39 @@ public sealed class PrivacyRoutingRuntimeTests
             Assert.True(result.CanonicalBody.IsEmpty);
         }
         Assert.Equal(2, effects.ContactCalls);
+        if (failure == "logger-failure") { Assert.Empty(log.Messages); return; }
         var message = Assert.Single(log.Messages);
         Assert.Contains($"({expected})", message);
         Assert.DoesNotContain("private", message);
         Assert.Equal(0, log.ExceptionObjects);
+        Assert.Matches(@"cause=[a-z-]{1,32}; depth=[0-3]; method=[A-Za-z0-9_.+<>`]{1,240}; completion remains unknown\.$", message);
+        if (failure == "wrapped-crypto") Assert.Contains("cause=cryptographic-rejection; depth=1;", message);
+        if (failure == "wrapped-canonical")
+        {
+            Assert.Contains("cause=canonical-rejection; depth=1;", message);
+            Assert.DoesNotContain("method=unavailable", message);
+        }
+        if (failure == "deep-chain") Assert.Contains("cause=custody-or-io; depth=3; method=unavailable", message);
+    }
+
+    private static Exception OwnedCanonicalFailure()
+    {
+        try { _ = DeepIdV2PreKeyServiceCodec.Decode([]); }
+        catch (Exception error) { return error; }
+        throw new InvalidOperationException("Expected malformed owned codec input.");
+    }
+
+    private static Exception DeepContactFailure()
+    {
+        Exception failure = new UnreadableContactFailure();
+        for (var index = 0; index < 12; index++) failure = new IOException("private", failure);
+        return failure;
+    }
+
+    private sealed class UnreadableContactFailure : System.Security.Cryptography.CryptographicException
+    {
+        public override string Message => throw new InvalidOperationException("Must not read private error text.");
+        public override string ToString() => throw new InvalidOperationException("Must not stringify private error.");
     }
 
     [Fact]
@@ -741,6 +780,7 @@ public sealed class PrivacyRoutingRuntimeTests
 
     private sealed class ClosedTerminalLogger : ILogger<PrivacyTerminalExitDispatcher>
     {
+        internal bool ThrowOnLog { get; init; }
         internal List<string> Messages { get; } = [];
         internal int ExceptionObjects { get; private set; }
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
@@ -748,6 +788,7 @@ public sealed class PrivacyRoutingRuntimeTests
         public void Log<TState>(LogLevel level, EventId id, TState state, Exception? error, Func<TState, Exception?, string> formatter)
         {
             if (error is not null) ExceptionObjects++;
+            if (ThrowOnLog) throw new InvalidOperationException("Private logger failure.");
             Messages.Add(formatter(state, error));
         }
     }
