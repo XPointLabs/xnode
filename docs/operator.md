@@ -1327,6 +1327,16 @@ These are focused source receipts, not full/rehearsal, deployed recovery or
 physical delivery evidence. The original30-second cooperative deadline remains;
 this does not guarantee both batches finish when actual I/O exhausts that budget.
 
+Local component `71bcae3` was built without compiler warnings/errors. Initial
+Up07 still used the old image because the build's local label differed from
+Compose; its failed smoke is not new-source evidence. The exact image was then
+retagged to the supported Compose name and Up08 verified its image ID on all
+three nodes plus all29 volume/25 bind identities. Smoke08 still exited1; live
+host recovery remains unavailable. A separate supported control capture fetched
+both signed records successfully, but neither that transport check nor an
+untrusted host-clock comparison proves protected-time currentness or native
+catch-up. The early-exit fix is not claimed as the sole live failure's cause.
+
 This is locally tested actual Registry HTTPS-producer/configured-node/native
 integration on synthetic owned inputs, not a deployed Registry-to-node or
 physical client result. The node's authority/admission reads
