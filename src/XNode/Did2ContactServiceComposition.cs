@@ -161,7 +161,7 @@ internal static class Did2ContactServiceComposition
                 { AllowAutoRedirect = false, UseCookies = false, AutomaticDecompression = DecompressionMethods.None })
                 .AddTypedClient<IMailboxGrantAuthorityClient>((client, provider) =>
                     new HttpsMailboxGrantAuthorityClient(client, provider.GetRequiredService<RouterNodeOptions>(), origin,
-                        provider.GetRequiredService<IClock>()));
+                        provider.GetRequiredService<IClock>(), provider.GetRequiredService<ILogger<HttpsMailboxGrantAuthorityClient>>()));
         }
         services.AddSingleton<Did2AuthenticatedContactClock>();
         services.TryAddSingleton<IContactServicePlacementAuthoritySource, VerifiedContactServicePlacementAuthoritySource>();

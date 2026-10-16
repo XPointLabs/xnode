@@ -390,6 +390,7 @@ public sealed partial class Did2ContactServiceCompositionTests
     [InlineData("compressed")]
     [InlineData("foreign-media-type")]
     [InlineData("http-error")]
+    [InlineData("logger-failure")]
     [InlineData("unknown-length")]
     [InlineData("truncated")]
     [InlineData("trailing")]
@@ -415,13 +416,14 @@ public sealed partial class Did2ContactServiceCompositionTests
         if (mode != "unknown-length") content.Headers.ContentLength = mode == "old-size" ? 478 : 206;
         if (mode == "compressed") content.Headers.ContentEncoding.Add("gzip");
         using var client = new HttpClient(new GrantResponseHandler(content,
-            mode == "http-error" ? HttpStatusCode.Forbidden : HttpStatusCode.OK));
+            mode is "http-error" or "logger-failure" ? HttpStatusCode.Forbidden : HttpStatusCode.OK));
         var placement = ContactServicePlacementFactory.Create(fixture.NetworkContext,
             ContactServiceRequestKind.ResolveInvite, request.Field(3));
         var nodeId = placement.RankedReplicaNodeIds[0];
         var node = new RouterNodeOptions { RouterId = Convert.ToHexStringLower(nodeId.Span),
             Ed25519PrivateKey = Convert.ToHexStringLower(fixture.Node(nodeId.Span).Seed) };
-        var authority = new HttpsMailboxGrantAuthorityClient(client, node, new("https://issuer.example/"), new SystemClock());
+        var logger = new GrantAuthorityLogger { Throw = mode == "logger-failure" };
+        var authority = new HttpsMailboxGrantAuthorityClient(client, node, new("https://issuer.example/"), new SystemClock(), logger);
         var input = new MailboxGrantAuthorityRequest(placement, owned.ExactXmg2, MailboxGrantAcquisitionResultCode.Unavailable,
             default, 0, 0, expiry, [new(nodeId, new byte[64]), new(placement.RankedReplicaNodeIds[1], new byte[64])],
             MailboxGrantAuthorityEvidenceKind.CurrentRoute, 0);
@@ -429,8 +431,18 @@ public sealed partial class Did2ContactServiceCompositionTests
             Assert.Equal(response, (await authority.AuthorizeAsync(input, default)).ToArray());
         else
             await Assert.ThrowsAsync<ContactServiceUnavailableException>(() => authority.AuthorizeAsync(input, default).AsTask());
-        if (mode is "old-size" or "compressed" or "foreign-media-type" or "http-error" or "unknown-length")
+        if (mode is "old-size" or "compressed" or "foreign-media-type" or "http-error" or "logger-failure" or "unknown-length")
             Assert.Equal(0, content.Reads);
+        if (mode == "current-failure") Assert.Empty(logger.Entries);
+        else
+        {
+            var entry = Assert.Single(logger.Entries);
+            Assert.Equal(new[] { "Category", "Phase", "Status", "{OriginalFormat}" }, entry.Keys.Order(StringComparer.Ordinal));
+            Assert.Contains(entry["Phase"]!.ToString(), new[] { "Validation", "Http", "Response", "Body" });
+            Assert.Contains(entry["Category"]!.ToString(), new[] { "unavailable", "http-transport", "io", "cryptographic", "authority", "canonical", "caller-cancelled", "deadline" });
+            Assert.Equal(mode is "http-error" or "logger-failure" ? 403 : 200, entry["Status"]);
+            Assert.All(logger.ExceptionArguments, error => Assert.Null(error));
+        }
     }
 
     [Theory]
@@ -660,6 +672,22 @@ public sealed partial class Did2ContactServiceCompositionTests
         }
         public async ValueTask DisposeAsync()
         { if (app is not null) { await app.StopAsync(); await app.DisposeAsync(); } certificate?.Dispose(); }
+    }
+
+    private sealed class GrantAuthorityLogger : ILogger<HttpsMailboxGrantAuthorityClient>
+    {
+        internal bool Throw;
+        internal List<Dictionary<string, object?>> Entries { get; } = [];
+        internal List<Exception?> ExceptionArguments { get; } = [];
+        public IDisposable? BeginScope<TState>(TState value) where TState : notnull => null;
+        public bool IsEnabled(LogLevel level) => true;
+        public void Log<TState>(LogLevel level, EventId eventId, TState value, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            Entries.Add(((IEnumerable<KeyValuePair<string, object?>>)(object)value!).ToDictionary(pair => pair.Key, pair => pair.Value));
+            ExceptionArguments.Add(exception);
+            if (Throw) throw new InvalidOperationException("Injected diagnostic sink failure.");
+        }
     }
 
     private sealed class PublicationLogger(PeerState state) : ILogger<ContactServiceOpaqueFacade>

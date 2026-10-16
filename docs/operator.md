@@ -1582,3 +1582,12 @@ Same-binary `file-read-business-repeat-11` then failed3/passed1/0skip/native1, i
 Store504 and peer deadlines. **This candidate is not stably qualified**, and the
 single85-case PASS does not replace that failure, final full/rehearsal gates or
 physical device acceptance. No deadline was raised and no refusal was waived.
+
+## Private mailbox grant failure metadata
+
+The private issuer HTTP client records only a bounded phase/status/category,
+without endpoint, request, exception object/message or identity. A diagnostic
+failure does not change the original retry/unknown outcome. See the
+[S05 checkpoint](testing/s05-private-grant-hop-2026-10-16.md) for exact source
+tests and deployment limitations; these records are not issuance or absence
+proof and must never justify replacing an unknown pending request.

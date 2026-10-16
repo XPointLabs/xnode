@@ -1,4 +1,5 @@
 using System.Net;
+using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -77,12 +78,15 @@ internal sealed class HttpsMailboxGrantAuthorityClient
     private readonly RouterNodeOptions node;
     private readonly IClock clock;
     private readonly Uri endpoint;
+    private readonly ILogger<HttpsMailboxGrantAuthorityClient>? logger;
+    private long failureTimestamp;
+    private enum GrantPhase { Validation, Http, Response, Body }
 
     public HttpsMailboxGrantAuthorityClient(
         HttpClient httpClient,
         RouterNodeOptions node,
         Uri authorityOrigin,
-        IClock clock)
+        IClock clock, ILogger<HttpsMailboxGrantAuthorityClient>? logger = null)
     {
         this.httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         this.node = node ?? throw new ArgumentNullException(nameof(node));
@@ -92,6 +96,7 @@ internal sealed class HttpsMailboxGrantAuthorityClient
             authorityOrigin.Query.Length != 0 || authorityOrigin.Fragment.Length != 0)
             throw new ArgumentException("Private grant authority requires one credential-free HTTPS origin.", nameof(authorityOrigin));
         this.clock = clock ?? throw new ArgumentNullException(nameof(clock));
+        this.logger = logger;
         endpoint = new UriBuilder(
             authorityOrigin.Scheme,
             authorityOrigin.Host,
@@ -115,6 +120,7 @@ internal sealed class HttpsMailboxGrantAuthorityClient
         var nodeId = node.GetRouterId().ToBytes();
         var seed = Convert.FromHexString(node.GetEd25519PrivateKey());
         byte[]? privateKey = null;
+        var phase = GrantPhase.Validation; var status = 0;
         try
         {
             var exactRequest = ContactCodec.Decode(DeepProtocolIdentifiers.Magic.XMG2, request.ExactXmg2.Span);
@@ -176,10 +182,12 @@ internal sealed class HttpsMailboxGrantAuthorityClient
             message.Content.Headers.ContentType = new MediaTypeHeaderValue(RequestMediaType);
             message.Content.Headers.ContentLength = body.Length;
 
+            phase = GrantPhase.Http;
             using var response = await httpClient.SendAsync(
                 message,
                 HttpCompletionOption.ResponseHeadersRead,
                 cancellationToken).ConfigureAwait(false);
+            phase = GrantPhase.Response; status = (int)response.StatusCode;
             placement.Network.EnsureCurrent();
             if (response.StatusCode != HttpStatusCode.OK
                 || !string.Equals(response.Content.Headers.ContentType?.MediaType,
@@ -189,6 +197,7 @@ internal sealed class HttpsMailboxGrantAuthorityClient
                 || length is not (206 or 510))
                 throw new ContactServiceUnavailableException(
                     "The mailbox grant authority returned no exact authenticated result.");
+            phase = GrantPhase.Body;
             var exact = await HttpPrivacyPeerClient.ReadExactlyBoundedAsync(
                 response.Content,
                 checked((int)length),
@@ -207,10 +216,14 @@ internal sealed class HttpsMailboxGrantAuthorityClient
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            Report(phase, status, "caller-cancelled");
             throw;
         }
+        catch (OperationCanceledException)
+        { Report(phase, status, "deadline"); throw; }
         catch (ContactServiceUnavailableException)
         {
+            Report(phase, status, "unavailable");
             throw;
         }
         catch (Exception exception) when (exception is HttpRequestException
@@ -222,6 +235,11 @@ internal sealed class HttpsMailboxGrantAuthorityClient
             or ArgumentException
             or OnionBoundaryException)
         {
+            Report(phase, status, exception switch {
+                HttpRequestException => "http-transport", IOException => "io",
+                CryptographicException => "cryptographic", OnionBoundaryException => "authority",
+                _ => "canonical"
+            });
             throw new ContactServiceUnavailableException(
                 "The internal mailbox grant authority hop failed closed.");
         }
@@ -231,6 +249,21 @@ internal sealed class HttpsMailboxGrantAuthorityClient
             if (privateKey is not null) CryptographicOperations.ZeroMemory(privateKey);
             CryptographicOperations.ZeroMemory(nonce);
         }
+    }
+
+    private void Report(GrantPhase phase, int status, string category)
+    {
+        if (logger is null) return;
+        try
+        {
+            // One fixed bucket; diagnostic time never supplies authority.
+            var previous = Volatile.Read(ref failureTimestamp);
+            if (previous != 0 && Stopwatch.GetElapsedTime(previous) < TimeSpan.FromSeconds(10)) return;
+            if (Interlocked.CompareExchange(ref failureTimestamp, Stopwatch.GetTimestamp(), previous) != previous) return;
+            logger.LogWarning("Private mailbox grant hop unavailable: phase={Phase}, status={Status}, category={Category}.",
+                phase, status, category);
+        }
+        catch { /* Logging cannot alter the original result or uncertainty. */ }
     }
 
     private static byte[] RandomNonZero32()
