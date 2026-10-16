@@ -233,4 +233,31 @@ public sealed partial class CurrentMailboxPeerHttpTests
         }
         Assert.Equal(document, File.ReadAllBytes(f.LedgerFile)); Assert.Equal(http, f.AllHttpRequests);
     }
+
+    [Fact]
+    public void OriginalStoreRecoveryAuthorityReasonUsesOnlyExistingAllowlistedBuiltinMetadata()
+    {
+        foreach (var label in new[] { "Lifecycle", "Network", "Generation", "IssuerKey", "IssuerNotBefore", "GrantNotBefore",
+            "GrantExpiry", "PolicyExpiry", "NetworkExpiry", "Lifetime", "Signature" })
+        {
+            var error = new System.Security.Cryptography.CryptographicException();
+            error.Data["Deep.MailboxAuthority.Check"] = label;
+            Assert.Equal(label, CurrentMailboxDiagnostics.AuthorityFailureCheck(error));
+        }
+        var unknown = new System.Security.Cryptography.CryptographicException();
+        Assert.Equal("Unclassified", CurrentMailboxDiagnostics.AuthorityFailureCheck(unknown));
+        unknown.Data["Deep.MailboxAuthority.Check"] = "private-unrecognized-provider-value";
+        Assert.Equal("Unclassified", CurrentMailboxDiagnostics.AuthorityFailureCheck(unknown));
+        unknown.Data["Deep.MailboxAuthority.Check"] = new UnreadableNativeFailure();
+        Assert.Equal("Unclassified", CurrentMailboxDiagnostics.AuthorityFailureCheck(unknown));
+        Assert.Equal("Unclassified", CurrentMailboxDiagnostics.AuthorityFailureCheck(new UnreadableAuthorityFailure()));
+        Assert.Equal("Unclassified", CurrentMailboxDiagnostics.AuthorityFailureCheck(null));
+    }
+
+    private sealed class UnreadableAuthorityFailure : System.Security.Cryptography.CryptographicException
+    {
+        public override System.Collections.IDictionary Data => throw new InvalidOperationException("Private diagnostic getter must not run.");
+        public override string Message => throw new InvalidOperationException("Private message must not be read.");
+        public override string ToString() => throw new InvalidOperationException("Private value must not be rendered.");
+    }
 }

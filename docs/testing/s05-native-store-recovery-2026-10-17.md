@@ -42,6 +42,7 @@ compiler diagnostics. These are focused scopes, not canonical full qualification
 | `focused-02` | 164 | Expanded12 recovery cases, native ingress/onion and host composition |
 | `focused-03` | 23 | Final16 recovery cases,2 registration cases, original quorum-persistence2 and native authority-fence3 |
 | `closed-observer-04` | 5 | Shared owned-code observer regression3 and recovery unreadable-exception/throwing-logger2 |
+| `closed-authority-reason-05` | 3 | Recovery observer2 and all11 existing reason labels plus unknown/object/subclass refusal |
 
 Positive cases use genuine signed fixture authority, two independent native
 stores and actual TLS/H2. They cover interruption at Store reservation and
@@ -83,3 +84,15 @@ native log again observed ReadCurrentWindowAsync IL1074/live pending Store;
 no identifier correlation with a particular old sender intent is asserted.
 Physical business acceptance remains0/4. Current expired-original recovery,
 canonical full/package and broader S05 gates remain open.
+
+Code-location observer source `828c3e2` was subsequently built/activated through
+Build19/Up20/Verify21, native0,9 desired images and54 retained mounts (six finite
+bind representation aliases, separately from raw comparison). After startup's
+ReadNetworkAsync refusal, node2 observed RequireIssuerGrant IL404. Actual
+container Protocol DLL/PDB maps this to source199, the common throw after the
+existing ordered issuer/network/time predicates, not a particular predicate.
+Module SHA256 `c30ab5f46044a1476053f53fca2c1e256584c0973381f694a9d754707682403d`;
+PDB SHA256 `9bdc79fff8ec50db3541247efd26c36c17e916cbe50ecc549323e1d12859422b`.
+The Protocol already attaches a fixed rejection label. Reason05 maps only this
+existing finite metadata from the built-in exception; no predicates or outcomes
+change. Matching activation is still required to observe the actual label.

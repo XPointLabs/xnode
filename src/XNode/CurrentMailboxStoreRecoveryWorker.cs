@@ -59,13 +59,14 @@ internal sealed class CurrentMailboxStoreRecoveryWorker(CurrentMailboxReplicatio
         try
         {
             var location = CurrentMailboxDiagnostics.FailureLocation(failure);
-            diagnosticKey = state + "|" + location.Method + "|" + location.Il.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var check = CurrentMailboxDiagnostics.AuthorityFailureCheck(failure);
+            diagnosticKey = state + "|" + location.Method + "|" + location.Il.ToString(System.Globalization.CultureInfo.InvariantCulture) + "|" + check;
             if (lastState != diagnosticKey)
             {
                 if (failure is null) logger.Log(state is "idle" or "settled" ? LogLevel.Information : LogLevel.Warning,
                     "Current mailbox Store recovery: state={State}; original custody retained.", state);
-                else logger.LogWarning("Current mailbox Store recovery: state={State}; method={CodeMethod}; il={Il}; original custody retained.",
-                    state, location.Method, location.Il);
+                else logger.LogWarning("Current mailbox Store recovery: state={State}; method={CodeMethod}; il={Il}; check={Check}; original custody retained.",
+                    state, location.Method, location.Il, check);
             }
         }
         catch { /* Diagnostics cannot alter recovery or shut down the host. */ }

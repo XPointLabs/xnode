@@ -147,8 +147,12 @@ failures retain original work; logging emits only a fixed state and no exception
 On a failure, the existing bounded owned-assembly method/IL observer is shared
 with native ingress. The deduplication key includes that code location, so a
 startup observation failure cannot hide a later original-grant refusal with the
-same state. No exception text/data, filename or private identifier is retained
+same state. No raw exception text/data, filename or private identifier is retained
 by the observer, and a throwing logger cannot alter the operation outcome.
+The existing Protocol `Deep.MailboxAuthority.Check` metadata is read only from
+the exact built-in CryptographicException and mapped through its eleven fixed
+labels. Unknown values/objects/subclasses are Unclassified, never stringified.
+This diagnostic label cannot authorize or settle work.
 An expired original grant remains unavailable: this worker does not implement
 unsettled-expiry retirement or waive the pending-prefix guard. Those activation
 requirements remain owned by XPOINT-NETWORK section9.1 above. Focused source,

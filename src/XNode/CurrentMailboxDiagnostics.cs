@@ -13,6 +13,16 @@ internal static class CurrentMailboxDiagnostics
 
     internal static IDisposable? Measure(string phase) => Duration.Enabled ? new Measurement(phase) : null;
 
+    internal static string AuthorityFailureCheck(Exception? error)
+    {
+        // Only the built-in exception getter and an existing finite Protocol
+        // diagnostic label. Never invoke subclass getters or stringify values.
+        if (error?.GetType() != typeof(System.Security.Cryptography.CryptographicException)) return "Unclassified";
+        return error.Data["Deep.MailboxAuthority.Check"] is string value && value is
+            "Lifecycle" or "Network" or "Generation" or "IssuerKey" or "IssuerNotBefore" or "GrantNotBefore" or
+            "GrantExpiry" or "PolicyExpiry" or "NetworkExpiry" or "Lifetime" or "Signature" ? value : "Unclassified";
+    }
+
     // Only owned code metadata, never exception text/data, source filenames or
     // caller/third-party type names. Callers keep logging failures non-fatal.
     internal static (string Method, int Il) FailureLocation(Exception? error)
