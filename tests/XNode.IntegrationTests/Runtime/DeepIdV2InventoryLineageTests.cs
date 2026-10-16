@@ -10,6 +10,167 @@ namespace XNode.IntegrationTests.Runtime;
 
 public sealed class DeepIdV2InventoryLineageTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DifferentSignedServiceEpochOne_IsNotSameEpochFork_OriginalCustodySurvives(bool expiredPredecessor)
+    {
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync(
+            authorServiceSuccessor: true, shortInitialService: expiredPredecessor);
+        var root = TemporaryRoot();
+        try
+        {
+            var originals = new ParsedXic1V2[2];
+            var successors = new ParsedXic1V2[2];
+            for (var replica = 0; replica < 2; replica++)
+                originals[replica] = await CommitAsync(fixture, fixture.Publication, replica,
+                    ReplicaDirectory(root, replica), productionJournalPath: true);
+            if (expiredPredecessor)
+            {
+                fixture.Sample += 20; // Controlled fixture time, never a live clock override.
+                Assert.True(BinaryPrimitives.ReadUInt64BigEndian(DeepIdV2PreKeyServiceCodec.Decode(fixture.Xps).Field(11).Span) <
+                    fixture.Freshness.TrustedLowerUnixSeconds + 20, "The predecessor must genuinely be expired at trusted lower time.");
+            }
+            for (var replica = 0; replica < 2; replica++)
+            {
+                var directory = ReplicaDirectory(root, replica);
+                var original = originals[replica];
+                var next = await CommitAsync(fixture, fixture.ServiceSuccessorPublication!, replica, directory,
+                    fixture.SuccessorXps, productionJournalPath: true);
+                successors[replica] = next;
+                AssertNoFailureMarker(directory);
+                using (var reopened = Open(fixture, replica, directory))
+                {
+                    Assert.Equal(2UL, BinaryPrimitives.ReadUInt64BigEndian(reopened.ReadCurrentManifest()!.Field(5).Span));
+                    Assert.Equal(1UL, BinaryPrimitives.ReadUInt64BigEndian(reopened.ReadCurrentManifest()!.Field(7).Span));
+                    Assert.Equal(original.CanonicalBytes.ToArray(), reopened.ReadRetainedExactReceipt(fixture.Publication)!.CanonicalBytes.ToArray());
+                }
+                var after = StateHash(directory);
+                Assert.Equal(next.CanonicalBytes.ToArray(), (await CommitAsync(fixture, fixture.ServiceSuccessorPublication!,
+                    replica, directory, fixture.SuccessorXps, productionJournalPath: true)).CanonicalBytes.ToArray());
+                if (!expiredPredecessor)
+                    Assert.Equal(original.CanonicalBytes.ToArray(),
+                        (await CommitAsync(fixture, fixture.Publication, replica, directory, productionJournalPath: true)).CanonicalBytes.ToArray());
+                Assert.Equal(after, StateHash(directory));
+            }
+            DeepIdV2PreKeyCommitReceiptVerifier.VerifyPair(fixture.ServiceSuccessorPublication!,
+                fixture.Placement.VerifiedPlacement, successors[0], successors[1]);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task HistoricalSupportRead_CannotCrossCurrentnessOrCancellationBeforeCommit(bool cancel)
+    {
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync(authorServiceSuccessor: true);
+        var root = TemporaryRoot();
+        try
+        {
+            var directory = ReplicaDirectory(root, 0);
+            await CommitAsync(fixture, fixture.Publication, 0, directory, productionJournalPath: true);
+            var path = Path.Combine(directory, "did2-prekey-stage", Convert.ToHexString(fixture.Publication.NetworkId.Span),
+                Convert.ToHexString(fixture.Publication.PublicationOperationId.Span), "manifest.xpp1");
+            var before = StateHash(directory);
+            using var cancellation = new CancellationTokenSource();
+            var observer = new HistoricalReadSecurity(path, () =>
+            {
+                if (cancel) cancellation.Cancel();
+                else fixture.Sample = 500;
+            });
+            Task<ParsedXic1V2> Attempt() => CommitAsync(fixture, fixture.ServiceSuccessorPublication!, 0, directory,
+                fixture.SuccessorXps, productionJournalPath: true, observer, cancellation.Token);
+            if (cancel) await Assert.ThrowsAnyAsync<OperationCanceledException>(Attempt);
+            else await Assert.ThrowsAsync<Deep.Protocol.AccountDirectoryV1.AccountDirectoryFreshnessVerificationException>(Attempt);
+            Assert.Equal(1, observer.Reads);
+            Assert.Equal(before, StateHash(directory)); AssertNoFailureMarker(directory);
+            fixture.Sample = 100; // Restore only the injected fixture clock fault.
+            _ = await CommitAsync(fixture, fixture.ServiceSuccessorPublication!, 0, directory,
+                fixture.SuccessorXps, productionJournalPath: true);
+            AssertNoFailureMarker(directory);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    private sealed class HistoricalReadSecurity(string expectedPath, Action afterReadValidation) : IMailboxStorageSecurity
+    {
+        private readonly MailboxStorageSecurity inner = new();
+        internal int Reads { get; private set; }
+        public void SecureDirectory(string path) => inner.SecureDirectory(path);
+        public void SecureFile(string path) => inner.SecureFile(path);
+        public void ValidateSecureFile(string path)
+        {
+            inner.ValidateSecureFile(path);
+            if (!string.Equals(Path.GetFullPath(path), Path.GetFullPath(expectedPath), StringComparison.Ordinal)) return;
+            Reads++; afterReadValidation();
+        }
+    }
+
+    [Theory]
+    [InlineData("predecessor")]
+    [InlineData("generation")]
+    [InlineData("policy")]
+    [InlineData("expiry")]
+    public async Task SignedInvalidServiceTransition_RejectsWithoutPoisoningPredecessor(string mutation)
+    {
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync(
+            authorServiceSuccessor: true, serviceSuccessorMutation: mutation);
+        var root = TemporaryRoot();
+        try
+        {
+            for (var replica = 0; replica < 2; replica++)
+            {
+                var directory = ReplicaDirectory(root, replica);
+                var original = await CommitAsync(fixture, fixture.Publication, replica, directory, productionJournalPath: true);
+                var before = StateHash(directory);
+                await Assert.ThrowsAsync<CryptographicException>(async () => await CommitAsync(fixture,
+                    fixture.ServiceSuccessorPublication!, replica, directory, fixture.SuccessorXps, productionJournalPath: true));
+                Assert.Equal(before, StateHash(directory)); AssertNoFailureMarker(directory);
+                using var reopened = Open(fixture, replica, directory);
+                Assert.Equal(original.CanonicalBytes.ToArray(), reopened.ReadCurrentCommitReceipt()!.CanonicalBytes.ToArray());
+            }
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task MissingOrSubstitutedHistoricalSupport_RejectsWithoutMutation_ExactRecoverySucceeds(bool substitute)
+    {
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync(authorServiceSuccessor: true);
+        var root = TemporaryRoot();
+        try
+        {
+            for (var replica = 0; replica < 2; replica++)
+            {
+                var directory = ReplicaDirectory(root, replica);
+                await CommitAsync(fixture, fixture.Publication, replica, directory, productionJournalPath: true);
+                var path = Path.Combine(directory, "did2-prekey-stage", Convert.ToHexString(fixture.Publication.NetworkId.Span),
+                    Convert.ToHexString(fixture.Publication.PublicationOperationId.Span), "manifest.xpp1");
+                var exact = await File.ReadAllBytesAsync(path);
+                if (substitute)
+                {
+                    var other = DeepIdV2BoundedPreKeyPublicationCodec.CreateSequence(fixture.ServiceSuccessorPublication!.CanonicalBytes.Span,
+                        fixture.Placement.ViewHash.Span, fixture.Publisher.CanonicalBytes.Span, fixture.Dca, fixture.SuccessorXps)[0];
+                    await File.WriteAllBytesAsync(path, other);
+                }
+                else File.Move(path, path + ".held");
+                var before = StateHash(directory);
+                await Assert.ThrowsAsync<InvalidDataException>(async () => await CommitAsync(fixture,
+                    fixture.ServiceSuccessorPublication!, replica, directory, fixture.SuccessorXps, productionJournalPath: true));
+                Assert.Equal(before, StateHash(directory)); AssertNoFailureMarker(directory);
+                if (substitute) await File.WriteAllBytesAsync(path, exact);
+                else File.Move(path + ".held", path);
+                _ = await CommitAsync(fixture, fixture.ServiceSuccessorPublication!, replica, directory,
+                    fixture.SuccessorXps, productionJournalPath: true);
+                AssertNoFailureMarker(directory);
+            }
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
     [Fact]
     public async Task SignedSuccessorsThroughEpochFourteen_ReopenAndRetainedExactReplay()
     {
@@ -155,23 +316,33 @@ public sealed class DeepIdV2InventoryLineageTests
     }
 
     private static async Task<ParsedXic1V2> CommitAsync(DeepIdV2PublicationAuthorityFixture fixture,
-        ParsedXpp1V2 publication, int replica, string directory)
+        ParsedXpp1V2 publication, int replica, string directory, byte[]? exactService = null,
+        bool productionJournalPath = false, IMailboxStorageSecurity? security = null, CancellationToken ct = default)
     {
         // Independent, test-owned candidate journals exercise the authorized
         // service CAS after the real current-proof/device/inventory verifier.
         // This helper is not the terminal: its earlier same-operation staging
         // conflict guard is not exercised or claimed as endpoint coverage.
         using var journal = new DeepIdV2PublicationJournal(
-            Path.Combine(directory, "test-candidates", Guid.NewGuid().ToString("N")),
+            productionJournalPath ? Path.Combine(directory, "did2-prekey-stage", Convert.ToHexString(publication.NetworkId.Span),
+                Convert.ToHexString(publication.PublicationOperationId.Span)) :
+                Path.Combine(directory, "test-candidates", Guid.NewGuid().ToString("N")),
             publication.NetworkId.Span, publication.PublicationOperationId.Span,
             fixture.Placement.ViewHash.Span, publication.PlacementHash.Span, publication.Manifest.Field(2).Span);
         var fragments = DeepIdV2BoundedPreKeyPublicationCodec.CreateSequence(
             publication.CanonicalBytes.Span, fixture.Placement.ViewHash.Span,
-            fixture.Publisher.CanonicalBytes.Span, fixture.Dca, fixture.Xps);
+            fixture.Publisher.CanonicalBytes.Span, fixture.Dca, exactService ?? fixture.Xps);
+        var retained = journal.ReadCommitted();
+        var replay = retained is not null;
+        if (replay)
+        {
+            Assert.Equal(publication.CanonicalBytes.ToArray(), retained!.Candidate!.CanonicalBytes.ToArray());
+            Assert.Equal(exactService ?? fixture.Xps, retained.PublisherXps1.ToArray());
+        }
         foreach (var fragment in fragments.Take(fragments.Count - 1))
-            Assert.Equal(PublicationStageDisposition.Staged,
+            Assert.Equal(replay ? PublicationStageDisposition.ExactReplay : PublicationStageDisposition.Staged,
                 journal.Stage(fragment, fixture.Publisher).Disposition);
-        Assert.Equal(PublicationStageDisposition.CandidateReady,
+        Assert.Equal(replay ? PublicationStageDisposition.ExactReplay : PublicationStageDisposition.CandidateReady,
             journal.Stage(fragments[^1], fixture.Publisher).Disposition);
         var local = fixture.Placement.ReplicaIds[replica];
         var node = new RouterNodeOptions
@@ -181,8 +352,8 @@ public sealed class DeepIdV2InventoryLineageTests
             Ed25519PrivateKey = Convert.ToHexString(fixture.Node(local.Span).Seed)
         };
         var committer = new DeepIdV2PublicationFinalCommitter(node, new(fixture, fixture),
-            fixture, fixture, new MailboxStorageSecurity(), new MailboxDurabilityBarrier());
-        return await committer.CommitAsync(journal, fixture.Placement, null, default);
+            fixture, fixture, security ?? new MailboxStorageSecurity(), new MailboxDurabilityBarrier());
+        return await committer.CommitAsync(journal, fixture.Placement, null, ct);
     }
 
     private static DeepIdV2InventoryCommitStore Open(DeepIdV2PublicationAuthorityFixture fixture,

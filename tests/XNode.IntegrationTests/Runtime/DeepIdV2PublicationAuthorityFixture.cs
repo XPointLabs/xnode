@@ -72,6 +72,8 @@ internal sealed partial class DeepIdV2PublicationAuthorityFixture : IDisposable,
         new Dictionary<string, ParsedXpp1V2>();
     internal byte[] Dca { get; private set; } = [];
     internal byte[] Xps { get; private set; } = [];
+    internal byte[] SuccessorXps { get; private set; } = [];
+    internal ParsedXpp1V2? ServiceSuccessorPublication { get; private set; }
     internal Xpu1Request ContactPublication { get; private set; } = null!;
     internal ReadOnlyMemory<byte> ContactDispatch { get; private set; }
     internal PublicationCurrentWireRequest ContactCurrentRequest { get; private set; } = null!;
@@ -122,14 +124,16 @@ internal sealed partial class DeepIdV2PublicationAuthorityFixture : IDisposable,
         IReadOnlyList<TransportOrigin>? transportOrigins = null, bool distinctNodeIdentities = false,
         bool authorOneTimeObject = false, byte contactDepositMarker = 0x41,
         byte contactPublicationMarker = 0x47, bool shortMailboxProjection = false,
-        Func<DeepIdV2PublicationAuthorityFixture, Task<ReadOnlyMemory<byte>>>? commitForSuccessor = null)
+        Func<DeepIdV2PublicationAuthorityFixture, Task<ReadOnlyMemory<byte>>>? commitForSuccessor = null,
+        bool authorServiceSuccessor = false, bool shortInitialService = false,
+        string serviceSuccessorMutation = "")
     {
         if (authorOneTimeObject && authorRouteSuccessor)
             throw new ArgumentException("One-time invitations do not support route successors.");
         if (commitForSuccessor is not null && (!authorContactPublication || !authorRouteSuccessor || authorOneTimeObject))
             throw new ArgumentException("Publication successor authoring requires a committed reusable predecessor.");
         var fixture = new DeepIdV2PublicationAuthorityFixture(serviceMarker, distinctNodeIdentities);
-        try { await fixture.AuthorAsync(authorContactPublication, networkCommitmentMarker, rootMarker, authorRouteSuccessor, lastResortReuseLimit, authorInventoryRotation, corruptFirstPreKeyBundleSignature, transportOrigins, authorOneTimeObject, contactDepositMarker, contactPublicationMarker, shortMailboxProjection, commitForSuccessor); return fixture; }
+        try { await fixture.AuthorAsync(authorContactPublication, networkCommitmentMarker, rootMarker, authorRouteSuccessor, lastResortReuseLimit, authorInventoryRotation, corruptFirstPreKeyBundleSignature, transportOrigins, authorOneTimeObject, contactDepositMarker, contactPublicationMarker, shortMailboxProjection, commitForSuccessor, authorServiceSuccessor, shortInitialService, serviceSuccessorMutation); return fixture; }
         catch { fixture.Dispose(); throw; }
     }
 
@@ -137,7 +141,8 @@ internal sealed partial class DeepIdV2PublicationAuthorityFixture : IDisposable,
         ushort lastResortReuseLimit, bool authorInventoryRotation, bool corruptFirstPreKeyBundleSignature,
         IReadOnlyList<TransportOrigin>? transportOrigins, bool authorOneTimeObject, byte contactDepositMarker,
         byte contactPublicationMarker, bool shortMailboxProjection,
-        Func<DeepIdV2PublicationAuthorityFixture, Task<ReadOnlyMemory<byte>>>? commitForSuccessor)
+        Func<DeepIdV2PublicationAuthorityFixture, Task<ReadOnlyMemory<byte>>>? commitForSuccessor, bool authorServiceSuccessor,
+        bool shortInitialService, string serviceSuccessorMutation)
     {
         using var root = new TestSigner(rootMarker);
         using var w1 = new TestSigner(0x30);
@@ -259,12 +264,15 @@ internal sealed partial class DeepIdV2PublicationAuthorityFixture : IDisposable,
         try
         {
             var dpd = Reference("DPD1", 1, device.Certificate.CanonicalHash.Span);
+            var inventoryExpires = shortInitialService ? checked(Freshness.TrustedUpperUnixSeconds + 8) : 1_400UL;
             ReadOnlyMemory<byte>[] xpsFields = [Network, service, id, dpd,
                 U64(1), new byte[32], U16(DeepIdV2Codec.Suite), U16(32), U16(lastResortReuseLimit),
-                U64(1_000), U64(1_400)];
+                U64(1_000), U64(inventoryExpires)];
             Xps = DeepIdV2PreKeyServiceCodec.Encode(xpsFields,
                 PublicKeyAuth.SignDetached(
                     DeepIdV2PreKeyServiceCodec.CreateSignatureInput(xpsFields), key.PrivateKey));
+            var serviceGeneration = 1UL;
+            var exactService = Xps;
             // This gate verifies the signatures/custody of public KEM descriptors.
             // No decapsulation/exchange is claimed by these test-only descriptors.
             ParsedDpk2V2 Member(byte marker, Dpk2PrekeyKind kind, ulong epoch, byte variant)
@@ -274,8 +282,8 @@ internal sealed partial class DeepIdV2PublicationAuthorityFixture : IDisposable,
                 Dpk2Record Record(byte[] x, byte[] ml, byte[] bundle) => new(
                     Network, authorization.Record.DeepAccountId.Span, id,
                     device.Certificate.DeviceGeneration, dpd, directory.Head.Record.DirectoryGeneration,
-                    directory.Head.Record.RecordHash.Span, 1, epoch, Bytes(32, 0x51),
-                    1, 1_000, 1_000, 1_400, device.Certificate.DeviceX25519PublicKey.Span,
+                    directory.Head.Record.RecordHash.Span, serviceGeneration, epoch, Bytes(32, 0x51),
+                    1, 1_000, 1_000, inventoryExpires, device.Certificate.DeviceX25519PublicKey.Span,
                     Bytes(32, 0x71), ScalarMult.Base(Bytes(32, 0x81)), x,
                     kind == Dpk2PrekeyKind.OneTime ? prekeyId : [],
                     kind == Dpk2PrekeyKind.OneTime ? ScalarMult.Base(prekeyId) : [],
@@ -302,11 +310,11 @@ internal sealed partial class DeepIdV2PublicationAuthorityFixture : IDisposable,
                     .Select(i => Member((byte)(0x10 + i), Dpk2PrekeyKind.OneTime, epoch, variant))
                     .OrderBy(member => Convert.ToHexString(member.OneTimePrekeyId.Span), StringComparer.Ordinal).ToArray();
                 var last = Member(0x90, Dpk2PrekeyKind.LastResort, epoch, variant);
-                ReadOnlyMemory<byte>[] xpiFields = [Network, service, id, dpd, U64(1),
-                    Reference("XPS1", 2, SHA256.HashData(Xps)), U64(epoch), predecessor, U16(32),
+                ReadOnlyMemory<byte>[] xpiFields = [Network, service, id, dpd, U64(serviceGeneration),
+                    Reference("XPS1", 2, SHA256.HashData(exactService)), U64(epoch), predecessor, U16(32),
                     InventoryRoot(members), last.ExactHash, directory.Head.Record.RecordHash,
                     Reference("DRS1", 1, identity.Revocations.Snapshot.CanonicalHash.Span),
-                    U64(1_000), U64(1_400)];
+                    U64(1_000), U64(inventoryExpires)];
                 var manifest = DeepIdV2PreKeyManifestCodec.Decode(DeepIdV2PreKeyManifestCodec.Encode(
                     xpiFields, PublicKeyAuth.SignDetached(
                         DeepIdV2PreKeyManifestCodec.CreateSignatureInput(xpiFields), key.PrivateKey)));
@@ -329,6 +337,34 @@ internal sealed partial class DeepIdV2PublicationAuthorityFixture : IDisposable,
                 };
             }
             InventoryHistory = inventoryHistory;
+            if (authorServiceSuccessor)
+            {
+                serviceGeneration = 2;
+                var nextFields = xpsFields.ToArray();
+                nextFields[4] = U64(2); nextFields[5] = SHA256.HashData(Xps); nextFields[10] = U64(1_450);
+                switch (serviceSuccessorMutation)
+                {
+                    case "": break;
+                    case "predecessor": nextFields[5] = Hash("wrong signed XPS predecessor"); break;
+                    case "generation": serviceGeneration = 3; nextFields[4] = U64(3); break;
+                    case "policy": nextFields[7] = U16(31); break;
+                    case "expiry": nextFields[10] = xpsFields[10]; break;
+                    default: throw new ArgumentException("Unknown signed service mutation.");
+                }
+                SuccessorXps = DeepIdV2PreKeyServiceCodec.Encode(nextFields, PublicKeyAuth.SignDetached(
+                    DeepIdV2PreKeyServiceCodec.CreateSignatureInput(nextFields), key.PrivateKey));
+                // Hostile candidates are deliberately signed with this fixture's
+                // own key, not manufactured by weakening the production author.
+                DeepIdV2PreKeyServiceCodec.VerifyDeviceSignature(DeepIdV2PreKeyServiceCodec.Decode(SuccessorXps),
+                    device.Certificate.DeviceEd25519PublicKey.Span);
+                if (serviceSuccessorMutation.Length == 0)
+                    DeepIdV2PreKeyLineageVerifier.VerifyServiceTransition(DeepIdV2PreKeyServiceCodec.Decode(SuccessorXps),
+                        DeepIdV2PreKeyServiceCodec.Decode(Xps), device.Certificate.DeviceEd25519PublicKey.Span);
+                exactService = SuccessorXps;
+                inventoryExpires = 1_400;
+                ServiceSuccessorPublication = Inventory(1, new byte[32], 0xee, variant: 2);
+                serviceGeneration = 1; exactService = Xps;
+            }
             if (authorContactPublication || authorOneTimeObject)
             {
                 var current = DeepIdV2CurrentContactAuthorizationVerifier.Verify(Freshness,

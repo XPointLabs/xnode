@@ -8,7 +8,7 @@ namespace XNode;
 
 internal sealed record DeepIdV2VerifiedPublicationCandidate(
     ParsedXpp1V2 Publication, ParsedDid2 PublisherDid2,
-    DeepIdV2CurrentContactAuthorization CurrentAuthorization);
+    DeepIdV2CurrentContactAuthorization CurrentAuthorization, ParsedXps1V2 Service);
 
 /// <summary>
 /// Joins a durably reassembled XPP1 candidate to a recipient-specific,
@@ -66,6 +66,6 @@ internal sealed class DeepIdV2PublicationCandidateAuthority(
             current, staged.Candidate,
             now.BootId.Span, now.SampleSeconds);
         return new DeepIdV2VerifiedPublicationCandidate(staged.Candidate,
-            staged.PublisherDid2, current);
+            staged.PublisherDid2, current, DeepIdV2PreKeyServiceCodec.Decode(staged.PublisherXps1.Span));
     }
 }

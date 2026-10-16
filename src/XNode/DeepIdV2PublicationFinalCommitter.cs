@@ -104,6 +104,34 @@ internal sealed class DeepIdV2PublicationFinalCommitter(
                 using var store = new DeepIdV2InventoryCommitStore(
                     node.DataDirectory, publication.NetworkId.Span,
                     serviceCapability.Span, localId, security, durability);
+                var predecessor = store.ReadCurrentPublication();
+                if (predecessor is not null &&
+                    !Fixed(predecessor.Manifest.Field(5).Span, publication.Manifest.Field(5).Span))
+                {
+                    // Old exact replay has already been authorized as a current
+                    // complete candidate. The durable CAS returns its old receipt;
+                    // it must not be treated as a new reverse service transition.
+                    var retainedReplay = store.ReadRetainedExactReceipt(publication);
+                    if (retainedReplay is not null) return retainedReplay;
+                    var oldService = DeepIdV2PublicationSupportReader.ReadPredecessorService(
+                        node.DataDirectory, predecessor, verified.PublisherDid2, security);
+                    var identity = verified.CurrentAuthorization.Freshness.CurrentCheckpoint!.Binding.Identity;
+                    var device = identity.ActiveDevices.SingleOrDefault(item =>
+                        Fixed(item.Certificate.DeviceId.Span, publication.Manifest.Field(3).Span)) ??
+                        throw new CryptographicException("DID2 service succession has no exact current device.");
+                    DeepIdV2PreKeyLineageVerifier.VerifyServiceTransition(verified.Service, oldService,
+                        device.Certificate.DeviceEd25519PublicKey.Span);
+                    now = await clock.ReadAsync(cancellationToken).ConfigureAwait(false) ??
+                        throw new CryptographicException("DID2 service transition lost its monotonic clock.");
+                    refreshed = DeepIdV2CurrentContactAuthorizationVerifier.Verify(
+                        verified.CurrentAuthorization.Freshness, verified.CurrentAuthorization.Authorization,
+                        now.BootId.Span, now.SampleSeconds);
+                    current.VerifiedPlacement.Network.EnsureCurrent();
+                    current.EnsureUsable(refreshed.TrustedUpperUnixSeconds);
+                    if (refreshed.TrustedLowerUnixSeconds < notBefore || refreshed.TrustedUpperUnixSeconds >= expiresAt)
+                        throw new CryptographicException("DID2 service commit crossed its signed inventory interval.");
+                }
+                cancellationToken.ThrowIfCancellationRequested();
                 return store.CommitAuthorized(publication,
                     refreshed.TrustedLowerUnixSeconds,
                     input => PublicKeyAuth.SignDetached(input,

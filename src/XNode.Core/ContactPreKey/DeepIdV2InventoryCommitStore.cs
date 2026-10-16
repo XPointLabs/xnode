@@ -138,6 +138,18 @@ internal sealed partial class DeepIdV2InventoryCommitStore : IDisposable
         }
     }
 
+    // Exact historical local receipt, never fresh publication/claim authority.
+    // The final committer independently verifies the current complete candidate.
+    internal ParsedXic1V2? ReadRetainedExactReceipt(ParsedXpp1V2 publication)
+    {
+        lock (custodyGate)
+        {
+            EnsureAvailable();
+            return ReadState().SingleOrDefault(slot =>
+                Fixed(slot.Publication.CanonicalBytes.Span, publication.CanonicalBytes.Span))?.Receipt;
+        }
+    }
+
     internal ParsedXic1V2 CommitAuthorized(ParsedXpp1V2 verifiedPublication,
         ulong committedAtUnixSeconds, Func<byte[], byte[]> signNodeData)
     {
@@ -161,14 +173,16 @@ internal sealed partial class DeepIdV2InventoryCommitStore : IDisposable
             .ComputeAggregateHash(verifiedPublication.CanonicalBytes.Span);
         var state = ReadState();
         var epoch = U64(manifest.Field(7).Span);
+        var serviceGeneration = U64(manifest.Field(5).Span);
         foreach (var slot in state)
         {
             var storedEpoch = U64(slot.Manifest.Field(7).Span);
+            var sameServiceEpoch = U64(slot.Manifest.Field(5).Span) == serviceGeneration && storedEpoch == epoch;
             if (Fixed(slot.Receipt.Field(2).Span,
                     verifiedPublication.PublicationOperationId.Span) ||
-                storedEpoch == epoch)
+                sameServiceEpoch)
             {
-                if (storedEpoch == epoch &&
+                if (sameServiceEpoch &&
                     Fixed(slot.AggregateHash, aggregateHash) &&
                     Fixed(slot.Manifest.CanonicalBytes.Span,
                         manifest.CanonicalBytes.Span) &&

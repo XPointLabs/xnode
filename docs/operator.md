@@ -727,6 +727,16 @@ the `Production` activation guard remains closed. Only the bounded authenticated
 replica route is allowlisted through signed-origin HTTPS to its dedicated H2
 listener. It is not an unauthenticated direct publication API. This source is
 not yet a production LKG/renewal owner.
+Under [DR-0132](../../docs/survival-program/decisions/DR-0132-replica-prekey-service-transition.md),
+the final committer also admits an independently verified immediate signed XPS
+service successor at epoch1, without changing snapshot version2. Its historical
+descriptor comes from the exact predecessor operation's existing bounded manifest,
+anchored by the node-signed inventory reference. Keep staging and inventory/claim
+custody together in backups. Missing/substituted support fails before mutation;
+do not reconstruct it from unrelated credentials or clear an existing fork marker.
+The epoch conflict key includes service generation; operation reuse and genuine
+same-service forks remain fail-closed. Source qualification does not qualify a
+running image, current claim or physical delivery.
 Two-replica dispatch/final verification and client claim/receive remain release
 gates.
 The internal DID2 claim journal now shares the inventory custody lock and stores
