@@ -45,15 +45,31 @@ The test now asserts that exact earlier rejection. Strict registry generation
 and validation passed;178 normative anchors were unchanged and one normative
 document source hash was mechanically repinned. No wire allocation was added.
 
-Full canonical/package gates, matching running images and retained-account
-device recovery remain open. The current local dev runtime has one pre-existing
-fork marker on one node; read-only audit found none on the other two. Cause is
-not inferable from that bare marker. No marker, key, inventory or account was
-reset. Production, Releases and main were not changed.
+Full canonical/package gates and retained-account device recovery remain open.
+Before activation the local dev runtime had one pre-existing fork marker on one
+node; read-only audit found none on the other two. Cause is not inferable from
+that bare marker. Production, Releases and main were not changed.
 
 Mr. X subsequently authorized a local-dev reset if `deep-dev` cannot supply a
 compatible snapshot. Its network and both genesis anchors differ, so importing
-that state is forbidden. A planned recoverable quarantine of only the affected
-local service directory is operator test maintenance, not protocol recovery or
-permission to remove production latches. No reset is performed by this source
-change. Keys, accounts and other service custody remain outside that reset scope.
+that state is forbidden. After `image-08` completed native0 with no compiler
+warnings/errors, `reset-09` stopped only the affected local node and moved its
+one affected service directory (4 files, including the intact marker) into
+recoverable quarantine on the same data volume. The first offline helper did
+not run because the old container image was no longer locally available; its
+exit125 is retained separately. The continuation used the newly built pinned
+image with no network and only the exact data volume mounted. No keys, accounts,
+other service directories or staging state were reset. This explicit local
+operator reset is not retained-native-custody recovery acceptance and does not
+authorize removing production latches.
+
+Supported `up-10` completed native0 with all9 services running and exact matched
+Registry, publisher and three-node images. All29 volume and25 bind identities
+match before/after; bind comparison canonicalizes only Windows drive/separator
+and equivalent Docker Desktop host-source representations. `smoke-11` completed
+native0: current Registry proof,3 verified ONION nodes, recovery60s. This separate
+readiness result is not sustained operation or business delivery. Android31 install
+preflight passed against the attached physical device and exact APK/signer;
+it was not installed by that preflight. Windows automation was stopped by a
+physical Escape before opening the retained profile. No new device acceptance
+is claimed; contacts, text, attachments and groups remain0/4.
