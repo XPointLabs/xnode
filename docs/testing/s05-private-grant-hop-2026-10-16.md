@@ -34,3 +34,13 @@ Windows PowerShell5.1/SDK10.0.301. This is focused source evidence only. Matchin
 local deployment, preserved-mount smoke and exact pending device retry remain
 required. Registry-side classification is owned by its
 [checkpoint](../../../deep-registry-api/docs/testing/s05-private-grant-hop-2026-10-16.md).
+
+The matching local diagnostic runtime subsequently identifies a private-hop503
+and the Registry's immediate shared-gate busy throw, using the actual Registry
+module/PDB identity and IL offset, not a guessed exception message. Android's
+single post-update refresh remains failed; no business acceptance follows.
+The correction and provider receipts belong to the Registry checkpoint above.
+If an original acquisition window expires before the next device run, only the
+existing owned [DR-0126 continuation](../../../docs/survival-program/decisions/DR-0126-independent-grant-after-unresolved-acquisition.md)
+may preserve/close that uncertainty and acquire independent current work. The
+operator must not delete, re-window or manually replace it to obtain a PASS.
