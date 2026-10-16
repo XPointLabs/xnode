@@ -273,12 +273,12 @@ public sealed partial class CurrentMailboxPeerHttpTests
     }
 
     private static byte[] RetrieveFrame(Fixture f, ulong counter = 1, byte operation = 0x71, ulong after = 0,
-        ushort maximum = 10, ReadOnlyMemory<byte> continuation = default)
+        ushort maximum = 10, ReadOnlyMemory<byte> continuation = default, ulong grantExpiry = 1110)
     {
         var envelope = MailboxAuthenticatedRequestTranscript.DecodeStoreBody(f.Recipient.Envelope);
         var binding = MailboxAuthenticatedRequestTranscript.ForRetrieve(envelope.Epoch,
             Enumerable.Repeat(operation, 16).ToArray(), envelope.MailboxId, envelope.PlacementId, after, maximum, continuation.Span);
-        var grant = MailboxGrantRevocationStoreTests.Grant(f.Signed, f.Recipient.Node.Host, MailboxCapabilityDomain.Retrieve, 0x52);
+        var grant = MailboxGrantRevocationStoreTests.Grant(f.Signed, f.Recipient.Node.Host, MailboxCapabilityDomain.Retrieve, 0x52, expires: grantExpiry);
         return MailboxAuthenticatedClientRequestCodec.Encode(new()
         {
             Binding = binding,

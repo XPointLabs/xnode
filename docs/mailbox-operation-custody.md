@@ -153,10 +153,30 @@ The existing Protocol `Deep.MailboxAuthority.Check` metadata is read only from
 the exact built-in CryptographicException and mapped through its eleven fixed
 labels. Unknown values/objects/subclasses are Unclassified, never stringified.
 This diagnostic label cannot authorize or settle work.
-An expired original grant remains unavailable: this worker does not implement
-unsettled-expiry retirement or waive the pending-prefix guard. Those activation
-requirements remain owned by XPOINT-NETWORK section9.1 above. Focused source,
+An expired original grant remains unavailable for dispatch: this worker does not
+retire it or replace the original attempt. The separate DR-0134 prefix/read
+candidate below is not a worker admission bypass. Focused source,
 matched retained runtime and physical acceptance are distinct evidence scopes.
+
+### Original-permission expiry exclusion candidate
+
+The source consumer follows [XPOINT-NETWORK section9.1](../../docs/architecture/XPOINT-NETWORK-V1.md#91-current-two-replica-store-ordering)
+and [DR-0134](../../docs/survival-program/decisions/DR-0134-original-store-expiry-exclusion.md).
+For active uncertain intents the actual protected writer ledger invokes the
+closed Protocol expiry verifier before allocating a later cursor. Durable rows
+still require their exact authenticated MQR3; corrupt/missing quorum never falls
+back to expiry. Each original row is independently reloaded/authenticated after
+callbacks. No row, request, counter, floor or blob is collected or rewritten by
+this denial-only check.
+
+Retrieve now enters through the same ledger owner, retaining ledger -> mutation
+lock order. Under native mutation serialization, Pending may be omitted only
+when its complete native context, nonce and blob digest match an actual original
+protected intent and permanent expiry is verified. Reopen the protected document
+and reread the native record after callbacks. A non-writer missing exact original
+custody still refuses; no peer RPC or reconstructed signed request is added.
+Completed objects remain readable. This is not settlement, noncommit, delivery
+or client cancellation; the old worker/client dispatch remains current-only.
 
 Every current native receiver requires one operation ledger at construction;
 Store/Retrieve/ACK and peer Store/tombstone cannot omit this owner or substitute

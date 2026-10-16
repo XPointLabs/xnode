@@ -108,12 +108,12 @@ public sealed partial class CurrentMailboxPeerHttpTests
         public void FlushParentDirectory(string path) => native.FlushParentDirectory(path);
     }
 
-    private static byte[] DifferentGrantStore(Fixture f)
+    private static byte[] DifferentGrantStore(Fixture f, ulong expires = 1110)
     {
         var body = MailboxAuthenticatedRequestTranscript.DecodeStoreBody(f.Recipient.Envelope) with
         { OperationId = Enumerable.Repeat((byte)0x82, 16).ToArray(), DeduplicationDigest = Enumerable.Repeat((byte)0x92, 32).ToArray() };
         var binding = MailboxAuthenticatedRequestTranscript.ForStore(body);
-        var grant = MailboxGrantRevocationStoreTests.Grant(f.Signed, f.Sender.Node.Host, MailboxCapabilityDomain.Deposit, 0x62);
+        var grant = MailboxGrantRevocationStoreTests.Grant(f.Signed, f.Sender.Node.Host, MailboxCapabilityDomain.Deposit, 0x62, expires: expires);
         return MailboxAuthenticatedClientRequestCodec.Encode(new()
         {
             Binding = binding,

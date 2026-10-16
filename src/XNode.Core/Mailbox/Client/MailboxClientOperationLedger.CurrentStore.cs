@@ -29,7 +29,7 @@ public sealed partial class MailboxClientOperationLedger
         finally { _gate.Release(); }
     }
 
-    private static async Task RequireCurrentStorePrefixAsync(MailboxClientLedgerDocument document, ulong epoch,
+    private async Task RequireCurrentStorePrefixAsync(MailboxClientLedgerDocument document, ulong epoch,
         string mailbox, string placement, string membership, VerifiedMailboxHostAuthorityV2 host,
         MailboxCurrentOperationLease lease, CancellationToken token)
     {
@@ -37,11 +37,25 @@ public sealed partial class MailboxClientOperationLedger
             prior.Epoch == epoch && FixedHexEquals(prior.MailboxId, mailbox) &&
             FixedHexEquals(prior.PlacementCommitment, placement) && FixedHexEquals(prior.MembershipCommitment, membership)))
         {
-            if (string.IsNullOrEmpty(prior.PeerRequest) || prior.State != "durable" || string.IsNullOrEmpty(prior.Receipt))
+            if (string.IsNullOrEmpty(prior.PeerRequest))
                 throw new InvalidOperationException("Current Store prefix has an unsettled exact intent.");
-            await host.VerifyStoreSettlementAsync(Convert.FromBase64String(prior.PeerRequest),
-                Convert.FromBase64String(prior.Receipt), token).ConfigureAwait(false);
+            if (prior.State == "durable")
+            {
+                if (string.IsNullOrEmpty(prior.Receipt))
+                    throw new InvalidDataException("Current durable Store has lost its settlement.");
+                await host.VerifyStoreSettlementAsync(Convert.FromBase64String(prior.PeerRequest),
+                    Convert.FromBase64String(prior.Receipt), token).ConfigureAwait(false);
+            }
+            else
+            {
+                if (prior.State is not ("reserved" or "retryable" or "completing") || prior.Receipt.Length != 0)
+                    throw new InvalidOperationException("Current Store prefix has an unsettled exact intent.");
+                try { await host.VerifyStoreExpiryExclusionAsync(Convert.FromBase64String(prior.PeerRequest), token).ConfigureAwait(false); }
+                catch (System.Security.Cryptography.CryptographicException error)
+                { throw new InvalidOperationException("Current Store prefix has an unsettled exact intent.", error); }
+            }
             _ = await lease.CheckAsync(token).ConfigureAwait(false);
+            await RequireUnchangedCurrentStoreAsync(prior, lease, token).ConfigureAwait(false);
         }
     }
 

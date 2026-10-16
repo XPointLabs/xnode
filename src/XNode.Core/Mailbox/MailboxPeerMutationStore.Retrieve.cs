@@ -1,5 +1,7 @@
 using System.Security.Cryptography;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
+using Deep.Protocol.XPointNetworkV1;
+using XNode.Core.Mailbox.Client;
 
 namespace XNode.Core.Mailbox;
 
@@ -15,7 +17,8 @@ public sealed partial class MailboxPeerMutationStore
 
     internal async Task<MailboxCurrentRetrieveWindow> ReadCurrentWindowAsync(
         MailboxAuthenticatedRetrieveBody request, ReadOnlyMemory<byte> membership,
-        ulong snapshotHighWater, MailboxCurrentOperationLease lease, CancellationToken token)
+        ulong snapshotHighWater, MailboxClientOperationLedger ledger, MailboxClientLedgerDocument document,
+        VerifiedMailboxHostAuthorityV2 host, MailboxCurrentOperationLease lease, CancellationToken token)
     {
         await _gate.WaitAsync(token).ConfigureAwait(false);
         try
@@ -32,6 +35,7 @@ public sealed partial class MailboxPeerMutationStore
             if (index is not null && index.Any(pair => pair.Key <= highWater && pair.Value.Count != 1))
                 throw new InvalidDataException("Current mailbox cursor has ambiguous mutation custody.");
             var items = new List<MailboxRetrievedEnvelope>(request.MaximumItems + 1);
+            var excluded = new List<(string Path, PersistedMutation Record)>();
             if (index is not null)
             {
                 foreach (var pair in index)
@@ -42,9 +46,26 @@ public sealed partial class MailboxPeerMutationStore
                     if (record.Cursor != pair.Key || RetrieveScope(record) != scope ||
                         Path.GetFileNameWithoutExtension(path) != RecordKey(record.Epoch, record.MailboxId, record.EnvelopeDigest))
                         throw new InvalidDataException("Current retrieve index differs from native custody.");
-                    if (record.ExpiresAtUnixSeconds <= upper || record.State is "tombstone-pending" or "tombstoned") continue;
+                    if (record.State is "tombstone-pending" or "tombstoned") continue;
                     if (record.State != "completed")
-                        throw new InvalidDataException("Current retrieve has unresolved native Store custody.");
+                    {
+                        var key = MailboxClientOperationLedger.BuildOperationKey(record.Epoch,
+                            Convert.FromHexString(record.MailboxId), Convert.FromHexString(record.OperationId));
+                        if (record.State != "pending" || !document.Operations.TryGetValue(key, out var original) ||
+                            original.PeerRequest.Length == 0)
+                            throw new InvalidDataException("Current retrieve has unresolved native Store custody.");
+                        var peer = MailboxPeerWireV2Codec.Decode(Convert.FromBase64String(original.PeerRequest));
+                        var body = MailboxAuthenticatedRequestTranscript.DecodeStoreBody(peer.Payload.Span);
+                        if (!record.MatchesStoreContext(peer, body) || !FixedHex(record.ReplayNonce, peer.ReplayNonce.Span) ||
+                            !FixedHex(record.BlobId, peer.PayloadDigest.Span))
+                            throw new InvalidDataException("Current retrieve original Store differs from native custody.");
+                        await ledger.RequireCurrentStoreExpiryAsync(original, host, lease, token).ConfigureAwait(false);
+                        if (Read(path) != record)
+                            throw new InvalidDataException("Current retrieve Pending changed during expiry verification.");
+                        excluded.Add((path, record));
+                        continue; // Original uncertainty and all native/protected records remain.
+                    }
+                    if (record.ExpiresAtUnixSeconds <= upper) continue;
                     // A continuation issued by the other replica may already
                     // be beyond a locally reserved Store. Do not silently skip
                     // that live Pending custody: it can complete below the
@@ -74,6 +95,11 @@ public sealed partial class MailboxPeerMutationStore
             var finalUpper = await lease.CheckAsync(token).ConfigureAwait(false);
             if (items.Any(item => item.Envelope.ExpiresAtUnixSeconds <= finalUpper))
                 throw new InvalidDataException("Current retrieve object expired during read.");
+            // A later blob/time callback must not change an earlier omitted
+            // Pending record below this page's snapshot. Gate still held.
+            foreach (var prior in excluded)
+                if (Read(prior.Path) != prior.Record)
+                    throw new InvalidDataException("Current retrieve excluded custody changed before release.");
             return new(highWater, items);
         }
         finally { _gate.Release(); }
