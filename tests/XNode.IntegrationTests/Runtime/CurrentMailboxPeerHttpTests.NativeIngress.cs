@@ -276,9 +276,14 @@ public sealed partial class CurrentMailboxPeerHttpTests
         MailboxAuthenticatedOperation.Ack => OnionOperation.Acknowledge,
         _ => throw new ArgumentOutOfRangeException(nameof(operation))
     };
-    private static ServiceProvider NativeServices(Fixture f, Action? resolving = null) => new ServiceCollection()
-        .AddSingleton(f.Sender.Receiver).AddSingleton<CurrentMailboxReplicationCoordinator>(_ =>
-        { resolving?.Invoke(); return f.Coordinator; }).BuildServiceProvider();
+    private static ServiceProvider NativeServices(Fixture f, Action? resolving = null,
+        Microsoft.Extensions.Logging.ILogger<NativeMailboxExitDispatcher>? logger = null)
+    {
+        var services = new ServiceCollection().AddSingleton(f.Sender.Receiver)
+            .AddSingleton<CurrentMailboxReplicationCoordinator>(_ => { resolving?.Invoke(); return f.Coordinator; });
+        if (logger is not null) services.AddSingleton(logger);
+        return services.BuildServiceProvider();
+    }
     private static ILocalNativeMailboxExitDispatcher NativeDispatcher(IServiceProvider services) => new NativeMailboxExitDispatcher(services);
     private static void AssertUnknown(NativeMailboxDispatchResult result)
     {
