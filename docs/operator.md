@@ -514,6 +514,12 @@ expanded133-case privacy/terminal/composition regression,0 failures/skips,
 native0 under Windows PowerShell5.1 / SDK10.0.301
 (`artifacts/s05-contact-terminal-20261016/focused-01`, `regression-02`).
 These are focused source receipts, not a full gate or physical completion.
+The matching local component build13 completed; supported Up14 checked its
+exact image on all three retained nodes, the unchanged Registry image and all
+29 volume /25 bind identities. Supported smoke15 exited0. Windows16 subsequently
+completed one empty incoming synchronization; no new terminal failure was
+observed in that bounded retry. Diagnostics are not a functional fix or proof
+that the earlier unknown completion cannot recur. Production is unchanged.
 
 The DID2 prekey claim runtime classifies native Windows replacement errors as
 I/O uncertainty. A claim whose reservation/completion cannot be confirmed returns
