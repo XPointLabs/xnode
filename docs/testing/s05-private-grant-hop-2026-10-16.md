@@ -40,6 +40,13 @@ and the Registry's immediate shared-gate busy throw, using the actual Registry
 module/PDB identity and IL offset, not a guessed exception message. Android's
 single post-update refresh remains failed; no business acceptance follows.
 The correction and provider receipts belong to the Registry checkpoint above.
+After its matching retained local activation, APK37 Refresh106 -> independent
+Inspect110 and Windows build20 each completed incoming synchronization without
+a messaging error. No new private-hop failure was observed in that bounded
+diagnostic interval. Empty-mailbox completion is not contact/message delivery;
+physical business acceptance remains0/4. Build10/Up11/smoke12 exited0; all9
+desired images and all54 original mounts are proved, preserving the raw failed
+representation comparison separately from its finite-equivalence proof.
 If an original acquisition window expires before the next device run, only the
 existing owned [DR-0126 continuation](../../../docs/survival-program/decisions/DR-0126-independent-grant-after-unresolved-acquisition.md)
 may preserve/close that uncertainty and acquire independent current work. The
