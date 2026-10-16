@@ -43,6 +43,8 @@ public sealed class CurrentMailboxRevocationRefreshTests
         var artifacts = new HttpsMailboxGrantRevocationArtifactSource(client, "https://registry.example/");
         await Assert.ThrowsAsync<IOException>(() => admission.RefreshRevocationsAsync(artifacts, default).AsTask());
         Assert.Equal(65UL, MailboxGrantRevocationV1Codec.Decode((await f.Deposit.ReadProtectedAsync()).Span).Generation);
+        // One role's bounded backlog must not starve the other role's batch.
+        Assert.Equal(2UL, MailboxGrantRevocationV1Codec.Decode((await f.Retrieve.ReadProtectedAsync()).Span).Generation);
         var callbacks = 0;
         await Assert.ThrowsAsync<CryptographicException>(() => admission.WithHostAsync((_, _) =>
         { callbacks++; return ValueTask.FromResult(true); }).AsTask());
@@ -61,6 +63,39 @@ public sealed class CurrentMailboxRevocationRefreshTests
             Assert.Equal(1, f.Signed.ProofReads);
             Assert.True(f.Signed.ObservationChecks > 260);
         }
+    }
+
+    [Theory]
+    [InlineData("signature")]
+    [InlineData("expired")]
+    public async Task FirstRoleBacklogCannotSkipSecondRoleVerificationOrAuthorizeAdmission(string fault)
+    {
+        await using var f = await CurrentMailboxAdmissionTests.Fixture.CreateAsync(MailboxAuthenticatedOperation.Retrieve);
+        var old = (await f.Deposit.ReadProtectedAsync()).ToArray();
+        var retainedRetrieve = (await f.Retrieve.ReadProtectedAsync()).ToArray();
+        var snapshots = new Dictionary<(MailboxCapabilityDomain, ulong), byte[]>();
+        for (ulong generation = 2; generation <= 71; generation++)
+        {
+            var next = Snapshot(f.Signed, generation: generation, prior: old,
+                expires: generation == 71 ? 1_140UL : 1_120UL);
+            snapshots[(MailboxCapabilityDomain.Deposit, generation)] = next;
+            old = next;
+        }
+        var target = Snapshot(f.Signed, MailboxCapabilityDomain.Retrieve, 2, retainedRetrieve,
+            expires: fault == "expired" ? 1_120UL : 1_140UL);
+        if (fault == "signature") target[^1] ^= 1;
+        snapshots[(MailboxCapabilityDomain.Retrieve, 2)] = target;
+        f.Signed.Sample = 115;
+        using var handler = new Records(snapshots); using var client = new HttpClient(handler);
+        await Assert.ThrowsAsync<CryptographicException>(() => f.Admission.RefreshRevocationsAsync(
+            new HttpsMailboxGrantRevocationArtifactSource(client, "https://registry.example/"), default).AsTask());
+        Assert.Equal(65UL, MailboxGrantRevocationV1Codec.Decode((await f.Deposit.ReadProtectedAsync()).Span).Generation);
+        var readBack = await f.Retrieve.ReadProtectedAsync();
+        Assert.True(retainedRetrieve.AsSpan().SequenceEqual(readBack.Span));
+        var callbacks = 0;
+        await Assert.ThrowsAsync<CryptographicException>(() => f.Admission.WithHostAsync((_, _) =>
+        { callbacks++; return ValueTask.FromResult(true); }).AsTask());
+        Assert.Equal(0, callbacks);
     }
 
     [Fact]

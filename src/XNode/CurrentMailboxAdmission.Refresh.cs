@@ -45,6 +45,7 @@ internal sealed partial class CurrentMailboxAdmission
                 await currentHost.EnsureCurrentAsync(ct).ConfigureAwait(false);
                 await host.EnsureCurrentAsync(ct).ConfigureAwait(false);
             }
+            var moreRetainedSteps = false;
             foreach (var role in new[] { MailboxCapabilityDomain.Deposit, MailboxCapabilityDomain.Retrieve })
             {
                 var store = role == MailboxCapabilityDomain.Deposit ? deposit : retrieve;
@@ -74,10 +75,14 @@ internal sealed partial class CurrentMailboxAdmission
                     generation = MailboxGrantRevocationV1Codec.Decode((await store.ReadProtectedAsync(ct).ConfigureAwait(false)).Span).Generation;
                     if (generation != nextGeneration) throw new IOException("Mailbox control native read-back changed.");
                 }
-                if (generation != latest.Generation) throw new IOException("Mailbox control catch-up has more retained steps.");
+                // Exhausting one role's step budget must not suppress the
+                // other role's bounded batch. This flag is not admission or
+                // a resume cursor: every next flight restores actual floors.
+                moreRetainedSteps |= generation != latest.Generation;
                 _ = await MailboxGrantRevocationV1Verifier.PlanInitialEnrollmentAsync(host, bytes, ct).ConfigureAwait(false);
             }
             await RequireSourcesAsync().ConfigureAwait(false);
+            if (moreRetainedSteps) throw new IOException("Mailbox control catch-up has more retained steps.");
             _ = await WithHostAsync(async (scope, checkToken) =>
             { _ = await scope.Lease.CheckAsync(checkToken).ConfigureAwait(false); return true; }, ct).ConfigureAwait(false);
         }

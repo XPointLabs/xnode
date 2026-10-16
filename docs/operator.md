@@ -1303,10 +1303,29 @@ a fresh signed target under the actual complete current host, then installs one
 verified successor at a time through the same native owner and read-back. A
 30-second flight commits at most 64 steps per role; unfinished history resumes
 from its durable floor next time. Expired intermediates provide no admission.
+If one role exhausts its step budget, refresh still attempts the other role's
+bounded batch within the original whole-flight deadline. It reports remaining
+history only after those batches and current-source checks; it never enters
+ordinary host admission while either role remains incomplete. No scheduling
+cursor, additional journal, skipped successor or enlarged budget is introduced.
 Missing protection, gaps, source changes and invalid signatures cannot trigger
 enrollment, floor reset, pruning or key generation. A network failure leaves the
 worker running with bounded backoff; successful attempts delay 15–17 seconds,
 failures 10–62 seconds. Stop cancels the attempt and delay.
+
+`artifacts/s05-current-publication-20261015/mgr-role-batches-red-13/` reproduced
+the premature first-role exit in both direct and actually observed source
+fixtures: native1,0PASS/2FAIL, Retrieve remained generation1 instead of2 after
+Deposit reached65. The original red12 TRX records the same assertions, but its
+PowerShell stderr handling lost the native terminal; it is not qualified.
+The corrected source passed `mgr-role-batches-15`:42PASS/0FAIL/0skip/native0,
+Windows PowerShell5.1 / SDK10.0.301, including expired/signature-invalid second
+targets, protected read-back, cold reopen, HTTP framing/retry/cancellation and
+host readiness. Attempt14 failed compilation with CS4007 in a new test's span
+expression; that expression was corrected without changing production guards.
+These are focused source receipts, not full/rehearsal, deployed recovery or
+physical delivery evidence. The original30-second cooperative deadline remains;
+this does not guarantee both batches finish when actual I/O exhausts that budget.
 
 This is locally tested actual Registry HTTPS-producer/configured-node/native
 integration on synthetic owned inputs, not a deployed Registry-to-node or
