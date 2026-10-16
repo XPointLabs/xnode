@@ -16,6 +16,28 @@ namespace XNode.IntegrationTests.Runtime;
 
 public sealed class CurrentMailboxHostCompositionTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void StoreRecoveryWorkerRegistrationRequiresConfiguredGraphWithoutOpeningCustody(bool configured)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "deep-composition-" + Guid.NewGuid().ToString("N"));
+        var node = new RouterNodeOptions { DataDirectory = Path.Combine(root, "data"), RouterId = new string('3', 64) };
+        var mailbox = new ReplicatedMailboxOptions { Enabled = true };
+        var configuration = Options(root).Validate(node, mailbox)!;
+        var services = new ServiceCollection();
+        // Descriptor-only proof: none of these factories may be resolved here.
+        services.AddSingleton<IDeepIdV2ContactStoreAuthoritySource>(_ => throw new InvalidOperationException("No authority acquired by registration."));
+        services.AddSingleton<IOnionMonotonicClock>(_ => throw new InvalidOperationException("No clock acquired by registration."));
+        if (configured) services.AddSingleton<DeepIdV2DirectoryProofConfiguration>(_ =>
+            throw new InvalidOperationException("No configured source opened by registration."));
+        services.AddCurrentMailboxHost(configuration, node, mailbox);
+        Assert.Equal(configured ? 1 : 0, services.Count(descriptor => !descriptor.IsKeyedService &&
+            descriptor.ServiceType == typeof(Microsoft.Extensions.Hosting.IHostedService) &&
+            descriptor.ImplementationType == typeof(CurrentMailboxStoreRecoveryWorker)));
+        Assert.False(Directory.Exists(root));
+    }
+
     [Fact]
     public void RetiredClientStoreAdapterAndItsNestedTypesAreAbsentFromActualCoreAssembly()
     {

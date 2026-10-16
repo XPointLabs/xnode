@@ -148,6 +148,7 @@ internal static class CurrentMailboxHostComposition
                 new HttpsMailboxGrantRevocationArtifactSource(provider.GetRequiredService<IHttpClientFactory>()
                     .CreateClient("did2-directory-proof"), provider.GetRequiredService<DeepIdV2DirectoryProofConfiguration>().RegistryOrigin));
             services.AddHostedService<CurrentMailboxRevocationRefreshWorker>();
+            services.AddHostedService<CurrentMailboxStoreRecoveryWorker>();
         }
         return services;
     }

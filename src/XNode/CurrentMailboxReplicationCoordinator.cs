@@ -50,7 +50,8 @@ internal sealed partial class CurrentMailboxReplicationCoordinator(CurrentMailbo
                     request.Scope.Replicas.Select(replica => replica.NodeId).ToArray(), request.Scope.Lease,
                     (cursor, upper) => local.AuthorStoreRequest(request.Scope, client.Binding.CanonicalRequest, cursor, upper), request.Scope.Host, ct,
                     requireExisting: requireExisting).ConfigureAwait(false);
-                var result = await StoreAdmittedClientAsync(request, intent.CanonicalPeerRequest, ct).ConfigureAwait(false);
+                var result = await StoreAdmittedClientAsync(request, intent.CanonicalPeerRequest, ct,
+                    intent.State == MailboxClientLedgerState.Durable ? intent.CachedReceipt : ReadOnlyMemory<byte>.Empty).ConfigureAwait(false);
                 if (result.Status == MailboxPeerQuorumStatus.Durable)
                     await ledger.SaveCurrentStoreQuorumAsync(intent.OperationKey, result.CanonicalMqr3,
                         request.Scope.Host, request.Scope.Lease, ct).ConfigureAwait(false);
@@ -82,7 +83,7 @@ internal sealed partial class CurrentMailboxReplicationCoordinator(CurrentMailbo
     }
 
     private async ValueTask<MailboxPeerQuorumResult> StoreAdmittedClientAsync(CurrentMailboxAdmission.Request request,
-        ReadOnlyMemory<byte> ownedPeer, CancellationToken ct)
+        ReadOnlyMemory<byte> ownedPeer, CancellationToken ct, ReadOnlyMemory<byte> settled = default)
     {
         var recovered = request.RecoveredOutcome;
         if (recovered is not null)
@@ -99,6 +100,15 @@ internal sealed partial class CurrentMailboxReplicationCoordinator(CurrentMailbo
             return new(MailboxPeerQuorumStatus.PartialFailure, ReadOnlyMemory<byte>.Empty, 0);
         var maximum = MailboxWireHttpContract.Store.MaximumResponseBytes;
         await request.ReserveOutcomeCapacityAsync(maximum, ct).ConfigureAwait(false);
+        if (!settled.IsEmpty)
+        {
+            await local.WithAdmittedPeerAsync(ownedPeer, MailboxPeerReplicationOperation.Store,
+                MailboxPeerWireResponseReplicaV2.Sender, request.Scope,
+                async (current, innerToken) =>
+                { await current.ValidateQuorumAsync(settled, innerToken).ConfigureAwait(false); return 0; }, ct).ConfigureAwait(false);
+            var adopted = await request.PersistSuccessAsync(settled, maximum, ct).ConfigureAwait(false);
+            return new(MailboxPeerQuorumStatus.Durable, adopted.CanonicalBytes, 2);
+        }
         var result = await local.WithAdmittedPeerAsync(ownedPeer, MailboxPeerReplicationOperation.Store,
             MailboxPeerWireResponseReplicaV2.Sender, request.Scope,
             (current, innerToken) => ReplicateAdmittedAsync(current, MailboxPeerReplicationOperation.Store, innerToken), ct).ConfigureAwait(false);

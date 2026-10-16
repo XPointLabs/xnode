@@ -118,6 +118,37 @@ Mailbox disabled skips these owners; that state qualifies no mailbox operation.
 Only the recovery boolean and a closed state label are added to public health,
 not exceptions, private files, identifiers, keys or contents.
 
+### Original Store settlement worker candidate
+
+The configured current graph also registers a separate host-owned Store recovery
+worker. Readiness does not run it. Each serial flight uses the existing Store
+request budget and selects at most one active exact intent from the authenticated
+operation document. A process-local round-robin index is scheduling only, never
+cursor, replay or time authority; it is discarded on restart. The idle delay is
+30–32 seconds; failures back off10–62 seconds with jitter. No queue, authority
+snapshot, journal generation or wire is added.
+
+Selection uses the same full host/key/native recovery as readiness and copies
+only the original operation reservation. Before any peer replay/effect, the
+receiver reopens that exact intent under its independently current original
+grant and both protected role owners. Closed/settled, missing, changed,
+expired/revoked or foreign custody cannot authorize another dispatch. Reuse the
+original signed PRQ2, nonce, cursor, body and expiry. There is no new MAU3,
+holder acquisition, route selection, encryption or client completion.
+
+Two independent verified replica receipts precede retaining MQR3 in the same
+protected document. A subsequent independently admitted exact client retry
+validates and adopts that saved quorum into its existing canonical outcome;
+it does not ask the peer again or reauthor a coordinator receipt. Native
+settlement alone is not a client outcome, semantic delivery or recipient ACK.
+
+Stop cancels the actual flight/delay. Expected authority/transport/custody
+failures retain original work; logging emits only a fixed state and no exception.
+An expired original grant remains unavailable: this worker does not implement
+unsettled-expiry retirement or waive the pending-prefix guard. Those activation
+requirements remain owned by XPOINT-NETWORK section9.1 above. Focused source,
+matched retained runtime and physical acceptance are distinct evidence scopes.
+
 Every current native receiver requires one operation ledger at construction;
 Store/Retrieve/ACK and peer Store/tombstone cannot omit this owner or substitute
 a neutral ledger. A supplied producer ledger must be that same instance.

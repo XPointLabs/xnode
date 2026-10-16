@@ -1228,6 +1228,16 @@ Store/Retrieve/ACK and descriptor-bound TLS/H2 peer Store/tombstone. The default
 remains disabled. Development/UAT network-source restrictions remain intact:
 this composition does not provide production authority or qualify activation.
 
+The current source candidate includes host-owned retry of original pending
+Store intents, separately from observational readiness. Its scheduling,
+cancellation, exact-byte custody and saved-quorum adoption belong to
+[the local custody contract](mailbox-operation-custody.md#original-store-settlement-worker-candidate).
+It requires already enrolled intact owners; enabling it does not provision or
+repair custody. Closed state logs distinguish idle/settled/incomplete/deadline/
+unavailable, not delivery or noncommit. Expired/revoked original permission
+cannot be renewed by restarting the worker. Preserve unavailable work and its
+independent roots; do not erase files, replace the grant or re-sign a peer nonce.
+
 ```json
 {
   "Mailbox": { "enabled": false },

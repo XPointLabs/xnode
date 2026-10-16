@@ -64,9 +64,13 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
     // A real host recovery operation, not admission for a synthetic client
     // request. Both MGR owners remain held through key and exact-document checks.
     internal async ValueTask InitializeHostAsync(CancellationToken token = default)
+        => _ = await WithInitializedHostAsync((_, _) => ValueTask.FromResult(true), token).ConfigureAwait(false);
+
+    private async ValueTask<T> WithInitializedHostAsync<T>(
+        Func<CurrentMailboxAdmission.HostScope, CancellationToken, ValueTask<T>> action, CancellationToken token)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
-        _ = await admission.WithHostAsync(async (scope, ct) =>
+        return await admission.WithHostAsync(async (scope, ct) =>
         {
             if (!ReferenceEquals(scope.Owner, admission))
                 throw new CryptographicException("Current host recovery belongs to another admission owner.");
@@ -86,7 +90,7 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
             admission.ValidateNativeRecovery(scope, ct);
             _ = await scope.Lease.CheckAsync(ct).ConfigureAwait(false);
             RequireKey();
-            return true;
+            return await action(scope, ct).ConfigureAwait(false);
         }, token).ConfigureAwait(false);
     }
 
@@ -221,7 +225,8 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
 
     internal async ValueTask<T> WithPeerAsync<T>(ReadOnlyMemory<byte> canonicalRequest,
         MailboxPeerReplicationOperation expectedOperation, MailboxPeerWireResponseReplicaV2 localRole,
-        Func<PeerOperation, CancellationToken, ValueTask<T>> action, CancellationToken token = default)
+        Func<PeerOperation, CancellationToken, ValueTask<T>> action, CancellationToken token = default,
+        Func<CurrentMailboxAdmission.GrantScope, CancellationToken, Task>? beforeAdmitted = null)
     {
         ArgumentNullException.ThrowIfNull(action);
         if (localRole is not (MailboxPeerWireResponseReplicaV2.Sender or MailboxPeerWireResponseReplicaV2.Recipient))
@@ -240,7 +245,11 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
             throw new CryptographicException("Current peer proofs must name one exact projection and grant.");
         var role = expectedOperation == MailboxPeerReplicationOperation.Store ? MailboxCapabilityDomain.Deposit : MailboxCapabilityDomain.Retrieve;
         return await admission.WithGrantAsync(first[38..].ToArray(), role,
-            (scope, ct) => WithAdmittedPeerAsync(owned, expectedOperation, localRole, scope, action, ct), token).ConfigureAwait(false);
+            async (scope, ct) =>
+            {
+                if (beforeAdmitted is not null) await beforeAdmitted(scope, ct).ConfigureAwait(false);
+                return await WithAdmittedPeerAsync(owned, expectedOperation, localRole, scope, action, ct).ConfigureAwait(false);
+            }, token).ConfigureAwait(false);
     }
 
     internal async ValueTask<T> WithAdmittedPeerAsync<T>(ReadOnlyMemory<byte> canonicalRequest,
@@ -337,6 +346,8 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
     {
         internal VerifiedMailboxPeerWireRequestV2 Verified => verified;
         internal ReadOnlyMemory<byte> CanonicalRequest => exact.ToArray();
+        internal Task SaveStoreSettlementAsync(string key, ReadOnlyMemory<byte> quorum, CancellationToken token) =>
+            owner.operationLedger.SaveCurrentStoreQuorumAsync(key, quorum, scope.Host, scope.Lease, token);
         internal VerifiedOnionNextHopTransport RecipientTransport => scope.Replicas.Single(
             replica => Fixed(replica.NodeId.Span, verified.Request.RecipientRouterId.Span)).Transport;
         internal async ValueTask EnsureCurrentAsync(CancellationToken token)
