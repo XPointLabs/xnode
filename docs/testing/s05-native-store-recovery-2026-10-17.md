@@ -96,3 +96,23 @@ PDB SHA256 `9bdc79fff8ec50db3541247efd26c36c17e916cbe50ecc549323e1d12859422b`.
 The Protocol already attaches a fixed rejection label. Reason05 maps only this
 existing finite metadata from the built-in exception; no predicates or outcomes
 change. Matching activation is still required to observe the actual label.
+
+Reason observer `7f33935` then passed supported Build22/Up23/Verify24, native0,
+no compiler diagnostics,9 desired images and54 retained mounts/RW modes. Four
+bind representations required the separate finite alias proof; raw comparison
+is not relabelled. Readiness reported current Registry proof/3 nodes in11s.
+After startup, node2 reported the existing `GrantExpiry` reason at the mapped
+RequireIssuerGrant throw. Current container Protocol DLL/PDB hashes match the
+mapped actual modules above. The original grant fails the upper-bound expiry
+predicate; no replay or grant lifetime was extended to make it pass.
+
+This is NOT proof that authenticated lower time has passed that expiry, that
+the old grant's signature has been revalidated (the predicates short-circuit),
+that the original Store did not commit elsewhere, or that its namespace may
+be retired. There is still no operation-ID correlation to a particular earlier
+sender request. The next required implementation is the actual bounded
+expired-original exclusion/settlement boundary, with independently authenticated
+original bindings, current time, protected replay/native consistency and
+unchanged uncertainty. Until then the pending-prefix guard remains in force.
+No additional device dispatch was made for these observation-only updates;
+APK43 Refresh177/Inspect178 is the last physical business observation (0/4).
