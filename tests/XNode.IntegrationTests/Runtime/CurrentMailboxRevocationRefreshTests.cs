@@ -41,7 +41,10 @@ public sealed class CurrentMailboxRevocationRefreshTests
         var admission = CurrentAdmission();
         using var handler = new Records(snapshots); using var client = new HttpClient(handler);
         var artifacts = new HttpsMailboxGrantRevocationArtifactSource(client, "https://registry.example/");
-        await Assert.ThrowsAsync<IOException>(() => admission.RefreshRevocationsAsync(artifacts, default).AsTask());
+        var diagnostics = new MailboxRevocationRefreshDiagnostics();
+        await Assert.ThrowsAsync<IOException>(() => admission.RefreshRevocationsAsync(artifacts, default, diagnostics).AsTask());
+        Assert.Equal(65UL, diagnostics.DepositGeneration); Assert.Equal(2UL, diagnostics.RetrieveGeneration);
+        Assert.Equal("completion", diagnostics.PhaseLabel);
         Assert.Equal(65UL, MailboxGrantRevocationV1Codec.Decode((await f.Deposit.ReadProtectedAsync()).Span).Generation);
         // One role's bounded backlog must not starve the other role's batch.
         Assert.Equal(2UL, MailboxGrantRevocationV1Codec.Decode((await f.Retrieve.ReadProtectedAsync()).Span).Generation);
@@ -148,7 +151,7 @@ public sealed class CurrentMailboxRevocationRefreshTests
         using var worker = new CurrentMailboxRevocationRefreshWorker(f.Admission,
             new HttpsMailboxGrantRevocationArtifactSource(client, "https://registry.example/"), logger);
         await worker.StartAsync(default);
-        Assert.Equal("Mailbox control refresh unavailable (HttpRequestException).",
+        Assert.Equal("Mailbox control refresh unavailable (HttpRequestException; phase=target-read; reason=transport; role=deposit; deposit=1; retrieve=1; target=(null)).",
             await logger.Seen.Task.WaitAsync(TimeSpan.FromSeconds(5)));
         Assert.False(worker.ExecuteTask!.IsCompleted);
         Assert.Equal(1, handler.Calls);
@@ -156,6 +159,22 @@ public sealed class CurrentMailboxRevocationRefreshTests
         Assert.Equal(retrieve, (await f.Retrieve.ReadProtectedAsync()).ToArray());
         using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await worker.StopAsync(stop.Token);
+    }
+
+    [Theory]
+    [InlineData((int)MailboxRevocationRefreshPhase.Starting, "starting")]
+    [InlineData((int)MailboxRevocationRefreshPhase.TargetVerify, "target-verify")]
+    [InlineData((int)MailboxRevocationRefreshPhase.ReadBack, "read-back")]
+    [InlineData(int.MaxValue, "unknown")]
+    public void RefreshDiagnosticLabelsAreClosedAndCannotEchoProviderText(int phase, string expected)
+    {
+        var diagnostics = new MailboxRevocationRefreshDiagnostics { Phase = (MailboxRevocationRefreshPhase)phase, Role = (MailboxCapabilityDomain)byte.MaxValue };
+        Assert.Equal(expected, diagnostics.PhaseLabel);
+        Assert.Equal("none", diagnostics.RoleLabel);
+        Assert.Null(diagnostics.DepositGeneration); Assert.Null(diagnostics.RetrieveGeneration); Assert.Null(diagnostics.TargetGeneration);
+        Assert.Equal("custody-or-io", MailboxRevocationRefreshDiagnostics.FailureReason(new IOException("private-provider-data")));
+        Assert.Equal("source-changed", MailboxRevocationRefreshDiagnostics.FailureReason(new CryptographicException("Mailbox control source changed during refresh.")));
+        Assert.Equal("observation-expired", MailboxRevocationRefreshDiagnostics.FailureReason(new CryptographicException("The observed DID2 proof is no longer current.")));
     }
 
     private sealed class ErrorSignal : ILogger<CurrentMailboxRevocationRefreshWorker>

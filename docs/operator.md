@@ -1327,6 +1327,18 @@ These are focused source receipts, not full/rehearsal, deployed recovery or
 physical delivery evidence. The original30-second cooperative deadline remains;
 this does not guarantee both batches finish when actual I/O exhausts that budget.
 
+The refresh worker's private warning now includes a closed phase/reason/role and
+the last generations obtained by its existing completed protected reads, plus
+the last target verified in that role. Unknown labels map to `unknown`/`none`;
+exception text, records, paths and identifiers are never logged. These numbers
+are per-flight diagnostics, not a currentness/admission capability or a resume
+cursor, and may lag an uncertain write. No additional source/floor read, journal,
+callback, retry or deadline is introduced. `mgr-refresh-phase-16` and matching
+expanded `mgr-refresh-phase-17` each passed46/0/0/native0 under Windows
+PowerShell5.1 / SDK10.0.301. The latter additionally verifies closed reason
+mapping, including expiry/source-change and arbitrary provider-text refusal.
+This is focused source evidence; runtime diagnosis and full qualification remain.
+
 Local component `71bcae3` was built without compiler warnings/errors. Initial
 Up07 still used the old image because the build's local label differed from
 Compose; its failed smoke is not new-source evidence. The exact image was then
