@@ -33,6 +33,7 @@ internal sealed class CurrentMailboxStoreRecoveryWorker(CurrentMailboxReplicatio
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(MailboxWireHttpContract.Store.RequestTimeoutSeconds));
         string state;
+        Exception? failure = null;
         try
         {
             state = await coordinator.RecoverOneStoreAsync(unchecked(turn++), deadline.Token).ConfigureAwait(false) switch
@@ -43,8 +44,8 @@ internal sealed class CurrentMailboxStoreRecoveryWorker(CurrentMailboxReplicatio
             };
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { throw; }
-        catch (OperationCanceledException) when (deadline.IsCancellationRequested) { state = "deadline"; }
-        catch (OperationCanceledException) { state = "unavailable"; }
+        catch (OperationCanceledException error) when (deadline.IsCancellationRequested) { state = "deadline"; failure = error; }
+        catch (OperationCanceledException error) { state = "unavailable"; failure = error; }
         catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException
             or InvalidOperationException or ArgumentException or OverflowException or CryptographicException
             or HttpRequestException or TimeoutException
@@ -53,15 +54,22 @@ internal sealed class CurrentMailboxStoreRecoveryWorker(CurrentMailboxReplicatio
             or MailboxClientOperationConflictException or MailboxClientException
             or MailboxClientCanonicalOutcomePersistenceException or MailboxClientCanonicalOutcomeCapacityException
             or MailboxClientCanonicalOutcomeConflictException or MailboxClientCanonicalOutcomeMissingException)
-        { state = "unavailable"; }
-        if (lastState != state)
+        { state = "unavailable"; failure = error; }
+        var diagnosticKey = state;
+        try
         {
-            // No exception, identifier, exact work or time-authority value.
-            try { logger.Log(state is "idle" or "settled" ? LogLevel.Information : LogLevel.Warning,
-                "Current mailbox Store recovery: state={State}; original custody retained.", state); }
-            catch { /* Diagnostics cannot alter recovery or shut down the host. */ }
-            lastState = state;
+            var location = CurrentMailboxDiagnostics.FailureLocation(failure);
+            diagnosticKey = state + "|" + location.Method + "|" + location.Il.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (lastState != diagnosticKey)
+            {
+                if (failure is null) logger.Log(state is "idle" or "settled" ? LogLevel.Information : LogLevel.Warning,
+                    "Current mailbox Store recovery: state={State}; original custody retained.", state);
+                else logger.LogWarning("Current mailbox Store recovery: state={State}; method={CodeMethod}; il={Il}; original custody retained.",
+                    state, location.Method, location.Il);
+            }
         }
+        catch { /* Diagnostics cannot alter recovery or shut down the host. */ }
+        lastState = diagnosticKey;
         return state;
     }
 }

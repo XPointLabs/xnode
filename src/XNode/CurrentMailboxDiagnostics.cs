@@ -3,7 +3,7 @@ using System.Diagnostics.Metrics;
 
 namespace XNode;
 
-// Optional resource observations only. Closed phase names, no identifiers,
+// Optional resource/failure observations only. Closed phase names, no identifiers,
 // payloads, paths, authority time, activity context or outgoing trace headers.
 internal static class CurrentMailboxDiagnostics
 {
@@ -12,6 +12,24 @@ internal static class CurrentMailboxDiagnostics
     internal static readonly Histogram<double> Duration = Meter.CreateHistogram<double>("phase.duration", "ms");
 
     internal static IDisposable? Measure(string phase) => Duration.Enabled ? new Measurement(phase) : null;
+
+    // Only owned code metadata, never exception text/data, source filenames or
+    // caller/third-party type names. Callers keep logging failures non-fatal.
+    internal static (string Method, int Il) FailureLocation(Exception? error)
+    {
+        if (error is null) return ("unavailable", -1);
+        var trace = new StackTrace(error, false);
+        for (var index = 0; index < Math.Min(trace.FrameCount, 32); index++)
+        {
+            var frame = trace.GetFrame(index); var method = frame?.GetMethod(); var type = method?.DeclaringType;
+            var assembly = type?.Assembly.GetName().Name;
+            if (assembly is not ("XNode" or "XNode.Core" or "Deep.Protocol" or "Deep.Protocol.MembershipRoutes")) continue;
+            var origin = (type!.DeclaringType is { } parent ? parent.Name + "+" : "") + type.Name + "." + method!.Name;
+            if (origin.Length is > 0 and <= 240 && origin.All(ch => char.IsAsciiLetterOrDigit(ch) || "_.+<>`".Contains(ch)))
+                return (origin, Math.Clamp(frame!.GetILOffset(), -1, 1048575));
+        }
+        return ("unavailable", -1);
+    }
 
     private sealed class Measurement(string phase) : IDisposable
     {

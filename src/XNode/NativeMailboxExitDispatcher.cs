@@ -180,28 +180,13 @@ public sealed class NativeMailboxExitDispatcher(IServiceProvider services)
                 IOException => "custody-or-io",
                 _ => "configuration-or-state"
             };
-            var location = FailureLocation(cause);
+            var location = CurrentMailboxDiagnostics.FailureLocation(cause);
             logger.LogWarning("Current mailbox terminal incomplete: stage={Stage}; kind={Kind}; depth={Depth}; method={CodeMethod}; il={Il}; completion remains unknown.",
                 stage, category, depth, location.Method, location.Il);
         }
         catch { /* Observations cannot replace the original result/exception. */ }
     }
 
-    private static (string Method, int Il) FailureLocation(Exception? error)
-    {
-        if (error is null) return ("unavailable", -1);
-        var trace = new StackTrace(error, false);
-        for (var index = 0; index < Math.Min(trace.FrameCount, 32); index++)
-        {
-            var frame = trace.GetFrame(index); var method = frame?.GetMethod(); var type = method?.DeclaringType;
-            var assembly = type?.Assembly.GetName().Name;
-            if (assembly is not ("XNode" or "XNode.Core" or "Deep.Protocol" or "Deep.Protocol.MembershipRoutes")) continue;
-            var origin = (type!.DeclaringType is { } parent ? parent.Name + "+" : "") + type.Name + "." + method!.Name;
-            if (origin.Length is > 0 and <= 240 && origin.All(ch => char.IsAsciiLetterOrDigit(ch) || "_.+<>`".Contains(ch)))
-                return (origin, Math.Clamp(frame!.GetILOffset(), -1, 1048575));
-        }
-        return ("unavailable", -1);
-    }
     private static NativeMailboxDispatchResult Success(ReadOnlyMemory<byte> bytes) =>
         new(StatusCodes.Status200OK, bytes);
     private static NativeMailboxDispatchResult Failure(MailboxHttpFailure failure) =>

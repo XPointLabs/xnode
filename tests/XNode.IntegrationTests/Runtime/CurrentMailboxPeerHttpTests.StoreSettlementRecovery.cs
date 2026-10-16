@@ -196,10 +196,41 @@ public sealed partial class CurrentMailboxPeerHttpTests
 
     private sealed class StoreRecoverySignal : ILogger<CurrentMailboxStoreRecoveryWorker>
     {
+        internal bool Throw;
+        internal int Calls;
         internal TaskCompletionSource<string> Seen { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
         public bool IsEnabled(LogLevel level) => true;
         public void Log<TState>(LogLevel level, EventId id, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
-        { Assert.Null(exception); Seen.TrySetResult(formatter(state, exception)); }
+        {
+            Calls++; Assert.Null(exception);
+            if (Throw) throw new IOException("Test-owned logger failure.");
+            Seen.TrySetResult(formatter(state, exception));
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OriginalStoreRecoveryClosedFailureCannotReadPrivateExceptionOrChangeOutcome(bool loggerThrows)
+    {
+        await using var f = await Fixture.CreateAsync(); f.OpenLedger();
+        f.RemoteHost.DropNext = true; _ = await f.Coordinator.StoreClientAsync(f.ClientStoreFrame());
+        var document = File.ReadAllBytes(f.LedgerFile); var http = f.AllHttpRequests;
+        f.OpenLedger(afterVerifiedRead: () => throw new UnreadableNativeFailure());
+        var logger = new StoreRecoverySignal { Throw = loggerThrows };
+        using var worker = new CurrentMailboxStoreRecoveryWorker(f.Coordinator, logger);
+        Assert.Equal("unavailable", await worker.RunOnceAsync(default));
+        Assert.Equal("unavailable", await worker.RunOnceAsync(default));
+        Assert.Equal(1, logger.Calls);
+        if (!loggerThrows)
+        {
+            Assert.True(logger.Seen.Task.IsCompletedSuccessfully);
+            var message = await logger.Seen.Task;
+            Assert.StartsWith("Current mailbox Store recovery: state=unavailable; method=MailboxClientOperationLedger+", message);
+            Assert.Contains("; il=", message);
+            Assert.DoesNotContain(nameof(UnreadableNativeFailure), message);
+        }
+        Assert.Equal(document, File.ReadAllBytes(f.LedgerFile)); Assert.Equal(http, f.AllHttpRequests);
     }
 }

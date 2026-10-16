@@ -41,6 +41,7 @@ compiler diagnostics. These are focused scopes, not canonical full qualification
 | `focused-01` | 22 | Initial6 recovery cases plus actual host recovery regression |
 | `focused-02` | 164 | Expanded12 recovery cases, native ingress/onion and host composition |
 | `focused-03` | 23 | Final16 recovery cases,2 registration cases, original quorum-persistence2 and native authority-fence3 |
+| `closed-observer-04` | 5 | Shared owned-code observer regression3 and recovery unreadable-exception/throwing-logger2 |
 
 Positive cases use genuine signed fixture authority, two independent native
 stores and actual TLS/H2. They cover interruption at Store reservation and
@@ -58,3 +59,27 @@ uncommitted case shapes are not an accepted full baseline. Current full/package,
 external transport rehearsal, matching retained local activation and physical
 Windows/Android business acceptance remain required. No production change,
 GitHub Release publication or main merge is claimed here.
+
+## Retained runtime observation
+
+Source `30cd519` was activated only in current-dev through supported Build16,
+Up17 and Verify18, all native0. All9 services matched captured desired images;
+all54 mounts/RW modes are preserved. Raw comparison did not pass because three
+bind-source strings changed representation; a separate finite Windows/Docker
+alias proof matched all54 original targets. Verify reported current Registry
+proof and3 verified nodes, recovery24s. This is readiness, not messaging.
+
+The first worker events are unavailable on all3 nodes. They do not identify the
+failing guard and, because the initial observer deduplicated by state alone,
+cannot establish whether a later failure has the same cause. Do not infer grant
+expiry from these logs. Closed observer04 above adds code-location-sensitive
+observation without changing recovery/currentness rules; matching activation
+and cause inspection remain required.
+
+Android43 Dry175/Inspect176/Refresh177/Inspect178 completed their scoped phases,
+without reset or APK replacement. Actual receive remains OutcomeUnknown:
+MailboxSyncTotal60611ms,10 Protect/345 Unprotect,32642ms protection. The closed
+native log again observed ReadCurrentWindowAsync IL1074/live pending Store;
+no identifier correlation with a particular old sender intent is asserted.
+Physical business acceptance remains0/4. Current expired-original recovery,
+canonical full/package and broader S05 gates remain open.
