@@ -10,8 +10,55 @@ internal static class CurrentMailboxDiagnostics
     internal const string MeterName = "XPoint.XNode.CurrentMailbox";
     private static readonly Meter Meter = new(MeterName);
     internal static readonly Histogram<double> Duration = Meter.CreateHistogram<double>("phase.duration", "ms");
+    private static readonly AsyncLocal<Work?> CurrentWork = new();
 
-    internal static IDisposable? Measure(string phase) => Duration.Enabled ? new Measurement(phase) : null;
+    internal static IDisposable? Measure(string phase) => Duration.Enabled || CurrentWork.Value is not null
+        ? new Measurement(phase, CurrentWork.Value) : null;
+
+    internal static IDisposable BeginWork(Action<WorkSummary> report) => new Work(report);
+    internal sealed record WorkSummary(long LeaseChecks, long LeaseMs, long AuthorityMs,
+        long HostMs, long GrantMs, long NativeJoinMs, long RevocationMs, long OperationMs);
+
+    private sealed class Work : IDisposable
+    {
+        private readonly Work? parent = CurrentWork.Value;
+        private readonly Action<WorkSummary> report;
+        private readonly object gate = new();
+        private long checks, lease, authority, host, grant, native, revocation, operation;
+        private bool disposed;
+        internal Work(Action<WorkSummary> report) { this.report = report; CurrentWork.Value = this; }
+        internal void Record(string phase, double ms)
+        {
+            lock (gate)
+            {
+                if (disposed) return;
+                var elapsed = Math.Clamp((long)ms, 0, 3600000);
+                switch (phase)
+                {
+                    case "lease-check": checks++; lease += elapsed; break;
+                    case "authority-source": authority += elapsed; break;
+                    case "host-verify": host += elapsed; break;
+                    case "grant-context-check": grant += elapsed; break;
+                    case "peer-replay-join" or "peer-native-join": native += elapsed; break;
+                    case "revocation-decode" or "revocation-file-read" or "revocation-floor-read" or
+                        "revocation-path-check" or "revocation-security-check" or "revocation-unprotect": revocation += elapsed; break;
+                    case "operation-commit" or "operation-prepare" or "operation-verify": operation += elapsed; break;
+                }
+            }
+        }
+        public void Dispose()
+        {
+            WorkSummary result;
+            lock (gate)
+            {
+                if (disposed) return;
+                disposed = true;
+                result = new(checks, lease, authority, host, grant, native, revocation, operation);
+            }
+            if (ReferenceEquals(CurrentWork.Value, this)) CurrentWork.Value = parent;
+            try { report(result); } catch { /* Timing never replaces the original outcome. */ }
+        }
+    }
 
     internal static string AuthorityFailureCheck(Exception? error)
     {
@@ -73,10 +120,14 @@ internal static class CurrentMailboxDiagnostics
         return ("unavailable", -1);
     }
 
-    private sealed class Measurement(string phase) : IDisposable
+    private sealed class Measurement(string phase, Work? work) : IDisposable
     {
         private readonly long started = Stopwatch.GetTimestamp();
-        public void Dispose() => Duration.Record(Stopwatch.GetElapsedTime(started).TotalMilliseconds,
-            new KeyValuePair<string, object?>("phase", phase));
+        public void Dispose()
+        {
+            var elapsed = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+            work?.Record(phase, elapsed);
+            if (Duration.Enabled) Duration.Record(elapsed, new KeyValuePair<string, object?>("phase", phase));
+        }
     }
 }

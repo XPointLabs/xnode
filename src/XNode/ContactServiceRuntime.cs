@@ -42,6 +42,12 @@ public sealed class ContactServicePersistenceOptions
     public int ReplayTtlSeconds { get; set; } = 300;
 
     internal TimeSpan ReplicaTimeout => TimeSpan.FromSeconds(ReplicaTimeoutSeconds);
+    // A forwarded coordinator performs inventory-read/prepare/complete RPCs;
+    // it cannot share the budget of ONE leaf RPC. Keep the composite below
+    // the existing public ONION30s budget. This is resource time, not authority.
+    internal TimeSpan ReplicaRequestBudget(ContactReplicaRpcOperation operation) =>
+        operation == ContactReplicaRpcOperation.CoordinateDid2PreKeyClaim
+            ? TimeSpan.FromSeconds(Math.Min(25L, 4L * ReplicaTimeoutSeconds)) : ReplicaTimeout;
     internal TimeSpan ReplayTtl => TimeSpan.FromSeconds(ReplayTtlSeconds);
 
     public void Validate()

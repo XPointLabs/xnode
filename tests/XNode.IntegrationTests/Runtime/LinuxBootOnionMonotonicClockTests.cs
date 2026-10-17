@@ -7,6 +7,33 @@ public sealed class LinuxBootOnionMonotonicClockTests
     private const string Boot = "550e8400-e29b-41d4-a716-446655440000\n";
 
     [Fact]
+    public async Task BoundedKernelReadCompletesInlineRereadsActualBytesAndRejectsOversizeOrCancellation()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "deep-clock-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, "value");
+        try
+        {
+            File.WriteAllText(path, Boot);
+            var first = LinuxBootOnionMonotonicClock.ReadTextAsync(path, default);
+            Assert.True(first.IsCompletedSuccessfully);
+            Assert.Equal(Boot, await first);
+            File.WriteAllText(path, "121.01 1.0\n");
+            Assert.Equal("121.01 1.0\n", await LinuxBootOnionMonotonicClock.ReadTextAsync(path, default));
+            using var cancelled = new CancellationTokenSource(); cancelled.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+                await LinuxBootOnionMonotonicClock.ReadTextAsync(path, cancelled.Token));
+            File.WriteAllText(path, new string('1', 513));
+            await Assert.ThrowsAsync<InvalidDataException>(async () =>
+                await LinuxBootOnionMonotonicClock.ReadTextAsync(path, default));
+            File.WriteAllBytes(path, [0xff]);
+            await Assert.ThrowsAsync<System.Text.DecoderFallbackException>(async () =>
+                await LinuxBootOnionMonotonicClock.ReadTextAsync(path, default));
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    }
+
+    [Fact]
     public async Task SameKernelBootAndIncreasingUptimeAreAcceptedAcrossReads()
     {
         var uptimes = new Queue<string>(["120.99 1.0\n", "121.01 1.0\n"]);

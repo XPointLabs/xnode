@@ -9,6 +9,44 @@ namespace XNode.IntegrationTests.Runtime;
 
 public sealed class FileDeepIdV2DirectoryProtectedHeadStoreTests
 {
+    [Fact]
+    public async Task PublicSignatureMemoStillAuthenticatesActualNativeFilesOnEveryWarmRead()
+    {
+        using var fixture = await Fixture.CreateAsync();
+        using var store = fixture.Open();
+        _ = await store.RestoreAsync(fixture.Authority, default);
+        _ = await store.ReadRetainedAsync(fixture.Authority, default);
+        var verified = store.PublicHeadSignatureVerifications;
+        Assert.True(verified > 0);
+        for (var pass = 0; pass < 3; pass++)
+            Assert.Equal(fixture.ExactGenesis, (await store.ReadRetainedAsync(fixture.Authority, default)).ExactAdh1.ToArray());
+        Assert.Equal(verified, store.PublicHeadSignatureVerifications);
+        var original = File.ReadAllBytes(fixture.TipPath);
+        var changed = original.ToArray(); changed[^1] ^= 1;
+        File.WriteAllBytes(fixture.TipPath, changed);
+        await Assert.ThrowsAnyAsync<Exception>(async () => await store.ReadRetainedAsync(fixture.Authority, default));
+        File.WriteAllBytes(fixture.TipPath, original);
+        Assert.Equal(fixture.ExactGenesis, (await store.ReadRetainedAsync(fixture.Authority, default)).ExactAdh1.ToArray());
+        Assert.Equal(verified, store.PublicHeadSignatureVerifications);
+    }
+
+    [Fact]
+    public async Task PublicSignatureMemoBindsExactVerifiedAuthorityNotObjectIdentity()
+    {
+        using var fixture = await Fixture.CreateAsync();
+        using var equivalent = await Fixture.CreateAsync();
+        using var foreign = await Fixture.CreateAsync(witnessSeedOffset: 8);
+        using var store = fixture.Open();
+        _ = await store.RestoreAsync(fixture.Authority, default);
+        _ = await store.ReadRetainedAsync(fixture.Authority, default);
+        var verified = store.PublicHeadSignatureVerifications;
+        Assert.NotSame(fixture.Authority, equivalent.Authority);
+        Assert.Equal(fixture.ExactGenesis, (await store.ReadRetainedAsync(equivalent.Authority, default)).ExactAdh1.ToArray());
+        Assert.Equal(verified, store.PublicHeadSignatureVerifications);
+        await Assert.ThrowsAnyAsync<Exception>(async () => await store.ReadRetainedAsync(foreign.Authority, default));
+        Assert.Equal(fixture.ExactGenesis, (await store.ReadRetainedAsync(fixture.Authority, default)).ExactAdh1.ToArray());
+    }
+
     [Theory]
     [InlineData("tip", false)]
     [InlineData("tip", true)]
@@ -172,7 +210,7 @@ public sealed class FileDeepIdV2DirectoryProtectedHeadStoreTests
                 new MailboxStorageSecurity(), new MailboxDurabilityBarrier());
         }
 
-        internal static async Task<Fixture> CreateAsync()
+        internal static async Task<Fixture> CreateAsync(byte witnessSeedOffset = 0)
         {
             var root = Path.Combine(Path.GetTempPath(),
                 "xnode-did2-floor-" + Guid.NewGuid().ToString("N"));
@@ -181,7 +219,7 @@ public sealed class FileDeepIdV2DirectoryProtectedHeadStoreTests
                 PublicKeyAuth.GenerateKeyPair(Bytes(32, (byte)(0x30 + index))))
                 .ToArray();
             var witnessKeys = Enumerable.Range(0, 3).Select(index =>
-                PublicKeyAuth.GenerateKeyPair(Bytes(32, (byte)(0x50 + index))))
+                PublicKeyAuth.GenerateKeyPair(Bytes(32, (byte)(0x50 + index + witnessSeedOffset))))
                 .ToArray();
             var roots = rootKeys.Select((pair, index) =>
                 new XPointNetworkBootstrapRootKey(

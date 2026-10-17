@@ -32,6 +32,12 @@ internal sealed class FileDeepIdV2DirectoryProtectedHeadStore :
     private readonly FileStream lease;
     private readonly SemaphoreSlim gate = new(1, 1);
     private VerifiedXPointNetworkAuthority? restoredAuthority;
+    // Signature-only memo for public signed heads. Native files are still
+    // reread, unprotected and structurally joined on EVERY observation.
+    // This never caches a floor/currentness decision or private plaintext.
+    private VerifiedXPointNetworkAuthority? headSignatureAuthority;
+    private (FloorRecord Record, AccountDirectoryProtectedLkg Head)[] verifiedPublicHeads = [];
+    internal long PublicHeadSignatureVerifications { get; private set; }
     private bool disposed;
 
     internal FileDeepIdV2DirectoryProtectedHeadStore(string stateDirectory,
@@ -295,6 +301,17 @@ internal sealed class FileDeepIdV2DirectoryProtectedHeadStore :
     private void ValidateChain(IReadOnlyList<FloorRecord> records,
         VerifiedXPointNetworkAuthority authority)
     {
+        var sameAuthority = headSignatureAuthority is { } prior &&
+            prior.NetworkId.Span.SequenceEqual(authority.NetworkId.Span) &&
+            prior.AuthorityCoreReference.Span.SequenceEqual(authority.AuthorityCoreReference.Span) &&
+            prior.DirectoryWitnessPolicyHash.Span.SequenceEqual(authority.DirectoryWitnessPolicyHash.Span) &&
+            prior.Dts1PolicyCoreReference.Span.SequenceEqual(authority.Dts1PolicyCoreReference.Span) &&
+            prior.TimeSourcePolicyHash.Span.SequenceEqual(authority.TimeSourcePolicyHash.Span);
+        // Resource bound only. Larger authentic histories retain the original
+        // full verification path; this is not a new accepted-history ceiling.
+        var keepMemo = records.Sum(record => (long)record.ExactAdh1.Length) <= 4 * 1024 * 1024;
+        var nextMemo = keepMemo ? new (FloorRecord Record, AccountDirectoryProtectedLkg Head)[records.Count] : [];
+        ulong previousGeneration = 0;
         for (var index = 0; index < records.Count; index++)
         {
             var record = records[index];
@@ -308,17 +325,25 @@ internal sealed class FileDeepIdV2DirectoryProtectedHeadStore :
                           records[index - 1].CoreHash)))
                 throw new InvalidDataException(
                     "The DID2 head floor chain is incomplete or cross-scope.");
-            var restored = index == 0
-                ? DeepIdV2DirectoryBootstrapVerifier.RestoreGenesis(authority,
-                    record.ExactAdh1, record.CoreHash)
-                : AccountDirectoryProtectedLkgFactory.Restore(authority,
-                    record.ExactAdh1, record.CoreHash);
-            if (index > 0 && restored.LogGeneration <=
-                    AccountDirectoryAdh1Codec.Decode(
-                        records[index - 1].ExactAdh1).LogGeneration)
+            AccountDirectoryProtectedLkg restored;
+            if (sameAuthority && index < verifiedPublicHeads.Length &&
+                record.ExactlyMatches(verifiedPublicHeads[index].Record))
+                restored = verifiedPublicHeads[index].Head;
+            else
+            {
+                restored = index == 0
+                    ? DeepIdV2DirectoryBootstrapVerifier.RestoreGenesis(authority, record.ExactAdh1, record.CoreHash)
+                    : AccountDirectoryProtectedLkgFactory.Restore(authority, record.ExactAdh1, record.CoreHash);
+                PublicHeadSignatureVerifications++;
+            }
+            if (index > 0 && restored.LogGeneration <= previousGeneration)
                 throw new InvalidDataException(
                     "The DID2 head floor generation moved backwards.");
+            previousGeneration = restored.LogGeneration;
+            if (keepMemo) nextMemo[index] = (record, restored);
         }
+        verifiedPublicHeads = nextMemo;
+        headSignatureAuthority = keepMemo ? authority : null;
     }
 
     private FloorRecord? ReadRecordIfExists(string path) =>

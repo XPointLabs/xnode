@@ -35,6 +35,7 @@ internal static class ContactReplicaHttpEndpoint
         }
 
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var started = System.Diagnostics.Stopwatch.GetTimestamp();
         deadline.CancelAfter(options.ReplicaTimeout);
         try
         {
@@ -71,6 +72,13 @@ internal static class ContactReplicaHttpEndpoint
             }
 
             ContactReplicaPeerAuthenticator.EnsureSigningCustody(network, local, node.GetEd25519PrivateKey());
+            // Authentication/body acquisition retain the leaf budget. Only a
+            // fully authenticated composite may use its remaining TOTAL budget;
+            // repeated callbacks never reset it and cancellation cannot revive.
+            var remaining = options.ReplicaRequestBudget(command.Operation) - System.Diagnostics.Stopwatch.GetElapsedTime(started);
+            deadline.Token.ThrowIfCancellationRequested();
+            if (remaining <= TimeSpan.Zero) return Results.StatusCode(StatusCodes.Status504GatewayTimeout);
+            deadline.CancelAfter(remaining);
             var result = await receiver.ReceiveAsync(
                 command,
                 sender,

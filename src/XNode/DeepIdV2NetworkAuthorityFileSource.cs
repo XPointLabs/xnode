@@ -38,7 +38,10 @@ internal sealed class DeepIdV2NetworkAuthorityFileSource
 
     internal VerifiedXPointNetworkAuthority ReadCurrent()
     {
-        var exact = ReadExactMany(authorityPaths.Concat(timePolicyPaths).ToArray());
+        // This small paired keyring is read inside every protected operation
+        // check. Do not synchronously fork/join the request's own ThreadPool
+        // for each tiny record. Every path/handle/byte check still runs.
+        var exact = ReadExactMany(authorityPaths.Concat(timePolicyPaths).ToArray(), parallel: false);
         try
         {
             var verified = XPointNetworkAuthorityVerifier.Verify(pin,
@@ -90,7 +93,8 @@ internal sealed class DeepIdV2NetworkAuthorityFileSource
             "DID2 authority artifact exceeds its closed bound.", budget);
     }
 
-    internal static byte[][] ReadExactMany(IReadOnlyList<string> paths, BoundedFileRead.ByteBudget? budget = null)
+    internal static byte[][] ReadExactMany(IReadOnlyList<string> paths, BoundedFileRead.ByteBudget? budget = null,
+        bool parallel = true)
     {
         // At most six already bounded 4096-record closure groups. This is an
         // acquisition count bound, not a larger protocol or byte limit.
@@ -101,10 +105,11 @@ internal sealed class DeepIdV2NetworkAuthorityFileSource
             // Only independent, read-only public artifacts are acquired in
             // parallel. Each keeps its own fresh full path checks and handle.
             // Four reads at most; all finish before verification or release.
-            for (var first = 0; first < paths.Count; first += 4)
+            var batchSize = parallel ? 4 : 1;
+            for (var first = 0; first < paths.Count; first += batchSize)
             {
                 var start = first;
-                var count = Math.Min(4, paths.Count - start);
+                var count = Math.Min(batchSize, paths.Count - start);
                 if (count == 1) { result[start] = ReadExact(paths[start], budget); continue; }
                 var errors = new ExceptionDispatchInfo?[count];
                 Parallel.For(0, count, new ParallelOptions { MaxDegreeOfParallelism = 4 }, offset =>

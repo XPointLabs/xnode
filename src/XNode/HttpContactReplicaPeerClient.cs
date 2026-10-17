@@ -96,7 +96,7 @@ internal sealed class HttpContactReplicaPeerClient : IContactReplicaPeerClient
         AddHeaders(request, authentication);
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(options.ReplicaTimeout);
+        timeout.CancelAfter(options.ReplicaRequestBudget(command.Operation));
         try
         {
             using var handler = handlerFactory(peer);

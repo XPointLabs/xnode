@@ -25,6 +25,36 @@ internal sealed class DeepIdV2PublicationCandidateAuthority(
     private readonly IOnionMonotonicClock clock = clock ??
         throw new ArgumentNullException(nameof(clock));
 
+    // Only an exact in-flight claim may call this with its previously verified
+    // public candidate. This is NOT a new proof or a renewed authority lease.
+    // Reread native support and validate the actual protected directory floor
+    // on BOTH sides of full current inventory validation.
+    internal async ValueTask<DeepIdV2VerifiedPublicationCandidate> ObserveCommittedCandidateAsync(
+        DeepIdV2PublicationJournal journal, DeepIdV2VerifiedPublicationCandidate previous,
+        CancellationToken cancellationToken)
+    {
+        var staged = journal.ReadCommitted();
+        if (staged is not { Disposition: PublicationStageDisposition.CandidateReady, Candidate: not null, PublisherDid2: not null } ||
+            !Fixed(staged.Candidate.CanonicalBytes.Span, previous.Publication.CanonicalBytes.Span) ||
+            !Fixed(staged.PublisherDid2.CanonicalBytes.Span, previous.PublisherDid2.CanonicalBytes.Span) ||
+            !Fixed(staged.PublisherDca1.Span, previous.CurrentAuthorization.Authorization.Record.CanonicalBytes.Span) ||
+            !Fixed(staged.PublisherXps1.Span, previous.Service.CanonicalBytes.Span))
+            throw new CryptographicException("Observed claim publication support changed.");
+        var freshness = previous.CurrentAuthorization.Freshness;
+        await proofs.ValidateObservedAsync(freshness, cancellationToken).ConfigureAwait(false);
+        var now = await clock.ReadAsync(cancellationToken).ConfigureAwait(false);
+        var current = DeepIdV2CurrentContactAuthorizationVerifier.Verify(freshness,
+            previous.CurrentAuthorization.Authorization, now.BootId.Span, now.SampleSeconds);
+        DeepIdV2ReplicaPreKeyInventoryVerifier.VerifyComplete(staged.PublisherDid2,
+            staged.PublisherXps1.Span, current, staged.Candidate, now.BootId.Span, now.SampleSeconds);
+        await proofs.ValidateObservedAsync(freshness, cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        return new(staged.Candidate, staged.PublisherDid2, current, previous.Service);
+    }
+
+    private static bool Fixed(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b) =>
+        a.Length == b.Length && CryptographicOperations.FixedTimeEquals(a, b);
+
     internal async ValueTask<DeepIdV2VerifiedPublicationCandidate>
         VerifyCommittedCandidateAsync(
         DeepIdV2PublicationJournal journal,

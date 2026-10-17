@@ -20,6 +20,44 @@ namespace XNode.IntegrationTests.Runtime;
 public sealed class DeepIdV2PreKeyClaimRuntimeTests
 {
     [Fact]
+    public async Task ForwardedCoordinatorHasCompositeBudgetWithoutExtendingLeafRpcs()
+    {
+        using var harness = await Harness.CreateAsync();
+        harness.ConfigurePeerBudget(1, TimeSpan.FromMilliseconds(400));
+        var request = harness.Request();
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        _ = harness.Verify(request, await harness.Claims[1].ReceiveTerminalAsync(request.CanonicalBytes, default));
+        Assert.True(elapsed.Elapsed >= TimeSpan.FromSeconds(1));
+        Assert.Equal(2, ClaimSnapshotHashes(harness.Root).Length);
+        var options = new ContactServicePersistenceOptions { ReplicaTimeoutSeconds = 1 };
+        Assert.Equal(TimeSpan.FromSeconds(1), options.ReplicaRequestBudget(ContactReplicaRpcOperation.PrepareDid2PreKeyClaim));
+        Assert.Equal(TimeSpan.FromSeconds(4), options.ReplicaRequestBudget(ContactReplicaRpcOperation.CoordinateDid2PreKeyClaim));
+    }
+
+    [Fact]
+    public async Task ExactClaimPhasesReusePublicProofButRecheckObservedFloorAndRejectItsLoss()
+    {
+        using var harness = await Harness.CreateAsync();
+        var before = harness.Signed.ProofReads;
+        var request = harness.Request();
+        var exact = await harness.Claims[0].ReceiveTerminalAsync(request.CanonicalBytes, default);
+        _ = harness.Verify(request, exact);
+        Assert.Equal(2, harness.Signed.ProofReads - before);
+        Assert.True(harness.Signed.ObservationChecks >= 4);
+        var snapshots = ClaimSnapshotHashes(harness.Root);
+        harness.Signed.OnObservationCheck = () =>
+        {
+            harness.Signed.OnObservationCheck = null;
+            harness.Signed.RejectProof = true;
+        };
+        await Assert.ThrowsAsync<System.Security.Cryptography.CryptographicException>(async () =>
+            await harness.Claims[0].ReceiveTerminalAsync(request.CanonicalBytes, default));
+        Assert.Equal(snapshots, ClaimSnapshotHashes(harness.Root));
+        harness.Signed.RejectProof = false;
+        Assert.Equal(exact.ToArray(), (await harness.Claims[0].ReceiveTerminalAsync(request.CanonicalBytes, default)).ToArray());
+    }
+
+    [Fact]
     public async Task ConcurrentExhaustionHonorsSignedLastResortLimitAndExactReplayAfterRestart()
     {
         using var harness = await Harness.CreateAsync(lastResortReuseLimit: 2);
@@ -525,6 +563,9 @@ public sealed class DeepIdV2PreKeyClaimRuntimeTests
         private readonly ServiceProvider services = new ServiceCollection().AddLogging().AddRouting().BuildServiceProvider();
         private readonly IClock clock = new FixedClock();
         private readonly ContactServicePersistenceOptions options = new() { ReplicaTimeoutSeconds = 20 };
+        private TimeSpan claimInnerDelay;
+        internal void ConfigurePeerBudget(int seconds, TimeSpan innerDelay)
+        { options.ReplicaTimeoutSeconds = seconds; options.Validate(); claimInnerDelay = innerDelay; }
         private ContactReplicaReplayGuard[] replays = [];
         internal ContactReplicaRpcOperation? LoseNextResponse { get; set; }
         internal ContactReplicaRpcOperation? SubstituteNextSignature { get; set; }
@@ -612,6 +653,10 @@ public sealed class DeepIdV2PreKeyClaimRuntimeTests
             Assert.Equal(ContactReplicaHttpContract.Route, request.RequestUri!.AbsolutePath);
             var body = await request.Content!.ReadAsByteArrayAsync(token);
             var command = ContactReplicaWireCodec.DecodeRequest(body);
+            if (claimInnerDelay > TimeSpan.Zero && command.Operation is
+                ContactReplicaRpcOperation.ReadDid2PreKeyInventoryCommit or ContactReplicaRpcOperation.PrepareDid2PreKeyClaim or
+                ContactReplicaRpcOperation.CompleteDid2PreKeyClaim)
+                await Task.Delay(claimInnerDelay, token);
             var context = new DefaultHttpContext { RequestServices = services };
             context.Connection.LocalPort = 7443; context.Request.Scheme = "https";
             context.Request.Method = "POST"; context.Request.Protocol = "HTTP/2";

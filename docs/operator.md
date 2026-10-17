@@ -349,6 +349,24 @@ still execute on every callback. Cache hits do not renew signed or monotonic
 lifetimes. Source changes or elapsed resource budget require full verification;
 stop, lost floor, expired proof and rollback remain fail-closed. No state layout,
 wire value, replica deadline or acquisition permission changes.
+For the same exact in-flight XPK, replica phases can reuse their own previously
+verified public publication candidate only after rereading native inventory,
+receipt and support and checking the actual protected directory floor on both
+sides of full inventory validation. A failed observation clears the memo and
+rejects that call. No proof lifetime or claim RPC budget slides forward.
+Leaf replica requests retain their configured budget (default5s). The
+authenticated `CoordinateDid2PreKeyClaim` composite has one total resource
+budget from its original start: four leaf budgets, capped at25s (default20s),
+below the public ONION30s boundary. Body/signature admission must finish within
+the original leaf budget before the composite can use its remaining time.
+No signed request, reservation, nonce, proof or authority expiry is extended.
+The directory-floor reader still rereads/unprotects every chain file and checks
+revision/linkage, anchor and index. It may reuse only signature verification of
+byte-identical public heads under the same verified authority/witness/time-policy
+references (bounded4MiB memo; larger histories use full verification). This is
+not a cached native floor or currentness permission. Small procfs clock samples
+are bounded inline kernel reads, not cached time. Closed native work summaries
+report nested numeric timings; they never authorize work and are not additive.
 The forwarding node ID is an opaque descriptor identity, not its Ed25519 public
 key. The grant client requires the locally verified ResolveInvite placement for
 the exact locator and checks its signing seed against that descriptor before

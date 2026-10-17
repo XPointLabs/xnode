@@ -355,7 +355,8 @@ internal static class PrivacyRoutingProductionComposition
             provider.GetRequiredService<PrivacyRoutingProductionCapability>(),
             provider.GetRequiredService<OnionKeyAgreementAuthority>(),
             provider.GetRequiredService<OnionReplayAuthority>(),
-            provider.GetRequiredService<PrivacyRoutingCodec>()));
+            provider.GetRequiredService<PrivacyRoutingCodec>(),
+            provider.GetService<ILogger<PrivacyRoutingRuntime>>()));
     }
 
     internal static byte[] DeriveKeyHandle(ReadOnlySpan<byte> publicKey)

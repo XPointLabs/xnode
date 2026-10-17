@@ -31,9 +31,14 @@ internal sealed class DeepIdV2PreKeyClaimRuntime(
     RouterNodeOptions node, IDeepIdV2PreKeyClaimPlacementSource placements,
     DeepIdV2PublicationCandidateAuthority candidates, IContactReplicaPeerClient peers,
     IOnionMonotonicClock monotonic, IClock wallClock,
-    IMailboxStorageSecurity security, IMailboxDurabilityBarrier durability) : IContactReplicaCommandReceiver
+    IMailboxStorageSecurity security, IMailboxDurabilityBarrier durability,
+    ILogger<DeepIdV2PreKeyClaimRuntime>? logger = null) : IContactReplicaCommandReceiver
 {
     private readonly SemaphoreSlim gate = new(1, 1);
+    private readonly DeepIdV2PreKeyClaimDiagnostics diagnostics = new(logger);
+    // One public verified context, under gate, for the SAME exact XPK only.
+    // No key/outcome cache, persisted state, sliding freshness or new wire.
+    private ClaimObservation? observedClaim;
 
     internal async ValueTask<ReadOnlyMemory<byte>> ReceiveTerminalAsync(
         ReadOnlyMemory<byte> exactRequest, CancellationToken cancellationToken)
@@ -60,11 +65,19 @@ internal sealed class DeepIdV2PreKeyClaimRuntime(
         }
         catch (Exception exception) when (exception is IOException or Win32Exception)
         {
+            diagnostics.Report("Terminal", exception);
             return Failure(request, Xpc1V2Status.OutcomeUnknown, Xpc1V2MutationOutcome.OutcomeUnknown, 1, []);
         }
     }
 
     public async ValueTask<ContactReplicaRpcResponse> ReceiveAsync(ContactReplicaRpcCommand command,
+        RouterId authenticatedSender, CancellationToken cancellationToken)
+    {
+        try { return await ReceiveCoreAsync(command, authenticatedSender, cancellationToken).ConfigureAwait(false); }
+        catch (Exception error) { diagnostics.Report("PeerReceive", error); throw; }
+    }
+
+    private async ValueTask<ContactReplicaRpcResponse> ReceiveCoreAsync(ContactReplicaRpcCommand command,
         RouterId authenticatedSender, CancellationToken cancellationToken)
     {
         if (command.Operation is not (ContactReplicaRpcOperation.CoordinateDid2PreKeyClaim or
@@ -191,6 +204,7 @@ internal sealed class DeepIdV2PreKeyClaimRuntime(
             catch (Exception exception) when (exception is IOException or Win32Exception or InvalidDataException or
                 CryptographicException or FormatException or InvalidOperationException or OperationCanceledException)
             {
+                diagnostics.Report("Reservation", exception);
                 throw new IOException("DID2 claim reservation/completion outcome requires exact-operation reconciliation.", exception);
             }
         }
@@ -244,13 +258,30 @@ internal sealed class DeepIdV2PreKeyClaimRuntime(
         using var journal = new DeepIdV2PublicationJournal(directory, publication.NetworkId.Span,
             publication.PublicationOperationId.Span, manifest.ViewHash.Span, manifest.PlacementHash.Span,
             request.Field(16).Span, security, durability);
-        var candidate = await candidates.VerifyCommittedCandidateAsync(journal, cancellationToken).ConfigureAwait(false);
+        DeepIdV2VerifiedPublicationCandidate candidate;
+        if (observedClaim is { } observed && Fixed(observed.RequestHash, request.RequestHash.Span))
+        {
+            try
+            {
+                if (!Fixed(observed.Publication, publication.CanonicalBytes.Span) ||
+                    !Fixed(observed.Receipt, receipt.CanonicalBytes.Span))
+                    throw new CryptographicException("Observed claim native inventory changed.");
+                candidate = await candidates.ObserveCommittedCandidateAsync(journal, observed.Candidate, cancellationToken).ConfigureAwait(false);
+            }
+            catch { observedClaim = null; throw; } // No fallback within a failed observation.
+        }
+        else
+        {
+            observedClaim = null;
+            candidate = await candidates.VerifyCommittedCandidateAsync(journal, cancellationToken).ConfigureAwait(false);
+        }
         if (!Fixed(candidate.Publication.CanonicalBytes.Span, publication.CanonicalBytes.Span))
             throw new UnauthorizedAccessException("DID2 current publication support differs from retained inventory.");
         var publicationPlacement = ContactServicePlacementFactory.Create(current.VerifiedPlacement.Network,
             ContactServiceRequestKind.PublishPreKeyInventory, request.Field(16));
         var context = new ClaimContext(request, publication, receipt, candidate, current, publicationPlacement);
         _ = await EnsureFreshAsync(context, cancellationToken).ConfigureAwait(false);
+        observedClaim = new(request.RequestHash.ToArray(), publication.CanonicalBytes.ToArray(), receipt.CanonicalBytes.ToArray(), candidate);
         return context;
     }
 
@@ -350,4 +381,6 @@ internal sealed class DeepIdV2PreKeyClaimRuntime(
     private sealed record ClaimContext(ParsedXpk1V2 Request, ParsedXpp1V2 Publication, ParsedXic1V2 Receipt,
         DeepIdV2VerifiedPublicationCandidate Candidate, ContactServicePlacementCapability Placement,
         VerifiedContactServicePlacement PublicationPlacement);
+    private sealed record ClaimObservation(byte[] RequestHash, byte[] Publication, byte[] Receipt,
+        DeepIdV2VerifiedPublicationCandidate Candidate);
 }

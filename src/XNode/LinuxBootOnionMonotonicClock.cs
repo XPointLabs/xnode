@@ -76,15 +76,28 @@ internal sealed class LinuxBootOnionMonotonicClock : IOnionMonotonicClock
         }
     }
 
-    private static async ValueTask<string> ReadTextAsync(
+    internal static ValueTask<string> ReadTextAsync(
         string path,
         CancellationToken cancellationToken)
     {
-        if (!File.Exists(path))
+        // procfs values are tiny kernel-memory reads, not asynchronous disk
+        // I/O. Scheduling two ThreadPool file operations on every authority
+        // check needlessly stalls the bounded native critical section.
+        // Read BOTH actual sources on every sample; no clock value is cached.
+        cancellationToken.ThrowIfCancellationRequested();
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 512, FileOptions.None);
+        Span<byte> bytes = stackalloc byte[512];
+        var count = 0;
+        while (count < bytes.Length)
         {
-            throw new IOException($"Required Linux procfs source is unavailable: {path}");
+            cancellationToken.ThrowIfCancellationRequested();
+            var read = stream.Read(bytes[count..]);
+            if (read == 0) break;
+            count += read;
         }
-        return await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
+        if (stream.ReadByte() != -1) throw new InvalidDataException("Linux procfs value exceeds its bound.");
+        cancellationToken.ThrowIfCancellationRequested();
+        return ValueTask.FromResult(new UTF8Encoding(false, true).GetString(bytes[..count]));
     }
 
     private static byte[] ParseBootId(string value)

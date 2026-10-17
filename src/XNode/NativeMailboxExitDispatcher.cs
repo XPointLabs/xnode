@@ -51,6 +51,7 @@ public sealed class NativeMailboxExitDispatcher(IServiceProvider services)
     // Resource budgeting only, never authorization time or a replay floor.
     private readonly MailboxClientIngressLimiter limiter = new();
     private long failureLogTimestamp;
+    private long workLogTimestamp;
 
     public Task<NativeMailboxDispatchResult> DispatchAsync(
         VerifiedCanonicalOnionRequest request, CancellationToken cancellationToken)
@@ -66,6 +67,7 @@ public sealed class NativeMailboxExitDispatcher(IServiceProvider services)
     private async Task<NativeMailboxDispatchResult> DispatchCoreAsync(OnionOperation privacyOperation,
         ReadOnlyMemory<byte> canonicalMau3, CancellationToken cancellationToken)
     {
+        using var work = CurrentMailboxDiagnostics.BeginWork(ReportWork);
         (MailboxAuthenticatedOperation operation, MailboxHttpEndpointContract contract) = privacyOperation switch
         {
             OnionOperation.Store => (MailboxAuthenticatedOperation.Store, MailboxWireHttpContract.Store),
@@ -144,6 +146,22 @@ public sealed class NativeMailboxExitDispatcher(IServiceProvider services)
                 return NativeMailboxDispatchResult.OutcomeUnknownAfterForward();
             }
         }
+    }
+
+    private void ReportWork(CurrentMailboxDiagnostics.WorkSummary work)
+    {
+        try
+        {
+            var logger = services.GetService<ILogger<NativeMailboxExitDispatcher>>();
+            if (logger is null || !logger.IsEnabled(LogLevel.Warning) || work.LeaseMs < 1000) return;
+            var now = Stopwatch.GetTimestamp(); var last = Volatile.Read(ref workLogTimestamp);
+            if (last != 0 && Stopwatch.GetElapsedTime(last, now) < TimeSpan.FromSeconds(10) ||
+                Interlocked.CompareExchange(ref workLogTimestamp, now, last) != last) return;
+            logger.LogWarning("Current mailbox work: leaseChecks={LeaseChecks}; leaseMs={LeaseMs}; authorityMs={AuthorityMs}; hostMs={HostMs}; grantMs={GrantMs}; nativeJoinMs={NativeJoinMs}; revocationMs={RevocationMs}; operationMs={OperationMs}.",
+                work.LeaseChecks, work.LeaseMs, work.AuthorityMs, work.HostMs, work.GrantMs,
+                work.NativeJoinMs, work.RevocationMs, work.OperationMs);
+        }
+        catch { /* Resource observation cannot change the native result. */ }
     }
 
     private void ReportUnknown(string stage, Exception? error)

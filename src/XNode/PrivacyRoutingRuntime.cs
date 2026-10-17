@@ -84,6 +84,7 @@ public sealed class PrivacyRoutingRuntime
     private readonly OnionKeyAgreementAuthority? keyAgreement;
     private readonly OnionReplayAuthority? replay;
     private readonly PrivacyRoutingCodec? codec;
+    private readonly PrivacyRoutingFailureDiagnostics diagnostics;
 
     public bool ProductionCapabilityAvailable =>
         configuration.Enabled
@@ -114,7 +115,8 @@ public sealed class PrivacyRoutingRuntime
         PrivacyRoutingProductionCapability? productionCapability,
         OnionKeyAgreementAuthority? keyAgreement,
         OnionReplayAuthority? replay,
-        PrivacyRoutingCodec? codec)
+        PrivacyRoutingCodec? codec,
+        ILogger<PrivacyRoutingRuntime>? logger = null)
     {
         this.configuration = configuration
             ?? throw new ArgumentNullException(nameof(configuration));
@@ -126,6 +128,7 @@ public sealed class PrivacyRoutingRuntime
         this.keyAgreement = keyAgreement;
         this.replay = replay;
         this.codec = codec;
+        diagnostics = new(logger);
         var protocolBoundaryCount =
             (productionCapability is null ? 0 : 1)
             + (keyAgreement is null ? 0 : 1)
@@ -157,6 +160,7 @@ public sealed class PrivacyRoutingRuntime
             return PrivacyRuntimeResult.Of(PrivacyRuntimeOutcome.MalformedBeforeForward);
         var exactFrame = frame.ToArray();
         var effectStarted = false;
+        var phase = "Binding";
         try
         {
             var binding = await productionCapability.GetCurrentAsync(cancellationToken)
@@ -167,6 +171,7 @@ public sealed class PrivacyRoutingRuntime
                     PrivacyRuntimeOutcome.UnavailableBeforeForward);
             }
 
+            phase = "Open";
             var keyHandle = keyAgreement.BindKeyHandle(binding.KeyHandleId);
             var receives = new List<VerifiedOnionReceiveContext>();
             foreach (var position in binding.Positions)
@@ -181,6 +186,7 @@ public sealed class PrivacyRoutingRuntime
 
             if (opened is OpenedOnionRelay relay)
             {
+                phase = "Forward";
                 effectStarted = true;
                 return await ForwardAsync(relay, binding.Network, cancellationToken)
                     .ConfigureAwait(false);
@@ -193,16 +199,19 @@ public sealed class PrivacyRoutingRuntime
             }
 
             effectStarted = true;
+            phase = "Dispatch";
             return await DispatchAndSealAsync(exit, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (OnionBoundaryException exception)
         {
+            diagnostics.Report(phase, exception);
             return PrivacyRuntimeResult.Of(effectStarted
                 ? PrivacyRuntimeOutcome.OutcomeUnknownAfterForward : MapBoundaryFailure(exception.Code));
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException exception) when (cancellationToken.IsCancellationRequested)
         {
+            diagnostics.Report(phase, exception);
             return PrivacyRuntimeResult.Of(
                 PrivacyRuntimeOutcome.OutcomeUnknownAfterForward);
         }
@@ -213,6 +222,7 @@ public sealed class PrivacyRoutingRuntime
                 or UnauthorizedAccessException
                 or CryptographicException)
         {
+            diagnostics.Report(phase, exception);
             return PrivacyRuntimeResult.Of(effectStarted
                 ? PrivacyRuntimeOutcome.OutcomeUnknownAfterForward : PrivacyRuntimeOutcome.UnavailableBeforeForward);
         }
