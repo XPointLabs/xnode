@@ -53,8 +53,10 @@ public sealed class CurrentMailboxAdmissionTests
         var first = await fixture.Admission.WithRequestAsync(fixture.Frame, operation, async (request, token) =>
         {
             Assert.Equal(MailboxAuthenticatedReplayDisposition.NewReserved, request.ReplayDisposition);
-            Assert.True(await request.TryAcquireExecutionAsync(token));
-            await request.ReserveOutcomeCapacityAsync(64, token);
+            var reads = fixture.Signed.PublicationReads;
+            Assert.True(await request.TryAcquireExecutionAndReserveOutcomeAsync(64, token));
+            Assert.Equal(reads + 1, fixture.Signed.PublicationReads);
+            Assert.False(await request.TryAcquireExecutionAndReserveOutcomeAsync(64, token));
             return await request.PersistTerminalAsync(MailboxClientTerminalOutcome.OperationConflict, token);
         });
         Assert.Equal(1, fixture.Replay.Diagnostics.CompletedCount);
@@ -62,7 +64,7 @@ public sealed class CurrentMailboxAdmissionTests
         var replay = await fixture.Admission.WithRequestAsync(fixture.Frame, operation, async (request, token) =>
         {
             Assert.Equal(MailboxAuthenticatedReplayDisposition.IdempotentCompleted, request.ReplayDisposition);
-            Assert.False(await request.TryAcquireExecutionAsync(token));
+            Assert.False(await request.TryAcquireExecutionAndReserveOutcomeAsync(64, token));
             return request.RecoveredOutcome!;
         });
         Assert.Equal(first.CanonicalBytes.ToArray(), replay.CanonicalBytes.ToArray());
@@ -137,8 +139,7 @@ public sealed class CurrentMailboxAdmissionTests
         await using var fixture = await Fixture.CreateAsync(MailboxAuthenticatedOperation.Store);
         await fixture.Admission.WithRequestAsync(fixture.Frame, MailboxAuthenticatedOperation.Store, async (request, token) =>
         {
-            Assert.True(await request.TryAcquireExecutionAsync(token));
-            await request.ReserveOutcomeCapacityAsync(64, token);
+            Assert.True(await request.TryAcquireExecutionAndReserveOutcomeAsync(64, token));
             return await request.PersistTerminalAsync(MailboxClientTerminalOutcome.OperationConflict, token);
         });
         var prior = Snapshot(fixture.Signed);
@@ -158,7 +159,7 @@ public sealed class CurrentMailboxAdmissionTests
         await fixture.Admission.WithRequestAsync(fixture.Frame, MailboxAuthenticatedOperation.Store, (request, _) =>
         { escaped = request; return ValueTask.FromResult(1); });
         await Assert.ThrowsAsync<InvalidOperationException>(() => escaped!.EnsureCurrentAsync().AsTask());
-        await Assert.ThrowsAsync<InvalidOperationException>(() => escaped!.ReserveOutcomeCapacityAsync(64).AsTask());
+        await Assert.ThrowsAsync<InvalidOperationException>(() => escaped!.TryAcquireExecutionAndReserveOutcomeAsync(64).AsTask());
         Assert.Throws<InvalidOperationException>(() => escaped!.RecoveredOutcome);
         Assert.Equal(1, fixture.Replay.Diagnostics.PendingCount);
     }

@@ -70,10 +70,9 @@ internal sealed partial class CurrentMailboxReplicaReceiver
                         throw new CryptographicException("Current Retrieve continuation is invalid.");
                     snapshot = window.SnapshotHighWater;
                 }
-                if (!await request.TryAcquireExecutionAsync(ct).ConfigureAwait(false))
-                    throw new InvalidOperationException("Current Retrieve already has an active execution.");
                 var maximum = MailboxWireHttpContract.Retrieve.MaximumResponseBytes;
-                await request.ReserveOutcomeCapacityAsync(maximum, ct).ConfigureAwait(false);
+                if (!await request.TryAcquireExecutionAndReserveOutcomeAsync(maximum, ct).ConfigureAwait(false))
+                    throw new InvalidOperationException("Current Retrieve already has an active execution.");
                 var read = await operationLedger.ReadCurrentWindowAsync(body, scope.Grant.MembershipCommitment,
                     snapshot, mutations, scope.Host, scope.Lease, ct).ConfigureAwait(false);
                 var selectedCount = Math.Min(body.MaximumItems, read.Items.Count);

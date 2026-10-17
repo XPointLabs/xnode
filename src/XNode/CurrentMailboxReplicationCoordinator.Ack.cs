@@ -23,10 +23,9 @@ internal sealed partial class CurrentMailboxReplicationCoordinator
             {
                 var scope = request.Scope;
                 var recovered = request.RecoveredOutcome;
-                if (recovered is null && !await request.TryAcquireExecutionAsync(ct).ConfigureAwait(false))
-                    throw new InvalidOperationException("Current ACK already has an active execution.");
                 var maximum = MailboxWireHttpContract.Acknowledge.MaximumResponseBytes;
-                if (recovered is null) await request.ReserveOutcomeCapacityAsync(maximum, ct).ConfigureAwait(false);
+                if (recovered is null && !await request.TryAcquireExecutionAndReserveOutcomeAsync(maximum, ct).ConfigureAwait(false))
+                    throw new InvalidOperationException("Current ACK already has an active execution.");
                 // Retained reads/ACK keep the authenticated original object
                 // projection. The independently current host still owns time,
                 // revocation and selection verification, not this intent key.

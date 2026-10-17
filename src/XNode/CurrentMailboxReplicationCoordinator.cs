@@ -119,10 +119,9 @@ internal sealed partial class CurrentMailboxReplicationCoordinator(CurrentMailbo
             var completed = await request.CompleteRecoveredAsync(ct).ConfigureAwait(false);
             return new(MailboxPeerQuorumStatus.Durable, completed.CanonicalBytes, 2);
         }
-        if (!await request.TryAcquireExecutionAsync(ct).ConfigureAwait(false))
-            return new(MailboxPeerQuorumStatus.PartialFailure, ReadOnlyMemory<byte>.Empty, 0);
         var maximum = MailboxWireHttpContract.Store.MaximumResponseBytes;
-        await request.ReserveOutcomeCapacityAsync(maximum, ct).ConfigureAwait(false);
+        if (!await request.TryAcquireExecutionAndReserveOutcomeAsync(maximum, ct).ConfigureAwait(false))
+            return new(MailboxPeerQuorumStatus.PartialFailure, ReadOnlyMemory<byte>.Empty, 0);
         if (!settled.IsEmpty)
         {
             await local.WithAdmittedPeerAsync(ownedPeer, MailboxPeerReplicationOperation.Store,

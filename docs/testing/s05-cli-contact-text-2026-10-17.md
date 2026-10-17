@@ -157,8 +157,12 @@ all9 services/54 mounts without reset. No live authority interval is extended.
 Run28 passed the repaired Shared evidence boundary, then failed with
 `ReserveStoreCoreAsync` IL1104. Read-only matching PDB inspection maps this to
 the guard “Known current Store replay has lost its exact peer intent.” The
-client MAU counter/floor had persisted, but cancellation preceded first-intent
-allocation. That is distinct from actual loss of a committed intent.
+initial explanation was cancellation after MAU reservation but before first
+intent. That sequence was reproduced independently in the focused native
+fixture, not proven for the actual CLI request. Later run31's closed diagnostic
+found native custody for the real ciphertext; DR-0140 owns that distinct
+producer collision. The fixture gap remains a valid bounded source correction,
+not proof of CLI noncommit or actual loss of a committed intent.
 
 Focused22 reproduced the genuine cold gap (1FAIL/native1). Focused23 retained
 a compile failure from an incorrect enum name during the edit, not PASS.
@@ -188,3 +192,20 @@ as the reason for requiring an existing intent. It emits no operation IDs,
 payload, paths or raw exceptions and cannot alter admission. Focused26 passed
 the genuine pre-first-intent cold-recovery regression (native0). This is
 diagnosis, not evidence of text delivery or a reason to reset state.
+
+Run31 identified `native-store` as the existing-intent fence. Run32 then
+observed both real receive histories exactly once and completed duplicate
+polls; both Store outcomes remained unknown, so its terminal was native1 and
+`passed=false`. The client producer correction is owned by root DR-0140; the
+node does not waive its original native context or intent checks.
+
+The actual Store/ACK deadline traces also show repeated current joins.
+Execution acquisition and outcome-capacity reservation are now one synchronous
+in-memory transition behind one current native join. Neither runtime call
+performs I/O, awaits or an external callback; later ledger/mutation/network
+boundaries still recheck independently. No resource or signed lifetime grows.
+Focused27 passed31/native0/0skip, including a precise one-source-read assertion,
+duplicate execution refusal, escaped/revoked authority, current native
+Store/recovery, both Retrieve replicas and pinned-TLS peer cancellation.
+Focused28 passed5/native0/0skip for both ACK replicas, exact cold replay,
+concurrent execution, capacity refusal and expiry-after-peer-deletion recovery.

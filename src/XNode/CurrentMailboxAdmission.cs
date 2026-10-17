@@ -323,15 +323,15 @@ internal sealed partial class CurrentMailboxAdmission(
         { get { requireActive(); return reservation.RecoveredOutcome; } }
         internal async ValueTask EnsureCurrentAsync(CancellationToken token = default) =>
             _ = await check(token).ConfigureAwait(false);
-        internal async ValueTask<bool> TryAcquireExecutionAsync(CancellationToken token = default)
+        internal async ValueTask<bool> TryAcquireExecutionAndReserveOutcomeAsync(int maximumBytes, CancellationToken token = default)
         {
             await EnsureCurrentAsync(token).ConfigureAwait(false);
-            return runtime.TryAcquireExecution(reservation);
-        }
-        internal async ValueTask ReserveOutcomeCapacityAsync(int maximumBytes, CancellationToken token = default)
-        {
-            await EnsureCurrentAsync(token).ConfigureAwait(false);
+            // Both operations below are synchronous, in-memory and owned by
+            // this reservation. No I/O, await or external callback separates
+            // them; one current native join protects the same transition.
+            if (!runtime.TryAcquireExecution(reservation)) return false;
             runtime.ReserveOutcomeCapacity(reservation, maximumBytes);
+            return true;
         }
         internal async ValueTask<MailboxClientCanonicalOutcome> PersistTerminalAsync(
             MailboxClientTerminalOutcome terminal, CancellationToken token = default)
