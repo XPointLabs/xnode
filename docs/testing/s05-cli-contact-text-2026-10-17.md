@@ -173,3 +173,9 @@ complete anchored snapshot permits only first allocation for NewReserved or
 InFlight without a recovered outcome or native Store effect. A persisted PRQ2
 always returns unchanged; existing cursor/prefix/receipt rules are unchanged.
 Real retained CLI text/full qualification remains unaccepted at this checkpoint.
+
+Deploy16 failed closed in preflight's authenticated policy observation before
+image build/activation (native1, no Up). The exact supported retry deploy17
+passed Build/Up0 and preserved9 services/54 mounts. Neither attempt reset data,
+weakened time verification or touched production. Run29 continues the same
+pending CLI text on that activation; its business result is not inferred here.
