@@ -3,6 +3,7 @@ using Deep.Protocol.DeepExtension.PrivacyRouting;
 using System.Security.Cryptography;
 using XNode.Core.Mailbox;
 using XNode.Core.Mailbox.Client;
+using System.Diagnostics;
 
 namespace XNode;
 
@@ -15,9 +16,11 @@ internal interface ICurrentMailboxReplicaPeerClient
 /// <summary>Same current admission/replay/storage owner as the recipient. A
 /// remote failure leaves real local custody and peer Pending, never quorum.</summary>
 internal sealed partial class CurrentMailboxReplicationCoordinator(CurrentMailboxReplicaReceiver local,
-    ICurrentMailboxReplicaPeerClient peer, ReplicatedMailboxOptions options)
+    ICurrentMailboxReplicaPeerClient peer, ReplicatedMailboxOptions options,
+    ILogger<CurrentMailboxReplicationCoordinator>? logger = null)
 {
     private readonly TimeSpan timeout = CaptureTimeout(options);
+    private long lastPeerDiagnostic;
     internal void RequireReceiver(CurrentMailboxReplicaReceiver receiver)
     {
         if (!ReferenceEquals(local, receiver))
@@ -131,14 +134,20 @@ internal sealed partial class CurrentMailboxReplicationCoordinator(CurrentMailbo
         {
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
             deadline.CancelAfter(timeout);
+            var started = Stopwatch.GetTimestamp();
             try
             {
                 remote = await peer.SendAsync(current.RecipientTransport, operation,
                 current.CanonicalRequest, deadline.Token).ConfigureAwait(false);
             }
-            catch (Exception error) when (error is HttpRequestException or IOException ||
-                error is OperationCanceledException && !ct.IsCancellationRequested)
-            { remote = null; }
+            catch (OperationCanceledException)
+            {
+                ReportPeerFailure(ct.IsCancellationRequested ? "caller-cancelled" : "peer-deadline", started);
+                if (ct.IsCancellationRequested) throw;
+                remote = null;
+            }
+            catch (Exception error) when (error is HttpRequestException or IOException)
+            { ReportPeerFailure("transport", started); remote = null; }
         }
         await current.EnsureCurrentAsync(ct).ConfigureAwait(false);
         if (remote is null) return new(MailboxPeerQuorumStatus.PartialFailure, ReadOnlyMemory<byte>.Empty, 1);
@@ -147,6 +156,20 @@ internal sealed partial class CurrentMailboxReplicationCoordinator(CurrentMailbo
         catch (MailboxPeerReplicationException) { return new(MailboxPeerQuorumStatus.PartialFailure, ReadOnlyMemory<byte>.Empty, 1); }
         await current.CommitRecipientAsync(remote.Value, ct).ConfigureAwait(false);
         return new(MailboxPeerQuorumStatus.Durable, quorum, 2);
+    }
+    private void ReportPeerFailure(string reason, long started)
+    {
+        if (logger is null) return;
+        try
+        {
+            var now = Stopwatch.GetTimestamp(); var previous = Volatile.Read(ref lastPeerDiagnostic);
+            if (previous != 0 && Stopwatch.GetElapsedTime(previous, now) < TimeSpan.FromSeconds(10) ||
+                Interlocked.CompareExchange(ref lastPeerDiagnostic, now, previous) != previous) return;
+            logger.LogWarning("Current mailbox coordinator peer incomplete: reason={Reason}; elapsedMs={Elapsed}; budgetMs={Budget}.",
+                reason, Math.Clamp((long)Stopwatch.GetElapsedTime(started, now).TotalMilliseconds, 0, 3600000),
+                (long)timeout.TotalMilliseconds);
+        }
+        catch { /* Observations cannot alter the original unknown outcome. */ }
     }
     private static TimeSpan CaptureTimeout(ReplicatedMailboxOptions options)
     {

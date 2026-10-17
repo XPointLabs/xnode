@@ -1648,3 +1648,10 @@ Pre-forward DID2 resolver admission refusals also record the closed
 `ContactAdmission` phase/category and bounded owned-code location, using the
 same rate-limited, exception-free ONION diagnostic sink. This observation does
 not weaken admission or change forwarding certainty.
+
+The checked-in `Mailbox.peerTimeout` value now matches the15s bounded peer
+service and code default. The previous5s JSON override took precedence over the
+corrected constructor default. Explicit smaller operator overrides remain
+supported; a timeout still retains uncertainty and never produces quorum.
+The coordinator's closed numeric diagnostic distinguishes its own peer deadline
+from caller cancellation and records the actual captured budget/duration.

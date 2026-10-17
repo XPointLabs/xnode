@@ -11,8 +11,9 @@ public sealed partial class CurrentMailboxPeerHttpTests
         await using var f = await Fixture.CreateAsync(); f.OpenLedger();
         // Deliberately shorter than the real peer service for this cancellation
         // test; production's default must cover the full bounded peer work.
+        var log = new PeerDiagnosticLog<CurrentMailboxReplicationCoordinator>(false);
         f.Coordinator = new(f.Sender.Receiver, f.PeerClient, new ReplicatedMailboxOptions
-            { Enabled = true, PeerTimeout = TimeSpan.FromSeconds(5) });
+            { Enabled = true, PeerTimeout = TimeSpan.FromSeconds(5) }, log);
         var exactClient = f.ClientStoreFrame();
         var reached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -34,6 +35,11 @@ public sealed partial class CurrentMailboxPeerHttpTests
             Assert.Equal(MailboxPeerQuorumStatus.PartialFailure, partial.Status);
             Assert.Equal(1, partial.DurableReplicaCount); Assert.True(partial.CanonicalMqr3.IsEmpty);
             Assert.True(f.PeerClient.Cancelled);
+            Assert.Equal(1, log.Calls); Assert.False(log.ExceptionPassed);
+            Assert.Equal("peer-deadline", log.Fields["Reason"]);
+            Assert.Equal(5000L, log.Fields["Budget"]);
+            Assert.InRange((long)log.Fields["Elapsed"]!, 4000, 15000);
+            Assert.Equal(new[] { "Budget", "Elapsed", "Reason", "{OriginalFormat}" }, log.Fields.Keys.Order(StringComparer.Ordinal));
             Assert.Equal(0, f.Sender.Node.OutcomeCount);
             Assert.Equal(1, f.Sender.Node.Replay.Diagnostics.PendingCount);
             exactIntent = Assert.Single(f.ExactIntents);

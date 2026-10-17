@@ -48,6 +48,8 @@ public sealed class CurrentMailboxHostCompositionTests
         Assert.NotNull(mailbox);
         mailbox.Validate();
         Assert.Equal(TimeSpan.FromSeconds(MailboxClientLimits.MaximumTtlSeconds), mailbox.MaximumTtl);
+        Assert.Equal(TimeSpan.FromSeconds(MailboxWireHttpContract.PeerStore.RequestTimeoutSeconds), mailbox.PeerTimeout);
+        Assert.Equal(TimeSpan.FromSeconds(15), mailbox.PeerTimeout);
 
         var root = Path.Combine(Path.GetTempPath(), "deep-composition-" + Guid.NewGuid().ToString("N"));
         mailbox.Enabled = true;

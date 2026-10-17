@@ -126,3 +126,15 @@ Node focused18 passed3/native0/0skip for closed phases, hostile exception text,
 sink interruption and rate bound. Diagnostic activation deploy12 Build/Up0
 preserved all9 services/54 mounts, with no reset or production changes. It is
 not Verify/smoke/full acceptance.
+
+Run26's exact cold retry obtained durable Initial Store. Bob subsequently
+materialized the request, but its ACK remained unknown after cancellation;
+this is not completed CLI contact/text acceptance. Isolated retained Bob sync
+after deploy13 identified the effective peer budget as5000ms (5009ms elapsed),
+not the constructor's15s. Read-only inspection of the actual container's base
+`appsettings.json` confirmed its lower-case `Mailbox.peerTimeout`5s override;
+Development and environment had no override. The checked-in base setting is
+now15s. Focused19 passed1/native0 for actual pinned-TLS5s cancellation/cold
+recovery and closed timing metadata; focused20 passed1/native0 for the actual
+shipping JSON's retention and15s resource values. No replay/validity guard was
+relaxed, original failed ACK remains exact and retained.
