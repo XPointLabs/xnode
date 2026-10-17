@@ -98,12 +98,13 @@ internal sealed class DeepIdV2PublicationFinalCommitter(
             var signer = PublicKeyAuth.GenerateKeyPair(seed);
             try
             {
-                if (!Fixed(signer.PublicKey, localId))
+                var signingKey = current.VerifiedPlacement.Network.ResolveNodeIdentityPublicKey(localId);
+                if (!Fixed(signer.PublicKey, signingKey.Span))
                     throw new CryptographicException(
                         "DID2 final receipt signer is not the selected local node.");
                 using var store = new DeepIdV2InventoryCommitStore(
                     node.DataDirectory, publication.NetworkId.Span,
-                    serviceCapability.Span, localId, security, durability);
+                    serviceCapability.Span, localId, signingKey.Span, security, durability);
                 var predecessor = store.ReadCurrentPublication();
                 if (predecessor is not null &&
                     !Fixed(predecessor.Manifest.Field(5).Span, publication.Manifest.Field(5).Span))

@@ -249,7 +249,7 @@ internal sealed partial class DeepIdV2InventoryCommitStore
                 !Fixed(bytes.AsSpan(54, 32), localReplicaId) ||
                 !PublicKeyAuth.VerifyDetached(bytes.AsSpan(^StateSignatureLength).ToArray(),
                     HashDomain(ClaimStateDomain, bytes.AsSpan(0, bytes.Length - StateSignatureLength)),
-                    localReplicaId))
+                    localSigningPublicKey))
                 throw new InvalidDataException("DID2 claim custody has invalid scope or signature.");
             var count = BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(86, 4));
             if (count is < 1 or > MaximumClaimReservations)
@@ -351,7 +351,7 @@ internal sealed partial class DeepIdV2InventoryCommitStore
             item.Request.CanonicalBytes.Span, item.Offering.CanonicalBytes.Span,
             item.Manifest.CanonicalBytes.Span, item.Generation, item.Counter);
         if (!Fixed(local[..32], localReplicaId) ||
-            !PublicKeyAuth.VerifyDetached(local[32..].ToArray(), input, localReplicaId))
+            !PublicKeyAuth.VerifyDetached(local[32..].ToArray(), input, localSigningPublicKey))
             throw new InvalidDataException("DID2 completed claim is not signed by this replica.");
     }
 
@@ -389,7 +389,7 @@ internal sealed partial class DeepIdV2InventoryCommitStore
         var input = HashDomain(ClaimStateDomain, stream.ToArray());
         var signature = signNodeData(input);
         if (signature is null || signature.Length != StateSignatureLength ||
-            !PublicKeyAuth.VerifyDetached(signature, input, localReplicaId))
+            !PublicKeyAuth.VerifyDetached(signature, input, localSigningPublicKey))
             throw new CryptographicException("DID2 claim snapshot signer differs from the local replica.");
         stream.Write(signature);
         return stream.ToArray();

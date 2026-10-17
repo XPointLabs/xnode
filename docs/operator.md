@@ -160,6 +160,11 @@ the forwarding runtime supplies its verified network context; signing custody
 and inbound signatures resolve the identity key from the current signed XND1.
 Missing current authority rejects before peer replay acceptance. Configured
 peer IDs/pins do not authorize an identity key, and there is no ID-as-key fallback.
+DID2 final inventory receipts and local inventory/claim snapshot signatures
+also use that resolved descriptor key. Their scope headers, receipt replica
+fields and storage paths continue to contain the opaque node ID. A wrong local
+signing seed refuses before inventory activation; correcting custody permits
+the exact staged candidate to resume, without regenerating the node identity.
 Two-store loopback HTTP evidence is not deployed, onion or physical
 client delivery evidence. Internal client Store now binds captured MAU3 to the
 exact peer request under the same native admission owner and persists final

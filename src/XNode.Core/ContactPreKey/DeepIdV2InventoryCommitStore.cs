@@ -12,6 +12,8 @@ namespace XNode.Core.ContactPreKey;
 /// verify current DID2/device authority, the complete XPP1 inventory and the
 /// current selected placement. One signed receipt is not claim authority:
 /// clients and claims still require both selected replicas' final XIC1.
+/// Replica identity remains a scope identifier; the verification key must be
+/// independently resolved from the caller's verified current network closure.
 /// </summary>
 internal sealed partial class DeepIdV2InventoryCommitStore : IDisposable
 {
@@ -29,6 +31,7 @@ internal sealed partial class DeepIdV2InventoryCommitStore : IDisposable
     private readonly byte[] networkId;
     private readonly byte[] serviceCapability;
     private readonly byte[] localReplicaId;
+    private readonly byte[] localSigningPublicKey;
     private readonly IMailboxStorageSecurity security;
     private readonly IMailboxDurabilityBarrier durability;
     private readonly FileStream lease;
@@ -37,18 +40,19 @@ internal sealed partial class DeepIdV2InventoryCommitStore : IDisposable
 
     internal DeepIdV2InventoryCommitStore(string dataDirectory,
         ReadOnlySpan<byte> networkId, ReadOnlySpan<byte> serviceCapability,
-        ReadOnlySpan<byte> localReplicaId,
+        ReadOnlySpan<byte> localReplicaId, ReadOnlySpan<byte> localSigningPublicKey,
         IMailboxStorageSecurity? security = null,
         IMailboxDurabilityBarrier? durability = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(dataDirectory);
         if (networkId.Length != 16 || serviceCapability.Length != 32 ||
-            localReplicaId.Length != 32 || IsZero(networkId) ||
-            IsZero(serviceCapability) || IsZero(localReplicaId))
+            localReplicaId.Length != 32 || localSigningPublicKey.Length != 32 || IsZero(networkId) ||
+            IsZero(serviceCapability) || IsZero(localReplicaId) || IsZero(localSigningPublicKey))
             throw new ArgumentException("The DID2 inventory custody scope is invalid.");
         this.networkId = networkId.ToArray();
         this.serviceCapability = serviceCapability.ToArray();
         this.localReplicaId = localReplicaId.ToArray();
+        this.localSigningPublicKey = localSigningPublicKey.ToArray();
         this.security = security ?? new MailboxStorageSecurity();
         this.durability = durability ?? new MailboxDurabilityBarrier();
         var root = Path.GetFullPath(Path.Combine(dataDirectory,
@@ -103,6 +107,7 @@ internal sealed partial class DeepIdV2InventoryCommitStore : IDisposable
 
     internal static DeepIdV2InventoryCommitStore OpenExisting(string dataDirectory,
         ReadOnlySpan<byte> networkId, ReadOnlySpan<byte> capability, ReadOnlySpan<byte> replica,
+        ReadOnlySpan<byte> localSigningPublicKey,
         IMailboxStorageSecurity security, IMailboxDurabilityBarrier durability)
     {
         var directory = ServiceDirectory(dataDirectory, networkId, capability);
@@ -110,7 +115,7 @@ internal sealed partial class DeepIdV2InventoryCommitStore : IDisposable
         if (!new[] { "active.state", "activated.marker", "fault.marker", "fork.marker", "claims.state", "claims-activated.marker" }
                 .Any(name => File.Exists(Path.Combine(directory, name))))
             throw new InvalidOperationException("DID2 service has no existing inventory custody.");
-        return new(dataDirectory, networkId, capability, replica, security, durability);
+        return new(dataDirectory, networkId, capability, replica, localSigningPublicKey, security, durability);
     }
 
     private static string ServiceDirectory(string dataDirectory, ReadOnlySpan<byte> networkId,
@@ -214,7 +219,7 @@ internal sealed partial class DeepIdV2InventoryCommitStore : IDisposable
         var signature = signNodeData(signatureInput);
         if (signature is null || signature.Length != 64 ||
             !PublicKeyAuth.VerifyDetached(signature, signatureInput,
-                localReplicaId))
+                localSigningPublicKey))
             throw new CryptographicException(
                 "The DID2 inventory receipt signer differs from this replica.");
         var receipt = DeepIdV2PreKeyCommitReceiptCodec.Decode(
@@ -269,7 +274,7 @@ internal sealed partial class DeepIdV2InventoryCommitStore : IDisposable
             snapshotCaptured = true;
             if (!PublicKeyAuth.VerifyDetached(bytes.AsSpan(^StateSignatureLength).ToArray(),
                     HashDomain(StateHashDomain,
-                        bytes.AsSpan(0, bytes.Length - StateSignatureLength)), localReplicaId))
+                        bytes.AsSpan(0, bytes.Length - StateSignatureLength)), localSigningPublicKey))
                 throw new InvalidDataException(
                     "DID2 inventory active snapshot has an invalid local-node signature.");
             var state = new Slot[bytes[86]];
@@ -341,7 +346,7 @@ internal sealed partial class DeepIdV2InventoryCommitStore : IDisposable
             committedAt < U64(manifest.Field(14).Span) ||
             committedAt >= U64(manifest.Field(15).Span) ||
             !PublicKeyAuth.VerifyDetached(receipt.Field(7).ToArray(),
-                receipt.SignatureInput.ToArray(), localReplicaId))
+                receipt.SignatureInput.ToArray(), localSigningPublicKey))
             throw new InvalidDataException(
                 "DID2 inventory active slot is not this replica's signed manifest.");
     }
@@ -377,7 +382,7 @@ internal sealed partial class DeepIdV2InventoryCommitStore : IDisposable
             bytes.AsSpan(0, bytes.Length - StateSignatureLength));
         var signature = signNodeData(signingInput);
         if (signature is null || signature.Length != StateSignatureLength ||
-            !PublicKeyAuth.VerifyDetached(signature, signingInput, localReplicaId))
+            !PublicKeyAuth.VerifyDetached(signature, signingInput, localSigningPublicKey))
             throw new CryptographicException("The DID2 inventory snapshot signer differs from this replica.");
         signature.CopyTo(bytes, offset);
         return bytes;

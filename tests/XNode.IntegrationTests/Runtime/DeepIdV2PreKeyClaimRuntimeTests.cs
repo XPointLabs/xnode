@@ -441,7 +441,8 @@ public sealed class DeepIdV2PreKeyClaimRuntimeTests
         Assert.Equal(2, Directory.GetFiles(harness.Root, "claims.state", SearchOption.AllDirectories).Length);
         using var store = new DeepIdV2InventoryCommitStore(harness.Nodes[0].DataDirectory,
             DeepIdV2PublicationAuthorityFixture.Network, DeepIdV2PublicationAuthorityFixture.Service,
-            harness.Nodes[0].GetRouterId().ToBytes());
+            harness.Nodes[0].GetRouterId().ToBytes(),
+            harness.Placement.VerifiedPlacement.Network.ResolveNodeIdentityPublicKey(harness.Nodes[0].GetRouterId().ToBytes()).Span);
         var proposal = store.PrepareNextClaim(request, 1_095, 1_105,
             _ => throw new InvalidOperationException("Existing pending reservation must not change."));
         Assert.Empty(proposal.CompletedResult.ToArray());
@@ -487,6 +488,7 @@ public sealed class DeepIdV2PreKeyClaimRuntimeTests
         Assert.Throws<InvalidOperationException>(() => DeepIdV2InventoryCommitStore.OpenExisting(
             harness.Nodes[0].DataDirectory, DeepIdV2PublicationAuthorityFixture.Network,
             Enumerable.Repeat((byte)0xfc, 32).ToArray(), harness.Nodes[0].GetRouterId().ToBytes(),
+            harness.Placement.VerifiedPlacement.Network.ResolveNodeIdentityPublicKey(harness.Nodes[0].GetRouterId().ToBytes()).Span,
             new MailboxStorageSecurity(), new MailboxDurabilityBarrier()));
         Assert.Equal(directories, Directory.GetDirectories(harness.Root, "*", SearchOption.AllDirectories).Order().ToArray());
     }
@@ -502,7 +504,9 @@ public sealed class DeepIdV2PreKeyClaimRuntimeTests
         {
             using var store = DeepIdV2InventoryCommitStore.OpenExisting(harness.Nodes[index].DataDirectory,
                 DeepIdV2PublicationAuthorityFixture.Network, DeepIdV2PublicationAuthorityFixture.Service,
-                harness.Nodes[index].GetRouterId().ToBytes(), new MailboxStorageSecurity(), new MailboxDurabilityBarrier());
+                harness.Nodes[index].GetRouterId().ToBytes(),
+                harness.Placement.VerifiedPlacement.Network.ResolveNodeIdentityPublicKey(harness.Nodes[index].GetRouterId().ToBytes()).Span,
+                new MailboxStorageSecurity(), new MailboxDurabilityBarrier());
             return store.ReadCurrentCommitReceipt()!;
         }
         var exact = DeepIdV2ClaimPeerPayloadCodec.EncodePrepare(proposal, Receipt(0), Receipt(1), new byte[64]);
@@ -535,7 +539,9 @@ public sealed class DeepIdV2PreKeyClaimRuntimeTests
         _ = harness.Verify(request, await harness.Claims[0].ReceiveTerminalAsync(request.CanonicalBytes, default));
         using (var store = DeepIdV2InventoryCommitStore.OpenExisting(harness.Nodes[0].DataDirectory,
             DeepIdV2PublicationAuthorityFixture.Network, DeepIdV2PublicationAuthorityFixture.Service,
-            harness.Nodes[0].GetRouterId().ToBytes(), new MailboxStorageSecurity(), new MailboxDurabilityBarrier()))
+            harness.Nodes[0].GetRouterId().ToBytes(),
+            harness.Placement.VerifiedPlacement.Network.ResolveNodeIdentityPublicKey(harness.Nodes[0].GetRouterId().ToBytes()).Span,
+            new MailboxStorageSecurity(), new MailboxDurabilityBarrier()))
         {
             Assert.Throws<InvalidDataException>(() => store.LatchClaimCompletionFork());
             Assert.Throws<InvalidDataException>(() => store.ReadCurrentPublication());
@@ -545,6 +551,7 @@ public sealed class DeepIdV2PreKeyClaimRuntimeTests
         Assert.Throws<InvalidDataException>(() => DeepIdV2InventoryCommitStore.OpenExisting(
             harness.Nodes[0].DataDirectory, DeepIdV2PublicationAuthorityFixture.Network,
             DeepIdV2PublicationAuthorityFixture.Service, harness.Nodes[0].GetRouterId().ToBytes(),
+            harness.Placement.VerifiedPlacement.Network.ResolveNodeIdentityPublicKey(harness.Nodes[0].GetRouterId().ToBytes()).Span,
             new MailboxStorageSecurity(), new MailboxDurabilityBarrier()));
     }
 
@@ -584,7 +591,8 @@ public sealed class DeepIdV2PreKeyClaimRuntimeTests
             var harness = new Harness();
             try
             {
-                harness.Signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync(lastResortReuseLimit: lastResortReuseLimit);
+                harness.Signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync(lastResortReuseLimit: lastResortReuseLimit,
+                    distinctNodeIdentities: true);
                 harness.Placement = await harness.Signed.MintPreKeyClaimAsync(DeepIdV2PublicationAuthorityFixture.Service, default);
                 harness.Nodes = harness.Placement.ReplicaIds.Select((id, i) => new RouterNodeOptions
                 {

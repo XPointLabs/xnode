@@ -13,7 +13,7 @@ public sealed class DeepIdV2PublicationFinalCommitterTests
     [Fact]
     public async Task RealDid2Authority_TerminalAndPeerCommitBothReceipts_ExactReplayAfterReopen()
     {
-        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync(distinctNodeIdentities: true);
         var root = TemporaryRoot();
         try
         {
@@ -50,7 +50,8 @@ public sealed class DeepIdV2PublicationFinalCommitterTests
                 }
                 using (var store = new DeepIdV2InventoryCommitStore(directory,
                            DeepIdV2PublicationAuthorityFixture.Network,
-                           DeepIdV2PublicationAuthorityFixture.Service, replicas[i].Span))
+                           DeepIdV2PublicationAuthorityFixture.Service, replicas[i].Span,
+                           fixture.Placement.VerifiedPlacement.Network.ResolveNodeIdentityPublicKey(replicas[i]).Span))
                     Assert.Equal(fixture.Publication.CanonicalBytes.ToArray(),
                         store.ReadCurrentPublication()!.CanonicalBytes.ToArray());
 
@@ -163,14 +164,42 @@ public sealed class DeepIdV2PublicationFinalCommitterTests
         finally { Directory.Delete(root, recursive: true); }
     }
 
+    [Fact]
+    public async Task DistinctNodeIdentity_WrongLocalSigningSeedCannotCommit_ExactStageCanResume()
+    {
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync(distinctNodeIdentities: true);
+        var root = TemporaryRoot();
+        try
+        {
+            var local = fixture.Placement.ReplicaIds[0];
+            var other = fixture.Placement.ReplicaIds[1];
+            var fragments = Fragments(fixture);
+            var receiver = Receiver(fixture, root, local.Span, fixture.Node(other.Span).Seed);
+            foreach (var fragment in fragments.Take(fragments.Count - 1))
+                await receiver.ReceiveTerminalAsync(fragment, default);
+            await Assert.ThrowsAsync<CryptographicException>(async () =>
+                await receiver.ReceiveTerminalAsync(fragments[^1], default));
+            Assert.False(Directory.Exists(Path.Combine(root, "did2-prekey-commits")));
+            var resumed = Receiver(fixture, root, local.Span);
+            var receipt = DeepIdV2PreKeyCommitReceiptCodec.Decode(
+                (await resumed.ReceiveTerminalAsync(fragments[^1], default)).Span);
+            var key = fixture.Placement.VerifiedPlacement.Network.ResolveNodeIdentityPublicKey(local);
+            Assert.NotEqual(local.ToArray(), key.ToArray());
+            Assert.Equal(local.ToArray(), receipt.Field(5).ToArray());
+            Assert.True(Sodium.PublicKeyAuth.VerifyDetached(receipt.Field(7).ToArray(),
+                receipt.SignatureInput.ToArray(), key.ToArray()));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
     private static DeepIdV2ReplicaStageReceiver Receiver(DeepIdV2PublicationAuthorityFixture fixture,
-        string root, ReadOnlySpan<byte> local)
+        string root, ReadOnlySpan<byte> local, byte[]? signingSeed = null)
     {
         var node = new RouterNodeOptions
         {
             DataDirectory = root,
             RouterId = Convert.ToHexString(local),
-            Ed25519PrivateKey = Convert.ToHexString(fixture.Node(local).Seed)
+            Ed25519PrivateKey = Convert.ToHexString(signingSeed ?? fixture.Node(local).Seed)
         };
         var security = new MailboxStorageSecurity();
         var durability = new MailboxDurabilityBarrier();

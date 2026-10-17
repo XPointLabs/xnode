@@ -334,7 +334,8 @@ public sealed class DeepIdV2ClaimJournalTests
     private static DeepIdV2InventoryCommitStore Open(DeepIdV2PublicationAuthorityFixture fixture,
         string root, ReadOnlyMemory<byte> node, IMailboxDurabilityBarrier? durability = null) =>
         new(root, DeepIdV2PublicationAuthorityFixture.Network, fixture.Publication.Manifest.Field(2).Span,
-            node.Span, durability: durability);
+            node.Span, fixture.Placement.VerifiedPlacement.Network.ResolveNodeIdentityPublicKey(node).Span,
+            durability: durability);
 
     private static byte[] U16(ushort value)
     { var bytes = new byte[2]; BinaryPrimitives.WriteUInt16BigEndian(bytes, value); return bytes; }

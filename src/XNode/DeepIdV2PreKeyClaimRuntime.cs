@@ -128,9 +128,9 @@ internal sealed class DeepIdV2PreKeyClaimRuntime(
                         throw new CryptographicException("DID2 claim coordinator signature is invalid.");
                     _ = store.ReserveClaimProposal(request, proposal.Offering, proposal.Manifest,
                         proposal.Generation, proposal.Counter, now.TrustedLowerUnixSeconds, now.TrustedUpperUnixSeconds,
-                        Sign);
+                        data => Sign(data, current));
                     _ = await EnsureFreshAsync(context, cancellationToken).ConfigureAwait(false);
-                    result = Sign(input);
+                    result = Sign(input, current);
                 }
                 else if (complete is not null)
                 {
@@ -138,7 +138,7 @@ internal sealed class DeepIdV2PreKeyClaimRuntime(
                     if (!Fixed(complete.Result.Field(26).Span, context.Publication.Manifest.CanonicalBytes.Span))
                         throw new UnauthorizedAccessException("DID2 completion is not the current retained inventory.");
                     var verified = DeepIdV2PreKeyClaimReplicaSignatureVerifier.Verify(request, complete.Result, current.VerifiedPlacement);
-                    result = store.CompleteClaimLocally(verified, Sign);
+                    result = store.CompleteClaimLocally(verified, data => Sign(data, current));
                     _ = await EnsureFreshAsync(context, cancellationToken).ConfigureAwait(false);
                 }
                 else result = context.Receipt.CanonicalBytes;
@@ -168,7 +168,7 @@ internal sealed class DeepIdV2PreKeyClaimRuntime(
                 try
                 {
                     proposal = store.PrepareNextClaim(request, now.TrustedLowerUnixSeconds,
-                        now.TrustedUpperUnixSeconds, Sign);
+                        now.TrustedUpperUnixSeconds, data => Sign(data, current));
                 }
                 catch (DeepIdV2PreKeysUnavailableException)
                 {
@@ -178,7 +178,7 @@ internal sealed class DeepIdV2PreKeyClaimRuntime(
                     return Failure(request, Xpc1V2Status.PreKeysUnavailable,
                         Xpc1V2MutationOutcome.None, 0, []);
                 }
-                var localSignature = Sign(SigningInput(proposal));
+                var localSignature = Sign(SigningInput(proposal), current);
                 var remoteSignature = await SendAsync(current, ContactReplicaRpcOperation.PrepareDid2PreKeyClaim,
                     DeepIdV2ClaimPeerPayloadCodec.EncodePrepare(proposal, context.Receipt, remoteReceipt, localSignature),
                     cancellationToken).ConfigureAwait(false);
@@ -194,7 +194,7 @@ internal sealed class DeepIdV2PreKeyClaimRuntime(
                 var reread = DeepIdV2PreKeyClaimResultCodec.Decode(remoteCompletion.Span, request.CanonicalBytes.Span);
                 var verified = DeepIdV2PreKeyClaimReplicaSignatureVerifier.Verify(request, reread, current.VerifiedPlacement);
                 _ = await EnsureFreshAsync(context, cancellationToken).ConfigureAwait(false);
-                var localCompletion = store.CompleteClaimLocally(verified, Sign);
+                var localCompletion = store.CompleteClaimLocally(verified, data => Sign(data, current));
                 if (!Fixed(localCompletion.Span, remoteCompletion.Span))
                     store.LatchClaimCompletionFork();
                 _ = await EnsureFreshAsync(context, cancellationToken).ConfigureAwait(false);
@@ -325,10 +325,11 @@ internal sealed class DeepIdV2PreKeyClaimRuntime(
 
     private DeepIdV2InventoryCommitStore OpenStore(ParsedXpk1V2 request, ContactServicePlacementCapability current) =>
         DeepIdV2InventoryCommitStore.OpenExisting(node.DataDirectory, current.NetworkId.Span, request.Field(16).Span,
-            node.GetRouterId().ToBytes(), security, durability);
+            node.GetRouterId().ToBytes(), current.VerifiedPlacement.Network.ResolveNodeIdentityPublicKey(node.GetRouterId().ToBytes()).Span,
+            security, durability);
     private bool IsCoordinator(ContactServicePlacementCapability placement) => Fixed(placement.ReplicaIds[0].Span, node.GetRouterId().ToBytes());
 
-    private byte[] Sign(byte[] input)
+    private byte[] Sign(byte[] input, ContactServicePlacementCapability current)
     {
         var seed = Convert.FromHexString(node.GetEd25519PrivateKey());
         try
@@ -336,7 +337,7 @@ internal sealed class DeepIdV2PreKeyClaimRuntime(
             var key = PublicKeyAuth.GenerateKeyPair(seed);
             try
             {
-                if (!Fixed(key.PublicKey, node.GetRouterId().ToBytes()))
+                if (!Fixed(key.PublicKey, current.VerifiedPlacement.Network.ResolveNodeIdentityPublicKey(node.GetRouterId().ToBytes()).Span))
                     throw new CryptographicException("DID2 claim signer is not the local node.");
                 return PublicKeyAuth.SignDetached(input, key.PrivateKey);
             }

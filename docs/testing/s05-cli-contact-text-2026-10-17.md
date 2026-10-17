@@ -209,3 +209,25 @@ duplicate execution refusal, escaped/revoked authority, current native
 Store/recovery, both Retrieve replicas and pinned-TLS peer cancellation.
 Focused28 passed5/native0/0skip for both ACK replicas, exact cold replay,
 concurrent execution, capacity refusal and expiry-after-peer-deletion recovery.
+
+## Distinct node identity and receipt key
+
+The same contact slice exposed an independent producer/custody assumption:
+final inventory commit and claim signing/snapshot verification treated the
+opaque replica ID as an Ed25519 key. Focused29 actually reproduced2 failures
+with genuine distinct IDs/descriptor keys before mutation. The existing
+verified-network `ResolveNodeIdentityPublicKey` now supplies the key at both
+runtime boundaries and explicitly to the internal store; no ID-as-key default,
+wire/schema change, fallback, identity reset or compatibility reader was added.
+Receipt scope, state headers and paths still bind the original node ID.
+
+Focused30 preserves an intermediate compile failure from two target-typed
+test constructors. After fixing all callers, focused31 passed67/native0/0skip
+without compiler diagnostics across final commit, actual peer claim runtime,
+claim journals and inventory lineage. The claim runtime harness now uses
+distinct IDs/keys throughout. The additional wrong-seed regression proves
+refusal before inventory custody creation followed by exact-stage recovery
+with the correct key; cold replay, exhausted/last-resort claims, corrupted
+signatures, expiry, missing proof, lost responses and fork refusal remain tested.
+This is source evidence; deployment and connected CLI on the resulting image
+remain separate, and it is not a full source/package gate.

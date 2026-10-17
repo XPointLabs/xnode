@@ -358,7 +358,8 @@ public sealed class DeepIdV2InventoryLineageTests
 
     private static DeepIdV2InventoryCommitStore Open(DeepIdV2PublicationAuthorityFixture fixture,
         int replica, string directory) => new(directory, DeepIdV2PublicationAuthorityFixture.Network,
-        fixture.Publication.Manifest.Field(2).Span, fixture.Placement.ReplicaIds[replica].Span);
+        fixture.Publication.Manifest.Field(2).Span, fixture.Placement.ReplicaIds[replica].Span,
+        fixture.Placement.VerifiedPlacement.Network.ResolveNodeIdentityPublicKey(fixture.Placement.ReplicaIds[replica]).Span);
 
     private static byte[] StateHash(string directory) => SHA256.HashData(File.ReadAllBytes(
         Assert.Single(Directory.GetFiles(directory, "active.state", SearchOption.AllDirectories))));
