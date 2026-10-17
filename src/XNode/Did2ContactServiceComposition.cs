@@ -74,8 +74,10 @@ internal sealed class Did2AuthenticatedContactClock(
 internal sealed class Did2ContactResolverDispatcher(
     ProductionContactServiceOpaqueDispatcher opaque,
     IContactServicePlacementAuthoritySource placements,
-    Did2AuthenticatedContactClock time, bool grantsEnabled = false) : IContactServiceOpaqueDispatcher
+    Did2AuthenticatedContactClock time, bool grantsEnabled = false,
+    ILogger<Did2ContactResolverDispatcher>? logger = null) : IContactServiceOpaqueDispatcher
 {
+    private readonly PrivacyRoutingFailureDiagnostics diagnostics = new(logger);
     public async ValueTask<ReadOnlyMemory<byte>> DispatchAsync(ContactServiceOperation operation,
         ReadOnlyMemory<byte> canonicalRequest, CancellationToken ct)
     {
@@ -111,6 +113,7 @@ internal sealed class Did2ContactResolverDispatcher(
             ContactServiceReceiptAuthorityException)
         {
             if (forwarded) throw new IOException("DID2 contact dispatch has no current authenticated completion; outcome is unknown.", error);
+            diagnostics.Report("ContactAdmission", error);
             throw new ContactServiceUnavailableException("DID2 contact dispatch has no current admission authority.");
         }
     }
@@ -187,7 +190,8 @@ internal static class Did2ContactServiceComposition
         services.AddSingleton(provider => new Did2ContactResolverDispatcher(
             provider.GetRequiredService<ProductionContactServiceOpaqueDispatcher>(),
             provider.GetRequiredService<IContactServicePlacementAuthoritySource>(),
-            provider.GetRequiredService<Did2AuthenticatedContactClock>(), options?.MailboxGrantEnabled == true));
+            provider.GetRequiredService<Did2AuthenticatedContactClock>(), options?.MailboxGrantEnabled == true,
+            provider.GetRequiredService<ILogger<Did2ContactResolverDispatcher>>()));
         services.AddSingleton<Did2ContactReplicaCommandDispatcher>();
         services.RemoveAll<IContactReplicaCommandReceiver>();
         services.AddSingleton<IContactReplicaCommandReceiver>(provider => provider.GetRequiredService<Did2ContactReplicaCommandDispatcher>());

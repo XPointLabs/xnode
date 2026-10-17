@@ -110,3 +110,19 @@ Later own-publication retries hit Registry route `Threshold/authority` refusal;
 this is not a TLS failure or permission to replace the pending operation.
 Matching CLI business receipts remain **FAIL/unqualified**, not message delivery.
 Full source/package, smoke/rehearsal and physical qualification remain open.
+
+## Retained cycle retries and admission diagnostics
+
+Runs23–25 used the same newer QA pair. Both own publications passed in run23;
+the contact requests first returned503 BeforeForward, subsequently the exact
+retry rejected an expired auxiliary XMG2 in Protocol's `RequireWindow`. These
+are failed receipts, not end-to-end delivery. The pending acquisition remains
+retained; Shared's focused regression and fix are recorded in
+`deep-client-shared/docs/testing/s05-cli-pending-grant-2026-10-17.md`.
+
+Resolver pre-forward admission failures now use the existing bounded closed
+ONION diagnostic sink instead of silently losing the original code location.
+Node focused18 passed3/native0/0skip for closed phases, hostile exception text,
+sink interruption and rate bound. Diagnostic activation deploy12 Build/Up0
+preserved all9 services/54 mounts, with no reset or production changes. It is
+not Verify/smoke/full acceptance.

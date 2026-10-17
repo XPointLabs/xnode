@@ -1643,3 +1643,8 @@ Peer ingress failures may additionally include the existing closed authority
 check and bounded owned-code method/IL location. These are diagnostic metadata,
 not authority or noncommit evidence. Do not enable raw exception, request-body
 or credential logging to investigate a peer403; preserve its original custody.
+
+Pre-forward DID2 resolver admission refusals also record the closed
+`ContactAdmission` phase/category and bounded owned-code location, using the
+same rate-limited, exception-free ONION diagnostic sink. This observation does
+not weaken admission or change forwarding certainty.

@@ -26,6 +26,16 @@ public sealed class PrivacyRoutingFailureDiagnosticsTests
             Assert.DoesNotContain("DO-NOT-EXPORT", string.Join(" ", row.Values.Values));
         }
     }
+    [Fact]
+    public void ContactAdmissionPreservesOnlyItsClosedPhase()
+    {
+        var logger = new Capture(false);
+        new PrivacyRoutingFailureDiagnostics(logger).Report("ContactAdmission", new IOException("DO-NOT-EXPORT"));
+        var row = Assert.Single(logger.Rows);
+        Assert.Null(row.Error);
+        Assert.Equal("ContactAdmission", row.Values["Phase"]);
+        Assert.DoesNotContain("DO-NOT-EXPORT", string.Join(" ", row.Values.Values));
+    }
     private sealed class Capture(bool throwing) : ILogger
     {
         internal readonly List<(Dictionary<string, object?> Values, Exception? Error)> Rows = [];

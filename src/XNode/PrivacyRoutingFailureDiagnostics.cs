@@ -15,7 +15,7 @@ internal sealed class PrivacyRoutingFailureDiagnostics(ILogger? logger)
             var now = Stopwatch.GetTimestamp(); var last = Volatile.Read(ref previous);
             if (last != 0 && Stopwatch.GetElapsedTime(last, now) < TimeSpan.FromSeconds(10) ||
                 Interlocked.CompareExchange(ref previous, now, last) != last) return;
-            phase = phase is "Binding" or "Open" or "Forward" or "Dispatch" or "Seal" ? phase : "Unclassified";
+            phase = phase is "Binding" or "Open" or "Forward" or "Dispatch" or "Seal" or "ContactAdmission" ? phase : "Unclassified";
             for (var depth = 0; error is not null && depth < 3; depth++, error = error.InnerException!)
             {
                 var category = error switch
