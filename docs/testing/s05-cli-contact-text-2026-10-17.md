@@ -231,3 +231,14 @@ with the correct key; cold replay, exhausted/last-resort claims, corrupted
 signatures, expiry, missing proof, lost responses and fork refusal remain tested.
 This is source evidence; deployment and connected CLI on the resulting image
 remain separate, and it is not a full source/package gate.
+
+Supported deploy21 subsequently completed Build/Up0 on the retained local
+topology:9 services,55 mounts,0 mount differences, no reset/production change.
+All three actual node image digests match that build/source de53e06. Real CLI
+run36 on the same accepted contact pair then passed/native0 with26 cold
+processes,0 failed attempts and0 unsettled Store. Both new texts obtained
+verified Store, receive/ACK and exactly-once cold histories/dedup. A separate
+cold read proved both original and new pairs remain on both clients (2 local+
+2 remote each,0 pending). See the [CLI checkpoint](../../../deep-cli/docs/testing/cli-contact-text-2026-10-18.md).
+This upgraded-node regression does not relabel the earlier failed fresh
+Initial run34 or replace missing full/package/device release evidence.
