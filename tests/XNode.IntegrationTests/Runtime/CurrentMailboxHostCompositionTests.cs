@@ -17,6 +17,45 @@ namespace XNode.IntegrationTests.Runtime;
 public sealed class CurrentMailboxHostCompositionTests
 {
     [Theory]
+    [InlineData(7, false)]
+    [InlineData(29, false)]
+    [InlineData(30, true)]
+    public void CurrentHostRequiresFullProtocolRetentionBeforeFilesystemAccess(int days, bool accepted)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "deep-composition-" + Guid.NewGuid().ToString("N"));
+        var node = new RouterNodeOptions { DataDirectory = Path.Combine(root, "data") };
+        var options = Options(root);
+        var mailbox = new ReplicatedMailboxOptions { Enabled = true, MaximumTtl = TimeSpan.FromDays(days) };
+
+        if (accepted)
+            Assert.NotNull(options.Validate(node, mailbox));
+        else
+            Assert.Throws<InvalidOperationException>(() => options.Validate(node, mailbox));
+        Assert.False(Directory.Exists(root));
+    }
+
+    [Fact]
+    public void ShippingMailboxConfigurationSupportsCurrentProtocolRetention()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "XNode.slnx")))
+            directory = directory.Parent;
+        Assert.NotNull(directory);
+        var configuration = new ConfigurationBuilder()
+            .AddJsonFile(Path.Combine(directory.FullName, "src", "XNode", "appsettings.json"))
+            .Build();
+        var mailbox = configuration.GetRequiredSection("Mailbox").Get<ReplicatedMailboxOptions>();
+        Assert.NotNull(mailbox);
+        mailbox.Validate();
+        Assert.Equal(TimeSpan.FromSeconds(MailboxClientLimits.MaximumTtlSeconds), mailbox.MaximumTtl);
+
+        var root = Path.Combine(Path.GetTempPath(), "deep-composition-" + Guid.NewGuid().ToString("N"));
+        mailbox.Enabled = true;
+        Assert.NotNull(Options(root).Validate(new RouterNodeOptions { DataDirectory = Path.Combine(root, "data") }, mailbox));
+        Assert.False(Directory.Exists(root));
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public void StoreRecoveryWorkerRegistrationRequiresConfiguredGraphWithoutOpeningCustody(bool configured)

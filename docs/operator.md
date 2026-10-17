@@ -1479,6 +1479,15 @@ reset, if needed for activation, is a separate operator step.
 
 ### Current mailbox resource observations
 
+The enabled current mailbox host requires `Mailbox:MaximumTtl` to match the
+protocol's maximum object-retention window; the shipped configuration binds that
+same value. A shorter local cap rejects startup before opening custody rather
+than accepting traffic and rejecting valid retained objects later. This aligns
+configuration with [RETENTION-AND-RECOVERY](../../docs/architecture/RETENTION-AND-RECOVERY-V1.md);
+it does not extend any existing object's signed expiry, operation lease, grant,
+or network authority. Local S05 activation and physical delivery remain separate
+evidence requirements.
+
 The DR-0122 source candidate preserves the exact logical mailbox assignment
 across routine operational views. Its single normative owner is
 [CONTACT-RESOLVER](../../docs/architecture/CONTACT-RESOLVER-V1.md#36-exact-route-and-mailbox-closure).

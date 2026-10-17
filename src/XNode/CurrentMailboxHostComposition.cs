@@ -33,6 +33,8 @@ internal sealed class CurrentMailboxCustodyOptions
         if (Overlaps(data, custody) || Overlaps(data, keys) || Overlaps(custody, keys))
             throw new InvalidOperationException("Mailbox data, independent custody and key ring must be disjoint directories.");
         mailbox.Validate();
+        if (mailbox.MaximumTtl != TimeSpan.FromSeconds(MailboxClientLimits.MaximumTtlSeconds))
+            throw new InvalidOperationException("Current mailbox custody requires the full protocol object-retention window.");
         if (mailbox.AllowInsecureHttpPeerTransport)
             throw new InvalidOperationException("Current mailbox peer transport requires descriptor-bound TLS.");
         return new(network, [.. "PMA2"u8, 0, 1, .. policyHash], custody, keys);
