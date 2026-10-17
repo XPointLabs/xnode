@@ -56,7 +56,11 @@ public sealed partial class CurrentMailboxPeerHttpTests
         // Exact backup plus intact independent plan recovers; no recreation.
         File.WriteAllBytes(f.LedgerFile, exactDocument); new MailboxStorageSecurity().SecureFile(f.LedgerFile);
         await f.InitializeLedgerAsync();
-        Assert.Equal(MailboxPeerQuorumStatus.Durable, (await f.Coordinator.StoreClientAsync(original, f.Ledger!)).Status);
+        var recovered = await f.Coordinator.StoreClientAsync(original, f.Ledger!);
+        Assert.True(recovered.Status == MailboxPeerQuorumStatus.Durable,
+            $"Recovered Store={recovered.Status}; durable replicas={recovered.DurableReplicaCount}; peer calls={f.PeerClient.Calls}; " +
+            $"failure={f.PeerClient.Failure}; peer elapsed-ms={f.PeerClient.ElapsedMilliseconds}; peer cancelled={f.PeerClient.Cancelled}; " +
+            $"HTTP requests={f.RemoteHost.Requests}; status={f.RemoteHost.LastStatus}; bytes={f.RemoteHost.LastBytes}; {f.RemoteHost.Diagnostics}.");
         Assert.Equal(MailboxPeerQuorumStatus.Durable, (await f.Coordinator.StoreClientAsync(DifferentGrantStore(f), f.Ledger!)).Status);
         Assert.Equal(new ulong[] { 1, 2 }, f.ExactIntents.Select(bytes => MailboxPeerWireV2Codec.Decode(bytes).Cursor).Order());
     }

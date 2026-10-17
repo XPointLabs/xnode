@@ -176,15 +176,30 @@ identifier, payload or request is logged. The existing10s rate bound and
 throwing-logger isolation remain. HTTP status, verification, lease, replay and
 native mutation behavior are unchanged. The exact diagnostic cases passed2/
 native0/0skip without compiler diagnostics, including a throwing logger and
-unchanged403/no mutation. Matching activation remains pending; the diagnostic
-itself is not a repair or acceptance.
+unchanged403/no mutation. Matching Node334 was activated only in retained local
+current-dev: supported Build40/Up41/Verify42 exited0. Verification recovered the
+Registry proof and three ONION hosts; nine desired images and all54 mounts were
+preserved (eight finite Windows/Docker path aliases, no normalized difference).
+The diagnostic itself is not a repair or acceptance.
 
-The preceding broad331-case selection was stopped after two observed failures
-in `LostOrRolledBackIntentBeforeAnyNativeMutationRejectsNewGrantAndKnownReplay`
-(both boolean rows: initial expected Durable was PartialFailure). Its captured
+The preceding broad331-case selection was stopped after two observed failures:
+`CurrentRetrieveRejectsInvalidContinuationWithoutProducingOutcome(cursor)`
+failed at setup Store with peer cancellation5044ms; and
+`LostOrRolledBackIntentBeforeAnyNativeMutationRejectsNewGrantAndKnownReplay(false)`
+returned PartialFailure at the restored Store. This corrects the earlier
+incorrect attribution to both boolean rows of the latter method. Its captured
 native exit is-1, no TRX; it is interrupted/unqualified, not a PASS or a complete
 failure census. Neither failure is waived by the two diagnostic cases. Full
 source/rehearsal qualification and cause classification remain open.
+
+The restored Store assertion now retains the same Durable requirement and adds
+the existing closed peer timing/status/count diagnostics, without addresses,
+requests or exception text. Targeted recheck of those two methods passed all6
+rows/native0/0skip without compiler diagnostics, receipt
+`artifacts/s05-peer-ack-authorization-20261017/focused-04`. It does not explain
+or waive the original timing failure or qualify the interrupted broad run.
+`focused-03` is a harness invocation failure: omitted source-cutover property,
+compile failed before tests. That receipt is retained, not product/test PASS.
 
 Read-only metadata comparison independently resolved each running node's
 current configured data/mutation directory. In those directories, node2 had
