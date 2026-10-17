@@ -229,7 +229,8 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
     DeepIdV2NetworkAuthorityFileSource authoritySource,
     DeepIdV2NetworkClosureFileSource artifacts,
     FileDeepIdV2NetworkFloorStore floor,
-    IOnionMonotonicClock clock, TimeProvider? resourceTimeProvider = null) : IDeepIdV2PreKeyPlacementSource, IDeepIdV2ReceiveNetworkSource,
+    IOnionMonotonicClock clock, TimeProvider? resourceTimeProvider = null,
+    ILogger<DeepIdV2NetworkPlacementRuntime>? logger = null) : IDeepIdV2PreKeyPlacementSource, IDeepIdV2ReceiveNetworkSource,
     IDeepIdV2PreKeyClaimPlacementSource, IDeepIdV2ContactStoreAuthoritySource
 {
     private readonly SemaphoreSlim gate = new(1, 1);
@@ -239,6 +240,18 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
         VerifiedOnionNetworkContext Network, byte[] SourceDigest, long NetworkVerifiedAt);
     private Observation? observation;
     private int stopped;
+    private long lastTimingReport;
+
+    private void ReportReadTiming(CurrentMailboxNetworkReadTiming.Result work)
+    {
+        if (logger is null || work.TotalMs < 1000) return;
+        var stamp = System.Diagnostics.Stopwatch.GetTimestamp();
+        var previous = Interlocked.Read(ref lastTimingReport);
+        if (previous != 0 && System.Diagnostics.Stopwatch.GetElapsedTime(previous) < TimeSpan.FromSeconds(10)) return;
+        if (Interlocked.CompareExchange(ref lastTimingReport, stamp, previous) != previous) return;
+        logger.LogWarning("DID2 network read work totalMs={TotalMs}; slowest={Phase}; slowestMs={SlowestMs}; gateWaitMs={GateWaitMs}; proofAcquireMs={ProofAcquireMs}; networkVerifyMs={NetworkVerifyMs}.",
+            work.TotalMs, work.Slowest, work.SlowestMs, work.GateWaitMs, work.ProofAcquireMs, work.NetworkVerifyMs);
+    }
 
     internal void StopObservations()
     {
@@ -325,7 +338,9 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
         ParsedDid2 did2, ReadOnlyMemory<byte> localOwnerId, ReadOnlyMemory<byte> localKey, ReadOnlyMemory<byte> nextInstalledKey,
         CancellationToken cancellationToken, bool observational = false)
     {
-        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        using var timing = new CurrentMailboxNetworkReadTiming(ReportReadTiming);
+        using (timing.Measure(CurrentMailboxNetworkReadTiming.Phase.GateWait))
+            await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         var observesConfiguredAccount = artifacts.Observer is { } configuredObserver &&
             CryptographicOperations.FixedTimeEquals(configuredObserver.CanonicalBytes.Span, did2.CanonicalBytes.Span);
         try
@@ -336,24 +351,32 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
                 throw new CryptographicException("No acquired DID2 network observation is available.") : null;
             if (!observational && observesConfiguredAccount) Volatile.Write(ref observation, null);
             DeepIdV2NetworkFloor? previous;
+            using (timing.Measure(CurrentMailboxNetworkReadTiming.Phase.FloorRead))
             using (CurrentMailboxDiagnostics.Measure("network-floor-read"))
                 previous = await floor.ReadAsync(cancellationToken).ConfigureAwait(false);
             if (observed is not null && !FileDeepIdV2NetworkFloorStore.Same(observed.Floor, previous))
                 throw new CryptographicException("The observed DID2 network floor changed.");
-            var freshness = observed?.Freshness ?? await proofs.ReadCurrentAsync(did2, cancellationToken).ConfigureAwait(false);
+            VerifiedDeepIdV2DirectoryFreshness freshness;
+            using (timing.Measure(CurrentMailboxNetworkReadTiming.Phase.ProofAcquire))
+                freshness = observed?.Freshness ?? await proofs.ReadCurrentAsync(did2, cancellationToken).ConfigureAwait(false);
             if (freshness.CurrentCheckpoint is null)
                 throw new CryptographicException("DID2 network authority requires a current account checkpoint.");
             VerifiedXPointNetworkAuthority authority;
+            using (timing.Measure(CurrentMailboxNetworkReadTiming.Phase.AuthorityRead))
             using (CurrentMailboxDiagnostics.Measure("authority-lineage"))
                 authority = authoritySource.ReadCurrent();
             if (observed is not null)
             {
                 if (!SameAuthority(observed.Authority, authority))
                     throw new CryptographicException("The observed DID2 authority changed.");
+                using (timing.Measure(CurrentMailboxNetworkReadTiming.Phase.ProofObserve))
                 using (CurrentMailboxDiagnostics.Measure("proof-observe"))
                     await proofs.ValidateObservedAsync(freshness, cancellationToken).ConfigureAwait(false);
             }
-            using var exact = artifacts.ReadCurrent();
+            DeepIdV2NetworkClosureArtifacts exactSource;
+            using (timing.Measure(CurrentMailboxNetworkReadTiming.Phase.SourceRead))
+                exactSource = artifacts.ReadCurrent();
+            using var exact = exactSource;
             var sourceDigest = ComputeSourceDigest(exact);
             var time = new OnionTrustedTimeAuthority(clock);
             VerifiedOnionNetworkContext network;
@@ -367,11 +390,13 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
                 // authority/sources, clock, issuer and release fencing are
                 // still checked by this operation. Its original lease must
                 // remain live; cache hits never refresh either lifetime.
+                using (timing.Measure(CurrentMailboxNetworkReadTiming.Phase.ContextReuse))
                 using (CurrentMailboxDiagnostics.Measure("network-context-reuse"))
                     network = observed.Network;
             }
             else
             {
+                using (timing.Measure(CurrentMailboxNetworkReadTiming.Phase.NetworkVerify))
                 using (CurrentMailboxDiagnostics.Measure("network-verify"))
                     network = previous is null
                         ? await OnionNetworkContextVerifier.VerifyAsync(authority, freshness, exact.Policies,
@@ -382,8 +407,10 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
                 verifiedAt = resourceClock.GetTimestamp();
             }
             network.EnsureCurrent();
-            var issuer = await VerifyMailboxAuthorityAsync(network, authority, freshness, exact,
-                cancellationToken).ConfigureAwait(false);
+            (VerifiedMailboxAuthorityV2 Policy, OnionMonotonicReading Reading) issuer;
+            using (timing.Measure(CurrentMailboxNetworkReadTiming.Phase.MailboxVerify))
+                issuer = await VerifyMailboxAuthorityAsync(network, authority, freshness, exact,
+                    cancellationToken).ConfigureAwait(false);
             if (observed is not null && (!CryptographicOperations.FixedTimeEquals(
                     observed.Reading.BootId.Span, issuer.Reading.BootId.Span) ||
                     issuer.Reading.SampleSeconds < observed.Reading.SampleSeconds))
@@ -406,13 +433,25 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
                     throw new CryptographicException("Observation cannot advance the DID2 network floor.");
                 committed = observed.Floor;
             }
-            else committed = await floor.CommitVerifiedAsync(previous, network, cancellationToken).ConfigureAwait(false);
-            var retained = await floor.ReadAsync(cancellationToken).ConfigureAwait(false);
+            else
+            {
+                using (timing.Measure(CurrentMailboxNetworkReadTiming.Phase.FloorCommit))
+                    committed = await floor.CommitVerifiedAsync(previous, network, cancellationToken).ConfigureAwait(false);
+            }
+            DeepIdV2NetworkFloor? retained;
+            using (timing.Measure(CurrentMailboxNetworkReadTiming.Phase.FloorReadback))
+                retained = await floor.ReadAsync(cancellationToken).ConfigureAwait(false);
             if (!FileDeepIdV2NetworkFloorStore.Same(committed, retained))
                 throw new IOException("The DID2 network floor changed before capability release.");
             network.EnsureCurrent();
-            var retainedAuthority = authoritySource.ReadCurrent();
-            using var retainedArtifacts = artifacts.ReadCurrent();
+            VerifiedXPointNetworkAuthority retainedAuthority;
+            DeepIdV2NetworkClosureArtifacts retainedSource;
+            using (timing.Measure(CurrentMailboxNetworkReadTiming.Phase.SourceReadback))
+            {
+                retainedAuthority = authoritySource.ReadCurrent();
+                retainedSource = artifacts.ReadCurrent();
+            }
+            using var retainedArtifacts = retainedSource;
             if (!CryptographicOperations.FixedTimeEquals(authority.AuthorityCoreReference.Span, retainedAuthority.AuthorityCoreReference.Span) ||
                 !CryptographicOperations.FixedTimeEquals(authority.Dts1PolicyCoreReference.Span, retainedAuthority.Dts1PolicyCoreReference.Span) ||
                 !CryptographicOperations.FixedTimeEquals(authority.TimeSourcePolicyHash.Span, retainedAuthority.TimeSourcePolicyHash.Span) ||
@@ -421,8 +460,10 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
                 !SameSeries(exact.Projections, retainedArtifacts.Projections) ||
                 !SameSeries(exact.MailboxAuthorities, retainedArtifacts.MailboxAuthorities))
                 throw new CryptographicException("DID2 network authority changed before capability release.");
-            var finalIssuer = await VerifyMailboxAuthorityAsync(network, authority, freshness,
-                retainedArtifacts, cancellationToken).ConfigureAwait(false);
+            (VerifiedMailboxAuthorityV2 Policy, OnionMonotonicReading Reading) finalIssuer;
+            using (timing.Measure(CurrentMailboxNetworkReadTiming.Phase.MailboxReadback))
+                finalIssuer = await VerifyMailboxAuthorityAsync(network, authority, freshness,
+                    retainedArtifacts, cancellationToken).ConfigureAwait(false);
             if (!CryptographicOperations.FixedTimeEquals(issuer.Policy.ExactPma2.Span,
                     finalIssuer.Policy.ExactPma2.Span) ||
                 !CryptographicOperations.FixedTimeEquals(issuer.Reading.BootId.Span, finalIssuer.Reading.BootId.Span) ||
@@ -430,7 +471,10 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
                 throw new CryptographicException("DID2 mailbox issuer changed or crossed a clock discontinuity before release.");
             cancellationToken.ThrowIfCancellationRequested();
             if (observed is not null)
-                await proofs.ValidateObservedAsync(freshness, cancellationToken).ConfigureAwait(false);
+            {
+                using (timing.Measure(CurrentMailboxNetworkReadTiming.Phase.ProofReadback))
+                    await proofs.ValidateObservedAsync(freshness, cancellationToken).ConfigureAwait(false);
+            }
             if (Volatile.Read(ref stopped) != 0)
                 throw new InvalidOperationException("The DID2 network source stopped before capability release.");
             if (!observational && observesConfiguredAccount)

@@ -2,6 +2,37 @@
 
 Date: 2026-10-16. Physical business acceptance remains0/4.
 
+## 2026-10-17: native network-gate observation
+
+Windows29 exact retained Store retry ended OutcomeUnknown. A temporally nearby
+local node2 native-deadline reported ReadNetworkAsync IL163, not correlated by
+identifier. The actual installed module/PDB maps this to line328, waiting for
+the shared network gate, not proof validation or a completed Store. Module
+SHA256 `659e2e1bf900f0b38d40ff3b179c531726940b0cb643d48fdc2b346258f89ad4`;
+PDB `210e8f7f6bfedd936f5a29e20239f207cd57ab8252a7f7f8f19401de704f57f2`.
+Extraction/mapping is read-only local diagnostic evidence under
+`artifacts/s05-device-source-batch-20261017/native-pdb-01`.
+
+Source candidate adds per-call closed network work timing: total, slowest phase,
+gate wait, proof acquisition and network verification milliseconds, each clamped
+to one hour. The optional structured logger receives no exception, identifiers,
+authority time, payload or source paths. Reports require actual elapsed1s and
+are bounded to one per10s per runtime; neither bound is an operation/authority
+deadline. Both cancelled wait and acquired operation dispose the observer.
+The original wait/token/gate/floor/verification order,1s immutable-context reuse
+and signed lifetimes remain unchanged. Logging failure cannot change outcomes.
+
+Focused34 passed/native0/0skip, Windows PowerShell5.1 SDK10.0.301, receipt
+`artifacts/s05-device-source-batch-20261017/network-timing-02`: timing4, actual
+network placement/observation27 and native closed failure3. The first compile
+receipt failed on a test overload before executing cases and remains retained.
+This is affected source scope, not canonical full, matching activation, an
+identified gate holder or physical delivery. Next: supported local build/up,
+retained-image/mount verification and closed phase inspection before any
+performance/authority change. No production or release action.
+
+## Earlier grant-hop evidence
+
 The retained Android37 account passed network verification and entered new
 retained-grant acquisition, then observed OutcomeUnknown. Local closed node
 metadata at16:08:50Z reports `HttpsMailboxGrantAuthorityClient.AuthorizeAsync`
