@@ -21,6 +21,7 @@ internal sealed partial class CurrentMailboxReplicationCoordinator(CurrentMailbo
 {
     private readonly TimeSpan timeout = CaptureTimeout(options);
     private long lastPeerDiagnostic;
+    private long lastStoreBoundaryDiagnostic;
     internal void RequireReceiver(CurrentMailboxReplicaReceiver receiver)
     {
         if (!ReferenceEquals(local, receiver))
@@ -52,10 +53,12 @@ internal sealed partial class CurrentMailboxReplicationCoordinator(CurrentMailbo
                 // authenticates absence; rollback/missing documents still fail
                 // Load, and actual mutation or recovered outcome still pins an
                 // existing intent. Never remint an already persisted PRQ2.
-                var requireExisting = request.ReplayDisposition is not
+                var boundary = request.ReplayDisposition is not
                         (MailboxAuthenticatedReplayDisposition.NewReserved or MailboxAuthenticatedReplayDisposition.InFlight) ||
-                    request.RecoveredOutcome is not null ||
-                    await local.HasStoreCustodyAsync(request.Scope, envelope, ct).ConfigureAwait(false);
+                    request.RecoveredOutcome is not null ? "settled-replay" :
+                    await local.HasStoreCustodyAsync(request.Scope, envelope, ct).ConfigureAwait(false) ? "native-store" : "pre-intent";
+                var requireExisting = boundary != "pre-intent";
+                if (requireExisting) ReportStoreBoundary(boundary);
                 var intent = await ledger.ReserveCurrentStoreAsync(envelope, request.Scope.Grant.MembershipCommitment,
                     request.Scope.Replicas.Select(replica => replica.NodeId).ToArray(), request.Scope.Lease,
                     (cursor, upper) => local.AuthorStoreRequest(request.Scope, client.Binding.CanonicalRequest, cursor, upper), request.Scope.Host, ct,
@@ -67,6 +70,16 @@ internal sealed partial class CurrentMailboxReplicationCoordinator(CurrentMailbo
                         request.Scope.Host, request.Scope.Lease, ct).ConfigureAwait(false);
                 return result;
             }, token, storeLedger: ledger);
+    }
+
+    private void ReportStoreBoundary(string boundary)
+    {
+        var now = Stopwatch.GetTimestamp();
+        var previous = Volatile.Read(ref lastStoreBoundaryDiagnostic);
+        if (previous != 0 && Stopwatch.GetElapsedTime(previous, now) < TimeSpan.FromSeconds(10)) return;
+        if (Interlocked.CompareExchange(ref lastStoreBoundaryDiagnostic, now, previous) != previous) return;
+        try { logger?.LogWarning("Current mailbox Store boundary: reason={Reason}; original intent required.", boundary); }
+        catch { /* Observation cannot change the authenticated operation. */ }
     }
 
     // An internal producer supplies its exact peer request. This is not a

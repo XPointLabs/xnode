@@ -179,3 +179,12 @@ image build/activation (native1, no Up). The exact supported retry deploy17
 passed Build/Up0 and preserved9 services/54 mounts. Neither attempt reset data,
 weakened time verification or touched production. Run29 continues the same
 pending CLI text on that activation; its business result is not inferred here.
+
+Run30 recovered the previously committed acceptance after the Shared fix,
+but both exact text attempts still reached the native missing-intent guard.
+The running image digest matches the supported deploy17 candidate. A bounded
+closed diagnostic now distinguishes settled replay from native Store custody
+as the reason for requiring an existing intent. It emits no operation IDs,
+payload, paths or raw exceptions and cannot alter admission. Focused26 passed
+the genuine pre-first-intent cold-recovery regression (native0). This is
+diagnosis, not evidence of text delivery or a reason to reset state.
