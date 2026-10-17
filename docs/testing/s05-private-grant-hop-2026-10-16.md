@@ -31,6 +31,21 @@ identified gate holder or physical delivery. Next: supported local build/up,
 retained-image/mount verification and closed phase inspection before any
 performance/authority change. No production or release action.
 
+Candidate `c29f5c9` subsequently passed supported current-dev Build28/Up29/
+Verify30, all native0; build had no compiler diagnostics. All9 services match
+the captured desired images and all54 mount targets/RW modes retain the same
+source identities under the finite Windows-drive/Docker-host alias mapping.
+Raw comparison differs on4 bind representations and remains a separate result.
+Readiness recovered in62s: current Registry proof,3 verified ONION nodes,
+native mailbox recovery and required terminals ready. Receipts are under
+DevOps `artifacts/s05-native-network-timing-20261017`.
+
+Initial closed timing observations show proof acquisition work around1–4s and
+network verification around163–358ms. Some startup work ends before network
+verification; a work measurement is not a success receipt. These samples do not
+reproduce or explain the earlier30s gate wait. No cache/window was extended;
+actual contact retry and recipient/device acceptance remain open.
+
 ## Earlier grant-hop evidence
 
 The retained Android37 account passed network verification and entered new
