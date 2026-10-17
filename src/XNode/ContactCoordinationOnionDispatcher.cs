@@ -31,6 +31,7 @@ internal sealed class ContactCoordinationOnionDispatcher(
             if (request.Operation != OnionOperation.ContactResolve)
                 return NativeMailboxDispatchResult.RejectedBeforeForward();
             var parsed = ContactCoordinationOnionCodec.DecodeRequest(request.CanonicalBytes.Span);
+            diagnostic.Target = parsed.Target;
             phase = DiagnosticPhase.AuthorityBefore;
             var before = await authoritySource.ReadPublicationAuthorityAsync(cancellationToken).ConfigureAwait(false);
             phase = DiagnosticPhase.CurrentnessBefore;
@@ -64,13 +65,13 @@ internal sealed class ContactCoordinationOnionDispatcher(
                 NativeMailboxDispatchResult.RejectedBeforeForward();
             // Closed metadata only: never pass the exception, its message, request,
             // credential, capability, node identity or authority bytes to logging.
-            ReportRejection(phase, diagnostic.Check, result.Certainty, error);
+            ReportRejection(phase, diagnostic.Check, result.Certainty, error, diagnostic);
             return result;
         }
     }
 
     private void ReportRejection(DiagnosticPhase phase, CurrentnessCheck check,
-        NativeMailboxDispatchCertainty certainty, Exception error)
+        NativeMailboxDispatchCertainty certainty, Exception error, CurrentnessDiagnostic diagnostic)
     {
         ref var timestamp = ref failureLogTimestamps[(int)phase * CheckCount + (int)check];
         var previous = Volatile.Read(ref timestamp);
@@ -78,6 +79,9 @@ internal sealed class ContactCoordinationOnionDispatcher(
         if (Interlocked.CompareExchange(ref timestamp, Stopwatch.GetTimestamp(), previous) != previous) return;
         logger.LogWarning("DID2 coordination rejected: phase={Phase}, check={Check}, certainty={Certainty}, category={Category}.",
             phase, check, certainty, FailureCategory(error));
+        if (check == CurrentnessCheck.IssuedLowerBound)
+            logger.LogWarning("DID2 coordination time: target={Target}; leadSeconds={Lead}; widthSeconds={Width}; proofAgeSeconds={Age}.",
+                diagnostic.Target, diagnostic.Time.Lead, diagnostic.Time.Width, diagnostic.Time.Age);
     }
 
     private async ValueTask<VerifiedContactServicePlacement> RequireCurrentAsync(
@@ -123,6 +127,7 @@ internal sealed class ContactCoordinationOnionDispatcher(
             ContactCoordinationTarget.PublicationCurrent => DeepIdV2PublicationCurrentWireCodec.DecodeRequest(body.Span).IssuedAtUnixSeconds,
             _ => throw new CryptographicException("Unknown coordination target.")
         };
+        diagnostic.Time = CoordinationTimeObservation.Measure(lower, upper, issued, elapsed);
         diagnostic.Check = CurrentnessCheck.IssuedLowerBound;
         if (lower < issued)
             throw new CryptographicException("Coordination does not cover the complete current trusted interval.");
@@ -158,7 +163,12 @@ internal sealed class ContactCoordinationOnionDispatcher(
 
     private enum DiagnosticPhase { Decode, AuthorityBefore, CurrentnessBefore, Backend, AuthorityAfter, CurrentnessAfter, Pairing }
     private enum CurrentnessCheck { None, Network, Projection, Placement, Gateway, Clock, ProofFreshness, TimeArithmetic, IssuedLowerBound, RequestExpiry, PlacementExpiry }
-    private sealed class CurrentnessDiagnostic { internal CurrentnessCheck Check { get; set; } }
+    private sealed class CurrentnessDiagnostic
+    {
+        internal CurrentnessCheck Check { get; set; }
+        internal ContactCoordinationTarget Target;
+        internal CoordinationTimeObservation Time;
+    }
 
     private static bool Fixed(ReadOnlySpan<byte> left, ReadOnlySpan<byte> right) =>
         left.Length == right.Length && CryptographicOperations.FixedTimeEquals(left, right);

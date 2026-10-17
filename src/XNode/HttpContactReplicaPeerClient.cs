@@ -145,6 +145,11 @@ internal sealed class HttpContactReplicaPeerClient : IContactReplicaPeerClient
         }
         catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
         {
+            // Fixed operation/resource metadata only. Never include peer IDs,
+            // requests, signatures, paths or the exception in the sink.
+            try { logger?.LogWarning("Contact replica deadline: operation={Operation}; budgetMs={Budget}; original custody retained.",
+                command.Operation, checked((int)options.ReplicaRequestBudget(command.Operation).TotalMilliseconds)); }
+            catch { /* Observation cannot replace the original uncertainty. */ }
             throw new IOException("The contact replica transport deadline elapsed; outcome is unknown.", exception);
         }
         catch (Exception exception) when (exception is HttpRequestException

@@ -17,7 +17,8 @@ internal static class CurrentMailboxDiagnostics
 
     internal static IDisposable BeginWork(Action<WorkSummary> report) => new Work(report);
     internal sealed record WorkSummary(long LeaseChecks, long LeaseMs, long AuthorityMs,
-        long HostMs, long GrantMs, long NativeJoinMs, long RevocationMs, long OperationMs);
+        long HostMs, long GrantMs, long NativeJoinMs, long RevocationMs, long OperationMs,
+        long LineageMs, long SourceFilesMs, long FloorMs, long ProofObserveMs, long NetworkVerifyMs);
 
     private sealed class Work : IDisposable
     {
@@ -25,6 +26,7 @@ internal static class CurrentMailboxDiagnostics
         private readonly Action<WorkSummary> report;
         private readonly object gate = new();
         private long checks, lease, authority, host, grant, native, revocation, operation;
+        private long lineage, sourceFiles, floor, proofObserve, networkVerify;
         private bool disposed;
         internal Work(Action<WorkSummary> report) { this.report = report; CurrentWork.Value = this; }
         internal void Record(string phase, double ms)
@@ -37,6 +39,11 @@ internal static class CurrentMailboxDiagnostics
                 {
                     case "lease-check": checks++; lease += elapsed; break;
                     case "authority-source": authority += elapsed; break;
+                    case "authority-lineage": lineage += elapsed; break;
+                    case "network-source-files": sourceFiles += elapsed; break;
+                    case "network-floor-read" or "network-floor-readback": floor += elapsed; break;
+                    case "proof-observe": proofObserve += elapsed; break;
+                    case "network-verify": networkVerify += elapsed; break;
                     case "host-verify": host += elapsed; break;
                     case "grant-context-check": grant += elapsed; break;
                     case "peer-replay-join" or "peer-native-join": native += elapsed; break;
@@ -53,7 +60,8 @@ internal static class CurrentMailboxDiagnostics
             {
                 if (disposed) return;
                 disposed = true;
-                result = new(checks, lease, authority, host, grant, native, revocation, operation);
+                result = new(checks, lease, authority, host, grant, native, revocation, operation,
+                    lineage, sourceFiles, floor, proofObserve, networkVerify);
             }
             if (ReferenceEquals(CurrentWork.Value, this)) CurrentWork.Value = parent;
             try { report(result); } catch { /* Timing never replaces the original outcome. */ }

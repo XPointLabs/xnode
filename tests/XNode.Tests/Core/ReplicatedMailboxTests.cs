@@ -226,6 +226,7 @@ public sealed class ReplicatedMailboxTests : IDisposable
     [Fact]
     public void PeerAuthorityAndTwoOfTwoQuorumConfiguration_FailClosed()
     {
+        Assert.Equal(TimeSpan.FromSeconds(15), new ReplicatedMailboxOptions().PeerTimeout);
         var invalidQuorum = PeerFixture.Options();
         invalidQuorum.ReplicationFactor = 3;
         Assert.Throws<InvalidOperationException>(invalidQuorum.Validate);

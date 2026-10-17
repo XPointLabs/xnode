@@ -9,6 +9,10 @@ public sealed partial class CurrentMailboxPeerHttpTests
     public async Task PeerDeadlineCannotMintQuorumAndExactColdRetryResumesPendingNativeStore()
     {
         await using var f = await Fixture.CreateAsync(); f.OpenLedger();
+        // Deliberately shorter than the real peer service for this cancellation
+        // test; production's default must cover the full bounded peer work.
+        f.Coordinator = new(f.Sender.Receiver, f.PeerClient, new ReplicatedMailboxOptions
+            { Enabled = true, PeerTimeout = TimeSpan.FromSeconds(5) });
         var exactClient = f.ClientStoreFrame();
         var reached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

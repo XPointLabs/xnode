@@ -383,7 +383,7 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
             var verifiedAt = observed?.NetworkVerifiedAt ?? 0;
             var cacheElapsed = observed is null ? TimeSpan.MaxValue : resourceClock.GetElapsedTime(observed.NetworkVerifiedAt);
             if (observed is not null && CryptographicOperations.FixedTimeEquals(sourceDigest, observed.SourceDigest) &&
-                cacheElapsed >= TimeSpan.Zero && cacheElapsed < TimeSpan.FromSeconds(1))
+                cacheElapsed >= TimeSpan.Zero && cacheElapsed < TimeSpan.FromSeconds(10))
             {
                 // Reuse only a previously minted immutable context, not a
                 // trust boolean. Both protected floors, current proof, raw
@@ -440,6 +440,7 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
             }
             DeepIdV2NetworkFloor? retained;
             using (timing.Measure(CurrentMailboxNetworkReadTiming.Phase.FloorReadback))
+            using (CurrentMailboxDiagnostics.Measure("network-floor-readback"))
                 retained = await floor.ReadAsync(cancellationToken).ConfigureAwait(false);
             if (!FileDeepIdV2NetworkFloorStore.Same(committed, retained))
                 throw new IOException("The DID2 network floor changed before capability release.");
@@ -448,7 +449,8 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
             DeepIdV2NetworkClosureArtifacts retainedSource;
             using (timing.Measure(CurrentMailboxNetworkReadTiming.Phase.SourceReadback))
             {
-                retainedAuthority = authoritySource.ReadCurrent();
+                using (CurrentMailboxDiagnostics.Measure("authority-lineage"))
+                    retainedAuthority = authoritySource.ReadCurrent();
                 retainedSource = artifacts.ReadCurrent();
             }
             using var retainedArtifacts = retainedSource;
@@ -473,6 +475,7 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
             if (observed is not null)
             {
                 using (timing.Measure(CurrentMailboxNetworkReadTiming.Phase.ProofReadback))
+                using (CurrentMailboxDiagnostics.Measure("proof-observe"))
                     await proofs.ValidateObservedAsync(freshness, cancellationToken).ConfigureAwait(false);
             }
             if (Volatile.Read(ref stopped) != 0)

@@ -17,6 +17,11 @@ acceptance. Windows/Android remain deferred until CLI contact/text passes.
   12,505ms authority work. These nested timings are not additive.
 - Metadata-only inspection found98 directory-floor records per node. The
   retained reader reauthenticates the complete chain on every observation.
+- Matching CLI run20 recovered the original Alice publication and published a
+  new Bob. Contact request passed claim but Store still exhausted15s:75 checks,
+  14,277ms lease work,12,305ms authority work. Signature-only memoization did
+  not by itself solve connected Store. Alice retains `OutgoingRequest`; Bob
+  has no materialized contact yet. No delivery or consent PASS is inferred.
 
 ## Candidate corrections and limits
 
@@ -30,7 +35,7 @@ acceptance. Windows/Android remain deferred until CLI contact/text passes.
   response or authority is manufactured. Leaf RPC budgets are unchanged.
 - Forwarded claim coordination performs three leaf RPCs. Its authenticated
   outer request now has one total resource budget of four configured leaf
-  budgets (default20s, cap25s), measured from the original start. Admission
+  budgets (default25s with10s leaves, cap25s), measured from the original start. Admission
   still uses the leaf budget; no crypto/nonce/proof/reservation lease is renewed.
   The regression uses three400ms leaves with a1s leaf budget; the composite
   succeeds without increasing any individual leaf's allowance.
@@ -42,6 +47,12 @@ acceptance. Windows/Android remain deferred until CLI contact/text passes.
   verification; the accepted history bound and disk grammar do not change.
 - Closed numeric/code-location diagnostics never log payloads, identities,
   capabilities, private paths, raw exceptions or credentials.
+- Exact-source context reuse has a10s resource window instead of1s. This reuses
+  the same immutable capability only while its ORIGINAL lease remains live;
+  actual files, both floors, proof, clock, issuer and revocation checks remain.
+  Source changes, rollback, stop or expiry still reject. Nested authority-work
+  timings distinguish lineage, source files, native floor, proof observation
+  and full network verification; they are not additive or admission evidence.
 
 ## Receipts
 
@@ -55,6 +66,40 @@ binding/tamper/link/index cases and actual pinned TLS Store/Retrieve/ACK/reopen.
 It is not the connected CLI acceptance or a final full gate.
 `focused-08`35PASS/native0/0skip includes the composite-budget regression and
 the native claim recovery/refusal cases.
+`focused-09`10PASS/native0/0skip checks closed timing metadata and coordination.
+The oversized `focused-10` was explicitly cancelled after eight minutes. Its
+console reported139 passing cases but its captured native exit is1; the run
+is interrupted/unqualified, never PASS. Narrower matching `focused-11` passed
+10/native0/0skip: resource reuse, live source/floor/expiry refusals, pinned TLS
+Store/Retrieve/ACK/cold retry and closed timing scope. This is not a full gate.
+
+## Composite resource budgets and retained old intent
+
+Run21 reduced Store authority work to7,807ms (68 checks,9,366ms lease work),
+but the old15s composite still timed out. Nested measured buckets:1,859ms
+lineage,1,256ms source files,4ms network floor,2,316ms proof observation;
+no full network re-verification during that invocation. These are partial,
+nested observations, not an additive CPU account.
+
+Store/aggregate ACK now use Protocol's25s total coordinator budget; native peer
+services and the peer client's default use15s. Retrieve remains10s and public
+ONION30s. Contact RPC leaves default10s; the authenticated claim composite is
+capped25s. Explicit smaller operator budgets still reject/cancel normally.
+Original signed validity, replay records, grants and authority do not change.
+
+The controlled native/TLS regression uses two8s disk stalls. Focused12 retained
+the old15/5 failure. Focused13 exposed the still-short5s peer client. Focused14
+completed Store but failed a new assertion that incorrectly checked a recipient
+MAU3 client counter rather than its PRQ2 peer journal. The corrected peer-journal
+and blob check passed focused15/native0. Matching focused16 passed5/native0,
+including the deliberately explicit5s deadline and authority refusals.
+Focused17 passed3/native0 for contact leaf/composite budgets and timeout certainty.
+
+Run22's preserved old Store returned incomplete quorum rather than a native
+deadline: its recipient rejects stale PRQ2 without an existing reservation.
+This is not evidence of noncommit or permission to re-sign/remint it. Original
+profiles, intent and keys remain retained. A fresh QA pair after the resource
+fixes is a separate connected test, not recovery evidence for that old operation.
 
 Supported local activation `deep-devops/artifacts/cli-prekey-claim-20261017`:
 deploy01–04 Build/Up/Verify native0; deploy05 Build/Up native0 is diagnostic only.

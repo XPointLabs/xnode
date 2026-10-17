@@ -341,7 +341,7 @@ independently attest their current durable publication/role lookup; exact retry
 preserves the original result deadline. Existing observer, proof/network floor,
 V2 staging and candidate environment guards still apply.
 Repeated observation callbacks may reuse the already verified immutable network
-context for less than one second, only while its original lease is live and the
+context for less than ten seconds, only while its original lease is live and the
 complete source digest, authority and protected network floor remain identical.
 This is an in-memory resource optimization, not a cached readiness permission:
 the directory floor/proof, clock, issuer, revocation and final source/floor fences
@@ -354,12 +354,17 @@ verified public publication candidate only after rereading native inventory,
 receipt and support and checking the actual protected directory floor on both
 sides of full inventory validation. A failed observation clears the memo and
 rejects that call. No proof lifetime or claim RPC budget slides forward.
-Leaf replica requests retain their configured budget (default5s). The
+Leaf contact replica requests retain their configured budget (default10s). The
 authenticated `CoordinateDid2PreKeyClaim` composite has one total resource
-budget from its original start: four leaf budgets, capped at25s (default20s),
+budget from its original start: four leaf budgets, capped at25s (default25s),
 below the public ONION30s boundary. Body/signature admission must finish within
 the original leaf budget before the composite can use its remaining time.
 No signed request, reservation, nonce, proof or authority expiry is extended.
+Native Store and aggregate ACK use25s coordinator budgets, with15s peer
+services and a15s default peer-client budget (explicit smaller budgets remain
+supported). Local Retrieve remains10s; public ONION remains30s. These bounds
+schedule existing work, not permission to revive expired requests or infer
+noncommit. Actual signed validity and caller cancellation still win.
 The directory-floor reader still rereads/unprotects every chain file and checks
 revision/linkage, anchor and index. It may reuse only signature verification of
 byte-identical public heads under the same verified authority/witness/time-policy

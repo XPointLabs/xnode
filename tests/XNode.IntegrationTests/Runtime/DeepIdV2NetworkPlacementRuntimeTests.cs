@@ -23,9 +23,13 @@ public sealed class DeepIdV2NetworkPlacementRuntimeTests
         Assert.Same(acquired, reused.Network); Assert.Same(signed.Freshness, reused.Freshness);
         Assert.Equal(1, signed.ProofReads); Assert.Equal(2, signed.ObservationChecks);
         resources.Timestamp = resources.TimestampFrequency * 2;
+        var stillReused = await source.ReadPublicationAuthorityAsync(default);
+        Assert.Same(acquired, stillReused.Network); Assert.Same(signed.Freshness, stillReused.Freshness);
+        Assert.Equal(1, signed.ProofReads); Assert.Equal(4, signed.ObservationChecks);
+        resources.Timestamp = resources.TimestampFrequency * 11;
         var reverified = await source.ReadPublicationAuthorityAsync(default);
         Assert.NotSame(acquired, reverified.Network); Assert.Same(signed.Freshness, reverified.Freshness);
-        Assert.Equal(1, signed.ProofReads); Assert.Equal(4, signed.ObservationChecks);
+        Assert.Equal(1, signed.ProofReads); Assert.Equal(6, signed.ObservationChecks);
         Assert.True(FileDeepIdV2NetworkFloorStore.Same(retained, await floor.ReadAsync(default)));
         signed.RejectProof = true;
         await Assert.ThrowsAsync<CryptographicException>(() => source.ReadPublicationAuthorityAsync(default).AsTask());

@@ -37,7 +37,7 @@ public sealed class ContactServicePersistenceOptions
 {
     public bool RuntimeActivation { get; set; }
     public bool MapReplicaEndpoint { get; set; }
-    public int ReplicaTimeoutSeconds { get; set; } = 5;
+    public int ReplicaTimeoutSeconds { get; set; } = 10;
     public int ReplayCapacity { get; set; } = 100_000;
     public int ReplayTtlSeconds { get; set; } = 300;
 

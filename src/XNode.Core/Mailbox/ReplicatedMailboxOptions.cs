@@ -23,7 +23,9 @@ public sealed class ReplicatedMailboxOptions
 
     public int WriteQuorum { get; set; } = 2;
 
-    public TimeSpan PeerTimeout { get; set; } = TimeSpan.FromSeconds(5);
+    // Match the real bounded peer service, inside the25s coordinator budget.
+    // Explicit smaller operator budgets remain supported and fail closed.
+    public TimeSpan PeerTimeout { get; set; } = TimeSpan.FromSeconds(MailboxWireHttpContract.PeerStore.RequestTimeoutSeconds);
 
     public string PeerReplayDirectoryName { get; set; } = "mailbox-peer-replay-v2";
 
