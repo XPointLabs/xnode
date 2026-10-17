@@ -1662,3 +1662,11 @@ reads and bounds the actual files and checks paths/handles/EOF. Source changes
 or read/verification failures cannot return the previous lineage. No accepted
 floor, freshness, revocation, time check or permission is memoized; consumers
 still enforce those independently on every operation.
+
+Current Store retry distinguishes a pending MAU replay reservation from an
+already authored Store intent. An exact pending request can allocate its first
+intent only after the complete anchored operation snapshot and actual native
+joins authenticate that absence, with no recovered outcome or Store mutation.
+Existing intents remain byte-stable; missing/rolled-back files and effects
+still refuse reconstruction. See root DR-0139; no manual journal edits or
+state resets are part of this recovery.

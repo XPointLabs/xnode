@@ -47,7 +47,14 @@ internal sealed partial class CurrentMailboxReplicationCoordinator(CurrentMailbo
             {
                 // The native ledger owns the random nonce and the COMPLETE signed
                 // request before the first peer reservation/write. No remint on retry.
-                var requireExisting = request.ReplayDisposition != MailboxAuthenticatedReplayDisposition.NewReserved ||
+                // A pending MAU counter may have committed before the first
+                // Store intent. The native ledger's complete protected snapshot
+                // authenticates absence; rollback/missing documents still fail
+                // Load, and actual mutation or recovered outcome still pins an
+                // existing intent. Never remint an already persisted PRQ2.
+                var requireExisting = request.ReplayDisposition is not
+                        (MailboxAuthenticatedReplayDisposition.NewReserved or MailboxAuthenticatedReplayDisposition.InFlight) ||
+                    request.RecoveredOutcome is not null ||
                     await local.HasStoreCustodyAsync(request.Scope, envelope, ct).ConfigureAwait(false);
                 var intent = await ledger.ReserveCurrentStoreAsync(envelope, request.Scope.Grant.MembershipCommitment,
                     request.Scope.Replicas.Select(replica => replica.NodeId).ToArray(), request.Scope.Lease,

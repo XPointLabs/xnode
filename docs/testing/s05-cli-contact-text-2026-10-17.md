@@ -151,3 +151,25 @@ only after rereading every exact file. Source focused21 passed7/native0/0skip:
 warm identity, altered authority/policy/size, wrong pin and actual source/floor/
 clock/currentness refusal cases. Local diagnostic deploy15 Build/Up0 retained
 all9 services/54 mounts without reset. No live authority interval is extended.
+
+## Native client replay before the first Store intent
+
+Run28 passed the repaired Shared evidence boundary, then failed with
+`ReserveStoreCoreAsync` IL1104. Read-only matching PDB inspection maps this to
+the guard “Known current Store replay has lost its exact peer intent.” The
+client MAU counter/floor had persisted, but cancellation preceded first-intent
+allocation. That is distinct from actual loss of a committed intent.
+
+Focused22 reproduced the genuine cold gap (1FAIL/native1). Focused23 retained
+a compile failure from an incorrect enum name during the edit, not PASS.
+Focused24 passed4/native0/0skip: explicit gap, both replay-floor write faults
+and refusal after mutation/intent loss. Focused25 passed8/native0/0skip:
+missing/rollback before mutation, new-grant prefix blocking and quorum-write
+fault recovery. Root DR-0139 declares the two exact source-case replacements;
+full qualification must preserve and bind the original TRX, not waive them.
+
+The coordinator still verifies actual current grant/replay/custody. The
+complete anchored snapshot permits only first allocation for NewReserved or
+InFlight without a recovered outcome or native Store effect. A persisted PRQ2
+always returns unchanged; existing cursor/prefix/receipt rules are unchanged.
+Real retained CLI text/full qualification remains unaccepted at this checkpoint.
