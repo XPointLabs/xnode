@@ -74,8 +74,9 @@ internal sealed class CurrentMailboxPeerHttpEndpoint(CurrentMailboxReplicaReceiv
             var reason = error is MailboxPeerReplicationException peer
                 ? Enum.IsDefined(peer.Error) ? peer.Error.ToString() : "unclassified"
                 : error is null ? "deadline" : CurrentMailboxHostRecovery.FailureReason(error);
-            logger.LogWarning("Current mailbox peer ingress incomplete: failure={Failure}; reason={Reason}; original custody retained.",
-                failure.ToString(), reason);
+            var location = CurrentMailboxDiagnostics.FailureLocation(error);
+            logger.LogWarning("Current mailbox peer ingress incomplete: failure={Failure}; reason={Reason}; authorityCheck={AuthorityCheck}; method={Method}; il={Il}; original custody retained.",
+                failure.ToString(), reason, CurrentMailboxDiagnostics.AuthorityFailureCheck(error), location.Method, location.Il);
         }
         catch { /* Diagnostics must not alter the original failure/status. */ }
     }

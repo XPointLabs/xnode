@@ -39,10 +39,16 @@ public sealed partial class CurrentMailboxPeerHttpTests
         Assert.Equal(1, ingressLog.Calls);
         Assert.False(ingressLog.ExceptionPassed);
         Assert.Equal(LogLevel.Warning, ingressLog.Level);
-        Assert.Equal(new[] { "Failure", "Reason", "{OriginalFormat}" },
+        Assert.Equal(new[] { "AuthorityCheck", "Failure", "Il", "Method", "Reason", "{OriginalFormat}" },
             ingressLog.Fields.Keys.OrderBy(value => value, StringComparer.Ordinal));
         Assert.Equal("AuthorizationFailed", ingressLog.Fields["Failure"]);
         Assert.Equal("cryptographic-rejection", ingressLog.Fields["Reason"]);
+        Assert.Equal("Unclassified", ingressLog.Fields["AuthorityCheck"]);
+        var method = Assert.IsType<string>(ingressLog.Fields["Method"]);
+        Assert.StartsWith("CurrentMailboxReplicaReceiver+", method);
+        Assert.InRange(method.Length, 1, 240);
+        Assert.Matches("^[A-Za-z0-9_.+<>`]+$", method);
+        Assert.InRange(Assert.IsType<int>(ingressLog.Fields["Il"]), -1, 1048575);
         Assert.Empty(f.Sender.ReplayFiles); Assert.Empty(f.Recipient.ReplayFiles);
         Assert.Empty(f.Sender.MutationFiles); Assert.Empty(f.Recipient.MutationFiles);
     }

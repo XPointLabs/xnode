@@ -161,3 +161,36 @@ If an original acquisition window expires before the next device run, only the
 existing owned [DR-0126 continuation](../../../docs/survival-program/decisions/DR-0126-independent-grant-after-unresolved-acquisition.md)
 may preserve/close that uncertainty and acquire independent current work. The
 operator must not delete, re-window or manually replace it to obtain a PASS.
+
+## Peer ACK authorization diagnostic follow-up
+
+The matched client expired-Initial update reaches actual ACK dispatch, but the
+physical interval records peer AuthorizationFailed/cryptographic-rejection403;
+the exact rejecting predicate and identifier-level correlation remain unknown.
+See the [device checkpoint](../../../deep-client-maui/docs/S05-BUSINESS-WORK-2026-10-17.md#matched-expired-initial-update-ack-remains-unresolved).
+
+Peer ingress now reuses the existing bounded owned-code failure-location and
+closed authority-check observers: finite authority label, owned method name and
+clamped IL offset only. No exception argument/text/Data dump, source path,
+identifier, payload or request is logged. The existing10s rate bound and
+throwing-logger isolation remain. HTTP status, verification, lease, replay and
+native mutation behavior are unchanged. The exact diagnostic cases passed2/
+native0/0skip without compiler diagnostics, including a throwing logger and
+unchanged403/no mutation. Matching activation remains pending; the diagnostic
+itself is not a repair or acceptance.
+
+The preceding broad331-case selection was stopped after two observed failures
+in `LostOrRolledBackIntentBeforeAnyNativeMutationRejectsNewGrantAndKnownReplay`
+(both boolean rows: initial expected Durable was PartialFailure). Its captured
+native exit is-1, no TRX; it is interrupted/unqualified, not a PASS or a complete
+failure census. Neither failure is waived by the two diagnostic cases. Full
+source/rehearsal qualification and cause classification remain open.
+
+Read-only metadata comparison independently resolved each running node's
+current configured data/mutation directory. In those directories, node2 had
+four records (two pending, one completed, one tombstoned); nodes1/3 had none.
+The recent node2 tombstone target was absent on3. No identifiers or record bytes
+were exported, and no files/keys/volumes were changed. This raw metadata read
+did not independently reverify native custody/signatures; it is a diagnostic
+hint, not proof of noncommit, quorum absence, the exact403 predicate or authority
+to copy/repair a target. Preserve original native facts for the next owned check.

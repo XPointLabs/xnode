@@ -1615,3 +1615,8 @@ failure does not change the original retry/unknown outcome. See the
 [S05 checkpoint](testing/s05-private-grant-hop-2026-10-16.md) for exact source
 tests and deployment limitations; these records are not issuance or absence
 proof and must never justify replacing an unknown pending request.
+
+Peer ingress failures may additionally include the existing closed authority
+check and bounded owned-code method/IL location. These are diagnostic metadata,
+not authority or noncommit evidence. Do not enable raw exception, request-body
+or credential logging to investigate a peer403; preserve its original custody.
