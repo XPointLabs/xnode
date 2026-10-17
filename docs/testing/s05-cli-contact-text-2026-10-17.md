@@ -138,3 +138,16 @@ now15s. Focused19 passed1/native0 for actual pinned-TLS5s cancellation/cold
 recovery and closed timing metadata; focused20 passed1/native0 for the actual
 shipping JSON's retention and15s resource values. No replay/validity guard was
 relaxed, original failed ACK remains exact and retained.
+
+Run27 completed contact request, incoming materialization/ACK, ContactAccept
+Store and peer acceptance after exact cold retries. The first text remained
+pending: its retry rebuilt changed public evidence after ordinary view renewal.
+This is a Shared original-evidence defect, not successful text delivery; the
+original operation/ciphertext is preserved. Repeated local preparation also
+consumed the client's unchanged30s dispatch scope before its final hop.
+
+The node's paired XNA1/DTS1 source now reuses immutable signature verification
+only after rereading every exact file. Source focused21 passed7/native0/0skip:
+warm identity, altered authority/policy/size, wrong pin and actual source/floor/
+clock/currentness refusal cases. Local diagnostic deploy15 Build/Up0 retained
+all9 services/54 mounts without reset. No live authority interval is extended.

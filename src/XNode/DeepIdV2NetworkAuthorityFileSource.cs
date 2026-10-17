@@ -1,12 +1,13 @@
 using System.Security.Cryptography;
 using System.Runtime.ExceptionServices;
+using System.Buffers.Binary;
 using Deep.Protocol.XPointNetworkV1;
 
 namespace XNode;
 
 /// <summary>
-/// Re-verifies the exact signed XNA1/DTS1 lineage from an independently
-/// configured genesis pin. DID2 proof must never borrow the V1 ADP1 snapshot.
+/// Reads the exact signed XNA1/DTS1 lineage against an independent genesis pin.
+/// Only immutable signature verification is memoized; currentness is not.
 /// </summary>
 internal sealed class DeepIdV2NetworkAuthorityFileSource
 {
@@ -14,6 +15,9 @@ internal sealed class DeepIdV2NetworkAuthorityFileSource
     private readonly XPointNetworkGenesisPin pin;
     private readonly string[] authorityPaths;
     private readonly string[] timePolicyPaths;
+    private readonly object verificationGate = new();
+    private byte[]? verifiedDigest;
+    private VerifiedXPointNetworkAuthority? verifiedLineage;
 
     internal DeepIdV2NetworkAuthorityFileSource(XPointNetworkGenesisPin pin,
         IReadOnlyList<string> exactAuthorityPaths,
@@ -41,19 +45,43 @@ internal sealed class DeepIdV2NetworkAuthorityFileSource
         // This small paired keyring is read inside every protected operation
         // check. Do not synchronously fork/join the request's own ThreadPool
         // for each tiny record. Every path/handle/byte check still runs.
-        var exact = ReadExactMany(authorityPaths.Concat(timePolicyPaths).ToArray(), parallel: false);
+        byte[][] exact = [];
         try
         {
-            var verified = XPointNetworkAuthorityVerifier.Verify(pin,
-                exact.Take(authorityPaths.Length).Select(static bytes =>
-                    (ReadOnlyMemory<byte>)bytes).ToArray(),
-                exact.Skip(authorityPaths.Length).Select(static bytes =>
-                    (ReadOnlyMemory<byte>)bytes).ToArray());
-            if (!CryptographicOperations.FixedTimeEquals(
-                    verified.NetworkId.Span, pin.NetworkId.Span))
-                throw new CryptographicException(
-                    "DID2 authority lineage changed networks.");
-            return verified;
+            exact = ReadExactMany(authorityPaths.Concat(timePolicyPaths).ToArray(), parallel: false);
+            using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            Span<byte> length = stackalloc byte[4];
+            foreach (var bytes in exact)
+            {
+                BinaryPrimitives.WriteInt32BigEndian(length, bytes.Length);
+                hash.AppendData(length); hash.AppendData(bytes);
+            }
+            var digest = hash.GetHashAndReset();
+            lock (verificationGate)
+            {
+                // Signature/grammar verification of the SAME exact public lineage
+                // is immutable. Files/path/handle/EOF guards still run on every
+                // call, as do callers' actual floors, time and issuer checks.
+                // No freshness, accepted version floor or permission is cached.
+                if (verifiedLineage is not null && verifiedDigest is not null &&
+                    CryptographicOperations.FixedTimeEquals(digest, verifiedDigest)) return verifiedLineage;
+                var verified = XPointNetworkAuthorityVerifier.Verify(pin,
+                    exact.Take(authorityPaths.Length).Select(static bytes =>
+                        (ReadOnlyMemory<byte>)bytes).ToArray(),
+                    exact.Skip(authorityPaths.Length).Select(static bytes =>
+                        (ReadOnlyMemory<byte>)bytes).ToArray());
+                if (!CryptographicOperations.FixedTimeEquals(
+                        verified.NetworkId.Span, pin.NetworkId.Span))
+                    throw new CryptographicException(
+                        "DID2 authority lineage changed networks.");
+                verifiedDigest = digest; verifiedLineage = verified;
+                return verified;
+            }
+        }
+        catch
+        {
+            lock (verificationGate) { verifiedDigest = null; verifiedLineage = null; }
+            throw;
         }
         finally
         {

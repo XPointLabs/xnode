@@ -1655,3 +1655,10 @@ corrected constructor default. Explicit smaller operator overrides remain
 supported; a timeout still retains uncertainty and never produces quorum.
 The coordinator's closed numeric diagnostic distinguishes its own peer deadline
 from caller cancellation and records the actual captured budget/duration.
+
+The XNA1/DTS1 file source memoizes one verified immutable public lineage keyed
+by length-delimited SHA256 of all exact ordered input bytes. Every call still
+reads and bounds the actual files and checks paths/handles/EOF. Source changes
+or read/verification failures cannot return the previous lineage. No accepted
+floor, freshness, revocation, time check or permission is memoized; consumers
+still enforce those independently on every operation.

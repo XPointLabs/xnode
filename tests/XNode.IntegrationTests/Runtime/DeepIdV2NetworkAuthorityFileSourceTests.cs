@@ -60,6 +60,7 @@ public sealed class DeepIdV2NetworkAuthorityFileSourceTests
             Assert.Equal(authored.Authority.AuthorityCoreHash.ToArray(),
                 verified.AuthorityCoreHash.ToArray());
             Assert.Equal(network, verified.NetworkId.ToArray());
+            Assert.Same(verified, source.ReadCurrent());
 
             var wrongPin = new DeepIdV2NetworkAuthorityFileSource(
                 new XPointNetworkGenesisPin(network, Bytes(32, 0x88)),
@@ -71,6 +72,15 @@ public sealed class DeepIdV2NetworkAuthorityFileSourceTests
             File.WriteAllBytes(xnaPath, tampered);
             Assert.Throws<XPointNetworkAuthorityVerificationException>(
                 source.ReadCurrent);
+            File.WriteAllBytes(xnaPath, authored.ExactXna1.ToArray());
+            var restored = source.ReadCurrent();
+            Assert.NotSame(verified, restored); // A failed source never falls back to its memo.
+            Assert.Same(restored, source.ReadCurrent());
+            var changedPolicy = authored.ExactDts1.ToArray(); changedPolicy[^1] ^= 1;
+            File.WriteAllBytes(dtsPath, changedPolicy);
+            Assert.Throws<XPointNetworkAuthorityVerificationException>(source.ReadCurrent);
+            File.WriteAllBytes(dtsPath, authored.ExactDts1.ToArray());
+            Assert.NotSame(restored, source.ReadCurrent());
             File.WriteAllBytes(xnaPath, new byte[65_536]);
             Assert.Throws<InvalidDataException>(source.ReadCurrent);
             Assert.Throws<ArgumentException>(() =>
