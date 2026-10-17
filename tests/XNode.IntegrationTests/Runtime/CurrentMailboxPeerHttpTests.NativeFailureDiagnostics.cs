@@ -7,6 +7,52 @@ namespace XNode.IntegrationTests.Runtime;
 public sealed partial class CurrentMailboxPeerHttpTests
 {
     [Theory]
+    [InlineData("mailbox-peer-store-context-conflict", "StoreContext")]
+    [InlineData("mailbox-peer-tombstone-context-conflict", "TombstoneContext")]
+    [InlineData("mailbox-peer-expiry-overflow", "ExpiryOverflow")]
+    [InlineData("invalid-mailbox-blob", "InvalidBlob")]
+    [InlineData("mailbox-blob-size-rejected", "BlobSize")]
+    [InlineData("mailbox-ciphertext-not-canonical", "CiphertextCanonical")]
+    [InlineData("mailbox-blob-ttl-rejected", "BlobTtl")]
+    [InlineData("mailbox-blob-digest-mismatch", "BlobDigest")]
+    [InlineData("mailbox-storage-corrupt", "StorageCorrupt")]
+    [InlineData("mailbox-blob-id-conflict", "BlobConflict")]
+    [InlineData("mailbox-capacity-exhausted", "Capacity")]
+    [InlineData("private mailbox-blob-ttl-rejected", "Unclassified")]
+    [InlineData(null, "Unclassified")]
+    public void NativeMutationObserverMapsOnlyWholeClosedCodes(string? input, string expected)
+    {
+        var error = CurrentMailboxDiagnostics.MutationRejection(input);
+        Assert.Equal("Current peer durable mutation was rejected.", error.Message);
+        Assert.Equal(expected, CurrentMailboxDiagnostics.MutationFailureCheck(error));
+        Assert.Equal("Unclassified", CurrentMailboxDiagnostics.MutationFailureCheck(new UnreadableNativeFailure()));
+        error.Data["Deep.MailboxMutation.Check"] = "private payload";
+        Assert.Equal("Unclassified", CurrentMailboxDiagnostics.MutationFailureCheck(error));
+    }
+
+    [Theory]
+    [InlineData(false)] [InlineData(true)]
+    public async Task NativeMutationObserverCannotPromoteRejectionOrExposeOriginalText(bool loggerThrows)
+    {
+        await using var f = await Fixture.CreateAsync();
+        var logger = new NativeFailureLogger { Throw = loggerThrows };
+        using var services = NativeServices(f, () => throw CurrentMailboxDiagnostics.MutationRejection("mailbox-blob-ttl-rejected"), logger);
+        var dispatcher = NativeDispatcher(services);
+        AssertUnknown(await dispatcher.DispatchAsync(OnionOperation.Retrieve,
+            NativeFrame(f, MailboxAuthenticatedOperation.Retrieve), default));
+        Assert.Equal(1, logger.Calls); Assert.Null(logger.SuppliedException);
+        if (!loggerThrows)
+        {
+            var message = Assert.Single(logger.Messages);
+            Assert.Contains("; mutationCheck=BlobTtl;", message);
+            Assert.DoesNotContain("mailbox-blob-ttl-rejected", message);
+            Assert.EndsWith("; completion remains unknown.", message);
+        }
+        Assert.Equal(0, f.AllHttpRequests);
+        Assert.Empty(f.Sender.MutationFiles); Assert.Empty(f.Recipient.MutationFiles);
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task NativeIngressClosedFailureObserverCannotReadPrivateExceptionOrChangeUnknown(bool loggerThrows)

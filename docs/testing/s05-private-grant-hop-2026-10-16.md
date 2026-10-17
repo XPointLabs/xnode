@@ -46,6 +46,25 @@ verification; a work measurement is not a success receipt. These samples do not
 reproduce or explain the earlier30s gate wait. No cache/window was extended;
 actual contact retry and recipient/device acceptance remain open.
 
+At00:48:49Z a new node2 terminal event reports native-failure/configuration-or-state
+at PeerOperation.ApplyAndSignLocalAsync IL325. The actual installed module
+`aaa942b75452348f509a84a5d6b81737115826883617999da23ca3620d2966c4` and PDB
+`92e0ff891ee428b8f095f8dd76a78483f1aa294c954cf36e57a92182f6a94b0f`
+map IL325 to CurrentMailboxReplicaReceiver:366: the existing generic throw after
+mutation.Error, not the earlier gate wait. Correct mapping receipt is
+`native-pdb-03`; the preceding02 diagnostic accidentally requested IL163 and
+does not map the failure. Identifier correlation remains absent.
+
+The underlying mutation reason is lost at that throw. A diagnostic-only source
+candidate keeps the same InvalidDataException/message and outcome, attaching
+only a closed code-owned classification. Native terminal logging reads it only
+from the exact built-in exception type; unknown/private values stay Unclassified.
+It cannot authorize retry, skip a rejection, reveal the original error text or
+prove noncommit. Focused49 passed/native0/0skip, receipt
+`artifacts/s05-segmented-custody-batch-20261017/mutation-reason-01`: previous34
+plus15 mapping/wired-observer cases, including broken loggers and no mutations.
+Matching local activation and actual reason observation are still pending.
+
 ## Earlier grant-hop evidence
 
 The retained Android37 account passed network verification and entered new

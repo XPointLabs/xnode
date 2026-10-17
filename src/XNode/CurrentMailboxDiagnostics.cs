@@ -23,6 +23,38 @@ internal static class CurrentMailboxDiagnostics
             "GrantExpiry" or "PolicyExpiry" or "NetworkExpiry" or "Lifetime" or "Signature" ? value : "Unclassified";
     }
 
+    internal static InvalidDataException MutationRejection(string? error)
+    {
+        // Informative local metadata only; never propagate the supplied text.
+        var label = error switch
+        {
+            "mailbox-peer-store-context-conflict" => "StoreContext",
+            "mailbox-peer-tombstone-context-conflict" => "TombstoneContext",
+            "mailbox-peer-expiry-overflow" => "ExpiryOverflow",
+            "invalid-mailbox-blob" => "InvalidBlob",
+            "mailbox-blob-size-rejected" => "BlobSize",
+            "mailbox-ciphertext-not-canonical" => "CiphertextCanonical",
+            "mailbox-blob-ttl-rejected" => "BlobTtl",
+            "mailbox-blob-digest-mismatch" => "BlobDigest",
+            "mailbox-storage-corrupt" => "StorageCorrupt",
+            "mailbox-blob-id-conflict" => "BlobConflict",
+            "mailbox-capacity-exhausted" => "Capacity",
+            _ => "Unclassified"
+        };
+        var result = new InvalidDataException("Current peer durable mutation was rejected.");
+        result.Data["Deep.MailboxMutation.Check"] = label;
+        return result;
+    }
+
+    internal static string MutationFailureCheck(Exception? error)
+    {
+        if (error?.GetType() != typeof(InvalidDataException)) return "Unclassified";
+        return error.Data["Deep.MailboxMutation.Check"] is string value && value is
+            "StoreContext" or "TombstoneContext" or "ExpiryOverflow" or "InvalidBlob" or "BlobSize" or
+            "CiphertextCanonical" or "BlobTtl" or "BlobDigest" or "StorageCorrupt" or "BlobConflict" or "Capacity"
+            ? value : "Unclassified";
+    }
+
     // Only owned code metadata, never exception text/data, source filenames or
     // caller/third-party type names. Callers keep logging failures non-fatal.
     internal static (string Method, int Il) FailureLocation(Exception? error)

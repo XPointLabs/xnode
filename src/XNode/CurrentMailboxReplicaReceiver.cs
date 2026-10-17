@@ -363,7 +363,7 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
         {
             await EnsureCurrentAsync(token).ConfigureAwait(false);
             var mutation = await owner.Mutations.ApplyCurrentAsync(verified, scope.Lease, token).ConfigureAwait(false);
-            if (!string.IsNullOrEmpty(mutation.Error)) throw new InvalidDataException("Current peer durable mutation was rejected.");
+            if (!string.IsNullOrEmpty(mutation.Error)) throw CurrentMailboxDiagnostics.MutationRejection(mutation.Error);
             var durableAt = await owner.operationLedger.RecordCurrentPeerFloorAsync(verified.ReplayClaim.ScopeKey,
                 fact with { MutationCompleted = true }, true, scope.Lease, token).ConfigureAwait(false);
             var receipt = MailboxPeerWireV2Codec.CreateUnsignedDurableReplicaResponseAfterPersistence(verified,

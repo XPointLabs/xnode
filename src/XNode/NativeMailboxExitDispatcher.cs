@@ -181,8 +181,8 @@ public sealed class NativeMailboxExitDispatcher(IServiceProvider services)
                 _ => "configuration-or-state"
             };
             var location = CurrentMailboxDiagnostics.FailureLocation(cause);
-            logger.LogWarning("Current mailbox terminal incomplete: stage={Stage}; kind={Kind}; depth={Depth}; method={CodeMethod}; il={Il}; completion remains unknown.",
-                stage, category, depth, location.Method, location.Il);
+            logger.LogWarning("Current mailbox terminal incomplete: stage={Stage}; kind={Kind}; depth={Depth}; method={CodeMethod}; il={Il}; mutationCheck={MutationCheck}; completion remains unknown.",
+                stage, category, depth, location.Method, location.Il, CurrentMailboxDiagnostics.MutationFailureCheck(cause));
         }
         catch { /* Observations cannot replace the original result/exception. */ }
     }
