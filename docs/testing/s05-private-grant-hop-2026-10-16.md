@@ -63,7 +63,33 @@ It cannot authorize retry, skip a rejection, reveal the original error text or
 prove noncommit. Focused49 passed/native0/0skip, receipt
 `artifacts/s05-segmented-custody-batch-20261017/mutation-reason-01`: previous34
 plus15 mapping/wired-observer cases, including broken loggers and no mutations.
-Matching local activation and actual reason observation are still pending.
+Matching local Build31/Up32/Verify33 subsequently exited0: readiness11s,
+all9 desired images and54 retained mounts. Raw mount representations differed
+in5 entries; the separate finite alias normalization found0 differences. No
+production service, account, key or volume was reset.
+
+Windows30 exact Retry at01:03:41Z completed owned expiry in49831ms without a
+replacement command. A separate explicit Add at01:05:48Z reached Store transport
+and ended OutcomeUnknown in107650ms (33 Protect/1580 Unprotect,59140ms protection).
+The native terminal event at01:07:35Z reports `BlobTtl`. Read-only native metadata
+shows3 pending records, with the latest object's remaining lifetime above7 days
+but within30 days. These are closed local observations, not identifier correlation
+or proof of noncommit; the exact unresolved intent remains retained.
+
+The shipped `Mailbox:MaximumTtl` was7 days despite the current protocol limit and
+product retention of30 days. Node `ea9f796` aligns the shipped binding and rejects
+a shorter current-host cap before filesystem access. It does not change signed
+object expiry, grants, network authority or retry budgets. Focused148 PASS,
+native0/0skip/no compiler diagnostics (Windows PowerShell5.1/SDK10.0.301), receipt
+`artifacts/s05-native-ttl-alignment-20261017/focused-01`. This includes shipped JSON
+binding, current-host7/29/30-day cases, actual replica/replay custody and closed
+failure observers. Matching local Build34/Up35/Verify36 exited0 without compiler
+diagnostics: readiness17s, all9 desired images and54 retained mounts; raw alias
+differences6, separate finite-normalized differences0. Closed health observation
+found native recovery on nodes1/2; node3 was unavailable/checking, with a closed
+revocation-context observation. The readiness receipt alone therefore does not
+prove sustained native recovery. Physical delivery remains pending; this is not
+full/package or device acceptance.
 
 ## Earlier grant-hop evidence
 
