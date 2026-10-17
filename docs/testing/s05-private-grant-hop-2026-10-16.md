@@ -91,6 +91,25 @@ revocation-context observation. The readiness receipt alone therefore does not
 prove sustained native recovery. Physical delivery remains pending; this is not
 full/package or device acceptance.
 
+Windows31 with the matching original-evidence client correction subsequently
+reached Store and returned OutcomeUnknown113584ms. The closed node2 terminal
+event reports quorum-not-durable at01:43:12Z, not BlobTtl. Android47 reached
+Initial claim promotion during a separate incoming sync but rejected it; no
+identifier correlation or durable two-replica acceptance is inferred.
+
+The current peer client/ingress source now classifies only closed HTTP phase,
+numeric status, enum rejection or fixed failure category, rate-limited per10s.
+It never logs a URL, request, identifier, exception object or private message.
+Null/exception/status behavior, deadlines and original replay custody are
+unchanged even if the diagnostic logger throws. Focused118 PASS/native0/0skip,
+receipt `artifacts/s05-peer-hop-closed-diagnostic-20261017/focused-01`: actual
+pinned-TLS403 refusal with normal/throwing client and ingress loggers, exact
+closed fields/rate bound, unchanged bytes and no reservations/mutations, plus
+non-writer and host-composition guards. Matching activation is pending; the
+actual peer quorum cause remains unclassified.
+The existing120s first-reservation rule has not been relaxed, and no new peer
+request/grant/nonce was authored to replace the retained one.
+
 ## Earlier grant-hop evidence
 
 The retained Android37 account passed network verification and entered new

@@ -8,9 +8,11 @@ namespace XNode;
 
 /// <summary>Binary current-only peer ingress. The listener/TLS/length/budget
 /// gates precede allocation; no raw exception, payload or authority logs.</summary>
-internal sealed class CurrentMailboxPeerHttpEndpoint(CurrentMailboxReplicaReceiver receiver, int peerPort)
+internal sealed class CurrentMailboxPeerHttpEndpoint(CurrentMailboxReplicaReceiver receiver, int peerPort,
+    ILogger<CurrentMailboxPeerHttpEndpoint>? logger = null)
 {
     private readonly MailboxPeerIngressLimiter limiter = new();
+    private long lastDiagnostic;
 
     internal void Map(IEndpointRouteBuilder endpoints)
     {
@@ -44,16 +46,39 @@ internal sealed class CurrentMailboxPeerHttpEndpoint(CurrentMailboxReplicaReceiv
             }
             catch (EndOfStreamException) { return Failure(MailboxHttpFailure.MalformedCanonicalBody); }
             catch (OperationCanceledException) when (!token.IsCancellationRequested && deadline.IsCancellationRequested)
-            { return Failure(MailboxHttpFailure.DeadlineExceeded); }
+            { Report(MailboxHttpFailure.DeadlineExceeded, null); return Failure(MailboxHttpFailure.DeadlineExceeded); }
             catch (MailboxPeerReplicationException error)
-            { return Failure(error.Error == MailboxPeerReplicationError.ReplayConflict
-                ? MailboxHttpFailure.ReplayOrIdempotencyConflict : MailboxHttpFailure.MalformedCanonicalBody); }
-            catch (MailboxGrantRevocationFloorException) { return Failure(MailboxHttpFailure.DependencyUnavailable); }
-            catch (CryptographicException) { return Failure(MailboxHttpFailure.AuthorizationFailed); }
+            {
+                var failure = error.Error == MailboxPeerReplicationError.ReplayConflict
+                    ? MailboxHttpFailure.ReplayOrIdempotencyConflict : MailboxHttpFailure.MalformedCanonicalBody;
+                Report(failure, error); return Failure(failure);
+            }
+            catch (MailboxGrantRevocationFloorException error)
+            { Report(MailboxHttpFailure.DependencyUnavailable, error); return Failure(MailboxHttpFailure.DependencyUnavailable); }
+            catch (CryptographicException error)
+            { Report(MailboxHttpFailure.AuthorizationFailed, error); return Failure(MailboxHttpFailure.AuthorizationFailed); }
             catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or InvalidOperationException
                 or MailboxPeerReplayCapacityException or ArgumentException)
-            { return Failure(MailboxHttpFailure.DependencyUnavailable); }
+            { Report(MailboxHttpFailure.DependencyUnavailable, error); return Failure(MailboxHttpFailure.DependencyUnavailable); }
         }
     }
+
+    private void Report(MailboxHttpFailure failure, Exception? error)
+    {
+        if (logger is null) return;
+        try
+        {
+            var now = Stopwatch.GetTimestamp(); var previous = Volatile.Read(ref lastDiagnostic);
+            if (previous != 0 && Stopwatch.GetElapsedTime(previous, now) < TimeSpan.FromSeconds(10) ||
+                Interlocked.CompareExchange(ref lastDiagnostic, now, previous) != previous) return;
+            var reason = error is MailboxPeerReplicationException peer
+                ? Enum.IsDefined(peer.Error) ? peer.Error.ToString() : "unclassified"
+                : error is null ? "deadline" : CurrentMailboxHostRecovery.FailureReason(error);
+            logger.LogWarning("Current mailbox peer ingress incomplete: failure={Failure}; reason={Reason}; original custody retained.",
+                failure.ToString(), reason);
+        }
+        catch { /* Diagnostics must not alter the original failure/status. */ }
+    }
+
     private static IResult Failure(MailboxHttpFailure failure) => Results.StatusCode(MailboxWireHttpContract.StatusCode(failure));
 }

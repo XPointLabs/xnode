@@ -141,7 +141,7 @@ internal static class CurrentMailboxHostComposition
         services.AddSingleton<ICurrentMailboxReplicaPeerClient, CurrentMailboxReplicaPeerClient>();
         services.AddSingleton<CurrentMailboxReplicationCoordinator>();
         services.AddSingleton(provider => new CurrentMailboxPeerHttpEndpoint(provider.GetRequiredService<CurrentMailboxReplicaReceiver>(),
-            NodeListenerConfiguration.Create(node).PrivacyPeerPort));
+            NodeListenerConfiguration.Create(node).PrivacyPeerPort, provider.GetService<ILogger<CurrentMailboxPeerHttpEndpoint>>()));
         // Only the already reviewed configured DID2 source graph has an actual
         // Registry origin/strict TLS handler. Fixture-owned sources do not activate a worker.
         if (services.Any(d => d.ServiceType == typeof(DeepIdV2DirectoryProofConfiguration)))

@@ -1479,6 +1479,11 @@ reset, if needed for activation, is a separate operator step.
 
 ### Current mailbox resource observations
 
+Current peer-hop warnings expose only a closed HTTP phase/status/reason or an
+ingress failure/category, at most once per10s per owner. They omit origins,
+payloads, identities, keys and exception objects/messages. A diagnostic sink
+failure does not change rejection, retry, cancellation or durable-state behavior.
+
 The enabled current mailbox host requires `Mailbox:MaximumTtl` to match the
 protocol's maximum object-retention window; the shipped configuration binds that
 same value. A shorter local cap rejects startup before opening custody rather
