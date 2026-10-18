@@ -49,6 +49,61 @@ public sealed class GroupControlServiceRuntimeTests : IDisposable
     }
 
     [Fact]
+    public async Task FetchPaginatesBeforeDecodingAnOversizedAggregateAndKeepsExactCursor()
+    {
+        pair.OpenStores();
+        var dispatcher = pair.Dispatcher();
+        var predecessor = new byte[32];
+        for (ulong sequence = 1; sequence <= 3; sequence++)
+        {
+            var name = "large-page-" + sequence;
+            AssertStatus(await dispatcher.DispatchAsync(Request.Write(name, sequence, predecessor, Now, 24_576), default), 1, operation: 1);
+            predecessor = SHA256.HashData(Request.SealedBody(name, 24_576));
+        }
+        var first = AssertStatus(await dispatcher.DispatchAsync(Request.Fetch("large-first", 0, Now, 4), default), 3, operation: 2);
+        Assert.True(first.CanonicalBytes.Length <= 65_536);
+        Assert.Equal((ushort)2, U16(first.Field(17).Span));
+        Assert.Equal((ulong)2, U64(first.Field(19).Span));
+        Assert.Equal(new byte[] { 1 }, first.Field(20).ToArray());
+        Assert.Equal(Request.SealedBody("large-page-1", 24_576), DecodeFirstEvent(first.Field(18).Span[..24_660]));
+        pair.CloseStores(); pair.OpenStores();
+        var last = AssertStatus(await pair.Dispatcher().DispatchAsync(Request.Fetch("large-last", 2, Now, 4), default), 3, operation: 2);
+        Assert.Equal((ushort)1, U16(last.Field(17).Span));
+        Assert.Equal((ulong)3, U64(last.Field(19).Span));
+        Assert.Equal(new byte[] { 0 }, last.Field(20).ToArray());
+        Assert.Equal(Request.SealedBody("large-page-3", 24_576), DecodeFirstEvent(last.Field(18).Span));
+    }
+
+    [Fact]
+    public async Task FetchReportsTheRequiredPaddingClassWithoutDecodingAnOversizedCandidate()
+    {
+        pair.OpenStores();
+        var dispatcher = pair.Dispatcher();
+        AssertStatus(await dispatcher.DispatchAsync(Request.Write("padding-write", 1, new byte[32], Now, 24_576), default), 1, operation: 1);
+        var result = AssertStatus(await dispatcher.DispatchAsync(Request.Fetch("padding-fetch", 0, Now, 3), default), 11, operation: 2);
+        Assert.Equal((ushort)4, U16(result.Field(17).Span));
+        Assert.True(result.CanonicalBytes.Length <= 16_384);
+    }
+
+    [Theory]
+    [InlineData(32_374, 2)]
+    [InlineData(32_375, 1)]
+    public async Task FetchKeepsThe65535ByteCanonicalLimitInsideThe65536PaddingClass(int secondBytes, int expectedCount)
+    {
+        pair.OpenStores();
+        var dispatcher = pair.Dispatcher();
+        AssertStatus(await dispatcher.DispatchAsync(Request.Write("boundary-first", 1, new byte[32], Now, 32_768), default), 1, operation: 1);
+        var previous = SHA256.HashData(Request.SealedBody("boundary-first", 32_768));
+        AssertStatus(await dispatcher.DispatchAsync(Request.Write("boundary-second", 2, previous, Now, secondBytes), default), 1, operation: 1);
+        var result = AssertStatus(await dispatcher.DispatchAsync(Request.Fetch("boundary-fetch", 0, Now, 4), default), 3, operation: 2);
+        Assert.Equal((ushort)expectedCount, U16(result.Field(17).Span));
+        Assert.Equal((ulong)expectedCount, U64(result.Field(19).Span));
+        Assert.Equal(new byte[] { expectedCount == 2 ? (byte)0 : (byte)1 }, result.Field(20).ToArray());
+        Assert.True(result.CanonicalBytes.Length <= 65_535);
+        if (expectedCount == 2) Assert.Equal(65_535, result.CanonicalBytes.Length);
+    }
+
+    [Fact]
     public async Task LostReplicaAcknowledgementIsOutcomeUnknownAndRetryReconcilesExactly()
     {
         pair.OpenStores();
@@ -646,9 +701,9 @@ public sealed class GroupControlServiceRuntimeTests : IDisposable
             string operation,
             ulong sequence,
             byte[] predecessor,
-            DateTimeOffset now)
+            DateTimeOffset now, int sealedBytes = 64)
         {
-            var sealedBody = SealedBody(operation);
+            var sealedBody = SealedBody(operation, sealedBytes);
             return Encode("GSW1", WriteTags,
             [
                 Network,
@@ -686,10 +741,10 @@ public sealed class GroupControlServiceRuntimeTests : IDisposable
                 Be(paddingClass)
             ]);
 
-        internal static byte[] SealedBody(string operation)
+        internal static byte[] SealedBody(string operation, int bytes = 64)
         {
             var seed = Hash("sealed/" + operation);
-            return seed.Concat(seed).ToArray();
+            return Enumerable.Range(0, bytes).Select(index => seed[index % seed.Length]).ToArray();
         }
 
         private static byte[] Encode(

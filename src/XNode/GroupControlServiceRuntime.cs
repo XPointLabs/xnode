@@ -531,8 +531,10 @@ internal sealed class ProductionGroupControlTerminalDispatcher : IGroupControlTe
             var records = result.Records.ToArray();
             for (var count = records.Length; count > 0; count--)
             {
+                var page = records.Take(count).ToArray();
+                if (!GroupControlGss1Author.FitsEvents(page, request.RequestedPaddingClass)) continue;
                 var eventPayload = GroupControlGss1Payload.Events(
-                    records.Take(count).ToArray(),
+                    page,
                     result.HasMore || count != records.Length);
                 var candidate = GroupControlGss1Author.Author(
                     request,
@@ -541,16 +543,12 @@ internal sealed class ProductionGroupControlTerminalDispatcher : IGroupControlTe
                     now,
                     0,
                     request.RequestedPaddingClass,
-                    eventPayload,
-                    requireFit: false);
-                if (candidate.CanonicalGss1.Length <= PaddingBytes[request.RequestedPaddingClass])
-                {
-                    return candidate;
-                }
+                    eventPayload);
+                return candidate;
             }
 
             var firstBytes = GroupControlGss1Payload.EncodedRecordLength(records[0]);
-            var requiredClass = RequiredClass(request, records[0], now);
+            var requiredClass = RequiredClass(records[0]);
             return GroupControlGss1Author.Author(
                 request,
                 GroupControlApplicationStatus.RecordTooLarge,
@@ -588,23 +586,11 @@ internal sealed class ProductionGroupControlTerminalDispatcher : IGroupControlTe
             payload);
     }
 
-    private static ushort RequiredClass(
-        GroupControlRequestProjection request,
-        OpaqueGroupControlRecord record,
-        ulong now)
+    private static ushort RequiredClass(OpaqueGroupControlRecord record)
     {
         for (ushort padding = 0; padding < PaddingBytes.Length; padding++)
         {
-            var candidate = GroupControlGss1Author.Author(
-                request,
-                GroupControlApplicationStatus.Events,
-                GroupControlMutationOutcome.None,
-                now,
-                0,
-                padding,
-                GroupControlGss1Payload.Events([record], false),
-                requireFit: false);
-            if (candidate.CanonicalGss1.Length <= PaddingBytes[padding])
+            if (GroupControlGss1Author.FitsEvents([record], padding))
             {
                 return padding;
             }
@@ -751,6 +737,15 @@ internal static class GroupControlGss1Author
     private static readonly ushort[] Tags = [1, 2, 3, 4, 5, 6, 7, 8, 16, 17, 18, 19, 20];
     private static readonly int[] PaddingBytes = [256, 1_024, 4_096, 16_384, 65_536];
 
+    internal static bool FitsEvents(IReadOnlyList<OpaqueGroupControlRecord> records, ushort padding)
+    {
+        ValidatePadding(padding);
+        // GSS1 fixed fields/header:214 bytes; Events count/cursor/more:11.
+        // Size the page BEFORE constructing/decoding a possibly oversized
+        // aggregate. The final result still passes the strict Protocol decoder.
+        return checked(225 + records.Sum(GroupControlGss1Payload.EncodedRecordLength)) <= Math.Min(65_535, PaddingBytes[padding]);
+    }
+
     internal static GroupControlTerminalDispatchResult Author(
         GroupControlRequestProjection request,
         GroupControlApplicationStatus status,
@@ -758,8 +753,7 @@ internal static class GroupControlGss1Author
         ulong serverTime,
         uint retryAfterSeconds,
         ushort? requestedPaddingClass,
-        GroupControlGss1Payload? payload = null,
-        bool requireFit = true)
+        GroupControlGss1Payload? payload = null)
     {
         ArgumentNullException.ThrowIfNull(request);
         payload ??= GroupControlGss1Payload.Empty;
@@ -776,7 +770,7 @@ internal static class GroupControlGss1Author
         {
             ValidatePadding(fixedPadding);
             fields[7] = Be(fixedPadding);
-            return ValidateAndReturn(request, fields, fixedPadding, requireFit);
+            return ValidateAndReturn(request, fields, fixedPadding);
         }
 
         for (ushort padding = 0; padding < PaddingBytes.Length; padding++)
@@ -785,7 +779,7 @@ internal static class GroupControlGss1Author
             var candidate = Encode(fields);
             if (candidate.Length <= PaddingBytes[padding])
             {
-                return ValidateAndReturn(request, fields, padding, true);
+                return ValidateAndReturn(request, fields, padding);
             }
         }
         throw new InvalidDataException("The canonical GSS1 result exceeds every V1 padding class.");
@@ -794,11 +788,10 @@ internal static class GroupControlGss1Author
     private static GroupControlTerminalDispatchResult ValidateAndReturn(
         GroupControlRequestProjection request,
         byte[][] fields,
-        ushort padding,
-        bool requireFit)
+        ushort padding)
     {
         var canonical = Encode(fields);
-        if (requireFit && canonical.Length > PaddingBytes[padding])
+        if (canonical.Length > PaddingBytes[padding])
         {
             throw new InvalidDataException("The canonical GSS1 result does not fit its padding class.");
         }
@@ -1127,9 +1120,14 @@ public sealed class UnavailableGroupControlTerminalDispatcher : IGroupControlTer
 public sealed class GroupControlOnionTerminalAdapter
 {
     private readonly IGroupControlTerminalDispatcher dispatcher;
+    private readonly PrivacyRoutingFailureDiagnostics diagnostics;
 
-    public GroupControlOnionTerminalAdapter(IGroupControlTerminalDispatcher dispatcher) =>
+    public GroupControlOnionTerminalAdapter(IGroupControlTerminalDispatcher dispatcher,
+        ILogger<GroupControlOnionTerminalAdapter>? logger = null)
+    {
         this.dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
+        diagnostics = new(logger);
+    }
 
     public async Task<NativeMailboxDispatchResult> DispatchAsync(
         ReadOnlyMemory<byte> exactCanonicalGroupControlRequest,
@@ -1153,19 +1151,22 @@ public sealed class GroupControlOnionTerminalAdapter
             or InvalidDataException
             or OverflowException)
         {
+            diagnostics.Report("Dispatch", exception);
             return new NativeMailboxDispatchResult(
                 StatusCodes.Status400BadRequest,
                 ReadOnlyMemory<byte>.Empty,
                 NativeMailboxDispatchCertainty.RejectedBeforeForward);
         }
-        catch (GroupControlAuthorityUnavailableException)
+        catch (GroupControlAuthorityUnavailableException exception)
         {
+            diagnostics.Report("Dispatch", exception);
             return NativeMailboxDispatchResult.RejectedBeforeForward();
         }
         catch (Exception exception) when (exception is IOException
             or InvalidOperationException
             or UnauthorizedAccessException)
         {
+            diagnostics.Report("Dispatch", exception);
             return NativeMailboxDispatchResult.OutcomeUnknownAfterForward();
         }
     }

@@ -1757,6 +1757,14 @@ replica mutation and retention use the existing authenticated DID2 service clock
 not OS wall time; peer HTTP authentication keeps its separate host clock.
 Expired requests and carriage beyond the current signed view reject.
 
+Fetch sizes a complete record prefix before canonical encoding/decoding. The
+65536-byte padding class still permits at most65535 canonical GSS1 bytes;
+larger retained histories return a bounded page and its exact continuation
+cursor, not an oversized response or an unavailable terminal. A first record
+that exceeds the requested class returns the existing RecordTooLarge result.
+Group terminal failures emit rate-limited closed category/method/IL diagnostics
+only; request bytes, capabilities, selectors and exception text are excluded.
+
 `group-control-v1` beneath the node data directory contains opaque persistent
 CAS/replay state. Keep it with the node state volume during restart/upgrade;
 never regenerate node keys or erase this state to repair a failed write.
