@@ -163,12 +163,14 @@ if (contactCoordinationOrigin is not null)
         provider.GetRequiredService<RouterNodeOptions>(), provider.GetRequiredService<IClock>()));
     builder.Services.AddSingleton<ContactCoordinationOnionDispatcher>();
 }
+builder.Services.AddSingleton<BlobChunkOnionDispatcher>();
 builder.Services.AddSingleton(provider => new PrivacyTerminalExitDispatcher(
     provider.GetRequiredService<NativeMailboxExitDispatcher>(),
     provider.GetRequiredService<IContactServiceOpaqueDispatcher>(),
     provider.GetRequiredService<GroupControlOnionTerminalAdapter>(),
     provider.GetService<ContactCoordinationOnionDispatcher>(),
-    provider.GetRequiredService<ILogger<PrivacyTerminalExitDispatcher>>()));
+    provider.GetRequiredService<ILogger<PrivacyTerminalExitDispatcher>>(),
+    provider.GetRequiredService<BlobChunkOnionDispatcher>()));
 builder.Services.AddSingleton<INativeMailboxExitDispatcher>(provider =>
     provider.GetRequiredService<PrivacyTerminalExitDispatcher>());
 builder.Services.AddCurrentMailboxHostRecovery();

@@ -656,6 +656,7 @@ public sealed class PrivacyTerminalExitDispatcher : INativeMailboxExitDispatcher
     private readonly IContactServiceOpaqueDispatcher contact;
     private readonly GroupControlOnionTerminalAdapter groupControl;
     private readonly ContactCoordinationOnionDispatcher? coordination;
+    private readonly BlobChunkOnionDispatcher? blob;
     private readonly ILogger<PrivacyTerminalExitDispatcher>? logger;
     private long failureLogTimestamp;
 
@@ -672,10 +673,11 @@ public sealed class PrivacyTerminalExitDispatcher : INativeMailboxExitDispatcher
     internal PrivacyTerminalExitDispatcher(INativeMailboxExitDispatcher mailbox,
         IContactServiceOpaqueDispatcher contact, GroupControlOnionTerminalAdapter groupControl,
         ContactCoordinationOnionDispatcher? coordination,
-        ILogger<PrivacyTerminalExitDispatcher>? logger = null) : this(mailbox, contact, groupControl)
+        ILogger<PrivacyTerminalExitDispatcher>? logger = null, BlobChunkOnionDispatcher? blob = null) : this(mailbox, contact, groupControl)
     {
         this.coordination = coordination;
         this.logger = logger;
+        this.blob = blob;
     }
 
     // Keeps focused tests and non-hosted callers fail-closed while Program uses
@@ -697,6 +699,9 @@ public sealed class PrivacyTerminalExitDispatcher : INativeMailboxExitDispatcher
     {
         ArgumentNullException.ThrowIfNull(request);
         var privacyOperation = request.Operation;
+        if (privacyOperation == OnionOperation.Blob)
+            return blob is null ? NativeMailboxDispatchResult.RejectedBeforeForward() :
+                await blob.DispatchAsync(request, cancellationToken).ConfigureAwait(false);
         var canonicalBody = request.CanonicalBytes;
         if (canonicalBody.Length >= 4 && canonicalBody.Span[..4].SequenceEqual("XCA2"u8))
             return coordination is null ? NativeMailboxDispatchResult.RejectedBeforeForward() :

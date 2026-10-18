@@ -665,8 +665,8 @@ public sealed partial class DeepIdV2PublicationJournalTests
                 Bytes(32, 0x14), Bytes(32, 0x35));
 
         internal DeepIdV2InventoryCommitStore OpenInventoryStore(
-            byte[] replicaId, IMailboxDurabilityBarrier? durability = null) =>
-            new(DirectoryPath, Network, Bytes(32, 0x35), replicaId, durability: durability);
+            byte[] signingPublicKey, IMailboxDurabilityBarrier? durability = null) =>
+            new(DirectoryPath, Network, Bytes(32, 0x35), Bytes(32, 0x36), signingPublicKey, durability: durability);
 
         internal string InventoryServicePath() =>
             Directory.GetDirectories(Path.Combine(DirectoryPath,

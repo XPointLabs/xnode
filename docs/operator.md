@@ -1,5 +1,32 @@
 # Operator Guide
 
+## DR-0141 local BLOB candidate
+
+The [owned chunk-plane allocation](../../docs/survival-program/decisions/DR-0141-owned-blob-chunk-plane.md)
+adds a terminal handler inside existing ONION dispatch/DI, not a public file URL
+or new listener. Nodes require a genuine current directory/network source, the
+existing mailbox-role exit admission plus signed Blob role/nonzero capacity,
+current trusted time and exact capability/descriptor/ciphertext commitments.
+Matched Shared/CLI and Protocol/XNode binaries are required; unknown operation
+tables continue to reject rather than fall back to direct HTTP.
+
+Ciphertext and public descriptor custody lives in `blob-custody` under the
+existing node data directory. Keep that volume on supported upgrades; no account,
+node, resolver, certificate or signing-key reset is needed. Descriptors are
+staged/fsynced/atomically published, with immutable exact readback; a cold open
+removes only its closed unpublished staging names. Corrupt published files,
+links, foreign files or missing owners fail closed, not automatic repair.
+Only ciphertext/public commitments are persisted, never raw capabilities,
+object keys, filenames or plaintext. A lost reply after mutation remains unknown.
+
+Current per-node bounds are4 concurrent handlers,30-second handler cancellation,
+1024 objects,16384 chunks and512MiB ciphertext. Original retention is at most30
+days under verified trusted time. Quota/expiry return closed refusal, not a false
+Stored receipt or eviction of another object. This source candidate does **not**
+yet implement materialization-driven7-day retirement, expired-object GC,
+cancellation/recall or storage-node handover. Do not treat a successful small-file
+CLI transfer as sustained retention/capacity/release qualification.
+
 ## Current publication coordination cutover
 
 [DR-0125](../../docs/survival-program/decisions/DR-0125-current-publication-submission.md)
