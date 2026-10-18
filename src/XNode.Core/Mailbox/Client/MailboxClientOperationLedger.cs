@@ -571,17 +571,40 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
         {
             if (_currentCustody is null || lease is null)
                 throw new InvalidOperationException("Current operation custody and live host lease are required together.");
-            await _currentCustody.VerifyAsync(_path, lease, ValidateFileAsync, cancellationToken).ConfigureAwait(false);
+            MailboxClientLedgerDocument? captured = null;
+            byte[]? capturedHash = null;
+            long capturedLength = 0;
+            await _currentCustody.VerifyAsync(_path, lease, async (path, token) =>
+            {
+                _ = await ReadDocumentAsync(path, token, allowMissing: false,
+                    capture: (document, hash, length) =>
+                    { captured = document; capturedHash = hash; capturedLength = length; }).ConfigureAwait(false);
+            }, cancellationToken).ConfigureAwait(false);
+            if (captured is null || capturedHash is null)
+                throw new InvalidDataException("Current operation custody did not validate its document.");
+            // Re-read and authenticate the actual snapshot AFTER every custody/
+            // lease callback, but do not deserialize and structurally validate
+            // the identical whole ledger twice. This reuse is local to this
+            // single Load under _gate, never an admission or cross-call cache.
+            await using var stream = File.OpenRead(_path);
+            var length = stream.Length;
+            if (length is < 1 or > MaximumDocumentBytes || length != capturedLength)
+                throw new InvalidDataException("Mailbox operation snapshot changed after verification.");
+            var actualHash = await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false);
+            if (stream.Length != length || stream.Position != length)
+                throw new InvalidDataException("Mailbox operation snapshot changed while reading.");
+            _currentCustody.RequireDocumentSnapshot(_path, actualHash, length);
+            if (!CryptographicOperations.FixedTimeEquals(actualHash, capturedHash))
+                throw new InvalidDataException("Mailbox operation snapshot changed after verification.");
+            cancellationToken.ThrowIfCancellationRequested();
+            return captured;
         }
-        return await ReadDocumentAsync(_path, cancellationToken, allowMissing: _currentCustody is null,
-            authenticateSnapshot: _currentCustody is not null).ConfigureAwait(false);
+        return await ReadDocumentAsync(_path, cancellationToken, allowMissing: true).ConfigureAwait(false);
     }
 
-    private async Task ValidateFileAsync(string path, CancellationToken token) =>
-        _ = await ReadDocumentAsync(path, token, allowMissing: false).ConfigureAwait(false);
-
     private async Task<MailboxClientLedgerDocument> ReadDocumentAsync(string path, CancellationToken cancellationToken,
-        bool allowMissing, bool authenticateSnapshot = false)
+        bool allowMissing,
+        Action<MailboxClientLedgerDocument, byte[], long>? capture = null)
     {
         if (!File.Exists(path))
         {
@@ -610,8 +633,8 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
                 throw new InvalidDataException("Mailbox client operation snapshot exceeds its bound.");
             // Hash and parse the same opened snapshot, not a path verified before
             // an external authority callback and reopened without authentication.
-            using var algorithm = authenticateSnapshot ? SHA256.Create() : null;
-            using var hashing = authenticateSnapshot ? new CryptoStream(stream, algorithm!, CryptoStreamMode.Read, leaveOpen: true) : null;
+            using var algorithm = capture is not null ? SHA256.Create() : null;
+            using var hashing = algorithm is not null ? new CryptoStream(stream, algorithm, CryptoStreamMode.Read, leaveOpen: true) : null;
             var document = await JsonSerializer.DeserializeAsync<MailboxClientLedgerDocument>(
                 hashing ?? (Stream)stream,
                 JsonOptions,
@@ -620,13 +643,11 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
             {
                 throw new InvalidDataException("Mailbox client operation ledger is empty.");
             }
-            if (authenticateSnapshot)
+            if (hashing is not null)
             {
                 if (await hashing!.ReadAsync(new byte[1], cancellationToken).ConfigureAwait(false) != 0 ||
                     stream.Length != length || stream.Position != length)
                     throw new InvalidDataException("Mailbox operation snapshot changed while reading.");
-                _currentCustody!.RequireDocumentSnapshot(path, algorithm!.Hash ??
-                    throw new InvalidDataException("Mailbox operation snapshot hashing is incomplete."), length);
             }
 
             document.NextCursorByMailbox = new(
@@ -647,6 +668,8 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
                 document.PeerReplayFloors ?? throw new InvalidDataException("Mailbox peer replay floors are missing."),
                 StringComparer.Ordinal);
             ValidateDocument(document);
+            capture?.Invoke(document, algorithm!.Hash ??
+                throw new InvalidDataException("Mailbox operation snapshot hashing is incomplete."), length);
             return document;
         }
         catch (JsonException exception)

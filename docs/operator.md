@@ -1744,6 +1744,20 @@ expiry and replay checks repeat afterwards. Failure to converge still rejects
 without recipient reservation or mutation. Peer15s and client25s/30s budgets
 remain unchanged. No peer timestamp substitutes for actual policy time.
 
+Current operation reads parse and structurally validate a ledger snapshot once
+inside the held native owner. After all custody/lease callbacks they independently
+re-read/hash the actual file and require the committed native hash, exact length
+and equality with the parsed snapshot. Any change, including equal-length bytes,
+rejects before use. The parsed object never survives this single read or crosses
+an operation/callback as cached admission. Pending-replacement validation and
+cleanup, current authority/replay joins and all effect fences remain unchanged;
+this is not a storage-format update, reset or timeout increase.
+Focused `cli-gsr-20261018/forwarding-09` passed25 cases/native0/0skip, zero
+compiler warnings/errors: both post-verification snapshot changes (including
+same-length bytes), native startup/rollback, whole-ACK delayed-item recovery,
+PTR1 clocks, Store/ACK/HTTP and operation-checkpoint crash boundaries. These
+focused results do not qualify full/package gates or first-attempt latency.
+
 The explicit local candidate enables `GroupControlService:RuntimeActivation`,
 `GroupControlService:MapReplicaEndpoint` and `RequiredTerminals:GroupControl`
 together with the complete current DID2 resolver/network composition. A flag

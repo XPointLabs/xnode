@@ -6,15 +6,25 @@ namespace XNode.IntegrationTests.Runtime;
 
 public sealed partial class CurrentMailboxPeerHttpTests
 {
-    [Fact]
-    public async Task CurrentReadAuthenticatesActualSnapshotAfterVerifiedReadCallback()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CurrentReadAuthenticatesActualSnapshotAfterVerifiedReadCallback(bool sameLength)
     {
         await using var f = await Fixture.CreateAsync(); var prior = File.ReadAllBytes(f.LedgerFile);
-        f.OpenLedger(afterVerifiedRead: () => File.AppendAllText(f.LedgerFile, " "));
+        f.OpenLedger(afterVerifiedRead: () =>
+        {
+            if (!sameLength) File.AppendAllText(f.LedgerFile, " ");
+            else
+            {
+                var changed = prior.ToArray(); changed[0] ^= 1;
+                File.WriteAllBytes(f.LedgerFile, changed);
+            }
+        });
         await Assert.ThrowsAsync<InvalidDataException>(() => f.Coordinator.StoreClientAsync(f.ClientStoreFrame(), f.Ledger!).AsTask());
         Assert.Equal(0, f.Sender.Node.Replay.Diagnostics.ScopeCount); Assert.Equal(0, f.AllHttpRequests);
         Assert.Empty(f.Sender.MutationFiles);
-        Assert.Equal(prior.Length + 1, new FileInfo(f.LedgerFile).Length);
+        Assert.Equal(prior.Length + (sameLength ? 0 : 1), new FileInfo(f.LedgerFile).Length);
         File.WriteAllBytes(f.LedgerFile, prior); f.Reopen(); await f.InitializeLedgerAsync();
         Assert.Equal(MailboxPeerQuorumStatus.Durable, (await f.Coordinator.StoreClientAsync(f.ClientStoreFrame(), f.Ledger!)).Status);
     }
