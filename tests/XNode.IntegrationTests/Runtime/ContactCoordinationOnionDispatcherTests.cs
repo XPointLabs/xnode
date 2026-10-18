@@ -15,6 +15,53 @@ namespace XNode.IntegrationTests.Runtime;
 // HTTP handler and proof/clock retrieval are in-process. No socket/device claim.
 public sealed class ContactCoordinationOnionDispatcherTests
 {
+    [Theory]
+    [InlineData(true, 1)]
+    [InlineData(false, 1)]
+    [InlineData(true, 3)]
+    [InlineData(false, 3)]
+    public async Task NearFutureLowerBoundWaitsOnceAndRequiresActualConvergenceBeforeForward(bool converge, int lead)
+    {
+        using var f = await DeepIdV2PublicationAuthorityFixture.CreateAsync(authorContactPublication: true);
+        var request = f.ContactCurrentRequest;
+        await f.RefreshNetworkProofAsync(100, checked(request.IssuedAtUnixSeconds + 5 - (ulong)lead));
+        f.Sample = checked(101UL + (ulong)lead);
+        var placement = ContactServicePlacementFactory.Create(f.NetworkContext,
+            ContactServiceRequestKind.CoordinateContact, request.GatewayShard);
+        var id = placement.RankedReplicaNodeIds[0];
+        var node = new RouterNodeOptions { RouterId = Convert.ToHexStringLower(id.Span),
+            Ed25519PrivateKey = Convert.ToHexStringLower(f.Node(id.Span).Seed) };
+        var calls = 0;
+        var response = DeepIdV2PublicationCurrentWireCodec.EncodeResponse(request, f.ContactDispatch.Span);
+        var backend = new HttpContactCoordinationBackendClient(new("https://authority.example/"),
+            DeepIdV2PublicationAuthorityFixture.Network, node, new SystemClock(), () => new Handler(async (message, ct) =>
+            {
+                calls++;
+                Assert.Equal(request.CanonicalBytes.ToArray(), await message.Content!.ReadAsByteArrayAsync(ct));
+                var result = new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(response) };
+                result.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(DeepIdV2PublicationCurrentWireCodec.ResponseMediaType);
+                return result;
+            }));
+        var clock = new ConvergingClock(converge, lead);
+        var dispatcher = new ContactCoordinationOnionDispatcher(f, backend, node, clock, new DiagnosticLogger());
+        var exact = ContactCoordinationOnionCodec.EncodeRequest(ContactCoordinationTarget.PublicationCurrent, request.CanonicalBytes.Span);
+        var verified = OnionTerminalPayloadVerifierV1.VerifyRequest(f.NetworkContext, OnionOperation.ContactResolve, exact);
+        var result = await dispatcher.DispatchAsync(verified, default);
+        Assert.Equal(converge, result.Success);
+        Assert.Equal(converge ? 1 : 0, calls);
+        Assert.True(clock.Reads >= 2); // Not a relaxed first future-time check.
+    }
+
+    private sealed class ConvergingClock(bool converge, int lead) : IOnionMonotonicClock
+    {
+        internal int Reads;
+        public ValueTask<OnionMonotonicReading> ReadAsync(CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(new OnionMonotonicReading(DeepIdV2PublicationAuthorityFixture.Boot,
+                ++Reads > 1 && converge ? checked(101UL + (ulong)lead) : 100UL));
+        }
+    }
     [Fact]
     public async Task CurrentPublicationUsesCurrentViewGatewayAndAuthenticatedPairedPrivateTarget()
     {

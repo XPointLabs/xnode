@@ -217,13 +217,18 @@ public sealed class GroupControlServiceRuntimeTests : IDisposable
         services.AddSingleton<IMailboxDurabilityBarrier, MailboxDurabilityBarrier>();
         services.AddSingleton(privacy);
 
+        var factoryCalls = 0;
+        var clockFactoryCalls = 0;
         var plan = services.AddProductionGroupControlServiceBoundary(
             new GroupControlServiceOptions
             {
                 RuntimeActivation = true,
                 MapReplicaEndpoint = true
             },
-            authority);
+            _ => { factoryCalls++; return authority; },
+            _ => { clockFactoryCalls++; return pair.Clock; });
+        Assert.Equal(0, factoryCalls);
+        Assert.Equal(0, clockFactoryCalls);
         using var provider = services.BuildServiceProvider(
             new ServiceProviderOptions { ValidateOnBuild = true, ValidateScopes = true });
 
@@ -233,6 +238,8 @@ public sealed class GroupControlServiceRuntimeTests : IDisposable
             provider.GetRequiredService<IGroupControlTerminalDispatcher>());
         Assert.NotNull(provider.GetRequiredService<GroupControlReplicaRequestReceiver>());
         Assert.NotNull(provider.GetRequiredService<GroupControlReplicaReplayGuard>());
+        Assert.Equal(1, factoryCalls);
+        Assert.Equal(3, clockFactoryCalls);
     }
 
     [Fact]

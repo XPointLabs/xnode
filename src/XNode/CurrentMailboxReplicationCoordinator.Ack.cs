@@ -58,8 +58,8 @@ internal sealed partial class CurrentMailboxReplicationCoordinator
                     if (item.CanonicalPeerRequest.IsEmpty) throw new InvalidDataException("Current ACK exact intent is missing.");
                     if (saved is not null && !item.CachedReceipt.Span.SequenceEqual(saved.TombstoneQuorums[index].Span))
                         throw new InvalidDataException("Current ACK aggregate differs from its persisted item quorum.");
-                    var quorum = await local.WithAdmittedPeerAsync<ReadOnlyMemory<byte>>(item.CanonicalPeerRequest,
-                        MailboxPeerReplicationOperation.Tombstone, MailboxPeerWireResponseReplicaV2.Sender, scope,
+                    var quorum = await local.WithCapturedAckPeerAsync<ReadOnlyMemory<byte>>(intent.OperationKey, item.Cursor,
+                        item.CanonicalPeerRequest, scope,
                         async (current, inner) =>
                         {
                             if (!item.CachedReceipt.IsEmpty)

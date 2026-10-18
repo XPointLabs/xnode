@@ -41,7 +41,9 @@ internal sealed class CurrentMailboxPeerHttpEndpoint(CurrentMailboxReplicaReceiv
                 await context.Request.Body.ReadExactlyAsync(body, deadline.Token).ConfigureAwait(false);
                 if (await context.Request.Body.ReadAsync(new byte[1], deadline.Token).ConfigureAwait(false) != 0)
                     return Failure(MailboxHttpFailure.MalformedCanonicalBody);
-                var response = await receiver.ReceiveAsync(body, operation, deadline.Token).ConfigureAwait(false);
+                var response = operation == MailboxPeerReplicationOperation.Tombstone
+                    ? await receiver.ReceiveForwardedTombstoneAsync(body, deadline.Token).ConfigureAwait(false)
+                    : await receiver.ReceiveAsync(body, operation, deadline.Token).ConfigureAwait(false);
                 return Results.Bytes(response.ToArray(), contract.ResponseContentType);
             }
             catch (EndOfStreamException) { return Failure(MailboxHttpFailure.MalformedCanonicalBody); }

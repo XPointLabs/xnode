@@ -4,6 +4,28 @@ namespace XNode.Core.Mailbox.Client;
 
 public sealed partial class MailboxClientOperationLedger
 {
+    internal async Task RequireCurrentAckAdmissionAsync(string operationKey, ulong cursor,
+        ReadOnlyMemory<byte> originalRequest, MailboxCurrentOperationLease lease, CancellationToken token)
+    {
+        ThrowIfDisposed(); lease.RequireActive();
+        await _gate.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            var document = await LoadAsync(token, lease).ConfigureAwait(false);
+            var operation = GetAckOperation(document, operationKey);
+            var item = operation.Items[FindAckItem(operation, cursor)];
+            ValidateCurrentAckItem(operation, item);
+            var captured = Convert.FromBase64String(item.PeerRequest);
+            if (!captured.AsSpan().SequenceEqual(originalRequest.Span))
+                throw new InvalidDataException("Original ACK admission differs from actual protected batch custody.");
+            // Structural decoder also binds CreatedAt to native AcceptedAt;
+            // current admission/keys/target/expiry are independently rechecked
+            // by the owning receiver before reservation and every mutation.
+            _ = await lease.CheckAsync(token).ConfigureAwait(false);
+        }
+        finally { _gate.Release(); }
+    }
+
     internal async Task<MailboxClientAckReservation> ReserveCurrentAckAsync(MailboxAuthenticatedAckBody body,
         ReadOnlyMemory<byte> membership, IReadOnlyList<ReadOnlyMemory<byte>> replicas, MailboxCurrentOperationLease lease,
         Func<CancellationToken, Task<IReadOnlyList<MailboxCurrentAckTarget>>> readTargets,

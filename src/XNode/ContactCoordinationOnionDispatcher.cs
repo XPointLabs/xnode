@@ -35,7 +35,23 @@ internal sealed class ContactCoordinationOnionDispatcher(
             phase = DiagnosticPhase.AuthorityBefore;
             var before = await authoritySource.ReadPublicationAuthorityAsync(cancellationToken).ConfigureAwait(false);
             phase = DiagnosticPhase.CurrentnessBefore;
-            var placement = await RequireCurrentAsync(before, parsed, diagnostic, cancellationToken).ConfigureAwait(false);
+            VerifiedContactServicePlacement placement;
+            try { placement = await RequireCurrentAsync(before, parsed, diagnostic, cancellationToken).ConfigureAwait(false); }
+            catch (CryptographicException) when (diagnostic.Check == CurrentnessCheck.IssuedLowerBound &&
+                diagnostic.Time.Lead > 0 && diagnostic.Time.Lead <= Math.Min(10,
+                    checked(2L * before.Authority.MaximumWitnessUncertaintySeconds)))
+            {
+                // Independent authenticated intervals need not have identical
+                // lower bounds. Wait once (root uncertainty bound, at most11s)
+                // BEFORE effects, then reacquire
+                // actual authority and run every original strict check again.
+                // No grace/skew acceptance, changed bytes or extended deadline.
+                await Task.Delay(TimeSpan.FromSeconds(diagnostic.Time.Lead + 1), cancellationToken).ConfigureAwait(false);
+                phase = DiagnosticPhase.AuthorityBefore;
+                before = await authoritySource.ReadPublicationAuthorityAsync(cancellationToken).ConfigureAwait(false);
+                phase = DiagnosticPhase.CurrentnessBefore;
+                placement = await RequireCurrentAsync(before, parsed, diagnostic, cancellationToken).ConfigureAwait(false);
+            }
             // Conservatively mark unknown before the backend call: an exception
             // cannot prove that its exact durable request did not reach the issuer.
             forwarded = true;

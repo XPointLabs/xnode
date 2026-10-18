@@ -1013,11 +1013,13 @@ internal static class GroupControlServiceHostComposition
     internal static GroupControlServiceHostCompositionPlan AddProductionGroupControlServiceBoundary(
         this IServiceCollection services,
         GroupControlServiceOptions options,
-        IGroupControlAuthoritySource authoritySource)
+        Func<IServiceProvider, IGroupControlAuthoritySource> authoritySource,
+        Func<IServiceProvider, IClock> serviceClock)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(authoritySource);
+        ArgumentNullException.ThrowIfNull(serviceClock);
         options.Validate();
         if (!options.RuntimeActivation || !options.MapReplicaEndpoint)
         {
@@ -1028,10 +1030,10 @@ internal static class GroupControlServiceHostComposition
         var plan = new GroupControlServiceHostCompositionPlan(true, true);
         services.AddSingleton(options);
         services.AddSingleton(plan);
-        services.AddSingleton(authoritySource);
+        services.AddSingleton<IGroupControlAuthoritySource>(authoritySource);
         services.AddSingleton(provider => new GroupControlLocalReplicaRuntime(
             provider.GetRequiredService<RouterNodeOptions>(),
-            provider.GetRequiredService<IClock>(),
+            serviceClock(provider),
             provider.GetRequiredService<IMailboxStorageSecurity>(),
             provider.GetRequiredService<IMailboxDurabilityBarrier>()));
         services.AddSingleton<IGroupControlReplicaPeerClient, HttpGroupControlReplicaPeerClient>();
@@ -1039,7 +1041,7 @@ internal static class GroupControlServiceHostComposition
             new ProductionGroupControlReplicaBindingSource(
                 provider.GetRequiredService<GroupControlLocalReplicaRuntime>(),
                 provider.GetRequiredService<IGroupControlReplicaPeerClient>()));
-        AddActiveBoundaryServices(services);
+        AddActiveBoundaryServices(services, serviceClock);
         return plan;
     }
 
@@ -1069,18 +1071,19 @@ internal static class GroupControlServiceHostComposition
         services.AddSingleton(plan);
         services.AddSingleton(authoritySource);
         services.AddSingleton(replicaSource);
-        AddActiveBoundaryServices(services, includeReplicaReceiver: false);
+        AddActiveBoundaryServices(services, provider => provider.GetRequiredService<IClock>(), includeReplicaReceiver: false);
         return plan;
     }
 
     private static void AddActiveBoundaryServices(
         IServiceCollection services,
+        Func<IServiceProvider, IClock> serviceClock,
         bool includeReplicaReceiver = true)
     {
         services.AddSingleton(provider => new ProductionGroupControlTerminalDispatcher(
             provider.GetRequiredService<IGroupControlAuthoritySource>(),
             provider.GetRequiredService<IGroupControlReplicaBindingSource>(),
-            provider.GetRequiredService<IClock>(),
+            serviceClock(provider),
             provider.GetRequiredService<GroupControlServiceOptions>()));
         services.AddSingleton<IGroupControlTerminalDispatcher>(provider =>
             provider.GetRequiredService<ProductionGroupControlTerminalDispatcher>());
@@ -1091,7 +1094,7 @@ internal static class GroupControlServiceHostComposition
             services.AddSingleton(provider => new GroupControlReplicaRequestReceiver(
                 provider.GetRequiredService<IGroupControlAuthoritySource>(),
                 provider.GetRequiredService<GroupControlLocalReplicaRuntime>(),
-                provider.GetRequiredService<IClock>()));
+                serviceClock(provider)));
         }
     }
 

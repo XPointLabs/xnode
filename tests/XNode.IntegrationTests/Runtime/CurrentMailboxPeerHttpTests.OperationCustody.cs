@@ -91,10 +91,20 @@ public sealed partial class CurrentMailboxPeerHttpTests
         await f.InitializeLedgerAsync();
         if (write == 1 && beforeReplace)
         {
-            // An unanchored temporary is not authority. It is not adopted; a
-            // previously reserved client request cannot mint another peer nonce.
-            await Assert.ThrowsAsync<InvalidDataException>(() => f.Coordinator.StoreClientAsync(request, f.Ledger!).AsTask());
+            // DR-0139: an unanchored temporary was never the first committed
+            // peer intent. Actual protected absence and zero native effects
+            // permit first allocation; the temporary must never be adopted.
             Assert.Empty(f.ExactIntents); Assert.Empty(f.Sender.MutationFiles); Assert.Equal(0, f.AllHttpRequests);
+            var first = await f.Coordinator.StoreClientAsync(request, f.Ledger!);
+            Assert.Equal(MailboxPeerQuorumStatus.Durable, first.Status);
+            var committed = Assert.Single(f.ExactIntents);
+            Assert.NotEqual(exact, committed);
+            Assert.Equal(1, f.AllHttpRequests);
+            f.Reopen();
+            Assert.Equal(first.CanonicalMqr3.ToArray(),
+                (await f.Coordinator.StoreClientAsync(request, f.Ledger!)).CanonicalMqr3.ToArray());
+            Assert.Equal(committed, Assert.Single(f.ExactIntents));
+            Assert.Equal(1, f.AllHttpRequests);
         }
         else
         {

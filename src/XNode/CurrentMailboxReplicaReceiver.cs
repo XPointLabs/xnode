@@ -211,6 +211,23 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
         }, seed));
     }
 
+    internal ValueTask<ReadOnlyMemory<byte>> ReceiveForwardedTombstoneAsync(
+        ReadOnlyMemory<byte> forwarding, CancellationToken token = default)
+    {
+        var owned = forwarding.ToArray();
+        var original = MailboxPeerWireV2Codec.DecodeForwardedTombstoneRequest(owned);
+        return WithPeerAsync(original, MailboxPeerReplicationOperation.Tombstone,
+            MailboxPeerWireResponseReplicaV2.Recipient,
+            async (operation, ct) =>
+            {
+                var response = operation.Verified.ReplayDisposition == MailboxPeerReplayDisposition.IdempotentCompleted
+                    ? operation.Verified.CachedResponse.ToArray()
+                    : await operation.ApplyAndSignLocalAsync(ct).ConfigureAwait(false);
+                await operation.CommitRecipientAsync(response, ct).ConfigureAwait(false);
+                return response;
+            }, token, forwarding: owned);
+    }
+
     internal ValueTask<ReadOnlyMemory<byte>> ReceiveAsync(ReadOnlyMemory<byte> canonicalRequest,
         MailboxPeerReplicationOperation expectedOperation, CancellationToken token = default) =>
         WithPeerAsync(canonicalRequest, expectedOperation, MailboxPeerWireResponseReplicaV2.Recipient,
@@ -226,7 +243,8 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
     internal async ValueTask<T> WithPeerAsync<T>(ReadOnlyMemory<byte> canonicalRequest,
         MailboxPeerReplicationOperation expectedOperation, MailboxPeerWireResponseReplicaV2 localRole,
         Func<PeerOperation, CancellationToken, ValueTask<T>> action, CancellationToken token = default,
-        Func<CurrentMailboxAdmission.GrantScope, CancellationToken, Task>? beforeAdmitted = null)
+        Func<CurrentMailboxAdmission.GrantScope, CancellationToken, Task>? beforeAdmitted = null,
+        ReadOnlyMemory<byte> forwarding = default)
     {
         ArgumentNullException.ThrowIfNull(action);
         if (localRole is not (MailboxPeerWireResponseReplicaV2.Sender or MailboxPeerWireResponseReplicaV2.Recipient))
@@ -248,14 +266,30 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
             async (scope, ct) =>
             {
                 if (beforeAdmitted is not null) await beforeAdmitted(scope, ct).ConfigureAwait(false);
-                return await WithAdmittedPeerAsync(owned, expectedOperation, localRole, scope, action, ct).ConfigureAwait(false);
+                return await WithAdmittedPeerAsync(owned, expectedOperation, localRole, scope, action, ct, forwarding).ConfigureAwait(false);
             }, token).ConfigureAwait(false);
+    }
+
+    internal async ValueTask<T> WithCapturedAckPeerAsync<T>(string operationKey, ulong cursor,
+        ReadOnlyMemory<byte> canonicalRequest, CurrentMailboxAdmission.GrantScope scope,
+        Func<PeerOperation, CancellationToken, ValueTask<T>> action, CancellationToken token)
+    {
+        scope.Lease.RequireActive();
+        if (!ReferenceEquals(scope.Owner, admission))
+            throw new CryptographicException("Captured ACK belongs to another actual admission owner.");
+        var owned = canonicalRequest.ToArray();
+        await operationLedger.RequireCurrentAckAdmissionAsync(operationKey, cursor, owned, scope.Lease, token).ConfigureAwait(false);
+        var proof = MailboxPeerWireV2Codec.CreateOwnedAckAdmissionProof(owned, seed);
+        return await WithAdmittedPeerAsync(owned, MailboxPeerReplicationOperation.Tombstone,
+            MailboxPeerWireResponseReplicaV2.Sender, scope, action, token,
+            originalAckAdmissionProof: proof).ConfigureAwait(false);
     }
 
     internal async ValueTask<T> WithAdmittedPeerAsync<T>(ReadOnlyMemory<byte> canonicalRequest,
         MailboxPeerReplicationOperation expectedOperation, MailboxPeerWireResponseReplicaV2 localRole,
         CurrentMailboxAdmission.GrantScope scope,
-        Func<PeerOperation, CancellationToken, ValueTask<T>> action, CancellationToken token)
+        Func<PeerOperation, CancellationToken, ValueTask<T>> action, CancellationToken token,
+        ReadOnlyMemory<byte> forwarding = default, ReadOnlyMemory<byte> originalAckAdmissionProof = default)
     {
         ArgumentNullException.ThrowIfNull(action);
         scope.Lease.RequireActive();
@@ -330,7 +364,32 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
             decoded.RecipientRouterId.Span, decoded.Epoch, decoded.ReplayNonce.Span);
         await operationLedger.RequireCurrentPeerFloorCapacityAsync(scopeKey, scope.Lease, ct).ConfigureAwait(false);
         RequireRate(decoded.SenderRouterId.Span, upper);
-        var verified = MailboxPeerWireV2Codec.VerifyAndReserve(owned, policy, crypto, proofs, replay);
+        if (!forwarding.IsEmpty && (localRole != MailboxPeerWireResponseReplicaV2.Recipient ||
+            !Fixed(MailboxPeerWireV2Codec.DecodeForwardedTombstoneRequest(forwarding.Span), owned)))
+            throw new CryptographicException("Current forwarding differs from exact original request.");
+        if (!originalAckAdmissionProof.IsEmpty && (localRole != MailboxPeerWireResponseReplicaV2.Sender || !forwarding.IsEmpty))
+            throw new CryptographicException("Owned ACK admission cannot authorize recipient or forwarded work.");
+        VerifiedMailboxPeerWireRequestV2 verified;
+        try { verified = VerifyReservation(); }
+        catch (MailboxPeerReplicationException error) when (!forwarding.IsEmpty &&
+            error.Error == MailboxPeerReplicationError.InvalidReceipt &&
+            error.Data["Deep.MailboxPeer.Forwarding.Check"] is "DurableFuture" &&
+            error.Data["Deep.MailboxPeer.Forwarding.LeadSeconds"] is ulong lead && lead is > 0 and <= 4)
+        {
+            // Fully signed exact origin evidence, not an unauthenticated clock
+            // hint. One <=5s pre-reservation wait; original peer/client budgets
+            // still apply. Never use the peer's timestamp as policy.Now.
+            await Task.Delay(TimeSpan.FromSeconds(lead + 1), ct).ConfigureAwait(false);
+            upper = await RequireOperationCustodyAsync(scope, ct).ConfigureAwait(false);
+            policy = policy with { NowUnixSeconds = upper };
+            await operationLedger.RequireCurrentPeerFloorCapacityAsync(scopeKey, scope.Lease, ct).ConfigureAwait(false);
+            verified = VerifyReservation(); // repeats signatures, currentness, expiry and native replay checks
+        }
+        VerifiedMailboxPeerWireRequestV2 VerifyReservation() => forwarding.IsEmpty
+            ? originalAckAdmissionProof.IsEmpty
+                ? MailboxPeerWireV2Codec.VerifyAndReserve(owned, policy, crypto, proofs, replay)
+                : MailboxPeerWireV2Codec.VerifyAndReserveOwnedAckIntent(owned, originalAckAdmissionProof.Span, policy, crypto, proofs, replay)
+            : MailboxPeerWireV2Codec.VerifyAndReserveForwardedTombstone(forwarding.Span, policy, crypto, proofs, replay);
         var fact = await mutations.CaptureCurrentPeerFactAsync(verified,
             replay.CaptureCurrentSnapshot(verified.ReplayClaim), scope.Lease, ct).ConfigureAwait(false);
         await operationLedger.RecordCurrentPeerFloorAsync(scopeKey, fact,
@@ -346,6 +405,10 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
     {
         internal VerifiedMailboxPeerWireRequestV2 Verified => verified;
         internal ReadOnlyMemory<byte> CanonicalRequest => exact.ToArray();
+        internal ReadOnlyMemory<byte> CreateForwarding(ReadOnlyMemory<byte> localReceipt) =>
+            verified.Request.Operation == MailboxPeerReplicationOperation.Tombstone
+                ? MailboxPeerWireV2Codec.CreateDurableTombstoneForwarding(verified, localReceipt.Span, owner.seed)
+                : CanonicalRequest;
         internal Task SaveStoreSettlementAsync(string key, ReadOnlyMemory<byte> quorum, CancellationToken token) =>
             owner.operationLedger.SaveCurrentStoreQuorumAsync(key, quorum, scope.Host, scope.Lease, token);
         internal VerifiedOnionNextHopTransport RecipientTransport => scope.Replicas.Single(

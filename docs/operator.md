@@ -1710,3 +1710,56 @@ This expected admission failure must not escape `BackgroundService` and stop
 the host. Readiness/admission still fail closed; no previous proof, signature,
 time window, host-ignore policy or replacement intent is introduced. Diagnostics
 retain only the existing closed state/method/IL metadata, not exception text.
+
+### Current DID2 group-control candidate
+
+Coordination handles independent authenticated lower bounds without clock-skew
+acceptance: an issue-time lead bounded by twice the signed witness uncertainty
+(and at most10 seconds) may wait once, at most11 seconds
+before forwarding. The node then reacquires actual authority and repeats every
+strict currentness/expiry/gateway check on the unchanged request. Failure to
+converge still rejects before effects. Existing cancellation and transport
+deadlines are unchanged; no timestamp backdating or new current permission.
+
+Peer ACK forwarding is a coordinated pre-production carriage update under root
+DR-0147: the tombstone route requires PTR1 instead of a raw PRQ2. Store remains
+unchanged. The sender forwards its exact retained request plus actual durable
+local receipt and an exact-byte signature. A delayed recipient may recover
+original admission only from that verified proof, while current host/grant,
+native target, time, quotas and replay floors remain mandatory. Upgrade all
+replicas together; preserve replay, mutation, operation-custody and blob volumes.
+Do not reset state or remint an ACK after an unknown result.
+
+DR-0148 also joins sender first-admission recovery to the actual protected
+whole-ACK operation: it reloads the exact captured item, original AcceptedAt and
+native snapshot before signing the closed original-admission proof. This covers
+items never visited after an earlier item failed, without changing original
+requests or the native schema. The proof never travels on HTTP; the receiver
+still requires a fully durable PTR1 source receipt.
+
+Two authenticated clocks need not have identical upper bounds. Only fully
+authenticated PTR1 with a source durable-time lead1–4s may wait once, at most5s,
+before reservation. Actual current custody/time/capacity and all signatures,
+expiry and replay checks repeat afterwards. Failure to converge still rejects
+without recipient reservation or mutation. Peer15s and client25s/30s budgets
+remain unchanged. No peer timestamp substitutes for actual policy time.
+
+The explicit local candidate enables `GroupControlService:RuntimeActivation`,
+`GroupControlService:MapReplicaEndpoint` and `RequiredTerminals:GroupControl`
+together with the complete current DID2 resolver/network composition. A flag
+without that composition rejects startup. Placement is derived from actual
+the descriptor-anchored verified PMT and opaque service selector, with both
+replicas revalidated against the current NETCODEC cohort; requests cannot supply a
+replica list, owner key or currentness bit. The client terminal remains ONION
+operation5 only; the HTTPS group-control route is authenticated peer replication,
+not a client fallback. Existing node identity custody signs durable receipts. GSR terminal admission,
+replica mutation and retention use the existing authenticated DID2 service clock,
+not OS wall time; peer HTTP authentication keeps its separate host clock.
+Expired requests and carriage beyond the current signed view reject.
+
+`group-control-v1` beneath the node data directory contains opaque persistent
+CAS/replay state. Keep it with the node state volume during restart/upgrade;
+never regenerate node keys or erase this state to repair a failed write.
+See root CONTACT-AND-GROUP §14 and DR-0145 for the exact owner contracts. A
+successful local candidate does not qualify long-offline retention/handover,
+production activation, device enrollment or release readiness.

@@ -557,6 +557,9 @@ internal sealed partial class DeepIdV2PublicationAuthorityFixture : IDisposable,
             [Policy], [View], [Head], Descriptors, [Projection], null, new(this), default);
     }
 
+    internal async Task RefreshNetworkProofAsync(ulong sample, ulong proofTime) =>
+        NetworkContext = await VerifyNetworkAtAsync(sample, proofTime);
+
     // Raw, nonce-bound server response. Configured consumers must independently
     // verify it through their HTTP reader and persistent directory/network floors.
     internal async Task<byte[]> AuthorHttpProofAsync(DeepIdV2DirectoryProofWireRequest query)

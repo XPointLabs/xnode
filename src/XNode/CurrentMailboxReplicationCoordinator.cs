@@ -157,7 +157,7 @@ internal sealed partial class CurrentMailboxReplicationCoordinator(CurrentMailbo
             try
             {
                 remote = await peer.SendAsync(current.RecipientTransport, operation,
-                current.CanonicalRequest, deadline.Token).ConfigureAwait(false);
+                current.CreateForwarding(localReceipt), deadline.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {

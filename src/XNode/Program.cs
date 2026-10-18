@@ -212,7 +212,14 @@ if (contactServiceOptions.RuntimeActivation && !did2ContactResolverEnabled)
     throw new InvalidOperationException("ContactService activation requires the complete DID2 resolver composition.");
 var replicaEndpointActive = contactServicePlan.MapReplicaEndpoint ||
     did2ReplicaStageEnabled;
-var groupControlServicePlan = builder.Services.AddGroupControlServiceBoundary(groupControlServiceOptions);
+if (groupControlServiceOptions.RuntimeActivation && !did2ContactResolverEnabled)
+    throw new InvalidOperationException("GroupControl activation requires complete current DID2 network authority.");
+var groupControlServicePlan = groupControlServiceOptions.RuntimeActivation
+    ? builder.Services.AddProductionGroupControlServiceBoundary(groupControlServiceOptions,
+        provider => new DeepIdV2GroupControlAuthoritySource(provider.GetRequiredService<IDeepIdV2ContactStoreAuthoritySource>(),
+            provider.GetRequiredService<Deep.Protocol.DeepExtension.PrivacyRouting.IOnionMonotonicClock>()),
+        provider => provider.GetRequiredService<Did2AuthenticatedContactClock>())
+    : builder.Services.AddGroupControlServiceBoundary(groupControlServiceOptions);
 builder.Services.AddProductionPrivacyRoutingBoundary(
     privacyRouting,
     nodeOptions);

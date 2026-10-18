@@ -22,7 +22,9 @@ internal sealed class CurrentMailboxReplicaPeerClient(ILogger<CurrentMailboxRepl
             MailboxPeerReplicationOperation.Tombstone => MailboxWireHttpContract.PeerTombstone,
             _ => throw new ArgumentOutOfRangeException(nameof(operation))
         };
-        var request = MailboxPeerWireV2Codec.Decode(exactRequest.Span);
+        var request = MailboxPeerWireV2Codec.Decode(operation == MailboxPeerReplicationOperation.Tombstone
+            ? MailboxPeerWireV2Codec.DecodeForwardedTombstoneRequest(exactRequest.Span)
+            : exactRequest.Span);
         if (request.Operation != operation || !request.RecipientRouterId.Span.SequenceEqual(recipient.NodeId.Span))
             throw new HttpRequestException("Current mailbox recipient differs from its admitted transport.");
         var address = recipient.AddressFamily == OnionNextHopAddressFamily.IPv4

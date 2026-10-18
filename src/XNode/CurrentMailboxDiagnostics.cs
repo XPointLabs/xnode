@@ -70,6 +70,10 @@ internal static class CurrentMailboxDiagnostics
 
     internal static string AuthorityFailureCheck(Exception? error)
     {
+        if (error?.GetType() == typeof(Deep.Protocol.DeepExtension.MailboxCapabilities.MailboxPeerReplicationException))
+            return error.Data["Deep.MailboxPeer.Forwarding.Check"] is string peer &&
+                peer is "OriginRole" or "OriginAdmission" or "DurabilityOrder" or "ObjectExpiry" or "DurableFuture"
+                ? peer : "Unclassified";
         // Only the built-in exception getter and an existing finite Protocol
         // diagnostic label. Never invoke subclass getters or stringify values.
         if (error?.GetType() != typeof(System.Security.Cryptography.CryptographicException)) return "Unclassified";

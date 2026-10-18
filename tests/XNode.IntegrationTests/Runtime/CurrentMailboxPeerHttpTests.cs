@@ -558,15 +558,16 @@ public sealed partial class CurrentMailboxPeerHttpTests
         await using var f = await Fixture.CreateAsync();
         var exact = f.Recipient.Frame(MailboxPeerReplicationOperation.Store);
         using var client = new HttpClient(HttpPrivacyPeerClient.CreatePinnedHandler(f.Recipient.Node.Replicas.Single(replica => replica.NodeId.Span.SequenceEqual(f.Recipient.Node.Node)).Transport));
-        foreach (var defect in new[] { "operation", "media" })
+        foreach (var defect in new[] { "operation", "media", "retired-raw-tombstone" })
         {
             using var content = new ByteArrayContent(exact);
-            content.Headers.ContentType = new MediaTypeHeaderValue(defect == "media" ? "application/json" : MailboxWireHttpContract.Prq2ContentType);
-            var route = defect == "operation" ? MailboxWireHttpContract.PeerTombstoneRoute : MailboxWireHttpContract.PeerStoreRoute;
+            content.Headers.ContentType = new MediaTypeHeaderValue(defect == "media" ? "application/json" :
+                defect == "operation" ? MailboxWireHttpContract.Ptr1ContentType : MailboxWireHttpContract.Prq2ContentType);
+            var route = defect != "media" ? MailboxWireHttpContract.PeerTombstoneRoute : MailboxWireHttpContract.PeerStoreRoute;
             using var request = new HttpRequestMessage(HttpMethod.Post, $"https://127.0.0.1:{f.RemoteHost.Port}{route}")
             { Content = content, Version = HttpVersion.Version20, VersionPolicy = HttpVersionPolicy.RequestVersionExact };
             using var response = await client.SendAsync(request);
-            Assert.Equal(defect == "media" ? HttpStatusCode.UnsupportedMediaType : HttpStatusCode.Forbidden, response.StatusCode);
+            Assert.Equal(defect == "operation" ? HttpStatusCode.BadRequest : HttpStatusCode.UnsupportedMediaType, response.StatusCode);
             Assert.Empty(await response.Content.ReadAsByteArrayAsync());
             Assert.Empty(f.Recipient.ReplayFiles); Assert.Empty(f.Recipient.MutationFiles);
         }
@@ -768,6 +769,8 @@ public sealed partial class CurrentMailboxPeerHttpTests
 
     private sealed class ObservedPeerClient : ICurrentMailboxReplicaPeerClient
     {
+        internal bool SuppressNext;
+        internal Action? BeforeSend;
         internal int Calls;
         internal readonly List<byte[]> ExactRequests = [];
         internal string? Failure;
@@ -778,6 +781,8 @@ public sealed partial class CurrentMailboxPeerHttpTests
         {
             Calls++;
             ExactRequests.Add(exactRequest.ToArray());
+            if (SuppressNext) { SuppressNext = false; return null; }
+            BeforeSend?.Invoke();
             Failure = null;
             var started = Stopwatch.GetTimestamp();
             try { return await new CurrentMailboxReplicaPeerClient().SendAsync(recipient, operation, exactRequest, token); }
