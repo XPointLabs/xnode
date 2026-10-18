@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using System.Security.Cryptography;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Logging;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
@@ -207,6 +208,33 @@ public sealed partial class CurrentMailboxPeerHttpTests
             if (Throw) throw new IOException("Test-owned logger failure.");
             Seen.TrySetResult(formatter(state, exception));
         }
+    }
+
+    [Fact]
+    public async Task OriginalStoreRecoveryOnionAuthorityFailureRetainsCustodyWithoutStoppingHost()
+    {
+        // Obtain the genuine sealed Protocol exception through its verifier,
+        // not a new public constructor, reflection or fake runtime authority.
+        using var expired = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        var history = Deep.Protocol.DeepExtension.PrivacyRouting.OnionNetworkProtectedHistoryCodec.Encode(expired.NetworkContext);
+        expired.Sample = expired.Freshness.FreshnessDeadlineMonotonicSeconds;
+        var boundary = await Assert.ThrowsAsync<Deep.Protocol.DeepExtension.PrivacyRouting.OnionBoundaryException>(() => expired.VerifyHistoryAsync(history).AsTask());
+        await using var f = await Fixture.CreateAsync(); f.OpenLedger();
+        f.RemoteHost.DropNext = true; _ = await f.Coordinator.StoreClientAsync(f.ClientStoreFrame());
+        var document = File.ReadAllBytes(f.LedgerFile); var http = f.AllHttpRequests;
+        f.OpenLedger(afterVerifiedRead: () => throw boundary);
+        var logger = new StoreRecoverySignal();
+        using var worker = new CurrentMailboxStoreRecoveryWorker(f.Coordinator, logger);
+        Assert.Equal("unavailable", await worker.RunOnceAsync(default));
+        Assert.Equal("unavailable", await worker.RunOnceAsync(default));
+        Assert.DoesNotContain(boundary.Message, await logger.Seen.Task);
+        Assert.Equal(SHA256.HashData(document), SHA256.HashData(File.ReadAllBytes(f.LedgerFile)));
+        Assert.Equal(http, f.AllHttpRequests);
+        await worker.StartAsync(default);
+        Assert.False(worker.ExecuteTask!.IsCompleted);
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await worker.StopAsync(stop.Token);
+        Assert.True(worker.ExecuteTask.IsCompleted);
     }
 
     [Theory]

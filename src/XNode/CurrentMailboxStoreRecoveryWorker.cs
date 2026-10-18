@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
+using Deep.Protocol.DeepExtension.PrivacyRouting;
 using Deep.Protocol.XPointNetworkV1;
 using XNode.Core.Mailbox;
 using XNode.Core.Mailbox.Client;
@@ -49,6 +50,7 @@ internal sealed class CurrentMailboxStoreRecoveryWorker(CurrentMailboxReplicatio
         catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException
             or InvalidOperationException or ArgumentException or OverflowException or CryptographicException
             or HttpRequestException or TimeoutException
+            or OnionBoundaryException
             or MailboxPeerReplicationException or MailboxGrantRevocationFloorException
             or MailboxPeerReplayCapacityException or MailboxPeerMutationCapacityException or MailboxClientLedgerCapacityException
             or MailboxClientOperationConflictException or MailboxClientException

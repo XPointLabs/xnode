@@ -1702,3 +1702,11 @@ joins authenticate that absence, with no recovered outcome or Store mutation.
 Existing intents remain byte-stable; missing/rolled-back files and effects
 still refuse reconstruction. See root DR-0139; no manual journal edits or
 state resets are part of this recovery.
+
+Current Store recovery treats a sealed `OnionBoundaryException` (including a
+nonce-bound DTT/view mismatch or unavailable current network authority) as
+`unavailable`, preserving the exact original intent and bounded retry/backoff.
+This expected admission failure must not escape `BackgroundService` and stop
+the host. Readiness/admission still fail closed; no previous proof, signature,
+time window, host-ignore policy or replacement intent is introduced. Diagnostics
+retain only the existing closed state/method/IL metadata, not exception text.
