@@ -37,11 +37,14 @@ public interface IPrivacyPeerClient
         CancellationToken cancellationToken);
 }
 
-public sealed class HttpPrivacyPeerClient : IPrivacyPeerClient
+public sealed class HttpPrivacyPeerClient : IPrivacyPeerClient, IDisposable
 {
     private readonly RouterNodeOptions _node;
     private readonly IClock _clock;
     private readonly ILogger<HttpPrivacyPeerClient>? _logger;
+    private readonly PrivacyPeerHttpPool connections = new();
+
+    public void Dispose() => connections.Dispose();
 
     public HttpPrivacyPeerClient(
         RouterNodeOptions node,
@@ -107,13 +110,23 @@ public sealed class HttpPrivacyPeerClient : IPrivacyPeerClient
                 PrivacyPeerAuthenticator.SignatureHeader,
                 authentication.Signature);
 
-            using var handler = CreatePinnedHandler(nextHop);
-            using var client = new HttpClient(handler, disposeHandler: false);
-            using var response = await client.SendAsync(
+            // Reuse a socket only inside the same verified network object and
+            // exact selected hop. This never reuses a frame, nonce, signature,
+            // replay decision or operation authority, nor retries a dispatch.
+            network.EnsureCurrent();
+            var binding = string.Join(':', Convert.ToHexString(nextHop.NetworkId.Span),
+                Convert.ToHexString(nextHop.NodeId.Span), Convert.ToHexString(nextHop.OriginId.Span),
+                (int)nextHop.Transport, (int)nextHop.AddressFamily,
+                Convert.ToHexString(nextHop.Address.Span), nextHop.Port,
+                Convert.ToHexString(nextHop.SpkiSha256.Span));
+            using var connection = connections.Borrow(network, binding, certificateUntil =>
+                new HttpClient(CreatePinnedHandler(nextHop, certificateUntil), disposeHandler: true));
+            using var response = await connection.Client.SendAsync(
                     request,
                     HttpCompletionOption.ResponseHeadersRead,
                     cancellationToken)
                 .ConfigureAwait(false);
+            if (!connection.CertificateCurrent) return PrivacyForwardResult.Unknown;
             if (response.Version != HttpVersion.Version20)
             {
                 _logger?.LogWarning(
@@ -139,6 +152,7 @@ public sealed class HttpPrivacyPeerClient : IPrivacyPeerClient
                     checked((int)length.Value),
                     cancellationToken)
                 .ConfigureAwait(false);
+            if (!connection.CertificateCurrent) return PrivacyForwardResult.Unknown;
             if ((int)response.StatusCode == StatusCodes.Status200OK
                 && string.Equals(
                     response.Content.Headers.ContentType?.ToString(),
@@ -186,7 +200,7 @@ public sealed class HttpPrivacyPeerClient : IPrivacyPeerClient
             : "none";
 
     internal static SocketsHttpHandler CreatePinnedHandler(
-        VerifiedOnionNextHopTransport nextHop)
+        VerifiedOnionNextHopTransport nextHop, Action<DateTime, DateTime>? certificateValidity = null)
     {
         ArgumentNullException.ThrowIfNull(nextHop);
         var expectedAddress = Address(nextHop);
@@ -196,15 +210,24 @@ public sealed class HttpPrivacyPeerClient : IPrivacyPeerClient
         {
             AllowAutoRedirect = false,
             UseProxy = false,
+            UseCookies = false,
+            AutomaticDecompression = DecompressionMethods.None,
+            PooledConnectionLifetime = PrivacyPeerHttpPool.Lifetime,
+            PooledConnectionIdleTimeout = TimeSpan.FromMinutes(1),
             ConnectCallback = (context, cancellationToken) => ConnectAsync(
                 context.DnsEndPoint,
                 expectedAddress,
                 expectedPort,
                 cancellationToken)
         };
-        handler.SslOptions.RemoteCertificateValidationCallback =
-            (_, certificate, _, errors) =>
-                ValidatePinnedCertificate(certificate, errors, expectedSpki);
+        handler.SslOptions.AllowTlsResume = false;
+        handler.SslOptions.RemoteCertificateValidationCallback = (_, certificate, _, errors) =>
+        {
+            var valid = ValidatePinnedCertificate(certificate, errors, expectedSpki);
+            if (valid) certificateValidity?.Invoke(((X509Certificate2)certificate!).NotBefore.ToUniversalTime(),
+                ((X509Certificate2)certificate).NotAfter.ToUniversalTime());
+            return valid;
+        };
         return handler;
     }
 
@@ -320,7 +343,7 @@ public sealed class HttpPrivacyPeerClient : IPrivacyPeerClient
         var socket = new Socket(
             expectedAddress.AddressFamily,
             SocketType.Stream,
-            ProtocolType.Tcp);
+            ProtocolType.Tcp) { NoDelay = true };
         try
         {
             await socket.ConnectAsync(
@@ -369,7 +392,7 @@ public sealed class HttpPrivacyPeerClient : IPrivacyPeerClient
             var socket = new Socket(
                 address.AddressFamily,
                 SocketType.Stream,
-                ProtocolType.Tcp);
+                ProtocolType.Tcp) { NoDelay = true };
             try
             {
                 await socket.ConnectAsync(

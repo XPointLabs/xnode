@@ -1,5 +1,17 @@
 # Operator Guide
 
+## ONION peer HTTP/2 resources
+
+`HttpPrivacyPeerClient` owns a bounded, draining connection pool scoped to the
+same verified network object and exact selected hop. It does not pool replay or
+authority decisions, reuse request nonces or retry uncertain dispatches. Full TLS
+pin verification remains required for every new connection; TLS resumption is
+disabled, and pooled certificate deadlines cannot be extended by another
+handshake. No new operator setting, listener, identity or state reset is needed.
+See the [network owner](../../docs/architecture/XPOINT-NETWORK-V1.md#11-request-circuit-and-operation-state-machines)
+for isolation and resource bounds. Source tests and local CLI evidence do not
+qualify production/device or full transport rehearsal by themselves.
+
 ## DR-0141 local BLOB candidate
 
 The [owned chunk-plane allocation](../../docs/survival-program/decisions/DR-0141-owned-blob-chunk-plane.md)
