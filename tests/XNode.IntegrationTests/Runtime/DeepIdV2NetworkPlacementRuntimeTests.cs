@@ -55,13 +55,29 @@ public sealed class DeepIdV2NetworkPlacementRuntimeTests
         Assert.Equal(1, signed.ProofReads); Assert.Equal(2, signed.ObservationChecks);
         resources.Timestamp = resources.TimestampFrequency * 11;
         var reverified = await source.ReadPublicationAuthorityAsync(default);
-        Assert.NotSame(acquired, reverified.Network); Assert.Same(signed.Freshness, reverified.Freshness);
+        Assert.Same(acquired, reverified.Network); Assert.Same(signed.Freshness, reverified.Freshness);
         Assert.Equal(1, signed.ProofReads); Assert.Equal(3, signed.ObservationChecks);
         Assert.True(FileDeepIdV2NetworkFloorStore.Same(retained, await floor.ReadAsync(default)));
         signed.RejectProof = true;
         await Assert.ThrowsAsync<CryptographicException>(() => source.ReadPublicationAuthorityAsync(default).AsTask());
         signed.RejectProof = false;
         await Assert.ThrowsAsync<CryptographicException>(() => source.ReadPublicationAuthorityAsync(default).AsTask());
+        Assert.Equal(1, signed.ProofReads);
+    }
+
+    [Fact]
+    public async Task ReusedContextStillRejectsActualProofExpiryWithoutChangingProtectedFloor()
+    {
+        using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var files = new Assets(signed); using var floor = files.OpenFloor();
+        var resources = new ResourceClock(); var source = files.Source(floor, resourceTimeProvider: resources);
+        _ = await RefreshAsync(source, signed); var retained = await floor.ReadAsync(default);
+        resources.Timestamp = resources.TimestampFrequency * 60;
+        Assert.NotNull(await source.ReadPublicationAuthorityAsync(default));
+        signed.Sample = signed.Freshness.FreshnessDeadlineMonotonicSeconds;
+        var error = await Assert.ThrowsAsync<CryptographicException>(() => source.ReadPublicationAuthorityAsync(default).AsTask());
+        Assert.Equal("DID2 mailbox issuer needs the current independent proof.", error.Message);
+        Assert.True(FileDeepIdV2NetworkFloorStore.Same(retained, await floor.ReadAsync(default)));
         Assert.Equal(1, signed.ProofReads);
     }
 

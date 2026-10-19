@@ -394,13 +394,16 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
             var verifiedAt = observed?.NetworkVerifiedAt ?? 0;
             var cacheElapsed = observed is null ? TimeSpan.MaxValue : resourceClock.GetElapsedTime(observed.NetworkVerifiedAt);
             if (observed is not null && CryptographicOperations.FixedTimeEquals(sourceDigest, observed.SourceDigest) &&
-                cacheElapsed >= TimeSpan.Zero && cacheElapsed < TimeSpan.FromSeconds(10))
+                cacheElapsed >= TimeSpan.Zero)
             {
                 // Reuse only a previously minted immutable context, not a
                 // trust boolean. Both protected floors, current proof, raw
                 // authority/sources, clock, issuer and release fencing are
                 // still checked by this operation. Its original lease must
                 // remain live; cache hits never refresh either lifetime.
+                // Resource age alone does not invalidate an exact immutable
+                // signature result. Signed expiry and actual source/floor
+                // changes, not a second ten-second TTL, bound its reuse.
                 using (timing.Measure(CurrentMailboxNetworkReadTiming.Phase.ContextReuse))
                 using (CurrentMailboxDiagnostics.Measure("network-context-reuse"))
                     network = observed.Network;

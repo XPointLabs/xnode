@@ -373,12 +373,15 @@ independently attest their current durable publication/role lookup; exact retry
 preserves the original result deadline. Existing observer, proof/network floor,
 V2 staging and candidate environment guards still apply.
 Repeated observation callbacks may reuse the already verified immutable network
-context for less than ten seconds, only while its original lease is live and the
+context only while its original lease is live and the
 complete source digest, authority and protected network floor remain identical.
 This is an in-memory resource optimization, not a cached readiness permission:
 the directory floor/proof, clock, issuer, revocation and final source/floor fences
 still execute on every callback. Cache hits do not renew signed or monotonic
-lifetimes. Source changes or elapsed resource budget require full verification;
+lifetimes. Source changes require full verification; elapsed resource age alone
+does not require repeating signatures over the same immutable bytes. The
+[authority owner](../../docs/architecture/ACCOUNT-DIRECTORY-TRANSPARENCY-V1.md#working-public-authority-and-delivery)
+defines the separation between refresh and observational delivery checks;
 stop, lost floor, expired proof and rollback remain fail-closed. No state layout,
 wire value, replica deadline or acquisition permission changes.
 For the same exact in-flight XPK, replica phases can reuse their own previously
