@@ -222,7 +222,7 @@ internal sealed partial class CurrentMailboxAdmission(
                         !Fixed(OnionNetworkProtectedHistoryCodec.Encode(current.Network), protectedHistory) ||
                         !Fixed(current.Authority.AuthorityCoreReference.Span, authority.Authority.AuthorityCoreReference.Span) ||
                         !Fixed(current.MailboxAuthority.CoreHash.Span, authority.MailboxAuthority.CoreHash.Span))
-                        throw new CryptographicException("Current mailbox authority changed during the operation.");
+                        throw CurrentMailboxDiagnostics.AdmissionRejection(CurrentMailboxAdmissionRejection.AuthorityChanged);
                     VerifiedMailboxHostAuthorityV2 currentHost;
                     using (CurrentMailboxDiagnostics.Measure("host-verify"))
                         currentHost = await MailboxHostAuthorityV2Verifier.VerifyAsync(current.Network, current.Authority,
@@ -252,12 +252,12 @@ internal sealed partial class CurrentMailboxAdmission(
                     var freshness = current.Freshness;
                     if (!Fixed(freshness.NetworkId.Span, host.NetworkId.Span) ||
                         !freshness.IsCurrentAtMonotonic(reading.BootId.Span, reading.SampleSeconds))
-                        throw new CryptographicException("Current mailbox trusted interval is unavailable.");
+                        throw CurrentMailboxDiagnostics.AdmissionRejection(CurrentMailboxAdmissionRejection.Freshness);
                     var elapsed = checked(reading.SampleSeconds - freshness.MonotonicSample);
                     var lower = checked(freshness.TrustedLowerUnixSeconds + elapsed);
                     var upper = checked(freshness.TrustedUpperUnixSeconds + elapsed);
                     if (grant is not null && (lower < grant.NotBeforeUnixSeconds || upper >= grant.ExpiresAtUnixSeconds))
-                        throw new CryptographicException("Current mailbox grant does not cover the full trusted interval.");
+                        throw CurrentMailboxDiagnostics.AdmissionRejection(CurrentMailboxAdmissionRejection.GrantWindow);
                     // Recheck the same closed host after the final clock callback.
                     await RequireGrantCurrentAsync(host, checkToken).ConfigureAwait(false);
                     RequireActive(); checkToken.ThrowIfCancellationRequested();

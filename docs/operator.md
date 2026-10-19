@@ -1870,3 +1870,14 @@ the exact placement, and rechecks the full original interval before any effect.
 There is no grace acceptance, OS-clock authority, renewed request, extra network
 attempt, deadline extension or post-effect wait. Failure, cancellation, changed
 placement, expired windows or a clock that does not converge remain fail-closed.
+
+Native mailbox failures also log the existing finite `authorityCheck` label,
+separately from `mutationCheck`. Owned async-local-function code names can contain
+the compiler's `|` delimiter; their bounded names and IL offsets are retained so
+the real throw site is not hidden behind a caller's await frame. No exception
+message, arbitrary Data value, source filename, identity or authority timestamp
+is logged by this diagnostic.
+The native lease's unchanged predicates have finite labels
+`CurrentAuthorityChanged`, `CurrentFreshness` and `CurrentGrantWindow`.
+They preserve the built-in cryptographic exception type and original messages;
+the diagnostic never authorizes acceptance or changes the operation outcome.

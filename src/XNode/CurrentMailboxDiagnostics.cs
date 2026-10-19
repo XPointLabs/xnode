@@ -3,6 +3,8 @@ using System.Diagnostics.Metrics;
 
 namespace XNode;
 
+internal enum CurrentMailboxAdmissionRejection { AuthorityChanged, Freshness, GrantWindow }
+
 // Optional resource/failure observations only. Closed phase names, no identifiers,
 // payloads, paths, authority time, activity context or outgoing trace headers.
 internal static class CurrentMailboxDiagnostics
@@ -89,7 +91,22 @@ internal static class CurrentMailboxDiagnostics
         if (error?.GetType() != typeof(System.Security.Cryptography.CryptographicException)) return "Unclassified";
         return error.Data["Deep.MailboxAuthority.Check"] is string value && value is
             "Lifecycle" or "Network" or "Generation" or "IssuerKey" or "IssuerNotBefore" or "GrantNotBefore" or
-            "GrantExpiry" or "PolicyExpiry" or "NetworkExpiry" or "Lifetime" or "Signature" ? value : "Unclassified";
+            "GrantExpiry" or "PolicyExpiry" or "NetworkExpiry" or "Lifetime" or "Signature" or
+            "CurrentAuthorityChanged" or "CurrentFreshness" or "CurrentGrantWindow" ? value : "Unclassified";
+    }
+
+    internal static System.Security.Cryptography.CryptographicException AdmissionRejection(CurrentMailboxAdmissionRejection reason)
+    {
+        var (message, label) = reason switch
+        {
+            CurrentMailboxAdmissionRejection.AuthorityChanged => ("Current mailbox authority changed during the operation.", "CurrentAuthorityChanged"),
+            CurrentMailboxAdmissionRejection.Freshness => ("Current mailbox trusted interval is unavailable.", "CurrentFreshness"),
+            CurrentMailboxAdmissionRejection.GrantWindow => ("Current mailbox grant does not cover the full trusted interval.", "CurrentGrantWindow"),
+            _ => throw new ArgumentOutOfRangeException(nameof(reason))
+        };
+        var error = new System.Security.Cryptography.CryptographicException(message);
+        error.Data["Deep.MailboxAuthority.Check"] = label;
+        return error;
     }
 
     internal static InvalidDataException MutationRejection(string? error)
@@ -136,11 +153,16 @@ internal static class CurrentMailboxDiagnostics
             var assembly = type?.Assembly.GetName().Name;
             if (assembly is not ("XNode" or "XNode.Core" or "Deep.Protocol" or "Deep.Protocol.MembershipRoutes")) continue;
             var origin = (type!.DeclaringType is { } parent ? parent.Name + "+" : "") + type.Name + "." + method!.Name;
-            if (origin.Length is > 0 and <= 240 && origin.All(ch => char.IsAsciiLetterOrDigit(ch) || "_.+<>`".Contains(ch)))
+            if (IsCodeMethodName(origin))
                 return (origin, Math.Clamp(frame!.GetILOffset(), -1, 1048575));
         }
         return ("unavailable", -1);
     }
+
+    // '|' occurs in compiler-generated async local-function names. Excluding
+    // it hid the actual owned throw site behind the next caller's await frame.
+    internal static bool IsCodeMethodName(string value) => value.Length is > 0 and <= 240 &&
+        value.All(ch => char.IsAsciiLetterOrDigit(ch) || "_.+<>`|".Contains(ch));
 
     private sealed class Measurement(string phase, Work? work) : IDisposable
     {
