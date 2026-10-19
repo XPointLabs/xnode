@@ -7,13 +7,17 @@ namespace XNode.IntegrationTests.Runtime;
 public sealed partial class CurrentMailboxPeerHttpTests
 {
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task CurrentReadAuthenticatesActualSnapshotAfterVerifiedReadCallback(bool sameLength)
+    [InlineData(false, 1)]
+    [InlineData(true, 1)]
+    [InlineData(false, 2)]
+    [InlineData(true, 2)]
+    public async Task CurrentReadAuthenticatesActualSnapshotAfterVerifiedReadCallback(bool sameLength, int changeOnRead)
     {
         await using var f = await Fixture.CreateAsync(); var prior = File.ReadAllBytes(f.LedgerFile);
+        var reads = 0;
         f.OpenLedger(afterVerifiedRead: () =>
         {
+            if (++reads != changeOnRead) return;
             if (!sameLength) File.AppendAllText(f.LedgerFile, " ");
             else
             {

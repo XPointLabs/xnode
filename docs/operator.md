@@ -1752,6 +1752,14 @@ rejects before use. The parsed object never survives this single read or crosses
 an operation/callback as cached admission. Pending-replacement validation and
 cleanup, current authority/replay joins and all effect fences remain unchanged;
 this is not a storage-format update, reset or timeout increase.
+Within that exact active operation lease, a weak-keyed digest/length fingerprint
+can also reuse pure structural validation of identical bytes. Every read still
+parses a fresh mutable document, hashes/re-reads the actual file after callbacks
+and authenticates its native commitment. Changed bytes are fully validated;
+another lease or ledger has no reusable fingerprint. No row, replay floor,
+currentness result or admission is retained. Save validates every changed
+candidate, and all existing current authority, expiry, replay/native joins and
+effect fences remain mandatory.
 Focused `cli-gsr-20261018/forwarding-09` passed25 cases/native0/0skip, zero
 compiler warnings/errors: both post-verification snapshot changes (including
 same-length bytes), native startup/rollback, whole-ACK delayed-item recovery,

@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
@@ -116,6 +117,8 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
     private readonly IClock _clock;
     private readonly IMailboxOperationCustody? _currentCustody;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly ConditionalWeakTable<MailboxCurrentOperationLease, ValidatedStructure> _validatedStructures = new();
+    private sealed record ValidatedStructure(byte[] Hash, long Length);
     private readonly FileStream _directoryLease;
     private readonly object _lifecycleGate = new();
     private int _disposed;
@@ -574,18 +577,20 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
             MailboxClientLedgerDocument? captured = null;
             byte[]? capturedHash = null;
             long capturedLength = 0;
+            _validatedStructures.TryGetValue(lease, out var knownStructure);
             await _currentCustody.VerifyAsync(_path, lease, async (path, token) =>
             {
                 _ = await ReadDocumentAsync(path, token, allowMissing: false,
                     capture: (document, hash, length) =>
-                    { captured = document; capturedHash = hash; capturedLength = length; }).ConfigureAwait(false);
+                    { captured = document; capturedHash = hash; capturedLength = length; },
+                    knownStructure: knownStructure).ConfigureAwait(false);
             }, cancellationToken).ConfigureAwait(false);
             if (captured is null || capturedHash is null)
                 throw new InvalidDataException("Current operation custody did not validate its document.");
             // Re-read and authenticate the actual snapshot AFTER every custody/
             // lease callback, but do not deserialize and structurally validate
             // the identical whole ledger twice. This reuse is local to this
-            // single Load under _gate, never an admission or cross-call cache.
+            // single Load under _gate, never a reused mutable document or admission.
             await using var stream = File.OpenRead(_path);
             var length = stream.Length;
             if (length is < 1 or > MaximumDocumentBytes || length != capturedLength)
@@ -597,6 +602,12 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
             if (!CryptographicOperations.FixedTimeEquals(actualHash, capturedHash))
                 throw new InvalidDataException("Mailbox operation snapshot changed after verification.");
             cancellationToken.ThrowIfCancellationRequested();
+            // A digest of already checked grammar, not a cached document,
+            // currentness result, replay floor or native admission. This actual
+            // lease alone owns reuse; every Load above still re-reads/parses,
+            // hashes and authenticates the real committed file after callbacks.
+            _validatedStructures.Remove(lease);
+            _validatedStructures.Add(lease, new(actualHash, length));
             return captured;
         }
         return await ReadDocumentAsync(_path, cancellationToken, allowMissing: true).ConfigureAwait(false);
@@ -604,7 +615,8 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
 
     private async Task<MailboxClientLedgerDocument> ReadDocumentAsync(string path, CancellationToken cancellationToken,
         bool allowMissing,
-        Action<MailboxClientLedgerDocument, byte[], long>? capture = null)
+        Action<MailboxClientLedgerDocument, byte[], long>? capture = null,
+        ValidatedStructure? knownStructure = null)
     {
         if (!File.Exists(path))
         {
@@ -667,7 +679,9 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
             document.PeerReplayFloors = new(
                 document.PeerReplayFloors ?? throw new InvalidDataException("Mailbox peer replay floors are missing."),
                 StringComparer.Ordinal);
-            ValidateDocument(document);
+            if (knownStructure is null || knownStructure.Length != length || algorithm?.Hash is not { } digest ||
+                !CryptographicOperations.FixedTimeEquals(digest, knownStructure.Hash))
+                ValidateDocument(document);
             capture?.Invoke(document, algorithm!.Hash ??
                 throw new InvalidDataException("Mailbox operation snapshot hashing is incomplete."), length);
             return document;
