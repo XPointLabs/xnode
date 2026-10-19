@@ -1890,3 +1890,15 @@ applies. This avoids capturing a30-day object as a30-day-plus-one-second PRQ2;
 it does not increase TTL, allow future skew or rewrite an existing intent.
 See root DR-0151. A rejected pre-peer capture may retain an authenticated client
 replay reservation, but cannot create peer replay/mutation/HTTP effects.
+
+Privacy failures include one additional bounded owned caller method/IL pair,
+using the same assembly/name filter as the original throw site. This locates
+the concrete predicate behind shared `Fail` helpers without exposing an
+exception message, Data, source path, payload or authority timestamps.
+
+A pending authenticated ACK client reservation does not itself prove that a
+complete peer-intent batch was ever saved. First capture after interruption
+requires authenticated ledger absence, no independent native tombstone floor,
+no recovered outcome and the still-current original continuation/targets.
+Existing intent always replays exactly; expired uncaptured pages remain
+rejected. See root DR-0152. No custody reset or token extension is performed.

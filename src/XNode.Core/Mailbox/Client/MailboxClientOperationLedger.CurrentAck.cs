@@ -57,7 +57,15 @@ public sealed partial class MailboxClientOperationLedger
                 _ = await lease.CheckAsync(token).ConfigureAwait(false);
                 return ToAckReservation(key, existing);
             }
-            if (requireExisting) throw new InvalidDataException("Known current ACK has lost its exact peer intent.");
+            // A client counter can precede the first complete ACK intent. Only
+            // authenticated absence under this ledger/custody owner can permit
+            // first capture; an actual native tombstone fact always pins an old
+            // batch, including reservation before its first mutation.
+            var targetKeys = body.Acknowledgements.Select(item => MailboxPeerMutationStore.RecordKey(
+                body.Epoch, body.MailboxId.Bytes.Span, item.EnvelopeDigest.Span)).ToHashSet(StringComparer.Ordinal);
+            if (requireExisting || document.PeerReplayFloors.Values.Any(floor =>
+                    floor.TombstoneDigest.Length != 0 && targetKeys.Contains(floor.TargetKey)))
+                throw new InvalidDataException("Known current ACK has lost its exact peer intent.");
             if (LedgerEntryCost(document) + 1L + body.Acknowledgements.Count > _maxEntries)
                 throw new MailboxClientLedgerCapacityException();
             var targets = await readTargets(token).ConfigureAwait(false);

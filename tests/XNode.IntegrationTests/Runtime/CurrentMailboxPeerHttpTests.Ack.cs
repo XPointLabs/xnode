@@ -67,7 +67,8 @@ public sealed partial class CurrentMailboxPeerHttpTests
         var items = page.Items.Select(item => item.ToAcknowledgement()).ToArray();
         if (defect == "page-digest") items[0] = items[0] with { EnvelopeDigest = Enumerable.Repeat((byte)0xDA, 32).ToArray() };
         var exact = AckFrame(f, page, continuation: token, acknowledgements: items);
-        await Assert.ThrowsAsync<CryptographicException>(() => f.Coordinator.AcknowledgeClientAsync(exact, f.AckLedger).AsTask());
+        for (var attempt = 0; attempt < 2; attempt++)
+            await Assert.ThrowsAsync<CryptographicException>(() => f.Coordinator.AcknowledgeClientAsync(exact, f.AckLedger).AsTask());
         Assert.Empty(AckIntents(f)); Assert.Equal(2, f.AllHttpRequests);
         Assert.All(f.Sender.MutationFiles.Concat(f.Recipient.MutationFiles), path => Assert.Equal("completed", JsonNode.Parse(File.ReadAllBytes(path))!["state"]!.GetValue<string>()));
     }
@@ -161,7 +162,9 @@ public sealed partial class CurrentMailboxPeerHttpTests
         item["peerRequest"] = Convert.ToBase64String(bytes); f.OpenLedger();
         await f.InstallTestOwnedDocumentAsync(System.Text.Encoding.UTF8.GetBytes(document.ToJsonString()));
         var saved = File.ReadAllBytes(f.AckLedgerFile);
-        await Assert.ThrowsAsync<CryptographicException>(() => f.Coordinator.AcknowledgeClientAsync(exact, f.AckLedger).AsTask());
+        var error = await Assert.ThrowsAsync<MailboxPeerReplicationException>(() =>
+            f.Coordinator.AcknowledgeClientAsync(exact, f.AckLedger).AsTask());
+        Assert.Equal(MailboxPeerReplicationError.InvalidSignature, error.Error);
         Assert.Equal(saved, File.ReadAllBytes(f.AckLedgerFile)); Assert.Equal(2, f.AllHttpRequests); AssertTombstones(f, 1);
     }
 
@@ -308,7 +311,10 @@ public sealed partial class CurrentMailboxPeerHttpTests
         var recovered = (await f.Coordinator.AcknowledgeClientAsync(exact, f.AckLedger)).ToArray();
         AssertAck(recovered, page, 0x74); if (completed is not null) Assert.Equal(completed, recovered);
         Assert.Equal(intents, AckIntents(f)); Assert.Equal(pending ? 4 : 3, f.AllHttpRequests);
-        await Assert.ThrowsAsync<CryptographicException>(() => f.Coordinator.AcknowledgeClientAsync(
+        // Independent native tombstone custody now rejects a new batch before
+        // the expired continuation could be considered. Exact original replay
+        // above remains admitted; no new request may replace its saved intent.
+        await Assert.ThrowsAsync<InvalidDataException>(() => f.Coordinator.AcknowledgeClientAsync(
             AckFrame(f, page, counter: 2, operation: 0x79), f.AckLedger).AsTask());
         Assert.Equal(intents, AckIntents(f)); Assert.Equal(pending ? 4 : 3, f.AllHttpRequests);
     }

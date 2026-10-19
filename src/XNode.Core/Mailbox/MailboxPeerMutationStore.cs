@@ -551,7 +551,7 @@ public sealed partial class MailboxPeerMutationStore : IDisposable
         string digest) =>
         RecordKey(epoch, Convert.FromHexString(mailbox), Convert.FromHexString(digest));
 
-    private static string RecordKey(
+    internal static string RecordKey(
         ulong epoch,
         ReadOnlySpan<byte> mailbox,
         ReadOnlySpan<byte> digest)

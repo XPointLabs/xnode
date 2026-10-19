@@ -40,7 +40,8 @@ internal sealed partial class CurrentMailboxReplicationCoordinator
                         return await local.ReadAckTargetsAsync(scope, body, inner).ConfigureAwait(false);
                     },
                     (target, upper) => local.AuthorTombstoneRequest(scope, body, target, upper),
-                    request.ReplayDisposition != MailboxAuthenticatedReplayDisposition.NewReserved, ct).ConfigureAwait(false);
+                    recovered is not null || request.ReplayDisposition is not
+                        (MailboxAuthenticatedReplayDisposition.NewReserved or MailboxAuthenticatedReplayDisposition.InFlight), ct).ConfigureAwait(false);
                 MailboxAggregateAckResponse? saved = null;
                 if (recovered is not null)
                 {

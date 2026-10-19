@@ -143,7 +143,7 @@ internal static class CurrentMailboxDiagnostics
 
     // Only owned code metadata, never exception text/data, source filenames or
     // caller/third-party type names. Callers keep logging failures non-fatal.
-    internal static (string Method, int Il) FailureLocation(Exception? error)
+    internal static (string Method, int Il) FailureLocation(Exception? error, int skipOwnedFrames = 0)
     {
         if (error is null) return ("unavailable", -1);
         var trace = new StackTrace(error, false);
@@ -154,7 +154,10 @@ internal static class CurrentMailboxDiagnostics
             if (assembly is not ("XNode" or "XNode.Core" or "Deep.Protocol" or "Deep.Protocol.MembershipRoutes")) continue;
             var origin = (type!.DeclaringType is { } parent ? parent.Name + "+" : "") + type.Name + "." + method!.Name;
             if (IsCodeMethodName(origin))
+            {
+                if (skipOwnedFrames-- > 0) continue;
                 return (origin, Math.Clamp(frame!.GetILOffset(), -1, 1048575));
+            }
         }
         return ("unavailable", -1);
     }

@@ -22,7 +22,7 @@ public sealed class PrivacyRoutingFailureDiagnosticsTests
             Assert.Null(row.Error);
             Assert.Equal("Unclassified", row.Values["Phase"]);
             Assert.Equal(GroupControlAuthorityRejection.Unclassified, row.Values["AuthorityCheck"]);
-            Assert.Equal(new[] { "AuthorityCheck", "Category", "Depth", "Il", "Method", "Phase", "{OriginalFormat}" },
+            Assert.Equal(new[] { "AuthorityCheck", "CallerIl", "CallerMethod", "Category", "Depth", "Il", "Method", "Phase", "{OriginalFormat}" },
                 row.Values.Keys.Order(StringComparer.Ordinal));
             Assert.DoesNotContain("DO-NOT-EXPORT", string.Join(" ", row.Values.Values));
         }
