@@ -14,6 +14,50 @@ namespace XNode.IntegrationTests.Runtime;
 public sealed class PrivacyRoutingRuntimeTests
 {
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CapabilityFailureDiagnosticPreservesOriginalAndClosedOwnedLocation(bool throwingLogger)
+    {
+        using var configuration = EnabledTestConfiguration();
+        var logger = new CapabilityFailureLogger(throwingLogger);
+        await using var capability = new PrivacyRoutingProductionCapability(configuration,
+            new SecretFailureBindingSource(), TimeSpan.FromSeconds(10), logger);
+        await capability.StartAsync(default);
+        Assert.False(capability.IsVerified);
+        await Assert.ThrowsAsync<SecretCapabilityException>(async () => await capability.GetCurrentAsync(default));
+        var row = Assert.Single(logger.Rows);
+        Assert.Null(row.Error);
+        Assert.Equal(new[] { "AuthorityCheck", "CallerIl", "CallerMethod", "Category", "Il", "Method", "{OriginalFormat}" },
+            row.Values.Keys.Order(StringComparer.Ordinal));
+        Assert.Equal("cryptographic-rejection", row.Values["Category"]);
+        Assert.Equal("Unclassified", row.Values["AuthorityCheck"]);
+        Assert.DoesNotContain("DO-NOT-EXPORT", string.Join(" ", row.Values.Values));
+        Assert.True(CurrentMailboxDiagnostics.IsCodeMethodName((string)row.Values["Method"]!));
+        Assert.InRange((int)row.Values["Il"]!, -1, 1048575);
+        await capability.StopAsync(default);
+    }
+
+    private sealed class SecretCapabilityException : System.Security.Cryptography.CryptographicException
+    {
+        public override string Message => throw new InvalidOperationException("DO-NOT-EXPORT");
+    }
+    private sealed class SecretFailureBindingSource : IOnionHostReceiveBindingSource
+    {
+        public ValueTask<OnionHostReceiveBinding> GetCurrentAsync(CancellationToken ct) => throw new SecretCapabilityException();
+    }
+    private sealed class CapabilityFailureLogger(bool throwing) : ILogger<PrivacyRoutingProductionCapability>
+    {
+        internal readonly List<(Dictionary<string, object?> Values, Exception? Error)> Rows = [];
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel level) => true;
+        public void Log<TState>(LogLevel level, EventId id, TState state, Exception? error, Func<TState, Exception?, string> formatter)
+        {
+            Rows.Add((((IEnumerable<KeyValuePair<string, object?>>)state!).ToDictionary(), error));
+            if (throwing) throw new IOException("DO-NOT-EXPORT");
+        }
+    }
+
+    [Theory]
     [InlineData("rate-limit", "proof-rate-limit")]
     [InlineData("proof", "proof-unavailable")]
     [InlineData("crypto", "cryptographic-rejection")]

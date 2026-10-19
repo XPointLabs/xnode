@@ -223,8 +223,8 @@ internal sealed class PrivacyRoutingProductionCapability : IHostedService, IAsyn
 
     private void ReportFailure(Exception exception)
     {
-        // Closed diagnostic categories only: never log exception messages,
-        // inner exceptions, recipient ids, proof bytes, capabilities or paths.
+        // Closed categories and bounded owned code locations only. Never pass
+        // the exception to a logger or read arbitrary messages/Data/getters.
         var category = exception switch {
             DeepIdV2DirectoryProofUnavailableException { StatusCode: System.Net.HttpStatusCode.TooManyRequests } => "proof-rate-limit",
             DeepIdV2DirectoryProofUnavailableException => "proof-unavailable",
@@ -240,7 +240,18 @@ internal sealed class PrivacyRoutingProductionCapability : IHostedService, IAsyn
             IOException => "custody-or-io",
             _ => "configuration-or-state"
         };
-        if (lastFailure != category) logger?.LogWarning("ONION current capability unavailable ({Category}); retained custody and floors are unchanged.", category);
+        if (lastFailure != category)
+        {
+            try
+            {
+                var location = CurrentMailboxDiagnostics.FailureLocation(exception);
+                var caller = CurrentMailboxDiagnostics.FailureLocation(exception, 1);
+                logger?.LogWarning("ONION current capability unavailable ({Category}); method={Method}; il={Il}; callerMethod={CallerMethod}; callerIl={CallerIl}; authorityCheck={AuthorityCheck}; retained custody and floors are unchanged.",
+                    category, location.Method, location.Il, caller.Method, caller.Il,
+                    CurrentMailboxDiagnostics.AuthorityFailureCheck(exception));
+            }
+            catch { /* Observations cannot replace the original authority failure. */ }
+        }
         lastFailure = category;
     }
 

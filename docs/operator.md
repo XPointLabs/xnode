@@ -1902,3 +1902,10 @@ requires authenticated ledger absence, no independent native tombstone floor,
 no recovered outcome and the still-current original continuation/targets.
 Existing intent always replays exactly; expired uncaptured pages remain
 rejected. See root DR-0152. No custody reset or token extension is performed.
+
+Current ONION capability refresh also reports bounded owned method/IL and
+caller location plus the existing finite authority reason. This is the
+pre-dispatch capability owner, not a successful terminal ACK. Its category
+change suppression and fail-closed refresh remain; logger failures cannot
+replace the original authority failure. No exception object/message/Data,
+proof, identifier or path is logged.
