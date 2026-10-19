@@ -240,7 +240,8 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
         return ReserveStoreCoreAsync(envelope.Epoch, envelope.OperationId, binding.RequestDigest,
             envelope.MailboxId.Bytes, envelope.DeduplicationDigest, SHA256.HashData(binding.CanonicalRequest.Span),
             MailboxPlacementCommitment.Compute(envelope.PlacementId), membershipCommitment,
-            selectedReplicaIds, envelope.ExpiresAtUnixSeconds, token, lease, author, requireExisting, host);
+            selectedReplicaIds, envelope.ExpiresAtUnixSeconds, token, lease, author, requireExisting, host,
+            minimumPeerCreatedAt: envelope.CreatedAtUnixSeconds);
     }
 
     private async Task<MailboxClientStoreReservation> ReserveStoreCoreAsync(
@@ -250,7 +251,7 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
         IReadOnlyList<ReadOnlyMemory<byte>> expectedReplicaIds, ulong expiresAtUnixSeconds,
         CancellationToken cancellationToken, MailboxCurrentOperationLease? lease = null,
         Func<ulong, ulong, ReadOnlyMemory<byte>>? author = null, bool requireExisting = false,
-        VerifiedMailboxHostAuthorityV2? host = null)
+        VerifiedMailboxHostAuthorityV2? host = null, ulong minimumPeerCreatedAt = 0)
     {
         ThrowIfDisposed();
         var operationKey = BuildOperationKey(epoch, mailboxId.Span, operationId.Span);
@@ -366,12 +367,14 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
                 "");
             if (lease is not null)
             {
-                var upper = await lease.CheckAsync(cancellationToken).ConfigureAwait(false);
+                var upper = await lease.RequireOriginTimeAsync(minimumPeerCreatedAt, cancellationToken).ConfigureAwait(false);
                 var exactPeer = author!(cursor, upper);
                 var parsed = MailboxPeerWireV2Codec.Decode(exactPeer.Span);
                 var canonical = MailboxPeerWireV2Codec.Encode(parsed);
                 if (!canonical.AsSpan().SequenceEqual(exactPeer.Span))
                     throw new InvalidDataException("Current Store producer is not canonical.");
+                if (parsed.CreatedAtUnixSeconds < minimumPeerCreatedAt || parsed.CreatedAtUnixSeconds > upper)
+                    throw new InvalidDataException("Current Store producer origin differs from its authenticated envelope/time bounds.");
                 operation = operation with { PeerRequest = Convert.ToBase64String(canonical) };
             }
             document.Operations.Add(operationKey, operation);

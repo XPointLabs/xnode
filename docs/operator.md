@@ -1881,3 +1881,12 @@ The native lease's unchanged predicates have finite labels
 `CurrentAuthorityChanged`, `CurrentFreshness` and `CurrentGrantWindow`.
 They preserve the built-in cryptographic exception type and original messages;
 the diagnostic never authorizes acceptance or changes the operation outcome.
+
+For a new Store, PRQ2 authoring now requires the actual native bound to cover
+the exact MEO1 origin before persisting its immutable peer intent. A lead of at
+most4 seconds can wait once (at most5s), then every current lease check runs
+again and actual convergence is mandatory. The unchanged25s outer budget still
+applies. This avoids capturing a30-day object as a30-day-plus-one-second PRQ2;
+it does not increase TTL, allow future skew or rewrite an existing intent.
+See root DR-0151. A rejected pre-peer capture may retain an authenticated client
+replay reservation, but cannot create peer replay/mutation/HTTP effects.
