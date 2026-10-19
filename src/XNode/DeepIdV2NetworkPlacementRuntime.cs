@@ -239,6 +239,17 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
         VerifiedXPointNetworkAuthority Authority, DeepIdV2NetworkFloor Floor, OnionMonotonicReading Reading,
         VerifiedOnionNetworkContext Network, byte[] SourceDigest, long NetworkVerifiedAt);
     private Observation? observation;
+    // Pure verifier result keyed by ALL its inputs, including the actual
+    // trusted interval. No clock, floor, currentness decision or TTL is cached.
+    // Access is serialized by the real network-source gate.
+    private sealed record MailboxPolicyMemo(VerifiedXPointNetworkAuthority Authority,
+        byte[] Exact, ulong Lower, ulong Upper, VerifiedMailboxAuthorityV2 Policy);
+    private MailboxPolicyMemo? mailboxPolicyMemo;
+    internal long MailboxPolicySignatureVerifications { get; private set; }
+    private byte[]? parsedMailboxProjection;
+    private byte[][] parsedMailboxPolicies = [];
+    private (ContactRecord Projection, ContactRecord[] Policies)? parsedMailboxInputs;
+    internal long MailboxInputDecodes { get; private set; }
     private int stopped;
     private long lastTimingReport;
 
@@ -369,9 +380,9 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
             {
                 if (!SameAuthority(observed.Authority, authority))
                     throw new CryptographicException("The observed DID2 authority changed.");
-                using (timing.Measure(CurrentMailboxNetworkReadTiming.Phase.ProofObserve))
-                using (CurrentMailboxDiagnostics.Measure("proof-observe"))
-                    await proofs.ValidateObservedAsync(freshness, cancellationToken).ConfigureAwait(false);
+                // Observational work below is denial-only: no floor commit or
+                // capability escapes. Rejoin the actual protected proof once
+                // at the existing final fence AFTER all source/clock callbacks.
             }
             DeepIdV2NetworkClosureArtifacts exactSource;
             using (timing.Measure(CurrentMailboxNetworkReadTiming.Phase.SourceRead))
@@ -478,6 +489,7 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
                 using (CurrentMailboxDiagnostics.Measure("proof-observe"))
                     await proofs.ValidateObservedAsync(freshness, cancellationToken).ConfigureAwait(false);
             }
+            cancellationToken.ThrowIfCancellationRequested();
             if (Volatile.Read(ref stopped) != 0)
                 throw new InvalidOperationException("The DID2 network source stopped before capability release.");
             if (!observational && observesConfiguredAccount)
@@ -533,10 +545,11 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
         DeepIdV2NetworkClosureArtifacts exact, CancellationToken ct)
     {
         network.EnsureCurrent();
-        var projection = ContactCodec.Decode(ProtocolMagic.PMT2, exact.Projections[^1].Span);
+        var parsed = ParseMailboxInputs(exact);
+        var projection = parsed.Projection;
         if (!network.BindsProjection(ContactCodec.ArtifactReference(ProtocolMagic.PMT2, projection).CanonicalBytes))
             throw new CryptographicException("DID2 mailbox policy requires the exact current PMT2.");
-        var records = exact.MailboxAuthorities.Select(bytes => ContactCodec.Decode(ProtocolMagic.PMA2, bytes.Span)).ToArray();
+        var records = parsed.Policies;
         var matches = records.Where(record => CryptographicOperations.FixedTimeEquals(
             record.CoreHash.Span, projection.Field(4).Span[6..])).ToArray();
         if (matches.Length != 1)
@@ -546,12 +559,50 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
         if (!freshness.IsCurrentAtMonotonic(reading.BootId.Span, reading.SampleSeconds))
             throw new CryptographicException("DID2 mailbox issuer needs the current independent proof.");
         var elapsed = checked(reading.SampleSeconds - freshness.MonotonicSample);
-        var policy = MailboxAuthorityV2Verifier.Verify(authority, matches[0].CanonicalBytes.Span,
-            checked(freshness.TrustedLowerUnixSeconds + elapsed), checked(freshness.TrustedUpperUnixSeconds + elapsed));
+        var lower = checked(freshness.TrustedLowerUnixSeconds + elapsed);
+        var upper = checked(freshness.TrustedUpperUnixSeconds + elapsed);
+        var memo = mailboxPolicyMemo;
+        VerifiedMailboxAuthorityV2 policy;
+        if (memo is not null && ReferenceEquals(memo.Authority, authority) &&
+            memo.Lower == lower && memo.Upper == upper &&
+            CryptographicOperations.FixedTimeEquals(memo.Exact, matches[0].CanonicalBytes.Span))
+            policy = memo.Policy;
+        else
+        {
+            policy = MailboxAuthorityV2Verifier.Verify(authority, matches[0].CanonicalBytes.Span, lower, upper);
+            MailboxPolicySignatureVerifications++;
+            mailboxPolicyMemo = new(authority, matches[0].CanonicalBytes.ToArray(), lower, upper, policy);
+        }
         if (!policy.BindsProjection(projection.CanonicalBytes.Span))
             throw new CryptographicException("DID2 mailbox issuer does not bind the current projection.");
         network.EnsureCurrent(); ct.ThrowIfCancellationRequested();
         return (policy, reading);
+    }
+
+    // Canonical grammar of identical PUBLIC bytes is immutable. This one-frame
+    // memo does not cache selection, signatures, time or any native floor.
+    // Actual files are still read twice by ReadNetworkAsync and compared after
+    // callbacks; every use below independently checks projection/currentness.
+    private (ContactRecord Projection, ContactRecord[] Policies) ParseMailboxInputs(DeepIdV2NetworkClosureArtifacts exact)
+    {
+        var projection = exact.Projections[^1];
+        if (parsedMailboxInputs is { } memo && parsedMailboxProjection is not null &&
+            projection.Span.SequenceEqual(parsedMailboxProjection) && parsedMailboxPolicies.Length == exact.MailboxAuthorities.Count &&
+            !exact.MailboxAuthorities.Where((bytes, index) => !bytes.Span.SequenceEqual(parsedMailboxPolicies[index])).Any())
+            return memo;
+        var parsed = (Projection: ContactCodec.Decode(ProtocolMagic.PMT2, projection.Span),
+            Policies: exact.MailboxAuthorities.Select(bytes => ContactCodec.Decode(ProtocolMagic.PMA2, bytes.Span)).ToArray());
+        MailboxInputDecodes++;
+        // Resource-only bound; larger valid closures retain full parsing, not
+        // a new rejection threshold or permission to omit an issuer record.
+        if (projection.Length + exact.MailboxAuthorities.Sum(bytes => (long)bytes.Length) <= 4 * 1024 * 1024)
+        {
+            parsedMailboxProjection = projection.ToArray();
+            parsedMailboxPolicies = exact.MailboxAuthorities.Select(bytes => bytes.ToArray()).ToArray();
+            parsedMailboxInputs = parsed;
+        }
+        else { parsedMailboxProjection = null; parsedMailboxPolicies = []; parsedMailboxInputs = null; }
+        return parsed;
     }
 
     private static bool SameSeries(IReadOnlyList<ReadOnlyMemory<byte>> left, IReadOnlyList<ReadOnlyMemory<byte>> right)

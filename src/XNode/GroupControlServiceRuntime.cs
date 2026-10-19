@@ -57,11 +57,16 @@ public interface IGroupControlTerminalDispatcher
         CancellationToken cancellationToken);
 }
 
+internal enum GroupControlAuthorityRejection { Unclassified, RequestBinding, IssuedFuture, Expired, InvalidWindow, NetworkCeiling }
+
 internal sealed class GroupControlAuthorityUnavailableException : IOException
 {
-    internal GroupControlAuthorityUnavailableException()
+    internal GroupControlAuthorityRejection Rejection { get; }
+    internal GroupControlAuthorityUnavailableException(GroupControlAuthorityRejection rejection = GroupControlAuthorityRejection.Unclassified)
         : base("Current group-control placement and route authority is unavailable.")
     {
+        if (!Enum.IsDefined(rejection)) throw new ArgumentOutOfRangeException(nameof(rejection));
+        Rejection = rejection;
     }
 }
 

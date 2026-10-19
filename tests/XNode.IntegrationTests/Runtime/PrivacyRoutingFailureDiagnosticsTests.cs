@@ -21,10 +21,25 @@ public sealed class PrivacyRoutingFailureDiagnosticsTests
         {
             Assert.Null(row.Error);
             Assert.Equal("Unclassified", row.Values["Phase"]);
-            Assert.Equal(new[] { "Category", "Depth", "Il", "Method", "Phase", "{OriginalFormat}" },
+            Assert.Equal(GroupControlAuthorityRejection.Unclassified, row.Values["AuthorityCheck"]);
+            Assert.Equal(new[] { "AuthorityCheck", "Category", "Depth", "Il", "Method", "Phase", "{OriginalFormat}" },
                 row.Values.Keys.Order(StringComparer.Ordinal));
             Assert.DoesNotContain("DO-NOT-EXPORT", string.Join(" ", row.Values.Values));
         }
+    }
+    [Fact]
+    public void GroupAuthorityReasonIsTypedAndNeverExportsExceptionData()
+    {
+        var error = new GroupControlAuthorityUnavailableException(GroupControlAuthorityRejection.Expired);
+        error.Data["untrusted"] = "DO-NOT-EXPORT";
+        var logger = new Capture(false);
+        new PrivacyRoutingFailureDiagnostics(logger).Report("Dispatch", error);
+        var row = Assert.Single(logger.Rows);
+        Assert.Null(row.Error);
+        Assert.Equal(GroupControlAuthorityRejection.Expired, row.Values["AuthorityCheck"]);
+        Assert.DoesNotContain("DO-NOT-EXPORT", string.Join(" ", row.Values.Values));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new GroupControlAuthorityUnavailableException((GroupControlAuthorityRejection)255));
     }
     [Fact]
     public void ContactAdmissionPreservesOnlyItsClosedPhase()
@@ -35,6 +50,20 @@ public sealed class PrivacyRoutingFailureDiagnosticsTests
         Assert.Null(row.Error);
         Assert.Equal("ContactAdmission", row.Values["Phase"]);
         Assert.DoesNotContain("DO-NOT-EXPORT", string.Join(" ", row.Values.Values));
+    }
+    [Fact]
+    public void ContactAuthorityReasonIsTypedAndNeverExportsExceptionData()
+    {
+        var error = new ContactAdmissionIntervalException(ContactAdmissionRejection.IssuedFuture);
+        error.Data["untrusted"] = "DO-NOT-EXPORT";
+        var logger = new Capture(false);
+        new PrivacyRoutingFailureDiagnostics(logger).Report("ContactAdmission", error);
+        var row = Assert.Single(logger.Rows);
+        Assert.Null(row.Error);
+        Assert.Equal(ContactAdmissionRejection.IssuedFuture, row.Values["AuthorityCheck"]);
+        Assert.DoesNotContain("DO-NOT-EXPORT", string.Join(" ", row.Values.Values));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new ContactAdmissionIntervalException((ContactAdmissionRejection)255));
     }
     private sealed class Capture(bool throwing) : ILogger
     {

@@ -6,6 +6,33 @@ namespace XNode.IntegrationTests.Runtime;
 
 public sealed partial class CurrentMailboxPeerHttpTests
 {
+    [Fact]
+    public async Task CurrentStorePrefixFinalNativeRejoinRejectsTamperingBeforeAnyNewReservation()
+    {
+        await using var f = await Fixture.CreateAsync(); f.OpenLedger();
+        Assert.Equal(XNode.Core.Mailbox.MailboxPeerQuorumStatus.Durable,
+            (await f.Coordinator.StoreClientAsync(f.ClientStoreFrame())).Status);
+        Assert.Equal(XNode.Core.Mailbox.MailboxPeerQuorumStatus.Durable,
+            (await f.Coordinator.StoreClientAsync(DifferentGrantStore(f))).Status);
+        var body = MailboxAuthenticatedRequestTranscript.DecodeStoreBody(f.Recipient.Envelope) with
+        { OperationId = Enumerable.Repeat((byte)0x74, 16).ToArray(), DeduplicationDigest = Enumerable.Repeat((byte)0x75, 32).ToArray(),
+            Ciphertext = Enumerable.Repeat((byte)0x76, 64).ToArray() };
+        var next = f.ClientStoreFrame(MailboxClientCodec.EncodeEncryptedEnvelope(body), 2);
+        var reached = false; var reads = 0;
+        f.OpenLedger(afterVerifiedRead: () =>
+        {
+            // Populated prefix: first read captures the proof inputs; the
+            // second is its actual final native rejoin. Async stack inspection
+            // cannot identify this boundary after filesystem continuations.
+            if (++reads == 2)
+            { reached = true; File.AppendAllText(f.LedgerFile, " "); }
+        });
+        var http = f.AllHttpRequests; var replay = f.Sender.Node.Replay.Diagnostics;
+        await Assert.ThrowsAsync<InvalidDataException>(() => f.Coordinator.StoreClientAsync(next).AsTask());
+        Assert.True(reached); Assert.Equal(http, f.AllHttpRequests); Assert.Equal(replay, f.Sender.Node.Replay.Diagnostics);
+        Assert.Equal(2, f.ExactIntents.Length); Assert.Equal(2, f.Sender.MutationFiles.Length); Assert.Equal(2, f.Recipient.MutationFiles.Length);
+    }
+
     [Theory]
     [InlineData(false, false)]
     [InlineData(false, true)]

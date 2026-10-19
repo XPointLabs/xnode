@@ -15,11 +15,15 @@ public sealed class FileDeepIdV2DirectoryProtectedHeadStoreTests
         using var fixture = await Fixture.CreateAsync();
         using var store = fixture.Open();
         _ = await store.RestoreAsync(fixture.Authority, default);
-        _ = await store.ReadRetainedAsync(fixture.Authority, default);
+        var publicHead = await store.ReadRetainedAsync(fixture.Authority, default);
         var verified = store.PublicHeadSignatureVerifications;
         Assert.True(verified > 0);
         for (var pass = 0; pass < 3; pass++)
-            Assert.Equal(fixture.ExactGenesis, (await store.ReadRetainedAsync(fixture.Authority, default)).ExactAdh1.ToArray());
+        {
+            var actual = await store.ReadRetainedAsync(fixture.Authority, default);
+            Assert.Same(publicHead, actual);
+            Assert.Equal(fixture.ExactGenesis, actual.ExactAdh1.ToArray());
+        }
         Assert.Equal(verified, store.PublicHeadSignatureVerifications);
         var original = File.ReadAllBytes(fixture.TipPath);
         var changed = original.ToArray(); changed[^1] ^= 1;

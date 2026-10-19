@@ -50,6 +50,10 @@ internal sealed class DeepIdV2DirectoryCurrentProofReader(
     private readonly IDeepMlDsa65Verifier mlDsa65 =
         mlDsa65 ?? throw new ArgumentNullException(nameof(mlDsa65));
     private readonly SemaphoreSlim readGate = new(1, 1);
+    // One immutable signature result, under readGate. The real protected head
+    // is still read on every call and the current clock is never memoized.
+    private (VerifiedXPointNetworkAuthority Authority, AccountDirectoryProtectedLkg Head)? publicHeadMemo;
+    internal long PublicHeadSignatureVerifications { get; private set; }
 
     internal async ValueTask ValidateObservedAsync(VerifiedDeepIdV2DirectoryFreshness freshness,
         VerifiedXPointNetworkAuthority authority, CancellationToken cancellationToken)
@@ -191,10 +195,15 @@ internal sealed class DeepIdV2DirectoryCurrentProofReader(
         throw new CryptographicException(
             "The DID2 monotonic clock returned no reading.");
 
-    private static AccountDirectoryProtectedLkg RestoreAuthenticatedFloor(
+    private AccountDirectoryProtectedLkg RestoreAuthenticatedFloor(
         AccountDirectoryProtectedLkg stored,
         VerifiedXPointNetworkAuthority authority)
     {
+        if (publicHeadMemo is { } memo && ReferenceEquals(memo.Authority, authority) &&
+            memo.Head.LogGeneration == stored.LogGeneration &&
+            CryptographicOperations.FixedTimeEquals(memo.Head.CoreHash.Span, stored.CoreHash.Span) &&
+            CryptographicOperations.FixedTimeEquals(memo.Head.ExactAdh1.Span, stored.ExactAdh1.Span))
+            return memo.Head;
         var floor = stored.LogGeneration == 0
             ? DeepIdV2DirectoryBootstrapVerifier.RestoreGenesis(authority,
                 stored.ExactAdh1, stored.CoreHash.Span)
@@ -205,6 +214,8 @@ internal sealed class DeepIdV2DirectoryCurrentProofReader(
                 floor.Head.NetworkId.Span, authority.NetworkId.Span))
             throw new CryptographicException(
                 "The protected DID2 directory head is cross-network or retired.");
+        PublicHeadSignatureVerifications++;
+        publicHeadMemo = (authority, floor);
         return floor;
     }
 

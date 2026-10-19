@@ -33,9 +33,10 @@ public sealed partial class MailboxClientOperationLedger
         string mailbox, string placement, string membership, VerifiedMailboxHostAuthorityV2 host,
         MailboxCurrentOperationLease lease, CancellationToken token)
     {
-        foreach (var prior in document.Operations.Values.Where(prior =>
+        var prefix = document.Operations.Values.Where(prior =>
             prior.Epoch == epoch && FixedHexEquals(prior.MailboxId, mailbox) &&
-            FixedHexEquals(prior.PlacementCommitment, placement) && FixedHexEquals(prior.MembershipCommitment, membership)))
+            FixedHexEquals(prior.PlacementCommitment, placement) && FixedHexEquals(prior.MembershipCommitment, membership)).ToArray();
+        foreach (var prior in prefix)
         {
             if (string.IsNullOrEmpty(prior.PeerRequest))
                 throw new InvalidOperationException("Current Store prefix has an unsettled exact intent.");
@@ -54,8 +55,15 @@ public sealed partial class MailboxClientOperationLedger
                 catch (System.Security.Cryptography.CryptographicException error)
                 { throw new InvalidOperationException("Current Store prefix has an unsettled exact intent.", error); }
             }
+        }
+        // This loop authenticates past public facts only: no cursor allocation,
+        // mutation, signing, dispatch or receipt escapes between its callbacks.
+        // Rejoin the ENTIRE actual native snapshot once after ALL callbacks,
+        // rather than rereading the whole ledger separately for every old row.
+        if (prefix.Length != 0)
+        {
             _ = await lease.CheckAsync(token).ConfigureAwait(false);
-            await RequireUnchangedCurrentStoreAsync(prior, lease, token).ConfigureAwait(false);
+            await RequireUnchangedCurrentDocumentAsync(document, lease, token).ConfigureAwait(false);
         }
     }
 
@@ -78,7 +86,17 @@ public sealed partial class MailboxClientOperationLedger
             if (operation.State == "durable")
             {
                 if (!FixedBase64Equals(operation.Receipt, encoded))
-                    throw new InvalidDataException("Current Store settlement changed.");
+                {
+                    // Background recovery and a client outcome may have won
+                    // independently with different signed durable-at evidence.
+                    // Both must authenticate the SAME exact PRQ2. Keep BOTH
+                    // existing owners' immutable bytes; never overwrite either
+                    // winner, remint an intent or trust a durable state flag.
+                    await host.VerifyStoreSettlementAsync(Convert.FromBase64String(operation.PeerRequest),
+                        Convert.FromBase64String(operation.Receipt), token).ConfigureAwait(false);
+                    _ = await lease.CheckAsync(token).ConfigureAwait(false);
+                    await RequireUnchangedCurrentStoreAsync(operation, lease, token).ConfigureAwait(false);
+                }
                 return;
             }
             document.Operations[key] = operation with { State = "durable", Receipt = encoded };

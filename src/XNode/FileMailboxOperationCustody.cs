@@ -102,7 +102,10 @@ internal sealed class FileMailboxOperationCustody : IMailboxOperationCustody, ID
         Func<string, CancellationToken, Task> validate, CancellationToken token)
     {
         using var measurement = CurrentMailboxDiagnostics.Measure("operation-verify");
-        RequirePath(operationFile); _ = await lease.CheckAsync(token).ConfigureAwait(false);
+        // Inspection is denial-only. The full current check below remains
+        // mandatory after validation and before cleanup/result release; recovery
+        // still has its separate full fences before replacement and commit.
+        RequirePath(operationFile); lease.RequireActive(); token.ThrowIfCancellationRequested();
         var state = ReadState(); var actual = await HashAsync(operationPath, token).ConfigureAwait(false);
         if (state.Next is null)
         {

@@ -16,9 +16,16 @@ internal static class CurrentMailboxDiagnostics
         ? new Measurement(phase, CurrentWork.Value) : null;
 
     internal static IDisposable BeginWork(Action<WorkSummary> report) => new Work(report);
+    internal static void RecordNetworkPhase(CurrentMailboxNetworkReadTiming.Phase phase, long ms)
+    {
+        if (phase == CurrentMailboxNetworkReadTiming.Phase.GateWait) CurrentWork.Value?.Record("network-gate-wait", ms);
+        else if (phase is CurrentMailboxNetworkReadTiming.Phase.MailboxVerify or CurrentMailboxNetworkReadTiming.Phase.MailboxReadback)
+            CurrentWork.Value?.Record("mailbox-policy", ms);
+    }
     internal sealed record WorkSummary(long LeaseChecks, long LeaseMs, long AuthorityMs,
         long HostMs, long GrantMs, long NativeJoinMs, long RevocationMs, long OperationMs,
-        long LineageMs, long SourceFilesMs, long FloorMs, long ProofObserveMs, long NetworkVerifyMs);
+        long LineageMs, long SourceFilesMs, long FloorMs, long ProofObserveMs, long NetworkVerifyMs,
+        long NetworkGateMs, long MailboxPolicyMs);
 
     private sealed class Work : IDisposable
     {
@@ -27,6 +34,7 @@ internal static class CurrentMailboxDiagnostics
         private readonly object gate = new();
         private long checks, lease, authority, host, grant, native, revocation, operation;
         private long lineage, sourceFiles, floor, proofObserve, networkVerify;
+        private long networkGate, mailboxPolicy;
         private bool disposed;
         internal Work(Action<WorkSummary> report) { this.report = report; CurrentWork.Value = this; }
         internal void Record(string phase, double ms)
@@ -44,6 +52,8 @@ internal static class CurrentMailboxDiagnostics
                     case "network-floor-read" or "network-floor-readback": floor += elapsed; break;
                     case "proof-observe": proofObserve += elapsed; break;
                     case "network-verify": networkVerify += elapsed; break;
+                    case "network-gate-wait": networkGate += elapsed; break;
+                    case "mailbox-policy": mailboxPolicy += elapsed; break;
                     case "host-verify": host += elapsed; break;
                     case "grant-context-check": grant += elapsed; break;
                     case "peer-replay-join" or "peer-native-join": native += elapsed; break;
@@ -61,7 +71,7 @@ internal static class CurrentMailboxDiagnostics
                 if (disposed) return;
                 disposed = true;
                 result = new(checks, lease, authority, host, grant, native, revocation, operation,
-                    lineage, sourceFiles, floor, proofObserve, networkVerify);
+                    lineage, sourceFiles, floor, proofObserve, networkVerify, networkGate, mailboxPolicy);
             }
             if (ReferenceEquals(CurrentWork.Value, this)) CurrentWork.Value = parent;
             try { report(result); } catch { /* Timing never replaces the original outcome. */ }

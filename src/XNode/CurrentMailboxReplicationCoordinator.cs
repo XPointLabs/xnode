@@ -168,12 +168,16 @@ internal sealed partial class CurrentMailboxReplicationCoordinator(CurrentMailbo
             catch (Exception error) when (error is HttpRequestException or IOException)
             { ReportPeerFailure("transport", started); remote = null; }
         }
-        await current.EnsureCurrentAsync(ct).ConfigureAwait(false);
-        if (remote is null) return new(MailboxPeerQuorumStatus.PartialFailure, ReadOnlyMemory<byte>.Empty, 1);
+        if (remote is null)
+        {
+            await current.EnsureCurrentAsync(ct).ConfigureAwait(false);
+            return new(MailboxPeerQuorumStatus.PartialFailure, ReadOnlyMemory<byte>.Empty, 1);
+        }
         ReadOnlyMemory<byte> quorum;
-        try { quorum = await current.CreateQuorumAsync(localReceipt, remote.Value, ct).ConfigureAwait(false); }
+        // The owned method starts with the same full post-HTTP/pre-crypto
+        // native fence; do not duplicate it immediately before entering it.
+        try { quorum = await current.CreateQuorumAndCommitRecipientAsync(localReceipt, remote.Value, ct).ConfigureAwait(false); }
         catch (MailboxPeerReplicationException) { return new(MailboxPeerQuorumStatus.PartialFailure, ReadOnlyMemory<byte>.Empty, 1); }
-        await current.CommitRecipientAsync(remote.Value, ct).ConfigureAwait(false);
         return new(MailboxPeerQuorumStatus.Durable, quorum, 2);
     }
     private void ReportPeerFailure(string reason, long started)

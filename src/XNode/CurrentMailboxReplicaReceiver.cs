@@ -438,6 +438,12 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
         internal async ValueTask CommitRecipientAsync(ReadOnlyMemory<byte> response, CancellationToken token)
         {
             await EnsureCurrentAsync(token).ConfigureAwait(false);
+            await CommitRecipientAfterFenceAsync(response, token).ConfigureAwait(false);
+        }
+        // Entered only immediately after the owning full native fence. No
+        // callback or I/O separates that fence from this private continuation.
+        private async ValueTask CommitRecipientAfterFenceAsync(ReadOnlyMemory<byte> response, CancellationToken token)
+        {
             _ = MailboxPeerWireV2Codec.VerifyReplicaResponse(response.Span, verified, owner.crypto);
             if (verified.ReplayDisposition != MailboxPeerReplayDisposition.IdempotentCompleted)
                 owner.Replay.CompleteAtomically(verified.ReplayClaim, response);
@@ -446,7 +452,7 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
                 true, scope.Lease, token).ConfigureAwait(false);
             await EnsureCurrentAsync(token).ConfigureAwait(false);
         }
-        internal async ValueTask<ReadOnlyMemory<byte>> CreateQuorumAsync(ReadOnlyMemory<byte> local,
+        internal async ValueTask<ReadOnlyMemory<byte>> CreateQuorumAndCommitRecipientAsync(ReadOnlyMemory<byte> local,
             ReadOnlyMemory<byte> remote, CancellationToken token)
         {
             await EnsureCurrentAsync(token).ConfigureAwait(false);
@@ -455,6 +461,9 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
             var result = MailboxReceiptV3Codec.EncodeDurableQuorum(owner.crypto.SignQuorumResponse(unsigned, owner.seed));
             _ = MailboxPeerWireV2Codec.VerifyDurableQuorumResponse(result, verified, owner.crypto);
             await EnsureCurrentAsync(token).ConfigureAwait(false);
+            // This post-crypto join is also the pre-commit join; repeating it
+            // across an immediate private call adds no protected evidence.
+            await CommitRecipientAfterFenceAsync(remote, token).ConfigureAwait(false);
             return result;
         }
         internal async ValueTask ValidateQuorumAsync(ReadOnlyMemory<byte> quorum, CancellationToken token)

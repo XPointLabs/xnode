@@ -36,7 +36,11 @@ internal sealed class CurrentMailboxNetworkReadTiming(Action<CurrentMailboxNetwo
         public void Dispose()
         {
             if (Interlocked.Exchange(ref disposed, 1) == 0)
-                owner.durations[(int)phase] = Math.Min(3_600_000, owner.durations[(int)phase] + owner.Elapsed(started));
+            {
+                var elapsed = owner.Elapsed(started);
+                owner.durations[(int)phase] = Math.Min(3_600_000, owner.durations[(int)phase] + elapsed);
+                CurrentMailboxDiagnostics.RecordNetworkPhase(phase, elapsed);
+            }
         }
     }
 }

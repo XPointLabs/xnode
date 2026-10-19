@@ -1766,6 +1766,60 @@ same-length bytes), native startup/rollback, whole-ACK delayed-item recovery,
 PTR1 clocks, Store/ACK/HTTP and operation-checkpoint crash boundaries. These
 focused results do not qualify full/package gates or first-attempt latency.
 
+Directory observation reuses only the authenticated public head produced after
+the actual chain/anchor/index join; the reader's one-entry signature memo is
+bound to exact head/hash/generation and the reference-identical authority.
+Every observation still reads/unprotects/joins actual native files and samples
+the current clock. Missing, changed, rolled-back or expired state cannot use a
+cached floor or trigger acquisition-owner repair.
+
+Mailbox PMA verification can reuse a public policy only for identical verifier
+inputs: exact signed bytes, the same immutable authority and the exact actual
+trusted lower/upper interval. The Protocol host similarly memoizes this pure
+result within its immutable host. Boot, rollback, network/proof/policy/grant
+lifetimes, revocation, holder authentication, replay and all native pre/post
+effect fences remain independently checked. Advancing time requires a new
+verification; there is no TTL, wider authority window or timeout change.
+DTT intake additionally follows root DR-0150: the upper envelope accounts for
+the bounded live challenge RTT; the lower does not advance by that RTT. Signed
+expiry and full-interval admission still reject conservatively. Keep client
+and all node clock implementations matched when qualifying this cutover; a
+mixed old/new fleet is not accepted evidence. Signed bytes and node keys do not
+change, nor do the established anchor's monotonic/head/revocation rules.
+The network source additionally memoizes only canonical PMT/PMA parsing for one
+exact public byte frame (up to4MiB of retained parser input; larger valid inputs
+keep the original full-parse path). It still reads actual source files twice
+and checks their equality around callbacks. Current projection, root/time and
+all native checks remain independent of this untrusted public grammar memo.
+
+Store settlement recovery accepts independently authenticated MQR3 evidence
+for the same exact protected PRQ2 even when background recovery and the client
+outcome persisted different valid durable-at receipts. Both candidates must
+verify independently; neither immutable winner is overwritten. The original
+intent, current host/grant/revocation checks and final native rejoin remain.
+A byte-only equality check previously made this legitimate race unrecoverable.
+
+Historical Store-prefix verification checks every original signed settlement
+or expiry exclusion, then rejoins the entire actual operation document once
+after all verification callbacks. No reservation, signing, mutation, HTTP or
+released receipt occurs inside that read-only loop. This removes a whole-ledger
+read per historical row without carrying a native snapshot across an effect.
+Late tampering at the final native read still rejects before new reservation.
+Peer replication coalesces only adjacent full joins with no intervening callback
+or I/O: the post-HTTP join is the quorum method's entry join, and its post-crypto
+join is also the private recipient-commit entry join. Actual mutation, signing,
+HTTP, replay completion and final release retain their owning fences.
+Peer replay recovery joins actual grammar/native index/independent floors in one
+synchronous read pass under the same owner; canonical-key uniqueness and exact
+inventory/partition counts still detect extra, missing, changed or rolled-back
+records. No native document or admission result is retained across calls.
+Observational network reads perform the actual protected proof rejoin at the
+final boundary after all source/clock callbacks, rather than duplicating it
+before that denial-only work. They cannot commit a floor or release a capability
+before that rejoin, cancellation check and stopped-owner fence.
+Closed numeric mailbox diagnostics include authority gate/policy time; these
+are optional resource observations, never authority inputs or payload logging.
+
 The explicit local candidate enables `GroupControlService:RuntimeActivation`,
 `GroupControlService:MapReplicaEndpoint` and `RequiredTerminals:GroupControl`
 together with the complete current DID2 resolver/network composition. A flag
@@ -1786,6 +1840,10 @@ cursor, not an oversized response or an unavailable terminal. A first record
 that exceeds the requested class returns the existing RecordTooLarge result.
 Group terminal failures emit rate-limited closed category/method/IL diagnostics
 only; request bytes, capabilities, selectors and exception text are excluded.
+The closed `authorityCheck` distinguishes request binding, future issue time,
+expired carriage, invalid interval and signed network ceiling. It contains no
+absolute authority timestamps or caller-controlled exception data. These checks
+still reject identically; this diagnostic does not retry or widen a request.
 
 `group-control-v1` beneath the node data directory contains opaque persistent
 CAS/replay state. Keep it with the node state volume during restart/upgrade;
@@ -1793,3 +1851,22 @@ never regenerate node keys or erase this state to repair a failed write.
 See root CONTACT-AND-GROUP §14 and DR-0145 for the exact owner contracts. A
 successful local candidate does not qualify long-offline retention/handover,
 production activation, device enrollment or release readiness.
+
+### Contact admission interval convergence
+
+Operation-custody verification now inspects its protected checkpoint and native
+document before the full current-time fence when that inspection is denial-only.
+The post-validation fence still precedes cleanup/result release; interrupted
+replacement and commit retain their separate pre-effect fences. Each load still
+rejoins the actual native bytes and independent protected snapshot after callbacks.
+No document, protected root or currentness result is cached by this change.
+
+Contact admission now emits only a closed `IssuedFuture`, `Expired` or
+`InvalidWindow` reason alongside the existing sanitized phase/method diagnostic.
+For a near-future lower bound, it can wait once **before forwarding**, bounded
+by twice the verified root's witness uncertainty and at most11 seconds. It then
+reacquires authenticated time, requires actual convergence, reacquires and pairs
+the exact placement, and rechecks the full original interval before any effect.
+There is no grace acceptance, OS-clock authority, renewed request, extra network
+attempt, deadline extension or post-effect wait. Failure, cancellation, changed
+placement, expired windows or a clock that does not converge remain fail-closed.

@@ -26,8 +26,14 @@ internal sealed class PrivacyRoutingFailureDiagnostics(ILogger? logger)
                     _ => "Other"
                 };
                 var location = CurrentMailboxDiagnostics.FailureLocation(error);
-                logger.LogWarning("ONION processing incomplete: phase={Phase}; category={Category}; method={Method}; il={Il}; depth={Depth}.",
-                    phase, category, location.Method, location.Il, depth);
+                object authorityCheck = error switch
+                {
+                    GroupControlAuthorityUnavailableException group => group.Rejection,
+                    ContactAdmissionIntervalException contact => contact.Rejection,
+                    _ => GroupControlAuthorityRejection.Unclassified
+                };
+                logger.LogWarning("ONION processing incomplete: phase={Phase}; category={Category}; method={Method}; il={Il}; depth={Depth}; authorityCheck={AuthorityCheck}.",
+                    phase, category, location.Method, location.Il, depth, authorityCheck);
             }
         }
         catch { /* Observations never change the original transport outcome. */ }

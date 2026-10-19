@@ -52,4 +52,21 @@ public sealed partial class MailboxClientOperationLedger
             JsonSerializer.SerializeToUtf8Bytes(original, JsonOptions), JsonSerializer.SerializeToUtf8Bytes(actual, JsonOptions)))
             throw new InvalidDataException("Current Store changed during historical verification.");
     }
+
+    private async Task RequireUnchangedCurrentDocumentAsync(MailboxClientLedgerDocument original,
+        MailboxCurrentOperationLease lease, CancellationToken token)
+    {
+        var fresh = await LoadAsync(token, lease).ConfigureAwait(false);
+        if (original.SchemaVersion != fresh.SchemaVersion || original.NextCoordinatorSequence != fresh.NextCoordinatorSequence ||
+            original.RetiredCursorFloor != fresh.RetiredCursorFloor ||
+            !SameSnapshotEntries(original.NextCursorByMailbox, fresh.NextCursorByMailbox) ||
+            !SameSnapshotEntries(original.Operations, fresh.Operations) || !SameSnapshotEntries(original.AckOperations, fresh.AckOperations) ||
+            !SameSnapshotEntries(original.ClientReplayFloors, fresh.ClientReplayFloors) || !SameSnapshotEntries(original.PeerReplayFloors, fresh.PeerReplayFloors))
+            throw new InvalidDataException("Current operation snapshot changed during historical verification.");
+    }
+
+    private static bool SameSnapshotEntries<T>(Dictionary<string, T> original, Dictionary<string, T> fresh) =>
+        original.Count == fresh.Count && original.All(pair => fresh.TryGetValue(pair.Key, out var actual) &&
+            CryptographicOperations.FixedTimeEquals(JsonSerializer.SerializeToUtf8Bytes(pair.Value, JsonOptions),
+                JsonSerializer.SerializeToUtf8Bytes(actual, JsonOptions)));
 }

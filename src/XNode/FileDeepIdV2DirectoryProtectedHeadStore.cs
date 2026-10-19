@@ -185,6 +185,11 @@ internal sealed class FileDeepIdV2DirectoryProtectedHeadStore :
             if (anchor is null || indexed is null || !anchor.ExactlyMatches(latest) || !indexed.ExactlyMatches(latest))
                 throw new InvalidDataException("The observed DID2 floor needs acquisition-owner recovery.");
             cancellationToken.ThrowIfCancellationRequested();
+            // ValidateChain above has just authenticated every actual record
+            // and joined actual anchor/index. Reuse only its signed public
+            // result, not a remembered floor or a skipped native read.
+            if (verifiedPublicHeads.Length == records.Count)
+                return verifiedPublicHeads[^1].Head;
             return latest.Revision == 0
                 ? DeepIdV2DirectoryBootstrapVerifier.RestoreGenesis(authority, latest.ExactAdh1, latest.CoreHash)
                 : AccountDirectoryProtectedLkgFactory.Restore(authority, latest.ExactAdh1, latest.CoreHash);

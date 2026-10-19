@@ -23,13 +23,21 @@ internal sealed class DeepIdV2GroupControlAuthoritySource(IDeepIdV2ContactStoreA
         var expires = BinaryPrimitives.ReadUInt64BigEndian(exactRequest.Field(6).Span);
         if (!exactRequest.Field(1).Span.SequenceEqual(current.Network.NetworkId.Span) ||
             !exactRequest.Field(3).Span.SequenceEqual(placement.ViewHash.Span) ||
-            !exactRequest.Field(4).Span.SequenceEqual(placement.PlacementHash.Span) ||
-            issued > upper || expires <= upper || expires <= issued || expires - issued > 120 ||
-            expires > current.Network.MaximumRecordExpiryUnixSeconds)
-            throw new GroupControlAuthorityUnavailableException();
+            !exactRequest.Field(4).Span.SequenceEqual(placement.PlacementHash.Span))
+            throw new GroupControlAuthorityUnavailableException(GroupControlAuthorityRejection.RequestBinding);
+        RequireCarriageWindow(issued, expires, upper, current.Network.MaximumRecordExpiryUnixSeconds);
         current.Network.EnsureCurrent();
         return new(operation, current.Network.NetworkId.Span, placement.ViewHash.Span, placement.PlacementHash.Span,
             exactRequest.Field(16).Span, exactRequest.Field(17).Span,
             SHA256.HashData([.. placement.ViewHash.Span, .. placement.PlacementHash.Span]), expires, placement.ReplicaIds);
+    }
+
+    internal static void RequireCarriageWindow(ulong issued, ulong expires, ulong upper, ulong ceiling)
+    {
+        if (expires <= issued || expires - issued > 120)
+            throw new GroupControlAuthorityUnavailableException(GroupControlAuthorityRejection.InvalidWindow);
+        if (issued > upper) throw new GroupControlAuthorityUnavailableException(GroupControlAuthorityRejection.IssuedFuture);
+        if (expires <= upper) throw new GroupControlAuthorityUnavailableException(GroupControlAuthorityRejection.Expired);
+        if (expires > ceiling) throw new GroupControlAuthorityUnavailableException(GroupControlAuthorityRejection.NetworkCeiling);
     }
 }

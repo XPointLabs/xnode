@@ -11,6 +11,33 @@ namespace XNode.IntegrationTests.Runtime;
 /// <summary>Actual file source/floor/runtime with real signed proof; no HTTP or device claim.</summary>
 public sealed class DeepIdV2NetworkPlacementRuntimeTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PublicPolicyMemoRequiresExactActualTimeAndSignedBytes(bool atomic)
+    {
+        using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var files = new Assets(signed); using var floor = files.OpenFloor();
+        var source = files.Source(floor, atomic: atomic);
+        await RefreshAsync(source, signed);
+        var first = await source.ReadPublicationAuthorityAsync(default);
+        Assert.Equal(1L, source.MailboxPolicySignatureVerifications);
+        var same = await source.ReadPublicationAuthorityAsync(default);
+        Assert.Same(first.MailboxAuthority, same.MailboxAuthority);
+        Assert.Equal(1L, source.MailboxPolicySignatureVerifications);
+        signed.Sample++;
+        var next = await source.ReadPublicationAuthorityAsync(default);
+        Assert.NotSame(first.MailboxAuthority, next.MailboxAuthority);
+        Assert.Equal(2L, source.MailboxPolicySignatureVerifications);
+        Assert.Equal(1L, source.MailboxInputDecodes);
+        var retained = await floor.ReadAsync(default);
+        files.CorruptIssuerSignature();
+        await Assert.ThrowsAsync<CryptographicException>(() => source.ReadPublicationAuthorityAsync(default).AsTask());
+        Assert.True(FileDeepIdV2NetworkFloorStore.Same(retained, await floor.ReadAsync(default)));
+        Assert.Equal(2L, source.MailboxPolicySignatureVerifications);
+        Assert.Equal(2L, source.MailboxInputDecodes);
+    }
+
     [Fact]
     public async Task BriefVerifiedContextReuseDoesNotRenewProofOrProtectedFloors()
     {
@@ -21,15 +48,15 @@ public sealed class DeepIdV2NetworkPlacementRuntimeTests
         var acquired = await RefreshAsync(source, signed); var retained = await floor.ReadAsync(default);
         var reused = await source.ReadPublicationAuthorityAsync(default);
         Assert.Same(acquired, reused.Network); Assert.Same(signed.Freshness, reused.Freshness);
-        Assert.Equal(1, signed.ProofReads); Assert.Equal(2, signed.ObservationChecks);
+        Assert.Equal(1, signed.ProofReads); Assert.Equal(1, signed.ObservationChecks);
         resources.Timestamp = resources.TimestampFrequency * 2;
         var stillReused = await source.ReadPublicationAuthorityAsync(default);
         Assert.Same(acquired, stillReused.Network); Assert.Same(signed.Freshness, stillReused.Freshness);
-        Assert.Equal(1, signed.ProofReads); Assert.Equal(4, signed.ObservationChecks);
+        Assert.Equal(1, signed.ProofReads); Assert.Equal(2, signed.ObservationChecks);
         resources.Timestamp = resources.TimestampFrequency * 11;
         var reverified = await source.ReadPublicationAuthorityAsync(default);
         Assert.NotSame(acquired, reverified.Network); Assert.Same(signed.Freshness, reverified.Freshness);
-        Assert.Equal(1, signed.ProofReads); Assert.Equal(6, signed.ObservationChecks);
+        Assert.Equal(1, signed.ProofReads); Assert.Equal(3, signed.ObservationChecks);
         Assert.True(FileDeepIdV2NetworkFloorStore.Same(retained, await floor.ReadAsync(default)));
         signed.RejectProof = true;
         await Assert.ThrowsAsync<CryptographicException>(() => source.ReadPublicationAuthorityAsync(default).AsTask());
@@ -206,7 +233,7 @@ public sealed class DeepIdV2NetworkPlacementRuntimeTests
         for (var i = 0; i < 130; i++)
             Assert.NotNull((await source.ReadPublicationAuthorityAsync(default)).Freshness.CurrentCheckpoint);
         Assert.Equal(1, signed.ProofReads);
-        Assert.Equal(260, signed.ObservationChecks);
+        Assert.Equal(130, signed.ObservationChecks);
         Assert.Equal(committedWrites, writes);
         Assert.True(FileDeepIdV2NetworkFloorStore.Same(retained, await floor.ReadAsync(default)));
         source.StopObservations();
@@ -370,6 +397,12 @@ public sealed class DeepIdV2NetworkPlacementRuntimeTests
             var bytes = File.ReadAllBytes(mailboxAuthority);
             bytes[^1] ^= 1;
             File.WriteAllBytes(mailboxAuthority, bytes);
+            // Atomic mode consumes the bundle, not the loose issuer file.
+            // Fault the exact input the running source actually reads.
+            if (File.Exists(Path.Combine(root, "network.ncp2")))
+                Write("network.ncp2", XPointNetworkClosureWireCodec.EncodeResponse(DeepIdV2PublicationAuthorityFixture.Network,
+                    [signed.ExactAuthority], [signed.ExactTimePolicy], [signed.Policy], [signed.View],
+                    [signed.Head], signed.Descriptors, [signed.Projection], [bytes]));
         }
         internal bool NetworkFloorExists => File.Exists(Path.Combine(root, "node-state", "did2-network-state", "floor.bin"));
         internal void DeleteNetworkFloor() => File.Delete(Path.Combine(root, "node-state", "did2-network-state", "floor.bin"));

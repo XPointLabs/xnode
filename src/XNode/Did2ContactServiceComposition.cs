@@ -46,7 +46,7 @@ internal sealed class Did2AuthenticatedContactClock(
         }
     }
 
-    internal async ValueTask<(ulong Lower, ulong Upper)> ReadAsync(CancellationToken ct)
+    internal async ValueTask<(ulong Lower, ulong Upper, uint MaximumUncertainty)> ReadAsync(CancellationToken ct)
     {
         var current = await snapshots.ReadPublicationAuthorityAsync(ct).ConfigureAwait(false);
         current.Network.EnsureCurrent();
@@ -64,7 +64,7 @@ internal sealed class Did2AuthenticatedContactClock(
                 throw new CryptographicException("DID2 authenticated service time moved backwards.");
             lastUpper = upper;
         }
-        return (lower, upper);
+        return (lower, upper, current.Authority.MaximumWitnessUncertaintySeconds);
     }
 
     private static async Task ObserveAsync(Task task)
@@ -99,7 +99,12 @@ internal sealed class Did2ContactResolverDispatcher(
         try
         {
             var placement = await placements.MintAsync(kind, shard, ct).ConfigureAwait(false);
-            await RequireIntervalAsync(request, grant, publication, ct).ConfigureAwait(false);
+            if (await RequireIntervalAsync(request, grant, publication, ct, allowConvergence: true).ConfigureAwait(false))
+            {
+                var converged = await placements.MintAsync(kind, shard, ct).ConfigureAwait(false);
+                ContactReplicaRequestReceiver.EnsureExactPlacement(placement, converged);
+                await RequireIntervalAsync(request, grant, publication, ct).ConfigureAwait(false);
+            }
             forwarded = true;
             var result = await opaque.DispatchAsync(operation, canonicalRequest, ct).ConfigureAwait(false);
             var after = await placements.MintAsync(kind, shard, ct).ConfigureAwait(false);
@@ -118,14 +123,57 @@ internal sealed class Did2ContactResolverDispatcher(
         }
     }
 
-    private async ValueTask RequireIntervalAsync(ContactServiceRequestRecord? request, ContactRecord? grant,
-        ContactPublicationDispatchRequest? publication, CancellationToken ct)
+    private async ValueTask<bool> RequireIntervalAsync(ContactServiceRequestRecord? request, ContactRecord? grant,
+        ContactPublicationDispatchRequest? publication, CancellationToken ct, bool allowConvergence = false)
     {
-        var window = await time.ReadAsync(ct).ConfigureAwait(false);
         var issued = publication?.IssuedAtUnixSeconds ?? BinaryPrimitives.ReadUInt64BigEndian(grant is null ? request!.Field(5).Span : grant.Field(9).Span);
         var expires = publication?.ExpiresAtUnixSeconds ?? BinaryPrimitives.ReadUInt64BigEndian(grant is null ? request!.Field(6).Span : grant.Field(10).Span);
-        if (window.Lower < issued || window.Upper >= expires || grant is not null && (expires <= issued || expires - issued > 120))
-            throw new CryptographicException("The contact request does not cover the complete authenticated interval.");
+        return await ContactAdmissionInterval.RequireAsync(issued, expires, grant is not null,
+            time.ReadAsync, allowConvergence, ct).ConfigureAwait(false);
+    }
+}
+
+internal enum ContactAdmissionRejection { IssuedFuture, Expired, InvalidWindow }
+
+internal sealed class ContactAdmissionIntervalException(ContactAdmissionRejection rejection)
+    : CryptographicException("Contact admission does not cover the authenticated interval.")
+{
+    internal ContactAdmissionRejection Rejection { get; } = Enum.IsDefined(rejection)
+        ? rejection : throw new ArgumentOutOfRangeException(nameof(rejection));
+}
+
+internal static class ContactAdmissionInterval
+{
+    internal static async ValueTask<bool> RequireAsync(ulong issued, ulong expires, bool grant,
+        Func<CancellationToken, ValueTask<(ulong Lower, ulong Upper, uint MaximumUncertainty)>> read,
+        bool allowConvergence, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var window = await read(ct).ConfigureAwait(false);
+        var delay = RequireOrDelay(issued, expires, grant, window.Lower, window.Upper, window.MaximumUncertainty);
+        if (delay == 0) { ct.ThrowIfCancellationRequested(); return false; }
+        if (!allowConvergence)
+            throw new ContactAdmissionIntervalException(ContactAdmissionRejection.IssuedFuture);
+        // Scheduling only: the authenticated clock must actually converge.
+        await Task.Delay(TimeSpan.FromSeconds(delay), ct).ConfigureAwait(false);
+        window = await read(ct).ConfigureAwait(false);
+        if (RequireOrDelay(issued, expires, grant, window.Lower, window.Upper, window.MaximumUncertainty) != 0)
+            throw new ContactAdmissionIntervalException(ContactAdmissionRejection.IssuedFuture);
+        ct.ThrowIfCancellationRequested(); return true;
+    }
+
+    internal static int RequireOrDelay(ulong issued, ulong expires, bool grant,
+        ulong lower, ulong upper, uint maximumUncertainty)
+    {
+        if (lower > upper || expires <= issued || grant && expires - issued > 120)
+            throw new ContactAdmissionIntervalException(ContactAdmissionRejection.InvalidWindow);
+        if (upper >= expires)
+            throw new ContactAdmissionIntervalException(ContactAdmissionRejection.Expired);
+        if (lower >= issued) return 0;
+        var lead = issued - lower;
+        if (lead > Math.Min(10UL, 2UL * maximumUncertainty))
+            throw new ContactAdmissionIntervalException(ContactAdmissionRejection.IssuedFuture);
+        return checked((int)lead + 1);
     }
 }
 

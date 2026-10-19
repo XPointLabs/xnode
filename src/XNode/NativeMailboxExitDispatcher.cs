@@ -160,8 +160,8 @@ public sealed class NativeMailboxExitDispatcher(IServiceProvider services)
             logger.LogWarning("Current mailbox work: leaseChecks={LeaseChecks}; leaseMs={LeaseMs}; authorityMs={AuthorityMs}; hostMs={HostMs}; grantMs={GrantMs}; nativeJoinMs={NativeJoinMs}; revocationMs={RevocationMs}; operationMs={OperationMs}.",
                 work.LeaseChecks, work.LeaseMs, work.AuthorityMs, work.HostMs, work.GrantMs,
                 work.NativeJoinMs, work.RevocationMs, work.OperationMs);
-            logger.LogWarning("Current mailbox authority work: lineageMs={Lineage}; sourceFilesMs={SourceFiles}; floorMs={Floor}; proofObserveMs={ProofObserve}; networkVerifyMs={NetworkVerify}.",
-                work.LineageMs, work.SourceFilesMs, work.FloorMs, work.ProofObserveMs, work.NetworkVerifyMs);
+            logger.LogWarning("Current mailbox authority work: lineageMs={Lineage}; sourceFilesMs={SourceFiles}; floorMs={Floor}; proofObserveMs={ProofObserve}; networkVerifyMs={NetworkVerify}; gateMs={Gate}; policyMs={Policy}.",
+                work.LineageMs, work.SourceFilesMs, work.FloorMs, work.ProofObserveMs, work.NetworkVerifyMs, work.NetworkGateMs, work.MailboxPolicyMs);
         }
         catch { /* Resource observation cannot change the native result. */ }
     }

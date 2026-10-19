@@ -3,6 +3,21 @@ namespace XNode.IntegrationTests.Runtime;
 public sealed class CurrentMailboxNetworkReadTimingTests
 {
     [Fact]
+    public void AggregatesGateAndPolicyTimeAsClosedNumericWorkOnly()
+    {
+        var clock = new ResourceClock(); CurrentMailboxDiagnostics.WorkSummary? work = null;
+        using (CurrentMailboxDiagnostics.BeginWork(value => work = value))
+        using (var timing = new CurrentMailboxNetworkReadTiming(_ => { }, clock))
+        {
+            using (timing.Measure(CurrentMailboxNetworkReadTiming.Phase.GateWait)) clock.Timestamp += 7;
+            using (timing.Measure(CurrentMailboxNetworkReadTiming.Phase.MailboxVerify)) clock.Timestamp += 11;
+            using (timing.Measure(CurrentMailboxNetworkReadTiming.Phase.MailboxReadback)) clock.Timestamp += 13;
+        }
+        Assert.NotNull(work); Assert.Equal(7L, work.NetworkGateMs); Assert.Equal(24L, work.MailboxPolicyMs);
+        Assert.Equal(0L, work.LeaseChecks);
+    }
+
+    [Fact]
     public void MeasuresEveryClosedPhaseAndReportsOnlyBoundedWorkOnce()
     {
         var clock = new ResourceClock();

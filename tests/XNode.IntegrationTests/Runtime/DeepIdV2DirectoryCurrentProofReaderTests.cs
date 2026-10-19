@@ -33,6 +33,9 @@ public sealed class DeepIdV2DirectoryCurrentProofReaderTests
             await store.CommitVerifiedAsync(prior, signed.Freshness, default);
             var source = new RejectIfCalledArtifacts();
             var reader = new DeepIdV2DirectoryCurrentProofReader(source, store, signed, new RejectIfCalledPq());
+            await reader.ValidateObservedAsync(signed.Freshness, signed.Authority, default);
+            await reader.ValidateObservedAsync(signed.Freshness, signed.Authority, default);
+            Assert.Equal(1L, reader.PublicHeadSignatureVerifications);
             var latest = Path.Combine(root, "journal", "latest.floor");
             var exactIndex = File.ReadAllBytes(latest);
             switch (state)
@@ -47,6 +50,7 @@ public sealed class DeepIdV2DirectoryCurrentProofReaderTests
                 await Assert.ThrowsAsync<InvalidDataException>(async () => await reader.ValidateObservedAsync(signed.Freshness, signed.Authority, default));
             else await Assert.ThrowsAsync<CryptographicException>(async () => await reader.ValidateObservedAsync(signed.Freshness, signed.Authority, default));
             Assert.False(source.Called);
+            Assert.Equal(1L, reader.PublicHeadSignatureVerifications);
             if (state == "index") Assert.False(File.Exists(latest));
             else Assert.Equal(exactIndex, File.ReadAllBytes(latest));
         }

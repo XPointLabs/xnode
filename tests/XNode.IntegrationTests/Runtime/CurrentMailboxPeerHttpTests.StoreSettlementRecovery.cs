@@ -9,6 +9,37 @@ namespace XNode.IntegrationTests.Runtime;
 
 public sealed partial class CurrentMailboxPeerHttpTests
 {
+    [Fact]
+    public async Task EquivalentAuthenticatedSettlementPreservesBothImmutableWinnersAcrossColdReplay()
+    {
+        await using var f = await Fixture.CreateAsync(); f.OpenLedger();
+        var client = f.ClientStoreFrame();
+        var first = await f.Coordinator.StoreClientAsync(client);
+        Assert.Equal(MailboxPeerQuorumStatus.Durable, first.Status);
+        var original = Assert.Single(f.ExactIntents);
+        var quorum = MailboxReceiptV3Codec.DecodeDurableQuorum(first.CanonicalMqr3.Span);
+        var replica = quorum.FirstReplica;
+        var laterReplica = f.Sender.Crypto.SignReplicaResponse(replica with
+        { DurableAtUnixSeconds = replica.DurableAtUnixSeconds + 1, Signature = ReadOnlyMemory<byte>.Empty },
+            f.Signed.Node(replica.ReplicaId.Span).Seed);
+        var later = MailboxReceiptV3Codec.EncodeDurableQuorum(f.Sender.Crypto.SignQuorumResponse(quorum with
+        { FirstReplica = laterReplica, Signature = ReadOnlyMemory<byte>.Empty }, f.Signed.Node(quorum.CoordinatorId.Span).Seed));
+        Assert.NotEqual(first.CanonicalMqr3.ToArray(), later);
+        f.Signed.Sample += 2;
+        await f.Sender.Node.Host.VerifyStoreSettlementAsync(original, later);
+        // Simulate a recovery winner racing the independently durable client
+        // outcome. Both are genuine signatures for the SAME immutable PRQ2.
+        var document = JsonNode.Parse(File.ReadAllBytes(f.LedgerFile))!;
+        document["operations"]!.AsObject().Single().Value!["receipt"] = Convert.ToBase64String(later);
+        await f.InstallTestOwnedDocumentAsync(System.Text.Encoding.UTF8.GetBytes(document.ToJsonString()));
+        var native = File.ReadAllBytes(f.LedgerFile); var http = f.AllHttpRequests;
+        f.Reopen();
+        Assert.Equal(first.CanonicalMqr3.ToArray(), (await f.Coordinator.StoreClientAsync(client)).CanonicalMqr3.ToArray());
+        Assert.Equal(native, File.ReadAllBytes(f.LedgerFile)); Assert.Equal(http, f.AllHttpRequests);
+        Assert.Equal(original, Assert.Single(f.ExactIntents));
+        Assert.Single(f.Sender.MutationFiles); Assert.Single(f.Recipient.MutationFiles);
+    }
+
     [Theory]
     [InlineData(false, false)]
     [InlineData(false, true)]
