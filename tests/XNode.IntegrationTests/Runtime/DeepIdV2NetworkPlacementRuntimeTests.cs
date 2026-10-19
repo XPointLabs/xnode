@@ -32,10 +32,10 @@ public sealed class DeepIdV2NetworkPlacementRuntimeTests
         Assert.Equal(1L, source.MailboxInputDecodes);
         var retained = await floor.ReadAsync(default);
         files.CorruptIssuerSignature();
-        await Assert.ThrowsAsync<CryptographicException>(() => source.ReadPublicationAuthorityAsync(default).AsTask());
+        await Assert.ThrowsAnyAsync<CryptographicException>(() => source.ReadPublicationAuthorityAsync(default).AsTask());
         Assert.True(FileDeepIdV2NetworkFloorStore.Same(retained, await floor.ReadAsync(default)));
         Assert.Equal(2L, source.MailboxPolicySignatureVerifications);
-        Assert.Equal(2L, source.MailboxInputDecodes);
+        Assert.Equal(1L, source.MailboxInputDecodes); // Changed raw source is rejected before any re-decoding.
     }
 
     [Fact]
@@ -85,6 +85,80 @@ public sealed class DeepIdV2NetworkPlacementRuntimeTests
     {
         internal long Timestamp { get; set; }
         public override long GetTimestamp() => Timestamp;
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ChangedPublicViewCanJoinOnlyBeforeAdmissionNotInsideEffect(bool insideEffect)
+    {
+        using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var files = new Assets(signed); using var floor = files.OpenFloor();
+        var source = files.Source(floor, atomic: true); var prior = await RefreshAsync(source, signed);
+        var retained = await floor.ReadAsync(default);
+        files.InstallSuccessor(await signed.AdvancePublicNetworkAsync());
+        if (insideEffect)
+        {
+            await Assert.ThrowsAsync<DeepIdV2NetworkObservationChangedException>(() => source.ReadPublicationAuthorityAsync(default).AsTask());
+            Assert.Equal(1, signed.ProofReads);
+            Assert.True(FileDeepIdV2NetworkFloorStore.Same(retained, await floor.ReadAsync(default)));
+        }
+        else
+        {
+            var admitted = await source.ReadAdmissionAuthorityAsync(default);
+            Assert.Equal(prior.ProtectedLkg!.ViewGeneration + 1, admitted.Network.ProtectedLkg!.ViewGeneration);
+            Assert.Equal(2, signed.ProofReads);
+            Assert.Same(admitted.Network, (await source.ReadPublicationAuthorityAsync(default)).Network);
+        }
+    }
+
+    [Fact]
+    public async Task ReceiveObservationRejoinsActualCustodyAndSchedulesRefreshWithoutMintingProofs()
+    {
+        using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var files = new Assets(signed); using var floor = files.OpenFloor();
+        var source = files.Source(floor); var network = await RefreshAsync(source, signed);
+        var retained = await floor.ReadAsync(default);
+        for (var i = 0; i < 12; i++) Assert.True(await source.ObserveReceiveNetworkAsync(network, default));
+        Assert.Equal(1, signed.ProofReads);
+        var fresh = signed.Freshness;
+        var signedEndSample = checked(fresh.MonotonicSample + network.MaximumRecordExpiryUnixSeconds - fresh.TrustedUpperUnixSeconds);
+        signed.Sample = Math.Min(fresh.FreshnessDeadlineMonotonicSeconds, signedEndSample) - 20;
+        Assert.False(await source.ObserveReceiveNetworkAsync(network, default));
+        Assert.Equal(1, signed.ProofReads);
+        Assert.True(FileDeepIdV2NetworkFloorStore.Same(retained, await floor.ReadAsync(default)));
+        files.DeleteNetworkFloor();
+        await Assert.ThrowsAsync<InvalidDataException>(() => source.ObserveReceiveNetworkAsync(network, default).AsTask());
+        Assert.Equal(1, signed.ProofReads);
+    }
+
+    [Fact]
+    public async Task ReceiveObservationCannotRepairChangedPublicSourceOrReacquireItself()
+    {
+        using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var files = new Assets(signed); using var floor = files.OpenFloor();
+        var source = files.Source(floor, atomic: true); var network = await RefreshAsync(source, signed);
+        var retained = await floor.ReadAsync(default);
+        files.InstallSuccessor(await signed.AdvancePublicNetworkAsync());
+        Assert.False(await source.ObserveReceiveNetworkAsync(network, default));
+        Assert.Equal(1, signed.ProofReads);
+        Assert.True(FileDeepIdV2NetworkFloorStore.Same(retained, await floor.ReadAsync(default)));
+        await Assert.ThrowsAsync<CryptographicException>(() => source.ObserveReceiveNetworkAsync(network, default).AsTask());
+        Assert.Equal(1, signed.ProofReads);
+    }
+
+    [Fact]
+    public async Task InvalidChangedSourceCannotBeRepairedOrPromotedByAdmission()
+    {
+        using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var files = new Assets(signed); using var floor = files.OpenFloor();
+        var source = files.Source(floor); _ = await RefreshAsync(source, signed);
+        var retained = await floor.ReadAsync(default); files.CorruptIssuerSignature();
+        await Assert.ThrowsAnyAsync<CryptographicException>(() => source.ReadAdmissionAuthorityAsync(default).AsTask());
+        Assert.Equal(2, signed.ProofReads);
+        Assert.True(FileDeepIdV2NetworkFloorStore.Same(retained, await floor.ReadAsync(default)));
+        await Assert.ThrowsAnyAsync<CryptographicException>(() => source.ReadAdmissionAuthorityAsync(default).AsTask());
+        Assert.Equal(2, signed.ProofReads); // No observation/readiness fallback.
     }
 
     [Fact]
@@ -419,6 +493,21 @@ public sealed class DeepIdV2NetworkPlacementRuntimeTests
                 Write("network.ncp2", XPointNetworkClosureWireCodec.EncodeResponse(DeepIdV2PublicationAuthorityFixture.Network,
                     [signed.ExactAuthority], [signed.ExactTimePolicy], [signed.Policy], [signed.View],
                     [signed.Head], signed.Descriptors, [signed.Projection], [bytes]));
+        }
+        internal void InstallSuccessor(AuthoredXPointNetworkOperationalSuccessor successor)
+        {
+            Write("network.ncp2", XPointNetworkClosureWireCodec.EncodeResponse(DeepIdV2PublicationAuthorityFixture.Network,
+                [signed.ExactAuthority], [signed.ExactTimePolicy],
+                [File.ReadAllBytes(policy), successor.ExactXvp1], [File.ReadAllBytes(view), successor.ExactXnv1],
+                [File.ReadAllBytes(head), successor.ExactXnh1], successor.ExactXnd1,
+                [File.ReadAllBytes(projection), successor.ExactPmt2],
+                [File.ReadAllBytes(mailboxAuthority), successor.ExactPma2]));
+            File.WriteAllBytes(policy, successor.ExactXvp1.ToArray());
+            File.WriteAllBytes(view, successor.ExactXnv1.ToArray());
+            File.WriteAllBytes(head, successor.ExactXnh1.ToArray());
+            File.WriteAllBytes(projection, successor.ExactPmt2.ToArray());
+            File.WriteAllBytes(mailboxAuthority, successor.ExactPma2.ToArray());
+            for (var i = 0; i < nodes.Length; i++) File.WriteAllBytes(nodes[i], successor.ExactXnd1[i].ToArray());
         }
         internal bool NetworkFloorExists => File.Exists(Path.Combine(root, "node-state", "did2-network-state", "floor.bin"));
         internal void DeleteNetworkFloor() => File.Delete(Path.Combine(root, "node-state", "did2-network-state", "floor.bin"));

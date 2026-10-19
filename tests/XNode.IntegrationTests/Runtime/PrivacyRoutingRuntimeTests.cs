@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using Deep.Protocol.DeepExtension.ManagedIngress;
 using Deep.Protocol.DeepExtension.PrivacyRouting;
 using Microsoft.AspNetCore.Http;
@@ -13,6 +14,49 @@ namespace XNode.IntegrationTests.Runtime;
 
 public sealed class PrivacyRoutingRuntimeTests
 {
+    [Fact]
+    public async Task ObservedReceiveBindingsPollCustodyWithoutRepeatedProofAcquisitionAndFailClosed()
+    {
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var configuration = EnabledTestConfiguration();
+        var source = new ObservedBindingSource(Binding(configuration, fixture.NetworkContext));
+        await using var capability = new PrivacyRoutingProductionCapability(configuration, source, TimeSpan.FromMilliseconds(20));
+        await capability.StartAsync(default);
+        await WaitUntilAsync(() => source.Observations >= 3);
+        Assert.Equal(1, source.Calls);
+        await capability.GetCurrentAsync(default);
+        Assert.Equal(1, source.Calls);
+        source.Due = true;
+        await capability.GetCurrentAsync(default);
+        Assert.True(source.Calls >= 2);
+        source.Due = false; source.FailObservation = true;
+        await Assert.ThrowsAsync<CryptographicException>(() => capability.GetCurrentAsync(default).AsTask());
+        Assert.False(capability.IsVerified);
+        await capability.StopAsync(default);
+        var observed = source.Observations;
+        await Task.Delay(60);
+        Assert.Equal(observed, source.Observations);
+    }
+
+    private sealed class ObservedBindingSource(OnionHostReceiveBinding binding) : IOnionHostReceiveBindingSource, IObservedOnionHostReceiveBindingSource
+    {
+        internal int Calls, Observations;
+        internal volatile bool Due, FailObservation;
+        public bool CanObserve => true;
+        public ValueTask<OnionHostReceiveBinding> GetCurrentAsync(CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested(); Interlocked.Increment(ref Calls);
+            if (FailObservation) throw new CryptographicException("Closed test acquisition also rejected.");
+            return ValueTask.FromResult(binding);
+        }
+        public ValueTask<bool> ObserveAsync(OnionHostReceiveBinding retained, CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested(); Interlocked.Increment(ref Observations);
+            if (FailObservation) throw new CryptographicException("Closed test observation rejected.");
+            return ValueTask.FromResult(!Due);
+        }
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

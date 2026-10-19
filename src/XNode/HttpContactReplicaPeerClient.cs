@@ -115,6 +115,12 @@ internal sealed class HttpContactReplicaPeerClient : IContactReplicaPeerClient
                     StringComparison.Ordinal)
                 || response.Content.Headers.ContentEncoding.Count != 0)
             {
+                try { logger?.LogWarning("Contact replica envelope rejected: operation={Operation}; status={Status}; versionOk={VersionOk}; lengthOk={LengthOk}; mediaOk={MediaOk}; encodingOk={EncodingOk}.",
+                    command.Operation, (int)response.StatusCode, response.Version == HttpVersion.Version20,
+                    response.Content.Headers.ContentLength is >= 76 and <= ContactReplicaWireCodec.MaximumResponseBytes,
+                    string.Equals(response.Content.Headers.ContentType?.ToString(), ContactReplicaHttpContract.MediaType, StringComparison.Ordinal),
+                    response.Content.Headers.ContentEncoding.Count == 0); }
+                catch { /* Closed diagnostics cannot replace the original uncertain outcome. */ }
                 throw new IOException("The contact replica response envelope is not exact.");
             }
 

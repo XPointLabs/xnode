@@ -208,6 +208,11 @@ internal interface IDeepIdV2ReceiveNetworkSource
         CancellationToken cancellationToken);
 }
 
+internal interface IObservedDeepIdV2ReceiveNetworkSource
+{
+    ValueTask<bool> ObserveReceiveNetworkAsync(VerifiedOnionNetworkContext retained, CancellationToken cancellationToken);
+}
+
 internal interface IDeepIdV2PreKeyClaimPlacementSource
 {
     ValueTask<ContactServicePlacementCapability> MintPreKeyClaimAsync(
@@ -222,7 +227,14 @@ internal sealed record DeepIdV2ContactStoreAuthority(
 internal interface IDeepIdV2ContactStoreAuthoritySource
 {
     ValueTask<DeepIdV2ContactStoreAuthority> ReadPublicationAuthorityAsync(CancellationToken cancellationToken);
+    // Only the initial, pre-effect admission may ask the acquisition owner to
+    // join a changed public closure. All in-operation fences remain observers.
+    ValueTask<DeepIdV2ContactStoreAuthority> ReadAdmissionAuthorityAsync(CancellationToken cancellationToken) =>
+        ReadPublicationAuthorityAsync(cancellationToken);
 }
+
+internal sealed class DeepIdV2NetworkObservationChangedException() : CryptographicException(
+    "The acquired DID2 observation no longer binds the current public source.");
 
 internal sealed class DeepIdV2NetworkPlacementRuntime(
     IDeepIdV2CurrentDirectoryProofSource proofs,
@@ -231,7 +243,7 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
     FileDeepIdV2NetworkFloorStore floor,
     IOnionMonotonicClock clock, TimeProvider? resourceTimeProvider = null,
     ILogger<DeepIdV2NetworkPlacementRuntime>? logger = null) : IDeepIdV2PreKeyPlacementSource, IDeepIdV2ReceiveNetworkSource,
-    IDeepIdV2PreKeyClaimPlacementSource, IDeepIdV2ContactStoreAuthoritySource
+    IDeepIdV2PreKeyClaimPlacementSource, IDeepIdV2ContactStoreAuthoritySource, IObservedDeepIdV2ReceiveNetworkSource
 {
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly TimeProvider resourceClock = resourceTimeProvider ?? TimeProvider.System;
@@ -287,6 +299,45 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
         var current = await ReadNetworkAsync(observer, default, default, default, cancellationToken,
             observational: true).ConfigureAwait(false);
         return new(current.Network, current.Authority, current.Freshness, new OnionTrustedTimeAuthority(clock), current.MailboxAuthority);
+    }
+
+    public async ValueTask<DeepIdV2ContactStoreAuthority> ReadAdmissionAuthorityAsync(CancellationToken cancellationToken)
+    {
+        try { return await ReadPublicationAuthorityAsync(cancellationToken).ConfigureAwait(false); }
+        catch (DeepIdV2NetworkObservationChangedException)
+        {
+            // No mailbox/native effect or grant has been admitted. Reacquire
+            // once under the existing owner gate/budget; never replay an effect
+            // or revive a captured proof. Invalid new input still fails closed.
+            cancellationToken.ThrowIfCancellationRequested();
+            var observer = artifacts.Observer ?? throw new InvalidOperationException("DID2 admission requires the configured observer.");
+            var current = await ReadNetworkAsync(observer, default, default, default, cancellationToken).ConfigureAwait(false);
+            return new(current.Network, current.Authority, current.Freshness,
+                new OnionTrustedTimeAuthority(clock), current.MailboxAuthority);
+        }
+    }
+
+    public async ValueTask<bool> ObserveReceiveNetworkAsync(VerifiedOnionNetworkContext retained, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(retained);
+        try { retained.EnsureCurrent(); }
+        catch (OnionBoundaryException error) when (error.Code == "trusted-time-expired") { return false; }
+        DeepIdV2ContactStoreAuthority current;
+        try { current = await ReadPublicationAuthorityAsync(cancellationToken).ConfigureAwait(false); }
+        catch (DeepIdV2NetworkObservationChangedException) { return false; }
+        var observed = Volatile.Read(ref observation);
+        if (observed is null || !ReferenceEquals(observed.Freshness, current.Freshness) ||
+            !CryptographicOperations.FixedTimeEquals(OnionNetworkProtectedHistoryCodec.Encode(retained),
+                OnionNetworkProtectedHistoryCodec.Encode(current.Network))) return false;
+        // Scheduling only; all actual source/floor/clock/issuer checks above
+        // remain mandatory, including for bindings younger than ten seconds.
+        var sample = observed.Reading.SampleSeconds;
+        var fresh = current.Freshness;
+        if (!fresh.IsCurrentAtMonotonic(observed.Reading.BootId.Span, sample)) return false;
+        var upper = checked(fresh.TrustedUpperUnixSeconds + (sample - fresh.MonotonicSample));
+        var end = retained.MaximumRecordExpiryUnixSeconds;
+        var due = fresh.FreshnessDeadlineMonotonicSeconds - sample <= 30 || end <= upper || end - upper <= 30;
+        retained.EnsureCurrent(); cancellationToken.ThrowIfCancellationRequested(); return !due;
     }
 
     public async ValueTask<ContactServicePlacementCapability> MintPreKeyClaimAsync(
@@ -389,6 +440,8 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
                 exactSource = artifacts.ReadCurrent();
             using var exact = exactSource;
             var sourceDigest = ComputeSourceDigest(exact);
+            if (observed is not null && !CryptographicOperations.FixedTimeEquals(sourceDigest, observed.SourceDigest))
+                throw new DeepIdV2NetworkObservationChangedException();
             var time = new OnionTrustedTimeAuthority(clock);
             VerifiedOnionNetworkContext network;
             var verifiedAt = observed?.NetworkVerifiedAt ?? 0;

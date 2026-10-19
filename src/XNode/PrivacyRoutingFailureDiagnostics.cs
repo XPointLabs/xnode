@@ -31,6 +31,9 @@ internal sealed class PrivacyRoutingFailureDiagnostics(ILogger? logger)
                 {
                     GroupControlAuthorityUnavailableException group => group.Rejection,
                     ContactAdmissionIntervalException contact => contact.Rejection,
+                    Deep.Protocol.DeepExtension.PrivacyRouting.OnionBoundaryException { Code: "dtt-binding-invalid" }
+                        when error.Data["Deep.DttBinding.Check"] is string check &&
+                            check is "Authority" or "WitnessPolicy" or "ViewCore" or "ViewGeneration" or "Uncertainty" or "ExactProof" => check,
                     _ => GroupControlAuthorityRejection.Unclassified
                 };
                 logger.LogWarning("ONION processing incomplete: phase={Phase}; category={Category}; method={Method}; il={Il}; callerMethod={CallerMethod}; callerIl={CallerIl}; depth={Depth}; authorityCheck={AuthorityCheck}.",

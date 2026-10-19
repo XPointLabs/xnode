@@ -560,6 +560,26 @@ internal sealed partial class DeepIdV2PublicationAuthorityFixture : IDisposable,
     internal async Task RefreshNetworkProofAsync(ulong sample, ulong proofTime) =>
         NetworkContext = await VerifyNetworkAtAsync(sample, proofTime);
 
+    internal async Task<AuthoredXPointNetworkOperationalSuccessor> AdvancePublicNetworkAsync()
+    {
+        using var root = new TestSigner(0x20);
+        using var w1 = new TestSigner(0x30); using var w2 = new TestSigner(0x31); using var w3 = new TestSigner(0x32);
+        var rollovers = nodes.Select((signer, index) => new XPointNetworkOperationalNodeRollover(
+            signer, Bytes(32, (byte)(0x60 + index)), Bytes(32, (byte)(0x68 + index)),
+            ScalarMult.Base(Bytes(32, (byte)(0x40 + index))),
+            ScalarMult.Base(Bytes(32, (byte)(0x48 + index))))).ToArray();
+        var successor = await XPointNetworkOperationalSuccessorAuthor.AuthorAsync(new(
+            Bytes(32, 0x13), Authority, [root], [w1, w2, w3], rollovers,
+            Policy, Descriptors, [View], Head, MailboxAuthority, Projection,
+            XPointNetworkOperationalSuccessorAuthor.ComputeXnh1CoreHash(Head.Span),
+            ContactCodec.Decode("PMT2", Projection.Span).ArtifactHash.Span,
+            [.. "ADH1"u8, 0, 1, .. directoryMutation.ProtectedHead.CoreHash.Span], 1_070, 1_080, 1_500));
+        Policy = successor.ExactXvp1; View = successor.ExactXnv1; Head = successor.ExactXnh1;
+        Descriptors = successor.ExactXnd1; Projection = successor.ExactPmt2; MailboxAuthority = successor.ExactPma2;
+        await RefreshDirectoryProofAsync(Sample, 1_100);
+        return successor;
+    }
+
     // Raw, nonce-bound server response. Configured consumers must independently
     // verify it through their HTTP reader and persistent directory/network floors.
     internal async Task<byte[]> AuthorHttpProofAsync(DeepIdV2DirectoryProofWireRequest query)

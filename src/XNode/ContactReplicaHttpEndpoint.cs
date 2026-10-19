@@ -17,7 +17,8 @@ internal static class ContactReplicaHttpEndpoint
         RouterNodeOptions node,
         IClock clock,
         int peerListenerPort,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        PrivacyRoutingFailureDiagnostics? diagnostics = null)
     {
         if (!enabled
             || context.Connection.LocalPort != peerListenerPort
@@ -120,6 +121,7 @@ internal static class ContactReplicaHttpEndpoint
             or Deep.Protocol.DeepExtension.PrivacyRouting.OnionBoundaryException
             or ContactServiceReceiptAuthorityException)
         {
+            diagnostics?.Report("ContactAdmission", exception);
             return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
         }
     }
@@ -169,6 +171,8 @@ internal static class ContactReplicaEndpointMapping
         // Both flags being enabled must not register competing HTTP endpoints.
         var enabled = plan.MapReplicaEndpoint || did2ReplicaStageEnabled;
         if (!enabled) return endpoints;
+        var diagnostics = new PrivacyRoutingFailureDiagnostics(endpoints.ServiceProvider
+            .GetService<ILoggerFactory>()?.CreateLogger("XNode.ContactReplicaHttpEndpoint"));
 
         endpoints.MapPost(ContactReplicaHttpContract.Route, (
             HttpContext context,
@@ -181,7 +185,7 @@ internal static class ContactReplicaEndpointMapping
             CancellationToken cancellationToken) =>
             ContactReplicaHttpEndpoint.HandleCoreAsync(context, enabled,
                 options, replay, receiver, placements, node, clock, peerListenerPort,
-                cancellationToken));
+                cancellationToken, diagnostics));
         return endpoints;
     }
 }

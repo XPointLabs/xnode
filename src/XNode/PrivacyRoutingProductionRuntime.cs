@@ -8,11 +8,17 @@ using XNode.Core.PrivacyRouting;
 
 namespace XNode;
 
+internal interface IObservedOnionHostReceiveBindingSource
+{
+    bool CanObserve { get; }
+    ValueTask<bool> ObserveAsync(OnionHostReceiveBinding retained, CancellationToken cancellationToken);
+}
+
 internal sealed class VerifiedOnionHostReceiveBindingSource(
     IDeepIdV2ReceiveNetworkSource networks,
     RouterNodeOptions node,
     PrivacyRoutingConfiguration configuration)
-    : IOnionHostReceiveBindingSource
+    : IOnionHostReceiveBindingSource, IObservedOnionHostReceiveBindingSource
 {
     private readonly IDeepIdV2ReceiveNetworkSource networks = networks
         ?? throw new ArgumentNullException(nameof(networks));
@@ -20,6 +26,17 @@ internal sealed class VerifiedOnionHostReceiveBindingSource(
         ?? throw new ArgumentNullException(nameof(node))).GetRouterId().ToBytes();
     private readonly PrivacyRoutingConfiguration configuration = configuration
         ?? throw new ArgumentNullException(nameof(configuration));
+
+    public bool CanObserve => networks is IObservedDeepIdV2ReceiveNetworkSource;
+    public ValueTask<bool> ObserveAsync(OnionHostReceiveBinding retained, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!configuration.Enabled || !configuration.OwnsHandle(retained.KeyHandleId.Span))
+            throw new InvalidOperationException("The observed binding differs from installed receive custody.");
+        return networks is IObservedDeepIdV2ReceiveNetworkSource observer
+            ? observer.ObserveReceiveNetworkAsync(retained.Network, cancellationToken)
+            : ValueTask.FromResult(false);
+    }
 
     public async ValueTask<OnionHostReceiveBinding> GetCurrentAsync(
         CancellationToken cancellationToken)
@@ -66,6 +83,7 @@ internal sealed class VerifiedOnionHostReceiveBindingSource(
 
 internal sealed class PrivacyRoutingProductionCapability : IHostedService, IAsyncDisposable
 {
+    private static readonly TimeSpan MaximumObservedBindingResourceAge = TimeSpan.FromMinutes(2);
     private readonly PrivacyRoutingConfiguration configuration;
     private readonly IOnionHostReceiveBindingSource receiveBindings;
     private readonly TimeSpan refreshInterval;
@@ -167,7 +185,10 @@ internal sealed class PrivacyRoutingProductionCapability : IHostedService, IAsyn
                 throw unavailable;
             var retained = Volatile.Read(ref verifiedBinding);
             if (!forceRefresh && retained is not null &&
-                Stopwatch.GetElapsedTime(bindingCreatedTimestamp) < refreshInterval)
+                (receiveBindings is IObservedOnionHostReceiveBindingSource { CanObserve: true } observer
+                    ? Stopwatch.GetElapsedTime(bindingCreatedTimestamp) < MaximumObservedBindingResourceAge &&
+                        await observer.ObserveAsync(retained, request.Token).ConfigureAwait(false)
+                    : Stopwatch.GetElapsedTime(bindingCreatedTimestamp) < refreshInterval))
             {
                 try { retained.Network.EnsureCurrent(); }
                 catch (OnionBoundaryException) { retained = null; Volatile.Write(ref verifiedBinding, null); }
@@ -262,7 +283,8 @@ internal sealed class PrivacyRoutingProductionCapability : IHostedService, IAsyn
         {
             while (await timer.WaitForNextTickAsync(lifetime.Token).ConfigureAwait(false))
             {
-                try { _ = await ReadCurrentAsync(forceRefresh: true, lifetime.Token).ConfigureAwait(false); }
+                try { _ = await ReadCurrentAsync(forceRefresh: receiveBindings is not
+                    IObservedOnionHostReceiveBindingSource { CanObserve: true }, lifetime.Token).ConfigureAwait(false); }
                 catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { break; }
                 catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException or
                     HttpRequestException or TimeoutException or UnauthorizedAccessException or CryptographicException or

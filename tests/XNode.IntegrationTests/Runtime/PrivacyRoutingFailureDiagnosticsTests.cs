@@ -5,6 +5,34 @@ namespace XNode.IntegrationTests.Runtime;
 public sealed class PrivacyRoutingFailureDiagnosticsTests
 {
     [Theory]
+    [InlineData("Authority", true)]
+    [InlineData("WitnessPolicy", true)]
+    [InlineData("ViewCore", true)]
+    [InlineData("ViewGeneration", true)]
+    [InlineData("Uncertainty", true)]
+    [InlineData("ExactProof", true)]
+    [InlineData("DO-NOT-EXPORT", false)]
+    public async Task DttDiagnosticAcceptsOnlyFiniteBindingChecks(string check, bool accepted)
+    {
+        using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        await signed.AdvancePublicNetworkAsync();
+        var original = signed.CompletedOperational;
+        var error = await Assert.ThrowsAsync<Deep.Protocol.DeepExtension.PrivacyRouting.OnionBoundaryException>(() =>
+            Deep.Protocol.DeepExtension.PrivacyRouting.OnionNetworkContextVerifier.VerifyAsync(signed.Authority, signed.Freshness,
+                [original.ExactXvp1], [original.ExactXnv1], [original.ExactXnh1], original.ExactXnd1,
+                [original.ExactPmt2], null, new(signed), default).AsTask());
+        Assert.Equal("dtt-binding-invalid", error.Code);
+        Assert.Equal("ViewCore", error.Data["Deep.DttBinding.Check"]);
+        error.Data["Deep.DttBinding.Check"] = check;
+        var logger = new Capture(false);
+        new PrivacyRoutingFailureDiagnostics(logger).Report("Dispatch", error);
+        var row = Assert.Single(logger.Rows);
+        Assert.Equal(accepted ? (object)check : GroupControlAuthorityRejection.Unclassified, row.Values["AuthorityCheck"]);
+        Assert.DoesNotContain("DO-NOT-EXPORT", string.Join(" ", row.Values.Values));
+        Assert.Null(row.Error);
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public void ObservationIsClosedBoundedAndDoesNotReplaceFailure(bool throwing)
