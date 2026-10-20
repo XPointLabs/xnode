@@ -182,7 +182,9 @@ internal sealed partial class CurrentMailboxAdmission(
     private async ValueTask<T> WithAuthorityAsync<T>(byte[]? exactGrant, MailboxAuthenticatedGrant? grant,
         Func<AuthorityScope, CancellationToken, ValueTask<T>> action, CancellationToken token)
     {
-        var authority = await source.ReadAdmissionAuthorityAsync(token).ConfigureAwait(false);
+        var authority = grant is null
+            ? await source.ReadAdmissionAuthorityAsync(token).ConfigureAwait(false)
+            : await source.ReadGrantAdmissionAuthorityAsync(grant, token).ConfigureAwait(false);
         var host = await MailboxHostAuthorityV2Verifier.VerifyAsync(authority.Network, authority.Authority,
             authority.MailboxAuthority.ExactPma2, authority.TrustedTime, token).ConfigureAwait(false);
         _ = await host.ResolveReplicaAsync(node, token).ConfigureAwait(false);

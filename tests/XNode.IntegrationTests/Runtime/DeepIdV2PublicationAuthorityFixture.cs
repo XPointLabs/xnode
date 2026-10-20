@@ -560,6 +560,22 @@ internal sealed partial class DeepIdV2PublicationAuthorityFixture : IDisposable,
     internal async Task RefreshNetworkProofAsync(ulong sample, ulong proofTime) =>
         NetworkContext = await VerifyNetworkAtAsync(sample, proofTime);
 
+    internal async Task AdvanceDirectoryLifetimeAsync(ulong validUntil)
+    {
+        var original = Freshness.CurrentCheckpoint!;
+        using var w1 = new TestSigner(0x30); using var w2 = new TestSigner(0x31); using var w3 = new TestSigner(0x32);
+        var next = await DeepIdV2DirectoryHeadAuthor.AdvanceAsync(Authority, directoryMutation.ProtectedHead,
+            new(directoryMutation.ExactAllTransitions, [original], [], 990, validUntil, 2), [w1, w2, w3]);
+        initialDirectoryFloor = directoryMutation.ProtectedHead;
+        var lookup = DeepIdV2AccountDirectoryLookupCodec.Author(Publisher, Network,
+            initialDirectoryFloor.LogGeneration, initialDirectoryFloor.CoreHash.Span, 1, new byte[38], new byte[32]);
+        proofQuery = VerifiedDeepIdV2DirectoryQuery.VerifyDid2(lookup, Publisher);
+        proofMaterial = DeepIdV2DirectoryProofMaterialAuthor.Create(next.ProtectedHead, next.ExactAllTransitions,
+            [original], original.Checkpoint.DirectoryLeafKey.Span, initialDirectoryFloor);
+        exactDirectoryHead = next.ExactAdh1; directoryMutation = next;
+        await RefreshNetworkProofAsync(Sample, 1_100);
+    }
+
     internal async Task<AuthoredXPointNetworkOperationalSuccessor> AdvancePublicNetworkAsync()
     {
         using var root = new TestSigner(0x20);

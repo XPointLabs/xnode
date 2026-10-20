@@ -1,5 +1,7 @@
 using System.Security.Cryptography;
 using Deep.Protocol.ApplicationCore;
+using Deep.Protocol.AccountDirectoryV1;
+using Deep.Protocol.DeepExtension.MailboxCapabilities;
 using Deep.Protocol.DeepExtension.PrivacyRouting;
 using Deep.Protocol.XPointNetworkV1;
 using Microsoft.AspNetCore.DataProtection;
@@ -11,6 +13,75 @@ namespace XNode.IntegrationTests.Runtime;
 /// <summary>Actual file source/floor/runtime with real signed proof; no HTTP or device claim.</summary>
 public sealed class DeepIdV2NetworkPlacementRuntimeTests
 {
+    [Theory]
+    [InlineData("covered")]
+    [InlineData("renew")]
+    [InlineData("unavailable")]
+    [InlineData("beyond")]
+    [InlineData("signature")]
+    [InlineData("same-head")]
+    public async Task GrantAdmissionAcquiresNewDirectoryProofOnlyWhenNeededButNeverExtendsCapturedLeaseOrBypassesBounds(string mode)
+    {
+        using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        // PMA2 and network records keep their original genuine signed bounds.
+        // Only the current, witness-signed ADH1 window changes with full lineage.
+        await signed.AdvanceDirectoryLifetimeAsync(1_400);
+        using var files = new Assets(signed); using var floor = files.OpenFloor();
+        var proofSource = new RenewedDirectoryProofSource(signed, mode == "unavailable", mode == "same-head");
+        var source = files.Source(floor, proofSource: proofSource);
+        var original = await RefreshAsync(source, signed);
+        var originalEnd = original.MaximumRecordExpiryUnixSeconds;
+        var deadline = signed.Freshness.FreshnessDeadlineMonotonicSeconds;
+        var oldHost = await MailboxHostAuthorityV2Verifier.VerifyAsync(original, signed.Authority, signed.MailboxAuthority, new(signed));
+        var expiry = mode == "covered" ? originalEnd : mode == "beyond" ? 1_501UL : originalEnd + 1;
+        var exact = MailboxGrantRevocationStoreTests.Grant(signed, oldHost, MailboxCapabilityDomain.Deposit, 0x51,
+            expiry, 1_095);
+        if (mode == "signature") exact[^1] ^= 1;
+        var grant = MailboxAuthenticatedCapabilityCodec.DecodeGrant(exact);
+        if (mode != "covered")
+            await Assert.ThrowsAsync<CryptographicException>(() => oldHost.EnsureGrantCurrentAsync(exact).AsTask());
+        if (mode == "unavailable")
+        {
+            await Assert.ThrowsAsync<CryptographicException>(() => source.ReadGrantAdmissionAuthorityAsync(grant, default).AsTask());
+            await Assert.ThrowsAsync<CryptographicException>(() => source.ReadPublicationAuthorityAsync(default).AsTask());
+            Assert.Equal(2, proofSource.Reads);
+            return;
+        }
+        var admitted = await source.ReadGrantAdmissionAuthorityAsync(grant, default);
+        Assert.Equal(mode is "covered" or "signature" ? 1 : 2, proofSource.Reads);
+        Assert.Equal(originalEnd, original.MaximumRecordExpiryUnixSeconds); // Captured loan is not upgraded.
+        if (mode is "covered" or "signature") Assert.Same(original, admitted.Network);
+        else Assert.NotSame(original, admitted.Network);
+        var host = await MailboxHostAuthorityV2Verifier.VerifyAsync(admitted.Network, admitted.Authority,
+            admitted.MailboxAuthority.ExactPma2, admitted.TrustedTime);
+        if (mode is "beyond" or "signature" or "same-head")
+            await Assert.ThrowsAsync<CryptographicException>(() => host.EnsureGrantCurrentAsync(exact).AsTask());
+        else
+        {
+            var failure = await Record.ExceptionAsync(() => host.EnsureGrantCurrentAsync(exact).AsTask());
+            Assert.True(failure is null, failure?.Data["Deep.MailboxAuthority.Check"]?.ToString() ?? failure?.GetType().Name);
+        }
+        if (mode == "covered") Assert.Equal(deadline, admitted.Freshness.FreshnessDeadlineMonotonicSeconds);
+    }
+
+    private sealed class RenewedDirectoryProofSource(DeepIdV2PublicationAuthorityFixture signed, bool unavailable, bool sameHead)
+        : IDeepIdV2CurrentDirectoryProofSource
+    {
+        internal int Reads { get; private set; }
+        public async ValueTask<VerifiedDeepIdV2DirectoryFreshness> ReadCurrentAsync(ParsedDid2 did2, CancellationToken ct)
+        {
+            if (++Reads > 1)
+            {
+                if (unavailable) throw new CryptographicException("Injected unavailable current proof.");
+                if (sameHead) await signed.RefreshNetworkProofAsync(signed.Sample, 1_100);
+                else await signed.AdvanceDirectoryLifetimeAsync(1_500);
+            }
+            return await signed.ReadCurrentAsync(did2, ct);
+        }
+        public ValueTask ValidateObservedAsync(VerifiedDeepIdV2DirectoryFreshness freshness, CancellationToken ct) =>
+            signed.ValidateObservedAsync(freshness, ct);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -514,7 +585,8 @@ public sealed class DeepIdV2NetworkPlacementRuntimeTests
         internal FileDeepIdV2NetworkFloorStore OpenFloor(Action? afterFloorWrite = null) => new(Path.Combine(root, "node-state"),
             protector, new MailboxStorageSecurity(), new ObservedDurability(afterFloorWrite));
         internal DeepIdV2NetworkPlacementRuntime Source(FileDeepIdV2NetworkFloorStore floor,
-            bool observer = true, bool atomic = false, bool duplicateIssuer = false, TimeProvider? resourceTimeProvider = null)
+            bool observer = true, bool atomic = false, bool duplicateIssuer = false, TimeProvider? resourceTimeProvider = null,
+            IDeepIdV2CurrentDirectoryProofSource? proofSource = null)
         {
             var issuerPaths = new[] { mailboxAuthority };
             if (duplicateIssuer)
@@ -530,7 +602,7 @@ public sealed class DeepIdV2NetworkPlacementRuntimeTests
                         issuerPaths.Select(path => (ReadOnlyMemory<byte>)File.ReadAllBytes(path)).ToArray())), this.observer)
                 : new DeepIdV2NetworkClosureFileSource([policy], [view], [head], nodes, [projection],
                     issuerPaths, observer ? this.observer : "");
-            return new(signed, new(signed.GenesisPin, [authority], [time]), source, floor, signed, resourceTimeProvider);
+            return new(proofSource ?? signed, new(signed.GenesisPin, [authority], [time]), source, floor, signed, resourceTimeProvider);
         }
         public void Dispose() => Directory.Delete(root, recursive: true);
     }

@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using Deep.Protocol.AccountDirectoryV1;
 using Deep.Protocol.ApplicationCore;
 using Deep.Protocol.ContactV1;
+using Deep.Protocol.DeepExtension.MailboxCapabilities;
 using Deep.Protocol.DeepExtension.PrivacyRouting;
 using Deep.Protocol.XPointNetworkV1;
 
@@ -231,6 +232,10 @@ internal interface IDeepIdV2ContactStoreAuthoritySource
     // join a changed public closure. All in-operation fences remain observers.
     ValueTask<DeepIdV2ContactStoreAuthority> ReadAdmissionAuthorityAsync(CancellationToken cancellationToken) =>
         ReadPublicationAuthorityAsync(cancellationToken);
+    // Scheduling input from the actual decoded request, never permission. The
+    // returned host must still verify the complete original grant independently.
+    ValueTask<DeepIdV2ContactStoreAuthority> ReadGrantAdmissionAuthorityAsync(MailboxAuthenticatedGrant grant,
+        CancellationToken cancellationToken) => ReadAdmissionAuthorityAsync(cancellationToken);
 }
 
 internal sealed class DeepIdV2NetworkObservationChangedException() : CryptographicException(
@@ -315,6 +320,29 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
             return new(current.Network, current.Authority, current.Freshness,
                 new OnionTrustedTimeAuthority(clock), current.MailboxAuthority);
         }
+    }
+
+    public async ValueTask<DeepIdV2ContactStoreAuthority> ReadGrantAdmissionAuthorityAsync(MailboxAuthenticatedGrant grant,
+        CancellationToken cancellationToken)
+    {
+        var candidate = await ReadAdmissionAuthorityAsync(cancellationToken).ConfigureAwait(false);
+        if (grant.ExpiresAtUnixSeconds <= candidate.Network.MaximumRecordExpiryUnixSeconds) return candidate;
+        // Invalid caller signatures must not schedule an additional proof.
+        // This pure check is not grant admission: the host still checks every
+        // lifecycle/serial/assignment/time/revocation/holder constraint below.
+        var issuer = candidate.MailboxAuthority.ResolveIssuer(grant.Domain);
+        if (!CryptographicOperations.FixedTimeEquals(grant.NetworkId.Span, candidate.Network.NetworkId.Span) ||
+            !CryptographicOperations.FixedTimeEquals(grant.IssuerPublicKey.Span, issuer.PublicKey.Span) ||
+            !Sodium.PublicKeyAuth.VerifyDetached(grant.IssuerSignature.ToArray(),
+                MailboxAuthenticatedCapabilityCodec.GetGrantSigningBytes(grant), issuer.PublicKey.ToArray())) return candidate;
+        // An independently issued grant can end after the ADH1 carried by this
+        // still-live cached proof. Before any effect, acquire one NEW actual proof;
+        // never extend the old loan or remove the host's NetworkExpiry bound.
+        // A current-issuer signed expiry schedules at most one acquisition, not acceptance.
+        var observer = artifacts.Observer ?? throw new InvalidOperationException("DID2 grant admission requires the configured observer.");
+        var current = await ReadNetworkAsync(observer, default, default, default, cancellationToken).ConfigureAwait(false);
+        return new(current.Network, current.Authority, current.Freshness,
+            new OnionTrustedTimeAuthority(clock), current.MailboxAuthority);
     }
 
     public async ValueTask<bool> ObserveReceiveNetworkAsync(VerifiedOnionNetworkContext retained, CancellationToken cancellationToken)

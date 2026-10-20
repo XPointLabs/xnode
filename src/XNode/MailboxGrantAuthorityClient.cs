@@ -108,6 +108,26 @@ internal sealed class HttpsMailboxGrantAuthorityClient
         MailboxGrantAuthorityRequest request,
         CancellationToken cancellationToken)
     {
+        // Only this idempotent, exact-XMG issuer hop may repeat on authenticated
+        // HTTP503. Each attempt mints fresh forwarding authentication, never a
+        // replacement holder/request. Keep the parent deadline and all guards.
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
+        for (var attempt = 0; ; attempt++)
+        {
+            try { return await AuthorizeOnceAsync(request, deadline.Token).ConfigureAwait(false); }
+            catch (RetryableAuthorityResponseException) when (attempt == 0)
+            { await Task.Delay(TimeSpan.FromSeconds(1), deadline.Token).ConfigureAwait(false); }
+            catch (RetryableAuthorityResponseException)
+            { throw new ContactServiceUnavailableException("The private mailbox issuer remains unavailable."); }
+        }
+    }
+
+    private sealed class RetryableAuthorityResponseException : Exception { }
+
+    private async ValueTask<ReadOnlyMemory<byte>> AuthorizeOnceAsync(
+        MailboxGrantAuthorityRequest request, CancellationToken cancellationToken)
+    {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(request.Placement);
         cancellationToken.ThrowIfCancellationRequested();
@@ -189,6 +209,8 @@ internal sealed class HttpsMailboxGrantAuthorityClient
                 cancellationToken).ConfigureAwait(false);
             phase = GrantPhase.Response; status = (int)response.StatusCode;
             placement.Network.EnsureCurrent();
+            if (response.StatusCode == HttpStatusCode.ServiceUnavailable)
+                throw new RetryableAuthorityResponseException();
             if (response.StatusCode != HttpStatusCode.OK
                 || !string.Equals(response.Content.Headers.ContentType?.MediaType,
                     ResponseMediaType, StringComparison.Ordinal)
@@ -221,6 +243,8 @@ internal sealed class HttpsMailboxGrantAuthorityClient
         }
         catch (OperationCanceledException)
         { Report(phase, status, "deadline"); throw; }
+        catch (RetryableAuthorityResponseException)
+        { Report(phase, status, "unavailable"); throw; }
         catch (ContactServiceUnavailableException)
         {
             Report(phase, status, "unavailable");

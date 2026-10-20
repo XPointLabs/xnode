@@ -446,6 +446,70 @@ public sealed partial class Did2ContactServiceCompositionTests
     }
 
     [Theory]
+    [InlineData("recover", 2)]
+    [InlineData("busy", 2)]
+    [InlineData("invalid", 1)]
+    [InlineData("cancel", 1)]
+    public async Task GrantHttpTemporaryHopRetriesExactIntentWithFreshAuthenticationWithinOriginalBudget(string mode, int calls)
+    {
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync(authorContactPublication: true);
+        using var holder = new GrantSigner(0x51);
+        var owned = await DeepIdV2MailboxGrantRequestAuthor.AuthorDepositAsync(fixture.ContactRoute,
+            fixture.ContactPublication.LocatorHash, holder);
+        var request = ContactCodec.Decode("XMG2", owned.ExactXmg2.Span);
+        var expiry = BinaryPrimitives.ReadUInt64BigEndian(request.Field(10).Span);
+        var exact = MailboxGrantResultAuthor.AuthorFailure(request, MailboxGrantAcquisitionResultCode.Unavailable,
+            BinaryPrimitives.ReadUInt64BigEndian(request.Field(9).Span), expiry).CanonicalBytes.ToArray();
+        var placement = ContactServicePlacementFactory.Create(fixture.NetworkContext, ContactServiceRequestKind.ResolveInvite, request.Field(3));
+        var nodeId = placement.RankedReplicaNodeIds[0];
+        var node = new RouterNodeOptions { RouterId = Convert.ToHexStringLower(nodeId.Span),
+            Ed25519PrivateKey = Convert.ToHexStringLower(fixture.Node(nodeId.Span).Seed) };
+        using var cancellation = new CancellationTokenSource();
+        string? transcript = null, nonce = null;
+        using var handler = new GrantSequenceHandler(async (message, attempt, ct) =>
+        {
+            using var document = JsonDocument.Parse(await message.Content!.ReadAsByteArrayAsync(ct));
+            var json = document.RootElement;
+            var stable = string.Join("|", json.EnumerateObject().Where(p => p.Name is not ("nonce" or "signature" or "issuedAtUnixSeconds"))
+                .Select(p => p.Name + ":" + p.Value.GetRawText()));
+            if (transcript is not null) Assert.Equal(transcript, stable);
+            transcript = stable;
+            var currentNonce = json.GetProperty("nonce").GetString()!;
+            if (nonce is not null) Assert.NotEqual(nonce, currentNonce);
+            nonce = currentNonce;
+            var decodedNonce = Convert.FromBase64String(currentNonce.Replace('-', '+').Replace('_', '/').PadRight(44, '='));
+            var signatureText = json.GetProperty("signature").GetString()!;
+            var signature = Convert.FromBase64String(signatureText.Replace('-', '+').Replace('_', '/').PadRight(88, '='));
+            var signed = MailboxGrantAuthorityAuthentication.GetSigningBytes(owned.ExactXmg2.Span,
+                MailboxGrantAcquisitionResultCode.Unavailable, [], expiry, nodeId.Span,
+                json.GetProperty("issuedAtUnixSeconds").GetUInt64(), decodedNonce);
+            Assert.True(PublicKeyAuth.VerifyDetached(signature, signed, fixture.NetworkContext.ResolveNodeIdentityPublicKey(nodeId).ToArray()));
+            if (mode == "cancel") cancellation.Cancel();
+            if (mode == "invalid") return new(HttpStatusCode.BadRequest);
+            if (attempt == 1 || mode == "busy") return new(HttpStatusCode.ServiceUnavailable);
+            var content = new ByteArrayContent(exact);
+            content.Headers.ContentType = new(HttpsMailboxGrantAuthorityClient.ResponseMediaType);
+            content.Headers.ContentLength = exact.Length;
+            return new(HttpStatusCode.OK) { Content = content };
+        });
+        using var client = new HttpClient(handler);
+        var authority = new HttpsMailboxGrantAuthorityClient(client, node, new("https://issuer.example/"), new SystemClock());
+        var input = new MailboxGrantAuthorityRequest(placement, owned.ExactXmg2, MailboxGrantAcquisitionResultCode.Unavailable,
+            default, 0, 0, expiry, [new(nodeId, new byte[64]), new(placement.RankedReplicaNodeIds[1], new byte[64])],
+            MailboxGrantAuthorityEvidenceKind.CurrentRoute, 0);
+        if (mode == "recover") Assert.Equal(exact, (await authority.AuthorizeAsync(input, cancellation.Token)).ToArray());
+        else if (mode == "cancel") await Assert.ThrowsAnyAsync<OperationCanceledException>(() => authority.AuthorizeAsync(input, cancellation.Token).AsTask());
+        else await Assert.ThrowsAsync<ContactServiceUnavailableException>(() => authority.AuthorizeAsync(input, cancellation.Token).AsTask());
+        Assert.Equal(calls, handler.Calls);
+    }
+
+    private sealed class GrantSequenceHandler(Func<HttpRequestMessage, int, CancellationToken, Task<HttpResponseMessage>> response) : HttpMessageHandler
+    {
+        internal int Calls { get; private set; }
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) => response(request, ++Calls, ct);
+    }
+
+    [Theory]
     [InlineData("wrong-key")]
     [InlineData("node-id-as-seed")]
     [InlineData("public-key-as-node")]

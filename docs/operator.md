@@ -356,6 +356,16 @@ See the [ingress regression checkpoint](testing/s00-mailbox-ingress-binding-2026
 
 ## Current DID2 mailbox issuer input
 
+The authenticated private mailbox-issuer hop may repeat once after HTTP503,
+within the original caller cancellation/deadline and a30-second outer cap. It
+keeps the exact XMG2, holder, route and replica-evidence intent, but signs a fresh
+one-use forwarding nonce. No other HTTP rejection is retried; results still need
+their exact current binding and size checks. Registry's idempotent grant journal
+owns any already-issued winner. A failed retry remains outcome-unknown, never
+proof of absence or permission for a replacement client send. Directory-head
+advancement still rejects release; the private grant endpoint reports that
+specific code-owned race as503, without accepting the old head.
+
 The independent node network boundary now retains and validates the public
 PMA2 chain required by [DR-0052](../../docs/survival-program/decisions/DR-0052-did2-mailbox-authority-distribution.md).
 File-based inputs require `DeepIdV2NetworkPlacement:ExactMailboxAuthorityPaths`
@@ -1924,3 +1934,14 @@ pre-dispatch capability owner, not a successful terminal ACK. Its category
 change suppression and fail-closed refresh remain; logger failures cannot
 replace the original authority failure. No exception object/message/Data,
 proof, identifier or path is logged.
+
+At new grant admission only, a correctly signed current-issuer grant whose end
+exceeds the cached network's signed record bound can schedule one independent
+current directory/network acquisition. In particular, a newer ADH1 may cover a
+grant that the still-live captured ADH1 cannot. This is not a nonce-proof TTL
+extension: the old context, grant bytes and all signed record bounds remain
+unchanged. The complete host grant verification runs again before any effect;
+an unchanged/insufficient head, unavailable proof or invalid signature cannot
+authorize the operation. In-effect publication checks remain observational and
+cannot upgrade their captured lease. The scheduling precheck verifies the actual
+issuer signature and network, but is never admission permission itself.
