@@ -11,6 +11,14 @@ internal static class CurrentMailboxEnrollmentCommand
     internal static async Task RunAsync(string[] args)
     {
         var (deposit, retrieve) = ReadInputs(args);
+        await using var services = CreateConfiguredServices();
+        using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await EnrollConfiguredAsync(services, deposit, retrieve, budget.Token).ConfigureAwait(false);
+        Console.WriteLine("Current mailbox enrollment verified. Current authority and signed renewal remain required for readiness.");
+    }
+
+    internal static ServiceProvider CreateConfiguredServices()
+    {
         // Same configuration and actual owners as Program, but no listeners,
         // hosted services, generated node identity or synthetic trust source.
         var builder = WebApplication.CreateBuilder(Array.Empty<string>());
@@ -36,10 +44,7 @@ internal static class CurrentMailboxEnrollmentCommand
         builder.Services.AddDeepIdV2DirectoryProof(proof);
         builder.Services.AddDeepIdV2NetworkPlacement(placement);
         builder.Services.AddCurrentMailboxHost(custody, node, mailbox);
-        await using var services = builder.Services.BuildServiceProvider();
-        using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await EnrollConfiguredAsync(services, deposit, retrieve, budget.Token).ConfigureAwait(false);
-        Console.WriteLine("Current mailbox enrollment verified. Current authority and signed renewal remain required for readiness.");
+        return builder.Services.BuildServiceProvider();
     }
 
     internal static async ValueTask EnrollConfiguredAsync(IServiceProvider services,

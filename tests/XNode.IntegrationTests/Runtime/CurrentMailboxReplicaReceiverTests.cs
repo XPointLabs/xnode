@@ -276,6 +276,11 @@ public sealed class CurrentMailboxReplicaReceiverTests
         internal string[] ReplayFiles => Directory.GetFiles(Path.Combine(Node.DataRoot, options.PeerReplayDirectoryName), "*.json");
         internal string[] MutationFiles => Directory.GetFiles(Path.Combine(Node.DataRoot, options.PeerMutationDirectoryName), "*.json");
         internal int CollectNeutralPeerReplay() => replay.CollectExpired(ulong.MaxValue, 1);
+        internal void InjectUnpairedPending(MailboxPeerReplayClaim claim) => replay.EvaluateAndReserve(claim);
+        internal async Task InjectUnpairedMutationAsync(VerifiedMailboxPeerWireRequestV2 verified) =>
+            _ = await Node.Admission.WithGrantAsync(verified.Request.SenderMembershipProof.CanonicalInclusionProof[38..],
+                MailboxCapabilityDomain.Deposit, async (scope, token) =>
+                    await mutations.ApplyCurrentAsync(verified, scope.Lease, token));
         internal Task<int> CollectNeutralPeerMutations() => mutations.CollectExpiredAsync(ulong.MaxValue, 1);
         internal Task InitializeNeutralPeerMutations() => mutations.InitializeAsync();
         internal static async Task<Fixture> CreateAsync(DeepIdV2PublicationAuthorityFixture? signed = null,

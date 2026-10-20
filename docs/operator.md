@@ -53,6 +53,15 @@ physical delivery remain unqualified until new runtime/device evidence exists.
 
 ## Current native mailbox admission candidate
 
+[DR-0157](../../docs/survival-program/decisions/DR-0157-current-absent-target-tombstone.md)
+also requires a coordinated node update for protected negative tombstone custody.
+An independently known absent pre-effect Store is closed only through current
+Retrieve authority and source-durable PTR1. No Store/blob is reconstructed; a
+missing completed mutation still refuses readiness. Terminal native tombstones
+keep their original bytes across a separately current ACK. Do not delete replay
+or mutation files to obtain readiness. Matching Shared ACK continuation follows
+[DR-0158](../../docs/survival-program/decisions/DR-0158-expired-prepared-final-ack.md).
+
 The S01 retained-route storage candidate now commits private read-route custody
 with each exact verified XPA1 publication. Public DCR predecessor cleanup does
 not erase it. Its bounded typed lookup is not wired as renewed grant issuance;
@@ -1756,13 +1765,33 @@ converge still rejects before effects. Existing cancellation and transport
 deadlines are unchanged; no timestamp backdating or new current permission.
 
 Peer ACK forwarding is a coordinated pre-production carriage update under root
-DR-0147: the tombstone route requires PTR1 instead of a raw PRQ2. Store remains
-unchanged. The sender forwards its exact retained request plus actual durable
+DR-0147: the tombstone route requires PTR1 instead of a raw PRQ2. DR-0155 now
+requires PSR1 for Store; raw peer Store HTTP is rejected. The sender forwards its exact retained request plus actual durable
 local receipt and an exact-byte signature. A delayed recipient may recover
 original admission only from that verified proof, while current host/grant,
 native target, time, quotas and replay floors remain mandatory. Upgrade all
 replicas together; preserve replay, mutation, operation-custody and blob volumes.
 Do not reset state or remint an ACK after an unknown result.
+
+DR-0154 places an independently protected pre-intent before native replay
+reservation. Interrupted Pending prefixes recreate only their exact hash-bound
+original; no timeout, expiry or keys are extended. DR-0155 permits one selected
+unpaired pre-effect Pending only with verified source durable evidence, actual
+protected-floor absence, no native target/blob and complete joins for all other
+history. Its unauthenticated timestamp is reconciled after protected preparation,
+never adopted as authority. Missing completed state or any unpaired native effect
+still refuses. Host readiness cannot perform this source-authorized repair.
+
+If the original MCG3 has already expired, the live PSR1 route still rejects.
+DR-0156 provides separate listener-free `current-mailbox-export-store-recovery`
+and `current-mailbox-reconcile-store` commands, using the same exclusive native
+owners and CURRENT host/MGR leases. Source export requires its actual protected
+completed Store/blob; recipient repair is restricted to the exact existing
+pre-effect Pending and changes only replay/preparation metadata. No expired
+Store, blob, ACK, client outcome, MRR2 or quorum is produced. See the supported
+DevOps `ExportStoreRecovery` / `ReconcileStoreCustody` actions; stop the specific
+owner first and preserve the private original/proof files. Old requests remain
+immutable, and any current successor delivery is reported separately.
 
 DR-0148 also joins sender first-admission recovery to the actual protected
 whole-ACK operation: it reloads the exact captured item, original AcceptedAt and

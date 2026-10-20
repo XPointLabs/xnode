@@ -7,6 +7,26 @@ namespace XNode.IntegrationTests.Runtime;
 
 public sealed partial class CurrentMailboxPeerHttpTests
 {
+    [Fact]
+    public async Task CurrentPeerFirstReservationRechecksFreshnessAfterNativeCustodyRecovery()
+    {
+        await using var f = await Fixture.CreateAsync();
+        var created = f.Signed.Freshness.TrustedUpperUnixSeconds - MailboxPeerWireV2Limits.MaximumPastAgeSeconds;
+        f.Recipient.Envelope = MailboxClientCodec.EncodeEncryptedEnvelope(
+            MailboxAuthenticatedRequestTranscript.DecodeStoreBody(f.Recipient.Envelope) with { CreatedAtUnixSeconds = created });
+        var candidate = MailboxPeerWireV2Codec.Decode(f.Recipient.Frame(MailboxPeerReplicationOperation.Store)) with
+        { CreatedAtUnixSeconds = created };
+        var exact = MailboxPeerWireV2Codec.Encode(f.Recipient.Crypto.SignRequest(candidate, f.Recipient.SenderSeed));
+        var changed = false;
+        f.OpenLedger(afterVerifiedRead: () => { if (!changed) { changed = true; f.Signed.Sample++; } });
+        var before = File.ReadAllBytes(f.LedgerFile);
+        var error = await Assert.ThrowsAsync<MailboxPeerReplicationException>(() =>
+            f.Coordinator.ReplicateAsync(exact, MailboxPeerReplicationOperation.Store).AsTask());
+        Assert.True(changed); Assert.Equal(MailboxPeerReplicationError.ExpiredOrStale, error.Error);
+        Assert.Equal(before, File.ReadAllBytes(f.LedgerFile));
+        Assert.Empty(f.Sender.ReplayFiles); Assert.Empty(f.Sender.MutationFiles); Assert.Equal(0, f.AllHttpRequests);
+    }
+
     // Select actual peer-floor transitions, not Store/ACK intent or client-floor
     // writes. Every non-selected write still uses the genuine native barrier.
     private sealed class PeerFloorWriteFault(int write, bool beforeReplace) : IMailboxDurabilityBarrier
@@ -91,7 +111,10 @@ public sealed partial class CurrentMailboxPeerHttpTests
                 exact, operation).AsTask());
         Assert.True(fault.Reached);
         if (write == 1 && !tombstone)
+        {
             Assert.Empty((recipient ? f.Recipient : f.Sender).MutationFiles);
+            Assert.Empty((recipient ? f.Recipient : f.Sender).ReplayFiles);
+        }
         f.Reopen();
         using var host = RecoveryHost(f, recipient);
         await host.StartAsync();
@@ -113,6 +136,50 @@ public sealed partial class CurrentMailboxPeerHttpTests
         f.Reopen();
         Assert.Equal(exactResult, (await f.Coordinator.ReplicateAsync(exact, operation)).CanonicalMqr3.ToArray());
         Assert.Equal(completedRequests, f.AllHttpRequests);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CurrentPeerAuthorityLossAfterProtectedPreparationLeavesNoOrphanAndColdResumesOriginal(bool recipient)
+    {
+        await using var f = await Fixture.CreateAsync();
+        var fault = new PeerPreparationAuthorityLoss(() => f.Signed.RejectProof = true);
+        if (recipient) f.OpenRecipientLedger(durability: fault); else f.OpenLedger(fault);
+        var exact = f.Recipient.Frame(MailboxPeerReplicationOperation.Store);
+        _ = await Record.ExceptionAsync(() => f.Coordinator.ReplicateAsync(exact, MailboxPeerReplicationOperation.Store).AsTask());
+        Assert.True(fault.Reached);
+        var interrupted = recipient ? f.Recipient : f.Sender;
+        Assert.Empty(interrupted.ReplayFiles); Assert.Empty(interrupted.MutationFiles);
+        f.Signed.RejectProof = false; f.Reopen(); f.Signed.Sample = 101;
+        Assert.Equal(MailboxPeerQuorumStatus.Durable, (await f.Coordinator.ReplicateAsync(exact,
+            MailboxPeerReplicationOperation.Store)).Status);
+        Assert.Single(f.Sender.ReplayFiles); Assert.Single(f.Recipient.ReplayFiles);
+        Assert.Single(f.Sender.MutationFiles); Assert.Single(f.Recipient.MutationFiles);
+        var requests = f.AllHttpRequests;
+        f.Reopen();
+        Assert.Equal(MailboxPeerQuorumStatus.Durable, (await f.Coordinator.ReplicateAsync(exact,
+            MailboxPeerReplicationOperation.Store)).Status);
+        Assert.Equal(requests, f.AllHttpRequests);
+    }
+
+    private sealed class PeerPreparationAuthorityLoss(Action loseAuthority) : IMailboxDurabilityBarrier
+    {
+        private readonly MailboxDurabilityBarrier native = new();
+        private bool selected;
+        internal bool Reached;
+        public void ReplaceFile(string temporary, string final)
+        {
+            var document = JsonNode.Parse(File.ReadAllBytes(temporary))!;
+            selected = !Reached && document["peerReplayFloors"]!.AsObject().Count > 0;
+            native.ReplaceFile(temporary, final);
+        }
+        public void FlushFileAndParentDirectory(string path)
+        {
+            native.FlushFileAndParentDirectory(path);
+            if (selected) { Reached = true; selected = false; loseAuthority(); }
+        }
+        public void FlushParentDirectory(string path) => native.FlushParentDirectory(path);
     }
 
     [Fact]

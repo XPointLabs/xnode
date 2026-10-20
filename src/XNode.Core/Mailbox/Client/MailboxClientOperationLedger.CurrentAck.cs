@@ -29,9 +29,12 @@ public sealed partial class MailboxClientOperationLedger
     internal async Task<MailboxClientAckReservation> ReserveCurrentAckAsync(MailboxAuthenticatedAckBody body,
         ReadOnlyMemory<byte> membership, IReadOnlyList<ReadOnlyMemory<byte>> replicas, MailboxCurrentOperationLease lease,
         Func<CancellationToken, Task<IReadOnlyList<MailboxCurrentAckTarget>>> readTargets,
-        Func<MailboxCurrentAckTarget, ulong, ReadOnlyMemory<byte>> author, bool requireExisting, CancellationToken token)
+        Func<MailboxCurrentAckTarget, ulong, ReadOnlyMemory<byte>> author,
+        Action<ReadOnlyMemory<byte>, MailboxCurrentPeerReplayFloor?> requireOriginalPeerIntent,
+        bool requireExisting, CancellationToken token)
     {
         ThrowIfDisposed(); lease.RequireActive();
+        ArgumentNullException.ThrowIfNull(requireOriginalPeerIntent);
         var binding = MailboxAuthenticatedRequestTranscript.ForAck(body.Epoch, body.OperationId.Span,
             body.MailboxId, body.PlacementId, body.IsFinalPage, body.ContinuationToken.Span, body.Acknowledgements);
         var key = BuildAckOperationKey(body.Epoch, body.MailboxId.Bytes.Span, body.OperationId.Span);
@@ -63,9 +66,39 @@ public sealed partial class MailboxClientOperationLedger
             // batch, including reservation before its first mutation.
             var targetKeys = body.Acknowledgements.Select(item => MailboxPeerMutationStore.RecordKey(
                 body.Epoch, body.MailboxId.Bytes.Span, item.EnvelopeDigest.Span)).ToHashSet(StringComparer.Ordinal);
-            if (requireExisting || document.PeerReplayFloors.Values.Any(floor =>
-                    floor.TombstoneDigest.Length != 0 && targetKeys.Contains(floor.TargetKey)))
+            if (requireExisting)
                 throw new InvalidDataException("Known current ACK has lost its exact peer intent.");
+            var joinedOriginals = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var priorOperation in document.AckOperations.Values.Where(prior => prior.Epoch == body.Epoch &&
+                prior.MailboxId == ToLowerHex(body.MailboxId.Bytes.Span, 32, nameof(body)) &&
+                prior.PlacementCommitment == ToLowerHex(MailboxPlacementCommitment.Compute(body.PlacementId), 32, nameof(body)) &&
+                prior.MembershipCommitment == ToLowerHex(membership.Span, 32, nameof(membership))))
+            foreach (var item in priorOperation.Items)
+            {
+                var target = MailboxPeerMutationStore.RecordKey(priorOperation.Epoch,
+                    DecodeLowerHex(priorOperation.MailboxId, 32), DecodeLowerHex(item.EnvelopeDigest, 32));
+                if (!targetKeys.Contains(target)) continue;
+                if (item.PeerRequest.Length == 0) throw new InvalidDataException("Current ACK cannot adopt a neutral original intent.");
+                ValidateCurrentAckItem(priorOperation, item);
+                var original = Convert.FromBase64String(item.PeerRequest); var peer = MailboxPeerWireV2Codec.Decode(original);
+                var peerScope = Convert.ToHexString(MailboxPeerReplayStateMachine.ComputeScopeKey(peer.SenderRouterId.Span,
+                    peer.RecipientRouterId.Span, peer.Epoch, peer.ReplayNonce.Span)).ToLowerInvariant();
+                if (peer.OperationId.Span.SequenceEqual(body.OperationId.Span) || !joinedOriginals.Add(peerScope))
+                    throw new InvalidDataException("Current ACK contradicts its original captured intents.");
+                var floor = document.PeerReplayFloors.GetValueOrDefault(peerScope);
+                if (floor is not null && floor.TargetKey != target) throw new InvalidDataException("Original ACK target differs from its floor.");
+                requireOriginalPeerIntent(original, floor);
+            }
+            foreach (var pair in document.PeerReplayFloors.Where(pair =>
+                pair.Value.TombstoneDigest.Length != 0 && targetKeys.Contains(pair.Value.TargetKey)))
+            {
+                // Re-ACK is new CURRENT work over a terminal target, not repair
+                // of missing old intent. Every old floor keeps its exact owned
+                // batch and joins the actual replay file before new capture.
+                if (!pair.Value.MutationCompleted || pair.Value.IsAbsentTarget)
+                    throw new InvalidDataException("A pending or absent target cannot coordinate a new ACK.");
+                if (!joinedOriginals.Contains(pair.Key)) throw new InvalidDataException("Known current ACK has lost its exact peer intent.");
+            }
             if (LedgerEntryCost(document) + 1L + body.Acknowledgements.Count > _maxEntries)
                 throw new MailboxClientLedgerCapacityException();
             var targets = await readTargets(token).ConfigureAwait(false);

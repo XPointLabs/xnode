@@ -116,6 +116,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
         await using var f = await Fixture.CreateAsync();
         var exact = f.Recipient.Frame(MailboxPeerReplicationOperation.Store);
         byte[]? original = null;
+        var forwarding = await CaptureStoreForwardingAsync(f, exact);
         if (completed) original = (await f.Recipient.Receiver.ReceiveAsync(exact, MailboxPeerReplicationOperation.Store)).ToArray();
         var replayFiles = f.Recipient.ReplayFiles.Select(File.ReadAllBytes).ToArray();
         var mutationFiles = f.Recipient.MutationFiles.Select(File.ReadAllBytes).ToArray();
@@ -125,8 +126,8 @@ public sealed partial class CurrentMailboxPeerHttpTests
         using var handler = HttpPrivacyPeerClient.CreatePinnedHandler(f.Recipient.Node.Replicas.Single(replica =>
             replica.NodeId.Span.SequenceEqual(f.Recipient.Node.Node)).Transport);
         using var client = new HttpClient(handler);
-        using var content = new ByteArrayContent(exact);
-        content.Headers.ContentType = new(MailboxWireHttpContract.Prq2ContentType);
+        using var content = new ByteArrayContent(forwarding.Forwarding.ToArray());
+        content.Headers.ContentType = new(MailboxWireHttpContract.Psr1ContentType);
         using var request = new HttpRequestMessage(HttpMethod.Post, $"https://127.0.0.1:{f.RemoteHost.Port}{MailboxWireHttpContract.PeerStoreRoute}")
         { Content = content, Version = HttpVersion.Version20, VersionPolicy = HttpVersionPolicy.RequestVersionExact };
         using var response = await client.SendAsync(request);

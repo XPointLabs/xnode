@@ -117,11 +117,30 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
             throw new CryptographicException("Current signing custody differs from its descriptor.");
     }
 
-    private async ValueTask<ulong> RequireOperationCustodyAsync(CurrentMailboxAdmission.GrantScope scope, CancellationToken token)
+    private async ValueTask<ulong> RequireOperationCustodyAsync(CurrentMailboxAdmission.GrantScope scope, CancellationToken token,
+        PreparedMailboxPeerReservationV2? sourceProvenPreEffectRecovery = null,
+        ReadOnlyMemory<byte> preparationScopeKey = default, Action<MailboxCurrentPeerReplayFloor?>? capturePreparation = null,
+        Func<IReadOnlyDictionary<string, MailboxCurrentPeerReplayFloor>, Task>? captureAuthenticatedFloors = null)
     {
         RequireSigningCustody(scope);
         return await admission.InitializeGrantOperationsAsync(operationLedger, scope, token,
-            (floors, peerToken) => ValidatePeerCustodyAsync(floors, scope.Lease, peerToken)).ConfigureAwait(false);
+            async (floors, peerToken) =>
+            {
+                var prior = preparationScopeKey.IsEmpty ? null : operationLedger.RequireCurrentPeerFloorCapacity(floors, preparationScopeKey);
+                capturePreparation?.Invoke(prior);
+                if (sourceProvenPreEffectRecovery is null || prior is not null)
+                    await ValidatePeerCustodyAsync(floors, scope.Lease, peerToken).ConfigureAwait(false);
+                else
+                {
+                    var snapshot = sourceProvenPreEffectRecovery.Snapshot;
+                    if (floors.ContainsKey(Convert.ToHexString(snapshot.ScopeKey.Span).ToLowerInvariant()))
+                        throw new InvalidDataException("Independent existing peer history cannot use unpaired recovery.");
+                    await mutations.RequirePreparedStoreTargetAbsentAsync(sourceProvenPreEffectRecovery, scope.Lease, peerToken).ConfigureAwait(false);
+                    replay.ValidateCurrentFloors(floors, peerToken, snapshot);
+                    await mutations.ValidateCurrentRecoveryAsync(scope.Lease, peerToken, floors).ConfigureAwait(false);
+                }
+                if (captureAuthenticatedFloors is not null) await captureAuthenticatedFloors(floors).ConfigureAwait(false);
+            }).ConfigureAwait(false);
     }
 
     private async Task ValidatePeerCustodyAsync(IReadOnlyDictionary<string, MailboxCurrentPeerReplayFloor> floors,
@@ -162,6 +181,21 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
         scope.Lease.RequireActive();
         if (!ReferenceEquals(scope.Owner, admission)) throw new CryptographicException("Current ACK belongs to another native owner.");
         return mutations.ReadCurrentAckTargetsAsync(body, scope.Grant.MembershipCommitment, scope.Lease, token);
+    }
+
+    internal void RequireOriginalAckIntent(CurrentMailboxAdmission.GrantScope scope,
+        ReadOnlyMemory<byte> exact, MailboxCurrentPeerReplayFloor? floor)
+    {
+        scope.Lease.RequireActive();
+        if (!ReferenceEquals(scope.Owner, admission)) throw new CryptographicException("ACK intent belongs to another native owner.");
+        var request = MailboxPeerWireV2Codec.Decode(exact.Span);
+        if (!Fixed(request.SenderRouterId.Span, admission.LocalNodeId.Span) ||
+            !Fixed(crypto.GetPublicKey(seed), request.SenderMembershipProof.SigningPublicKey.Span) ||
+            !crypto.Verify(request.SenderMembershipProof.SigningPublicKey.Span,
+                MailboxPeerWireV2Codec.GetSigningDigest(request), request.Signature.Span))
+            throw new InvalidDataException("Original protected ACK intent lost authentic local signing custody.");
+        replay.RequireOriginalAckIntent(exact, floor);
+        scope.Lease.RequireActive();
     }
 
     private ReadOnlyMemory<byte> AuthorRequest(CurrentMailboxAdmission.GrantScope scope,
@@ -219,6 +253,21 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
         return WithPeerAsync(original, MailboxPeerReplicationOperation.Tombstone,
             MailboxPeerWireResponseReplicaV2.Recipient,
             async (operation, ct) =>
+            {
+                var response = operation.Verified.ReplayDisposition == MailboxPeerReplayDisposition.IdempotentCompleted
+                    ? operation.Verified.CachedResponse.ToArray()
+                    : await operation.ApplyAndSignLocalAsync(ct).ConfigureAwait(false);
+                await operation.CommitRecipientAsync(response, ct).ConfigureAwait(false);
+                return response;
+            }, token, forwarding: owned);
+    }
+
+    internal ValueTask<ReadOnlyMemory<byte>> ReceiveForwardedStoreAsync(ReadOnlyMemory<byte> forwarding,
+        CancellationToken token = default)
+    {
+        var owned = forwarding.ToArray();
+        return WithPeerAsync(MailboxPeerWireV2Codec.DecodeForwardedStoreRequest(owned), MailboxPeerReplicationOperation.Store,
+            MailboxPeerWireResponseReplicaV2.Recipient, async (operation, ct) =>
             {
                 var response = operation.Verified.ReplayDisposition == MailboxPeerReplayDisposition.IdempotentCompleted
                     ? operation.Verified.CachedResponse.ToArray()
@@ -326,12 +375,17 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
             MailboxPeerWireV2Codec.GetSigningDigest(decoded), decoded.Signature.Span))
             throw new CryptographicException("Current peer sender signature is invalid.");
 
-        BlindedPlacementId placement;
+        BlindedPlacementId placement = null!;
+        var absentTarget = false;
         if (expectedOperation == MailboxPeerReplicationOperation.Store)
             placement = MailboxAuthenticatedRequestTranscript.DecodeStoreBody(decoded.Payload.Span).PlacementId;
         else if (!mutations.TryResolveTombstonePlacement(decoded, out placement))
-            throw new CryptographicException("Current peer tombstone has no matching durable target.");
-        if (!Fixed(MailboxPlacementCommitment.Compute(placement), scope.Grant.PlacementCommitment.Span) ||
+        {
+            if (localRole != MailboxPeerWireResponseReplicaV2.Recipient || forwarding.IsEmpty)
+                throw new CryptographicException("Current peer tombstone has no matching durable target.");
+            absentTarget = true;
+        }
+        if (!absentTarget && !Fixed(MailboxPlacementCommitment.Compute(placement), scope.Grant.PlacementCommitment.Span) ||
             decoded.Epoch != scope.Grant.Epoch ||
             !Fixed(decoded.MembershipCommitment.Span, scope.Grant.MembershipCommitment.Span) ||
             !Fixed(decoded.PlacementCommitment.Span, scope.Grant.PlacementCommitment.Span))
@@ -353,24 +407,20 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
             // above and around every effect remain the admission authority.
             EpochExpiresAtUnixSeconds = decoded.ExpiresAtUnixSeconds
         };
-        _ = MailboxPeerWireV2Codec.VerifyReplayCandidate(owned, policy, crypto, proofs);
-        // Authenticate the complete candidate before recovery; even a completed
-        // replay cannot bypass this owner. The SAME role leases remain held
-        // before rate/replay/mutation, without a synthetic client request.
-        upper = await RequireOperationCustodyAsync(scope, ct).ConfigureAwait(false);
-        policy = policy with { NowUnixSeconds = upper };
-        _ = MailboxPeerWireV2Codec.VerifyReplayCandidate(owned, policy, crypto, proofs);
+        // Preparation below authenticates the COMPLETE candidate before recovery,
+        // including completed replays. No duplicate unaided verification is needed.
+        // The SAME actual role leases remain held before rate/replay/mutation.
         var scopeKey = MailboxPeerReplayStateMachine.ComputeScopeKey(decoded.SenderRouterId.Span,
             decoded.RecipientRouterId.Span, decoded.Epoch, decoded.ReplayNonce.Span);
-        await operationLedger.RequireCurrentPeerFloorCapacityAsync(scopeKey, scope.Lease, ct).ConfigureAwait(false);
-        RequireRate(decoded.SenderRouterId.Span, upper);
         if (!forwarding.IsEmpty && (localRole != MailboxPeerWireResponseReplicaV2.Recipient ||
-            !Fixed(MailboxPeerWireV2Codec.DecodeForwardedTombstoneRequest(forwarding.Span), owned)))
+            !Fixed(expectedOperation == MailboxPeerReplicationOperation.Store
+                ? MailboxPeerWireV2Codec.DecodeForwardedStoreRequest(forwarding.Span)
+                : MailboxPeerWireV2Codec.DecodeForwardedTombstoneRequest(forwarding.Span), owned)))
             throw new CryptographicException("Current forwarding differs from exact original request.");
         if (!originalAckAdmissionProof.IsEmpty && (localRole != MailboxPeerWireResponseReplicaV2.Sender || !forwarding.IsEmpty))
             throw new CryptographicException("Owned ACK admission cannot authorize recipient or forwarded work.");
-        VerifiedMailboxPeerWireRequestV2 verified;
-        try { verified = VerifyReservation(); }
+        PreparedMailboxPeerReservationV2 prepared;
+        try { prepared = await PrepareReservationAsync().ConfigureAwait(false); }
         catch (MailboxPeerReplicationException error) when (!forwarding.IsEmpty &&
             error.Error == MailboxPeerReplicationError.InvalidReceipt &&
             error.Data["Deep.MailboxPeer.Forwarding.Check"] is "DurableFuture" &&
@@ -380,20 +430,49 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
             // hint. One <=5s pre-reservation wait; original peer/client budgets
             // still apply. Never use the peer's timestamp as policy.Now.
             await Task.Delay(TimeSpan.FromSeconds(lead + 1), ct).ConfigureAwait(false);
-            upper = await RequireOperationCustodyAsync(scope, ct).ConfigureAwait(false);
+            upper = await scope.Lease.CheckAsync(ct).ConfigureAwait(false);
             policy = policy with { NowUnixSeconds = upper };
-            await operationLedger.RequireCurrentPeerFloorCapacityAsync(scopeKey, scope.Lease, ct).ConfigureAwait(false);
-            verified = VerifyReservation(); // repeats signatures, currentness, expiry and native replay checks
+            prepared = await PrepareReservationAsync().ConfigureAwait(false); // repeats actual authority and crypto
         }
-        VerifiedMailboxPeerWireRequestV2 VerifyReservation() => forwarding.IsEmpty
+        ValueTask<PreparedMailboxPeerReservationV2> PrepareReservationAsync() => absentTarget
+            ? scope.Host.PrepareAbsentTargetTombstoneAsync(forwarding, replay, ct)
+            : ValueTask.FromResult(PrepareReservation());
+        PreparedMailboxPeerReservationV2 PrepareReservation() => forwarding.IsEmpty
             ? originalAckAdmissionProof.IsEmpty
-                ? MailboxPeerWireV2Codec.VerifyAndReserve(owned, policy, crypto, proofs, replay)
-                : MailboxPeerWireV2Codec.VerifyAndReserveOwnedAckIntent(owned, originalAckAdmissionProof.Span, policy, crypto, proofs, replay)
-            : MailboxPeerWireV2Codec.VerifyAndReserveForwardedTombstone(forwarding.Span, policy, crypto, proofs, replay);
-        var fact = await mutations.CaptureCurrentPeerFactAsync(verified,
-            replay.CaptureCurrentSnapshot(verified.ReplayClaim), scope.Lease, ct).ConfigureAwait(false);
+                ? MailboxPeerWireV2Codec.PrepareReplayReservation(owned, policy, crypto, proofs, replay)
+                : MailboxPeerWireV2Codec.PrepareOwnedAckReservation(owned, originalAckAdmissionProof.Span, policy, crypto, proofs, replay)
+            : expectedOperation == MailboxPeerReplicationOperation.Store
+                ? MailboxPeerWireV2Codec.PrepareForwardedStoreReservation(forwarding.Span, policy, crypto, proofs, replay)
+                : MailboxPeerWireV2Codec.PrepareForwardedTombstoneReservation(forwarding.Span, policy, crypto, proofs, replay);
+        MailboxCurrentPeerReplayFloor? prior = null;
+        PreparedMailboxPeerReservationV2? recovery = null;
+        if (!forwarding.IsEmpty && expectedOperation == MailboxPeerReplicationOperation.Store)
+            recovery = MailboxPeerWireV2Codec.PrepareForwardedStoreRecovery(forwarding.Span, policy, crypto, proofs);
+        MailboxCurrentPeerReplayFloor? absentFact = null;
+        upper = await RequireOperationCustodyAsync(scope, ct, recovery, scopeKey, value => prior = value,
+            absentTarget ? async floors => absentFact = await mutations.CaptureAbsentTargetFactAsync(
+                prepared, floors, scope.Lease, ct).ConfigureAwait(false) : null).ConfigureAwait(false);
+        RequireRate(decoded.SenderRouterId.Span, upper);
+        if (prior is null && recovery is not null) prepared = recovery;
+        else recovery = null;
+        policy = policy with { NowUnixSeconds = upper };
+        if (decoded.ExpiresAtUnixSeconds <= upper)
+            throw new CryptographicException("Current peer object expired during custody recovery.");
+        if (prior is not null && replay.RestoreCurrentPreparedPending(prepared, prior))
+            prepared = await PrepareReservationAsync().ConfigureAwait(false);
+        else if (forwarding.IsEmpty && originalAckAdmissionProof.IsEmpty)
+            // Recovery may be slow. A fresh first unaided reservation must use
+            // the actual post-recovery clock, not the earlier preparation time.
+            prepared = PrepareReservation();
+        prepared.RequireReservable();
+        var fact = absentFact ?? await mutations.CapturePreparedPeerFactAsync(prepared, scope.Lease, ct).ConfigureAwait(false);
+        // The independently protected intent MUST precede the first native
+        // reservation. Save/read-back/currentness may fail without orphaning a
+        // native file. A successful prefix may survive cancellation or crash.
         await operationLedger.RecordCurrentPeerFloorAsync(scopeKey, fact,
-            verified.ReplayDisposition != MailboxPeerReplayDisposition.NewReserved, scope.Lease, ct).ConfigureAwait(false);
+            prior is not null, scope.Lease, ct).ConfigureAwait(false);
+        if (recovery is not null) replay.ReconcileUnpairedCurrentPending(prepared, fact);
+        var verified = MailboxPeerWireV2Codec.CommitPreparedReservation(prepared, replay, crypto);
         var result = await action(new PeerOperation(this, scope, verified, owned, localRole, fact), ct).ConfigureAwait(false);
         await RequireOperationCustodyAsync(scope, ct).ConfigureAwait(false);
         return result;
@@ -408,7 +487,7 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
         internal ReadOnlyMemory<byte> CreateForwarding(ReadOnlyMemory<byte> localReceipt) =>
             verified.Request.Operation == MailboxPeerReplicationOperation.Tombstone
                 ? MailboxPeerWireV2Codec.CreateDurableTombstoneForwarding(verified, localReceipt.Span, owner.seed)
-                : CanonicalRequest;
+                : MailboxPeerWireV2Codec.CreateDurableStoreForwarding(verified, localReceipt.Span, owner.seed);
         internal Task SaveStoreSettlementAsync(string key, ReadOnlyMemory<byte> quorum, CancellationToken token) =>
             owner.operationLedger.SaveCurrentStoreQuorumAsync(key, quorum, scope.Host, scope.Lease, token);
         internal VerifiedOnionNextHopTransport RecipientTransport => scope.Replicas.Single(
@@ -425,7 +504,9 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
         internal async ValueTask<ReadOnlyMemory<byte>> ApplyAndSignLocalAsync(CancellationToken token)
         {
             await EnsureCurrentAsync(token).ConfigureAwait(false);
-            var mutation = await owner.Mutations.ApplyCurrentAsync(verified, scope.Lease, token).ConfigureAwait(false);
+            var mutation = fact.IsAbsentTarget
+                ? new MailboxPeerMutationResult(MailboxReplicaDisposition.Tombstone)
+                : await owner.Mutations.ApplyCurrentAsync(verified, scope.Lease, token).ConfigureAwait(false);
             if (!string.IsNullOrEmpty(mutation.Error)) throw CurrentMailboxDiagnostics.MutationRejection(mutation.Error);
             var durableAt = await owner.operationLedger.RecordCurrentPeerFloorAsync(verified.ReplayClaim.ScopeKey,
                 fact with { MutationCompleted = true }, true, scope.Lease, token).ConfigureAwait(false);

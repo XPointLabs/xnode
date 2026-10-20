@@ -29,6 +29,18 @@ if (args.Length > 0 && args[0] == "did2-network-floor-audit")
     return;
 }
 
+if (args.Length > 0 && args[0] is "current-mailbox-export-store-recovery" or "current-mailbox-reconcile-store")
+{
+    try { await CurrentMailboxHistoricalCustodyCommand.RunAsync(args); }
+    catch (Exception error)
+    {
+        Console.Error.WriteLine("Historical custody recovery rejected; exact native/protected state retained. No live grant was inferred.");
+        var location = CurrentMailboxDiagnostics.FailureLocation(error);
+        Console.Error.WriteLine($"Historical custody failure: reason={CurrentMailboxHostRecovery.FailureReason(error)}; method={location.Method}; il={location.Il}.");
+        Environment.ExitCode = 2;
+    }
+    return;
+}
 if (args.Length > 0 && args[0] == "current-mailbox-enroll")
 {
     try { await CurrentMailboxEnrollmentCommand.RunAsync(args); }

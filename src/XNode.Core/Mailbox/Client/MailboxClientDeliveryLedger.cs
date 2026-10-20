@@ -622,7 +622,8 @@ public sealed partial class MailboxClientOperationLedger
         HashSet<ulong> sequences,
         ref ulong maximumSequence)
     {
-        var ackTargets = new HashSet<(ulong Epoch, string MailboxId, ulong Cursor)>();
+        var ackTargets = new Dictionary<(ulong Epoch, string MailboxId, string Placement, string Membership, ulong Cursor),
+            (bool Current, string Digest, string Placement, string Membership, ulong Expiry)>();
         foreach (var pair in document.AckOperations)
         {
             var operation = pair.Value
@@ -698,11 +699,27 @@ public sealed partial class MailboxClientOperationLedger
                     throw new InvalidDataException("Mailbox ack item target is invalid.");
                 }
 
-                if (!ackTargets.Add((operation.Epoch, operation.MailboxId, item.Cursor)))
+                var target = (operation.Epoch, operation.MailboxId, operation.PlacementCommitment, operation.MembershipCommitment, item.Cursor);
+                var targetBinding = (current, item.EnvelopeDigest, operation.PlacementCommitment,
+                    operation.MembershipCommitment, item.ExpiresAtUnixSeconds);
+                if (ackTargets.TryGetValue(target, out var previous))
                 {
-                    throw new InvalidDataException(
-                        "Mailbox ack target is bound to multiple operations.");
+                    // Structural allowance only; ReserveCurrentAck independently
+                    // joins every original batch/request to actual replay custody
+                    // before creating new current work on an immutable terminal.
+                    var nativeTarget = MailboxPeerMutationStore.RecordKey(operation.Epoch, mailbox, digest);
+                    if (!current || !previous.Current) throw new InvalidDataException("Current ACK target conflicts with neutral custody.");
+                    if (previous != targetBinding) throw new InvalidDataException("Current ACK target digest or expiry changed.");
+                    var tombstones = document.PeerReplayFloors.Values.Where(floor =>
+                        floor.TargetKey == nativeTarget && floor.TombstoneDigest.Length != 0).ToArray();
+                    // New current pre-intents are valid prefixes. Mutation
+                    // completion is enforced by the actual owner, not a grammar
+                    // bit that would reject this new pre-intent itself.
+                    if (tombstones.Any(floor => floor.IsAbsentTarget) ||
+                        tombstones.Select(floor => floor.TombstoneDigest).Distinct(StringComparer.Ordinal).Skip(1).Any())
+                        throw new InvalidDataException("Current ACK target has conflicting original mutation custody.");
                 }
+                else ackTargets.Add(target, targetBinding);
 
                 ValidateAckItemState(item, current);
                 if (item.CoordinatorSequence != 0)

@@ -117,7 +117,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
         Assert.Equal(MailboxPeerQuorumStatus.Durable, recovered.Status);
         Assert.Equal(exact, Assert.Single(f.ExactIntents));
         Assert.Equal(2, f.RemoteHost.Requests); Assert.Equal(2, f.PeerClient.ExactRequests.Count);
-        Assert.All(f.PeerClient.ExactRequests, request => Assert.Equal(exact, request));
+        Assert.All(f.PeerClient.ExactRequests, request => Assert.Equal(exact, MailboxPeerWireV2Codec.DecodeForwardedStoreRequest(request)));
         f.Reopen(); f.Signed.Sample = 102;
         Assert.Equal(recovered.CanonicalMqr3.ToArray(),
             (await f.Coordinator.StoreClientAsync(client, f.Ledger!)).CanonicalMqr3.ToArray());
@@ -428,9 +428,10 @@ public sealed partial class CurrentMailboxPeerHttpTests
     {
         await using var f = await Fixture.CreateAsync();
         ReadOnlyMemory<byte>? reply = null;
+        var forwarding = await CaptureStoreForwardingAsync(f, f.Recipient.Frame(MailboxPeerReplicationOperation.Store));
         var error = await Record.ExceptionAsync(async () => reply = await new CurrentMailboxReplicaPeerClient().SendAsync(
             f.Recipient.Node.Replicas.Single(replica => replica.NodeId.Span.SequenceEqual(f.Recipient.Node.Node)).Transport, MailboxPeerReplicationOperation.Store,
-            f.Recipient.Frame(MailboxPeerReplicationOperation.Store), CancellationToken.None));
+            forwarding.Forwarding, CancellationToken.None));
         Assert.True(error is null, $"Failure={error?.GetType().Name}; HTTP error={(error as HttpRequestException)?.HttpRequestError}; inner={error?.InnerException?.GetType().Name}.");
         Assert.NotNull(reply);
         Assert.Equal(MailboxWireHttpContract.PeerStore.MaximumResponseBytes, reply.Value.Length);

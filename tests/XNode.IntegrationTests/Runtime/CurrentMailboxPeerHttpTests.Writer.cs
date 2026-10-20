@@ -1,4 +1,5 @@
 using System.Net;
+using System.Buffers.Binary;
 using System.Security.Cryptography;
 using Microsoft.Extensions.Logging;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
@@ -15,7 +16,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
     {
         await using var f = await Fixture.CreateAsync();
         f.Bind(true);
-        var request = f.Sender.Frame(MailboxPeerReplicationOperation.Store);
+        var request = SignedNonWriterStoreClaim(f.Sender.Frame(MailboxPeerReplicationOperation.Store), f.Sender.SenderSeed);
         var before = request.ToArray();
         var target = f.Sender.Node.Replicas.Single(replica => replica.NodeId.Span.SequenceEqual(f.Sender.Node.Node)).Transport;
         var log = new PeerDiagnosticLog<CurrentMailboxReplicaPeerClient>(throwingSink);
@@ -75,7 +76,8 @@ public sealed partial class CurrentMailboxPeerHttpTests
         await using var f = await Fixture.CreateAsync(); f.OpenLedger(); f.OpenRecipientLedger();
         var recipientPrior = File.ReadAllBytes(f.AckLedgerFile.Replace(f.Sender.Node.DataRoot, f.Recipient.Node.DataRoot, StringComparison.Ordinal));
         var client = f.ClientStoreFrame();
-        var reversed = f.Sender.Frame(MailboxPeerReplicationOperation.Store);
+        var raw = f.Sender.Frame(MailboxPeerReplicationOperation.Store);
+        var reversed = SignedNonWriterStoreClaim(raw, f.Sender.SenderSeed);
         var target = f.Sender.Node.Replicas.Single(replica => replica.NodeId.Span.SequenceEqual(f.Sender.Node.Node)).Transport;
         for (var attempt = 0; attempt < 2; attempt++)
         {
@@ -85,6 +87,10 @@ public sealed partial class CurrentMailboxPeerHttpTests
             Assert.Equal(0UL, f.Recipient.Node.Replay.Diagnostics.AcceptedTimeHighWatermarkUnixSeconds);
             Assert.Equal(0, f.Recipient.Node.OutcomeCount);
             Assert.Equal(recipientPrior, File.ReadAllBytes(f.AckLedgerFile));
+            var httpBefore = f.AllHttpRequests;
+            await Assert.ThrowsAsync<MailboxPeerReplicationException>(() => new CurrentMailboxReplicaPeerClient().SendAsync(
+                target, MailboxPeerReplicationOperation.Store, raw, default).AsTask());
+            Assert.Equal(httpBefore, f.AllHttpRequests); // Removed raw grammar never reaches HTTP.
             Assert.Null(await new CurrentMailboxReplicaPeerClient().SendAsync(
                 target, MailboxPeerReplicationOperation.Store, reversed, default));
             Assert.Equal((int)HttpStatusCode.Forbidden, f.RemoteHost.LastStatus);
@@ -100,5 +106,44 @@ public sealed partial class CurrentMailboxPeerHttpTests
         Assert.Single(f.Sender.MutationFiles); Assert.Single(f.Recipient.MutationFiles);
         var page = DecodePage((await f.Recipient.Receiver.RetrieveClientAsync(RetrieveFrame(f))).ToArray(), f);
         Assert.Equal(1UL, Assert.Single(page.Items).Cursor);
+    }
+
+    // Adversarial fixture only: the non-writer signs a false durability claim
+    // using its genuine fixture key. It must NOT obtain native source effects
+    // or use an accepting membership verifier. Canonical signatures ensure the
+    // unchanged HTTP403 assertions exercise writer authorization, not framing.
+    private static byte[] SignedNonWriterStoreClaim(byte[] exact, byte[] senderSeed)
+    {
+        var request = MailboxPeerWireV2Codec.Decode(exact);
+        var crypto = new SodiumMailboxPeerReplicationCrypto();
+        Assert.Equal(request.SenderMembershipProof.SigningPublicKey.ToArray(), crypto.GetPublicKey(senderSeed));
+        var receipt = crypto.SignReplicaResponse(new MailboxReplicaReceiptV2
+        {
+            Status = MailboxReceiptStatus.Durable, Disposition = MailboxReplicaDisposition.Stored,
+            ReplicaId = request.SenderRouterId, OperationId = request.OperationId, Epoch = request.Epoch,
+            Cursor = request.Cursor, AcceptedAtUnixSeconds = request.CreatedAtUnixSeconds,
+            DurableAtUnixSeconds = request.CreatedAtUnixSeconds, ExpiresAtUnixSeconds = request.ExpiresAtUnixSeconds,
+            BlindedMailboxId = request.BlindedMailboxId, PlacementCommitment = request.PlacementCommitment,
+            MembershipCommitment = request.MembershipCommitment,
+            EnvelopeDigest = MailboxAuthenticatedRequestTranscript.DecodeStoreBody(request.Payload.Span).DeduplicationDigest,
+            Signature = ReadOnlyMemory<byte>.Empty
+        }, senderSeed);
+        Assert.True(crypto.Verify(request.SenderMembershipProof.SigningPublicKey.Span,
+            MailboxReceiptV2Codec.GetReplicaSigningBytes(receipt), receipt.Signature.Span));
+        var encoded = MailboxReceiptV2Codec.EncodeReplica(receipt);
+        var result = new byte[exact.Length + MailboxPeerWireV2Codec.StoreForwardingOverhead];
+        "PSR1"u8.CopyTo(result);
+        BinaryPrimitives.WriteUInt32BigEndian(result.AsSpan(4), checked((uint)exact.Length));
+        exact.CopyTo(result, 8); encoded.CopyTo(result, 8 + exact.Length);
+        ReadOnlySpan<byte> domain = "deep.mailbox.peer.store-forwarding.v1\0"u8;
+        var signing = new byte[domain.Length + result.Length - 64];
+        domain.CopyTo(signing); result.AsSpan(0, result.Length - 64).CopyTo(signing.AsSpan(domain.Length));
+        var digest = SHA256.HashData(signing);
+        var key = Sodium.PublicKeyAuth.GenerateKeyPair(senderSeed).PrivateKey;
+        try { Sodium.PublicKeyAuth.SignDetached(digest, key).CopyTo(result, result.Length - 64); }
+        finally { CryptographicOperations.ZeroMemory(key); }
+        Assert.True(crypto.Verify(request.SenderMembershipProof.SigningPublicKey.Span, digest, result.AsSpan(result.Length - 64)));
+        Assert.Equal(exact, MailboxPeerWireV2Codec.DecodeForwardedStoreRequest(result));
+        return result;
     }
 }

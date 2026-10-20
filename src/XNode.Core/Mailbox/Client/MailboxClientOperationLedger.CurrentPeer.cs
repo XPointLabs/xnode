@@ -13,6 +13,11 @@ internal sealed record MailboxCurrentPeerReplayFloor([property: JsonRequired] st
     [property: JsonRequired] string TombstoneDigest, [property: JsonRequired] bool MutationCompleted,
     [property: JsonRequired] string ResponseDigest, [property: JsonRequired] ulong RetainUntilUnixSeconds)
 {
+    internal bool IsAbsentTarget => TombstoneDigest.Length != 0 &&
+        TombstoneDigest == AbsentTargetDigest(TargetKey, StoreDigest, ReplayDigest);
+    internal static string AbsentTargetDigest(string target, string store, string replay) => Digest(
+        "deep.mailbox.peer.absent-target.v1\0"u8.ToArray().Concat(Convert.FromHexString(target))
+            .Concat(Convert.FromHexString(store)).Concat(Convert.FromHexString(replay)).ToArray());
     internal static string Digest(ReadOnlySpan<byte> bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
     internal static string ReplayIdentity(MailboxPeerReplaySnapshot snapshot) => Digest(
         JsonSerializer.SerializeToUtf8Bytes(snapshot with
@@ -21,20 +26,17 @@ internal sealed record MailboxCurrentPeerReplayFloor([property: JsonRequired] st
 
 public sealed partial class MailboxClientOperationLedger
 {
-    internal async Task RequireCurrentPeerFloorCapacityAsync(ReadOnlyMemory<byte> scopeKey,
-        MailboxCurrentOperationLease lease, CancellationToken token)
+    // Called ONLY inside InitializeCurrent's authenticated snapshot callback
+    // under this ledger owner. Capacity and native joins use the same document;
+    // a second Load/lease round trip adds no independent evidence here.
+    internal MailboxCurrentPeerReplayFloor? RequireCurrentPeerFloorCapacity(
+        IReadOnlyDictionary<string, MailboxCurrentPeerReplayFloor> floors, ReadOnlyMemory<byte> scopeKey)
     {
-        ThrowIfDisposed(); lease.RequireActive();
+        ThrowIfDisposed();
         var key = ToLowerHex(scopeKey.Span, 32, nameof(scopeKey));
-        await _gate.WaitAsync(token).ConfigureAwait(false);
-        try
-        {
-            var document = await LoadAsync(token, lease).ConfigureAwait(false);
-            if (!document.PeerReplayFloors.ContainsKey(key) && document.PeerReplayFloors.Count >= _maxEntries)
-                throw new InvalidOperationException("Current peer custody capacity is exhausted.");
-            _ = await lease.CheckAsync(token).ConfigureAwait(false);
-        }
-        finally { _gate.Release(); }
+        if (!floors.ContainsKey(key) && floors.Count >= _maxEntries)
+            throw new InvalidOperationException("Current peer custody capacity is exhausted.");
+        return floors.GetValueOrDefault(key);
     }
 
     internal async Task<ulong> RecordCurrentPeerFloorAsync(ReadOnlyMemory<byte> scopeKey,
@@ -48,6 +50,13 @@ public sealed partial class MailboxClientOperationLedger
         try
         {
             var document = await LoadAsync(token, lease).ConfigureAwait(false);
+            if (candidate.TombstoneDigest.Length == 0 && document.PeerReplayFloors.Values.Any(
+                floor => floor.TargetKey == candidate.TargetKey && floor.IsAbsentTarget))
+                throw new InvalidDataException("A durable negative tombstone refuses Store resurrection.");
+            if (candidate.TombstoneDigest.Length != 0 && document.PeerReplayFloors.Values.Any(floor =>
+                floor.TargetKey == candidate.TargetKey && floor.TombstoneDigest.Length != 0 &&
+                !(floor.IsAbsentTarget && candidate.IsAbsentTarget) && floor.TombstoneDigest != candidate.TombstoneDigest))
+                throw new InvalidDataException("A different prepared tombstone cannot replace original native custody.");
             if (document.PeerReplayFloors.TryGetValue(key, out var prior))
             {
                 if (prior.ReplayDigest != candidate.ReplayDigest || prior.TargetKey != candidate.TargetKey ||

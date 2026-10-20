@@ -43,7 +43,7 @@ internal sealed class CurrentMailboxPeerHttpEndpoint(CurrentMailboxReplicaReceiv
                     return Failure(MailboxHttpFailure.MalformedCanonicalBody);
                 var response = operation == MailboxPeerReplicationOperation.Tombstone
                     ? await receiver.ReceiveForwardedTombstoneAsync(body, deadline.Token).ConfigureAwait(false)
-                    : await receiver.ReceiveAsync(body, operation, deadline.Token).ConfigureAwait(false);
+                    : await receiver.ReceiveForwardedStoreAsync(body, deadline.Token).ConfigureAwait(false);
                 return Results.Bytes(response.ToArray(), contract.ResponseContentType);
             }
             catch (EndOfStreamException) { return Failure(MailboxHttpFailure.MalformedCanonicalBody); }

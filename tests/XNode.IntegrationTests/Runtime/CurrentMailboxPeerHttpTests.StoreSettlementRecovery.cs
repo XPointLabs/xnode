@@ -69,7 +69,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
         Assert.Equal(original, Assert.Single(f.ExactIntents));
         Assert.Equal(clientOutcomes, f.Sender.Node.OutcomeCount); // Native settlement is not a fabricated client outcome.
         Assert.Single(f.Sender.MutationFiles); Assert.Single(f.Recipient.MutationFiles);
-        Assert.All(f.PeerClient.ExactRequests, request => Assert.Equal(original, request));
+        Assert.All(f.PeerClient.ExactRequests, request => Assert.Equal(original, MailboxPeerWireV2Codec.DecodeForwardedStoreRequest(request)));
         var document = JsonNode.Parse(File.ReadAllBytes(f.LedgerFile))!;
         var operation = document["operations"]!.AsObject().Single().Value!;
         Assert.Equal("durable", operation["state"]!.GetValue<string>());
@@ -207,7 +207,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
         Assert.Equal(original, Assert.Single(f.ExactIntents)); Assert.Equal(document, File.ReadAllBytes(f.LedgerFile));
         Assert.Empty(f.Recipient.MutationFiles);
         Assert.Equal(2, f.PeerClient.ExactRequests.Count);
-        Assert.All(f.PeerClient.ExactRequests, request => Assert.Equal(original, request));
+        Assert.All(f.PeerClient.ExactRequests, request => Assert.Equal(original, MailboxPeerWireV2Codec.DecodeForwardedStoreRequest(request)));
     }
 
     [Fact]

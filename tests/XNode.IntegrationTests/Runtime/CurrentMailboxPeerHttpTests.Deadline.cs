@@ -43,12 +43,12 @@ public sealed partial class CurrentMailboxPeerHttpTests
             Assert.Equal(0, f.Sender.Node.OutcomeCount);
             Assert.Equal(1, f.Sender.Node.Replay.Diagnostics.PendingCount);
             exactIntent = Assert.Single(f.ExactIntents);
-            Assert.True(exactIntent.AsSpan().SequenceEqual(Assert.Single(f.PeerClient.ExactRequests)));
+            Assert.Equal(exactIntent, MailboxPeerWireV2Codec.DecodeForwardedStoreRequest(Assert.Single(f.PeerClient.ExactRequests)));
         }
         finally { release.Set(); }
         await completed.Task.WaitAsync(TimeSpan.FromSeconds(15));
         f.Recipient.Fault.Action = null;
-        Assert.Equal(exactIntent.Length, f.RemoteHost.BodyBytes); Assert.Equal(1, f.RemoteHost.EndReads);
+        Assert.Equal(exactIntent.Length + MailboxPeerWireV2Codec.StoreForwardingOverhead, f.RemoteHost.BodyBytes); Assert.Equal(1, f.RemoteHost.EndReads);
         Assert.True(f.RemoteHost.RequestCancelled);
         Assert.Equal("OperationCanceledException", f.RemoteHost.HandlerFailure);
         Assert.Null(await f.Recipient.ReadBlobAsync());
@@ -60,7 +60,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
         Assert.Equal(2, recovered.DurableReplicaCount); Assert.False(recovered.CanonicalMqr3.IsEmpty);
         Assert.Single(f.Sender.MutationFiles); Assert.Single(f.Recipient.MutationFiles);
         Assert.Equal(2, f.PeerClient.ExactRequests.Count); Assert.Equal(2, f.RemoteHost.Requests);
-        Assert.True(exactIntent.AsSpan().SequenceEqual(f.PeerClient.ExactRequests[1]));
+        Assert.Equal(exactIntent, MailboxPeerWireV2Codec.DecodeForwardedStoreRequest(f.PeerClient.ExactRequests[1]));
         Assert.True(exactIntent.AsSpan().SequenceEqual(Assert.Single(f.ExactIntents)));
         Assert.Equal(0, f.Sender.Node.Replay.Diagnostics.PendingCount);
         Assert.Equal(1, f.Sender.Node.Replay.Diagnostics.CompletedCount);

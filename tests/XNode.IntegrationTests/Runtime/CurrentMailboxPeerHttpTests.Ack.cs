@@ -74,13 +74,14 @@ public sealed partial class CurrentMailboxPeerHttpTests
     }
 
     private static byte[] AckFrame(Fixture f, MailboxRetrievePage page, ulong counter = 1, byte operation = 0x74,
-        ReadOnlyMemory<byte>? continuation = null, IReadOnlyList<MailboxAcknowledgement>? acknowledgements = null)
+        ReadOnlyMemory<byte>? continuation = null, IReadOnlyList<MailboxAcknowledgement>? acknowledgements = null,
+        byte grantSerial = 0x52)
     {
         var envelope = MailboxAuthenticatedRequestTranscript.DecodeStoreBody(f.Recipient.Envelope);
         var binding = MailboxAuthenticatedRequestTranscript.ForAck(envelope.Epoch, Enumerable.Repeat(operation, 16).ToArray(),
             envelope.MailboxId, envelope.PlacementId, !page.HasMore, (continuation ?? page.ContinuationToken).Span,
             acknowledgements ?? page.Items.Select(item => item.ToAcknowledgement()).ToArray());
-        var grant = MailboxGrantRevocationStoreTests.Grant(f.Signed, f.Recipient.Node.Host, MailboxCapabilityDomain.Retrieve, 0x52);
+        var grant = MailboxGrantRevocationStoreTests.Grant(f.Signed, f.Recipient.Node.Host, MailboxCapabilityDomain.Retrieve, grantSerial);
         return MailboxAuthenticatedClientRequestCodec.Encode(new()
         {
             Binding = binding,
@@ -229,9 +230,21 @@ public sealed partial class CurrentMailboxPeerHttpTests
         await using var f = await Fixture.CreateAsync(); f.OpenLedger(); await StoreItem(f, 1);
         var page = DecodePage((await f.Recipient.Receiver.RetrieveClientAsync(RetrieveFrame(f))).ToArray(), f);
         _ = await f.Coordinator.AcknowledgeClientAsync(AckFrame(f, page), f.AckLedger); var intents = AckIntents(f);
-        await Assert.ThrowsAsync<InvalidDataException>(() => f.Coordinator.AcknowledgeClientAsync(
-            AckFrame(f, page, counter: 2, operation: 0x79), f.AckLedger).AsTask());
-        Assert.Equal(intents, AckIntents(f)); AssertTombstones(f, 1); Assert.Equal(2, f.AllHttpRequests);
+        var native = f.Sender.MutationFiles.Concat(f.Recipient.MutationFiles).Select(File.ReadAllBytes).ToArray();
+        // DR-0157 permits a separately authenticated current ACK, not rebinding
+        // the original terminal native tombstone. A pending tombstone still
+        // rejects replacement in CurrentPeerCannotReplaceAnotherPreparedTombstoneBeforeItsFirstEffect.
+        var next = AckFrame(f, page, counter: 2, operation: 0x79);
+        var reply = (await f.Coordinator.AcknowledgeClientAsync(next, f.AckLedger)).ToArray();
+        AssertAck(reply, page, 0x79);
+        Assert.Equal(2, AckIntents(f).Length);
+        foreach (var original in intents) Assert.Contains(AckIntents(f), bytes => bytes.AsSpan().SequenceEqual(original));
+        Assert.Equal(native, f.Sender.MutationFiles.Concat(f.Recipient.MutationFiles).Select(File.ReadAllBytes).ToArray());
+        AssertTombstones(f, 1); Assert.Equal(3, f.AllHttpRequests);
+        var calls = f.AllHttpRequests; f.Reopen();
+        Assert.Equal(reply, (await f.Coordinator.AcknowledgeClientAsync(next, f.AckLedger)).ToArray());
+        Assert.Equal(calls, f.AllHttpRequests);
+        Assert.Equal(native, f.Sender.MutationFiles.Concat(f.Recipient.MutationFiles).Select(File.ReadAllBytes).ToArray());
     }
 
     [Fact]

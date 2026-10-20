@@ -182,7 +182,7 @@ public sealed partial class MailboxPeerMutationStore : IDisposable
             var record = Read(path);
             if (!record.MatchesTombstoneTarget(request)
                 || record.State == "pending"
-                || record.State is "tombstone-pending" or "tombstoned"
+                || record.State == "tombstone-pending"
                     && !record.MatchesTombstoneOperation(request))
             {
                 return false;
@@ -365,7 +365,7 @@ public sealed partial class MailboxPeerMutationStore : IDisposable
                 != verified.ReplayClaim.EpochExpiresAtUnixSeconds
             || record.RetainUntilUnixSeconds
                 != verified.ReplayClaim.RetainUntilUnixSeconds
-            || record.State is "tombstone-pending" or "tombstoned"
+            || (record.State == "tombstone-pending" || record.State == "tombstoned" && lease is null)
                 && !record.MatchesTombstoneOperation(request))
         {
             return ContextConflict(MailboxReplicaDisposition.Tombstone, "tombstone");
@@ -619,9 +619,11 @@ public sealed partial class MailboxPeerMutationStore : IDisposable
 
         public static PersistedMutation StorePending(
             VerifiedMailboxPeerWireRequestV2 verified,
-            MailboxEncryptedEnvelope envelope)
+            MailboxEncryptedEnvelope envelope) => StorePending(verified.Request, envelope, verified.ReplayClaim);
+
+        public static PersistedMutation StorePending(MailboxPeerWireRequestV2 request,
+            MailboxEncryptedEnvelope envelope, MailboxPeerReplayClaim claim)
         {
-            var request = verified.Request;
             return new()
             {
                 State = "pending",
@@ -636,16 +638,18 @@ public sealed partial class MailboxPeerMutationStore : IDisposable
                 ReplayNonce = Hex(request.ReplayNonce.Span),
                 BlobId = Hex(SHA256.HashData(request.Payload.Span)),
                 StoreCreatedAtUnixSeconds = request.CreatedAtUnixSeconds,
-                StoreReservedAtUnixSeconds = verified.ReplayClaim.ReservedAtUnixSeconds,
+                StoreReservedAtUnixSeconds = claim.ReservedAtUnixSeconds,
                 ExpiresAtUnixSeconds = request.ExpiresAtUnixSeconds,
-                EpochExpiresAtUnixSeconds = verified.ReplayClaim.EpochExpiresAtUnixSeconds,
-                RetainUntilUnixSeconds = verified.ReplayClaim.RetainUntilUnixSeconds
+                EpochExpiresAtUnixSeconds = claim.EpochExpiresAtUnixSeconds,
+                RetainUntilUnixSeconds = claim.RetainUntilUnixSeconds
             };
         }
 
-        public PersistedMutation BeginTombstone(VerifiedMailboxPeerWireRequestV2 verified)
+        public PersistedMutation BeginTombstone(VerifiedMailboxPeerWireRequestV2 verified) =>
+            BeginTombstone(verified.Request, verified.ReplayClaim.ReservedAtUnixSeconds);
+
+        public PersistedMutation BeginTombstone(MailboxPeerWireRequestV2 request, ulong reservedAt)
         {
-            var request = verified.Request;
             return this with
             {
                 State = "tombstone-pending",
@@ -653,7 +657,7 @@ public sealed partial class MailboxPeerMutationStore : IDisposable
                 TombstoneReplayNonce = Hex(request.ReplayNonce.Span),
                 TombstoneCreatedAtUnixSeconds = request.CreatedAtUnixSeconds,
                 TombstoneReservedAtUnixSeconds =
-                    verified.ReplayClaim.ReservedAtUnixSeconds
+                    reservedAt
             };
         }
 

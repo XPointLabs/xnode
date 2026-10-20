@@ -26,7 +26,7 @@ public sealed partial class MailboxPeerMutationStore
                 if (!index.TryGetValue(item.Cursor, out var paths) || paths.Count != 1)
                     throw new InvalidDataException("Current ACK cursor custody is missing or ambiguous.");
                 var path = paths.Single(); var record = Read(path);
-                if (record.State != "completed" || record.Cursor != item.Cursor || RetrieveScope(record) != scope ||
+                if (record.State is not ("completed" or "tombstoned") || record.Cursor != item.Cursor || RetrieveScope(record) != scope ||
                     Path.GetFileNameWithoutExtension(path) != RecordKey(record.Epoch, record.MailboxId, record.EnvelopeDigest) ||
                     !FixedHex(record.EnvelopeDigest, item.EnvelopeDigest.Span) || record.ExpiresAtUnixSeconds <= upper ||
                     record.StoreCreatedAtUnixSeconds > upper)
