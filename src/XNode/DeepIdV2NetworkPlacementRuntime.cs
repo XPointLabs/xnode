@@ -719,7 +719,10 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
     {
         if (left.Count != right.Count) return false;
         for (var i = 0; i < left.Count; i++)
-            if (!CryptographicOperations.FixedTimeEquals(left[i].Span, right[i].Span)) return false;
+            // These are already distributed PUBLIC signed records, not secret
+            // keys, capabilities or MACs. Preserve exact byte equality while
+            // allowing vectorized comparison of the complete public history.
+            if (!left[i].Span.SequenceEqual(right[i].Span)) return false;
         return true;
     }
 }

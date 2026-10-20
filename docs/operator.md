@@ -1611,6 +1611,15 @@ an interrupted/failed completion remains faulted until operator recovery;
 authenticated signed conflicts still latch. No failed verification releases
 admission authority or resets a floor.
 
+Public NETCODEC records retain their pure canonical/core digests for their
+immutable object lifetime. Policy/view and exact historical projection lookup
+uses bounded indexes rather than repeatedly hashing/scanning the complete
+history. Public distribution read-back uses exact vectorized byte comparison;
+secret/capability/MAC comparisons are not changed. Actual files, authenticated
+protected roots, original signature and issuer rules, current time and each
+effect fence remain mandatory. No configuration, custody reset or new wire is
+needed; update the node with the matching Protocol build.
+
 The optional `XPoint.XNode.CurrentMailbox` meter exposes `phase.duration` in
 milliseconds with closed phase names only. No exporter is enabled by this
 change. Measurements contain no node/account/mailbox IDs, selectors, payloads,
