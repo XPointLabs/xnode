@@ -17,6 +17,7 @@ public sealed class FileDeepIdV2DirectoryProtectedHeadStoreTests
         _ = await store.RestoreAsync(fixture.Authority, default);
         var publicHead = await store.ReadRetainedAsync(fixture.Authority, default);
         var verified = store.PublicHeadSignatureVerifications;
+        var grammars = store.HeadGrammarDecodes;
         Assert.True(verified > 0);
         for (var pass = 0; pass < 3; pass++)
         {
@@ -25,6 +26,7 @@ public sealed class FileDeepIdV2DirectoryProtectedHeadStoreTests
             Assert.Equal(fixture.ExactGenesis, actual.ExactAdh1.ToArray());
         }
         Assert.Equal(verified, store.PublicHeadSignatureVerifications);
+        Assert.Equal(grammars, store.HeadGrammarDecodes);
         var original = File.ReadAllBytes(fixture.TipPath);
         var changed = original.ToArray(); changed[^1] ^= 1;
         File.WriteAllBytes(fixture.TipPath, changed);

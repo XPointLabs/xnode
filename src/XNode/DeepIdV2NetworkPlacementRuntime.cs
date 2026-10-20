@@ -64,6 +64,13 @@ internal sealed class DeepIdV2NetworkClosureFileSource
     private const long MaximumClosureBytes = 64L * 1024 * 1024;
     private readonly string[][] paths;
     private readonly string? publicBundlePath;
+    // Pure framing of one exact PUBLIC frame, not signatures/currentness.
+    // Every call still reads the actual file/EOF. Each consumer gets its own
+    // buffers, so disposing a read cannot mutate a later observation.
+    private readonly object bundleGrammarGate = new();
+    private byte[]? bundleGrammarBytes;
+    private byte[][][]? bundleGrammarGroups;
+    internal long BundleGrammarDecodes { get; private set; }
     internal ParsedDid2? Observer { get; }
 
     internal DeepIdV2NetworkClosureFileSource(string bundlePath, string publicObservationDid2Path)
@@ -125,15 +132,25 @@ internal sealed class DeepIdV2NetworkClosureFileSource
             var bytes = new byte[checked((int)stream.Length)];
             stream.ReadExactly(bytes);
             if (stream.ReadByte() != -1) throw new IOException("The network closure changed while reading.");
-            var raw = XPointNetworkClosureWireCodec.DecodeResponse(bytes);
-            return new DeepIdV2NetworkClosureArtifacts(new[] {
-                raw.ExactNetworkPolicyChain.Select(static b => b.ToArray()).ToArray(),
-                raw.ExactViewChain.Select(static b => b.ToArray()).ToArray(),
-                raw.ExactHeadChain.Select(static b => b.ToArray()).ToArray(),
-                raw.ExactActiveNodeDescriptors.Select(static b => b.ToArray()).ToArray(),
-                raw.ExactPlacementTopologyChain.Select(static b => b.ToArray()).ToArray(),
-                raw.ExactMailboxAuthorityChain.Select(static b => b.ToArray()).ToArray()
-            });
+            lock (bundleGrammarGate)
+            {
+                if (bundleGrammarBytes is not null && bundleGrammarGroups is not null && bytes.AsSpan().SequenceEqual(bundleGrammarBytes))
+                    return new(CloneGroups(bundleGrammarGroups));
+                BundleGrammarDecodes++;
+                var raw = XPointNetworkClosureWireCodec.DecodeResponse(bytes);
+                var framedGroups = new[] {
+                    raw.ExactNetworkPolicyChain, raw.ExactViewChain, raw.ExactHeadChain,
+                    raw.ExactActiveNodeDescriptors, raw.ExactPlacementTopologyChain, raw.ExactMailboxAuthorityChain
+                }.Select(static group => group.Select(static b => b.ToArray()).ToArray()).ToArray();
+                // Resource bound only: larger valid frames keep the full path.
+                if (bytes.Length <= 4 * 1024 * 1024)
+                {
+                    bundleGrammarBytes = bytes; bundleGrammarGroups = framedGroups;
+                    return new(CloneGroups(framedGroups));
+                }
+                bundleGrammarBytes = null; bundleGrammarGroups = null;
+                return new(framedGroups);
+            }
         }
         var groups = new byte[paths.Length][][];
         var budget = new BoundedFileRead.ByteBudget(MaximumClosureBytes,
@@ -157,6 +174,9 @@ internal sealed class DeepIdV2NetworkClosureFileSource
             throw;
         }
     }
+
+    private static byte[][][] CloneGroups(byte[][][] groups) =>
+        groups.Select(static group => group.Select(static bytes => bytes.ToArray()).ToArray()).ToArray();
 
     private static string[] Copy(IReadOnlyList<string> candidates)
     {
@@ -240,6 +260,9 @@ internal interface IDeepIdV2ContactStoreAuthoritySource
 
 internal sealed class DeepIdV2NetworkObservationChangedException() : CryptographicException(
     "The acquired DID2 observation no longer binds the current public source.");
+
+internal sealed class DeepIdV2NetworkObservationMissingException() : CryptographicException(
+    "No acquired DID2 network observation is available.");
 
 internal sealed class DeepIdV2NetworkPlacementRuntime(
     IDeepIdV2CurrentDirectoryProofSource proofs,
@@ -353,6 +376,9 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
         DeepIdV2ContactStoreAuthority current;
         try { current = await ReadPublicationAuthorityAsync(cancellationToken).ConfigureAwait(false); }
         catch (DeepIdV2NetworkObservationChangedException) { return false; }
+        // Negative scheduling only. The receive-binding owner must perform a
+        // genuine acquisition BEFORE dispatch; observation itself cannot mint.
+        catch (DeepIdV2NetworkObservationMissingException) { return false; }
         var observed = Volatile.Read(ref observation);
         if (observed is null || !ReferenceEquals(observed.Freshness, current.Freshness) ||
             !CryptographicOperations.FixedTimeEquals(OnionNetworkProtectedHistoryCodec.Encode(retained),
@@ -438,7 +464,7 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
             if (Volatile.Read(ref stopped) != 0)
                 throw new InvalidOperationException("The DID2 network source is stopped.");
             var observed = observational ? Volatile.Read(ref observation) ??
-                throw new CryptographicException("No acquired DID2 network observation is available.") : null;
+                throw new DeepIdV2NetworkObservationMissingException() : null;
             if (!observational && observesConfiguredAccount) Volatile.Write(ref observation, null);
             DeepIdV2NetworkFloor? previous;
             using (timing.Measure(CurrentMailboxNetworkReadTiming.Phase.FloorRead))

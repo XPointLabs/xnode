@@ -14,6 +14,55 @@ namespace XNode.IntegrationTests.Runtime;
 
 public sealed class PrivacyRoutingRuntimeTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LostObservationReacquiresBeforeReturningBindingButUnavailableProofStillRejects(bool unavailable)
+    {
+        using var fixture = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var files = new DeepIdV2NetworkPlacementRuntimeTests.Assets(fixture);
+        using var floor = files.OpenFloor();
+        var runtime = files.Source(floor);
+        using var configuration = EnabledTestConfiguration();
+        var source = new ActualObservedBindingSource(runtime, fixture, configuration);
+        await using var capability = new PrivacyRoutingProductionCapability(configuration, source, TimeSpan.FromSeconds(10));
+        await capability.StartAsync(default);
+        Assert.True(capability.IsVerified);
+        var retained = await floor.ReadAsync(default);
+        fixture.RejectProof = true;
+        await Assert.ThrowsAsync<CryptographicException>(() => runtime.AcquireObservationAsync(default).AsTask());
+        fixture.RejectProof = unavailable;
+        if (unavailable)
+        {
+            await Assert.ThrowsAsync<CryptographicException>(() => capability.GetCurrentAsync(default).AsTask());
+            Assert.False(capability.IsVerified);
+        }
+        else
+        {
+            var binding = await capability.GetCurrentAsync(default);
+            binding.Network.EnsureCurrent();
+            Assert.True(capability.IsVerified);
+        }
+        Assert.Equal(3, fixture.ProofReads); // Initial, failed owner refresh, genuine reacquisition.
+        Assert.True(FileDeepIdV2NetworkFloorStore.Same(retained, await floor.ReadAsync(default)));
+    }
+
+    private sealed class ActualObservedBindingSource(DeepIdV2NetworkPlacementRuntime runtime,
+        DeepIdV2PublicationAuthorityFixture fixture, PrivacyRoutingConfiguration configuration)
+        : IOnionHostReceiveBindingSource, IObservedOnionHostReceiveBindingSource
+    {
+        public bool CanObserve => true;
+        public async ValueTask<OnionHostReceiveBinding> GetCurrentAsync(CancellationToken ct)
+        {
+            var candidate = OnionPathCandidateSnapshotFactory.Create(fixture.NetworkContext).Candidates[0];
+            var network = await runtime.ReadCurrentAsync(candidate.RouterOwnerId,
+                Sodium.ScalarMult.Base(fixture.TestOnionScalar(candidate.NodeId.Span)), default, ct);
+            return Binding(configuration, network);
+        }
+        public ValueTask<bool> ObserveAsync(OnionHostReceiveBinding retained, CancellationToken ct) =>
+            runtime.ObserveReceiveNetworkAsync(retained.Network, ct);
+    }
+
     [Fact]
     public async Task ObservedReceiveBindingsPollCustodyWithoutRepeatedProofAcquisitionAndFailClosed()
     {

@@ -1945,3 +1945,19 @@ an unchanged/insufficient head, unavailable proof or invalid signature cannot
 authorize the operation. In-effect publication checks remain observational and
 cannot upgrade their captured lease. The scheduling precheck verifies the actual
 issuer signature and network, but is never admission permission itself.
+
+The ONION receive-binding observer reports a missing acquired observation as
+`false`, just like a changed public source. That negative scheduling answer is
+not a usable binding: the existing binding owner must acquire and fully verify
+fresh authority before returning from the same pre-dispatch request. Missing
+observations still reject publication/effect checks. Malformed native custody,
+clock failure, stopped sources and cancellation do not become positive results.
+
+Repeated native checks still read actual public bundle bytes/EOF and authenticate
+every actual protected head file and its independent anchor/index. Only pure
+grammar work is reused: one identical public bundle up to4MiB, and exact public
+head bytes already in the bounded signed-head memo. Changed bytes take the full
+parser/verification path; larger valid bundles keep the original uncached path.
+Bundle consumers own independent buffers, so disposal cannot alter the memo or
+another read. No remembered file metadata, native floor or currentness decision
+replaces these checks.

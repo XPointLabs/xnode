@@ -13,6 +13,27 @@ namespace XNode.IntegrationTests.Runtime;
 /// <summary>Actual file source/floor/runtime with real signed proof; no HTTP or device claim.</summary>
 public sealed class DeepIdV2NetworkPlacementRuntimeTests
 {
+    [Fact]
+    public async Task AtomicGrammarMemoRereadsActualBytesAndReturnsIndependentBuffers()
+    {
+        using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var files = new Assets(signed);
+        var source = files.ClosureSource(atomic: true);
+        Assert.Equal(1, source.BundleGrammarDecodes);
+        using var first = source.ReadCurrent();
+        using var second = source.ReadCurrent();
+        first.Dispose();
+        Assert.Equal(signed.MailboxAuthority.ToArray(), second.MailboxAuthorities.Single().ToArray());
+        Assert.Equal(1, source.BundleGrammarDecodes);
+        files.CorruptIssuerSignature();
+        using var changed = source.ReadCurrent(); // Framing is not signature authority.
+        Assert.NotEqual(signed.MailboxAuthority.ToArray(), changed.MailboxAuthorities.Single().ToArray());
+        Assert.Equal(2, source.BundleGrammarDecodes);
+        files.CorruptBundleMagic();
+        Assert.Throws<FormatException>(() => source.ReadCurrent());
+        Assert.Equal(3, source.BundleGrammarDecodes);
+    }
+
     [Theory]
     [InlineData("covered")]
     [InlineData("renew")]
@@ -43,7 +64,7 @@ public sealed class DeepIdV2NetworkPlacementRuntimeTests
         if (mode == "unavailable")
         {
             await Assert.ThrowsAsync<CryptographicException>(() => source.ReadGrantAdmissionAuthorityAsync(grant, default).AsTask());
-            await Assert.ThrowsAsync<CryptographicException>(() => source.ReadPublicationAuthorityAsync(default).AsTask());
+            await Assert.ThrowsAsync<DeepIdV2NetworkObservationMissingException>(() => source.ReadPublicationAuthorityAsync(default).AsTask());
             Assert.Equal(2, proofSource.Reads);
             return;
         }
@@ -132,7 +153,7 @@ public sealed class DeepIdV2NetworkPlacementRuntimeTests
         signed.RejectProof = true;
         await Assert.ThrowsAsync<CryptographicException>(() => source.ReadPublicationAuthorityAsync(default).AsTask());
         signed.RejectProof = false;
-        await Assert.ThrowsAsync<CryptographicException>(() => source.ReadPublicationAuthorityAsync(default).AsTask());
+        await Assert.ThrowsAsync<DeepIdV2NetworkObservationMissingException>(() => source.ReadPublicationAuthorityAsync(default).AsTask());
         Assert.Equal(1, signed.ProofReads);
     }
 
@@ -214,7 +235,9 @@ public sealed class DeepIdV2NetworkPlacementRuntimeTests
         Assert.False(await source.ObserveReceiveNetworkAsync(network, default));
         Assert.Equal(1, signed.ProofReads);
         Assert.True(FileDeepIdV2NetworkFloorStore.Same(retained, await floor.ReadAsync(default)));
-        await Assert.ThrowsAsync<CryptographicException>(() => source.ObserveReceiveNetworkAsync(network, default).AsTask());
+        Assert.False(await source.ObserveReceiveNetworkAsync(network, default));
+        // Still denial-only: the separate publication/effect API cannot use it.
+        await Assert.ThrowsAsync<DeepIdV2NetworkObservationMissingException>(() => source.ReadPublicationAuthorityAsync(default).AsTask());
         Assert.Equal(1, signed.ProofReads);
     }
 
@@ -374,7 +397,7 @@ public sealed class DeepIdV2NetworkPlacementRuntimeTests
         using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
         using var files = new Assets(signed);
         using var floor = files.OpenFloor();
-        await Assert.ThrowsAsync<CryptographicException>(async () =>
+        await Assert.ThrowsAsync<DeepIdV2NetworkObservationMissingException>(async () =>
             await files.Source(floor).ReadPublicationAuthorityAsync(default));
         Assert.Equal(0, signed.ProofReads);
         Assert.Null(await floor.ReadAsync(default));
@@ -419,7 +442,7 @@ public sealed class DeepIdV2NetworkPlacementRuntimeTests
         if (state == "stopped") source.StopObservations();
         if (state == "valid")
         {
-            await Assert.ThrowsAsync<CryptographicException>(async () => await source.ReadPublicationAuthorityAsync(default));
+            await Assert.ThrowsAsync<DeepIdV2NetworkObservationMissingException>(async () => await source.ReadPublicationAuthorityAsync(default));
             Assert.Null(await floor.ReadAsync(default));
             Assert.Equal(0, signed.ProofReads);
             await source.AcquireObservationAsync(cancel.Token);
@@ -466,7 +489,7 @@ public sealed class DeepIdV2NetworkPlacementRuntimeTests
         if (fault == "floor") Assert.False(files.NetworkFloorExists);
         // Failure clears the observation; fixing files alone cannot revive it.
         signed.Sample = 100; signed.RejectProof = false;
-        await Assert.ThrowsAsync<CryptographicException>(async () => await source.ReadPublicationAuthorityAsync(default));
+        await Assert.ThrowsAsync<DeepIdV2NetworkObservationMissingException>(async () => await source.ReadPublicationAuthorityAsync(default));
         Assert.Equal(1, signed.ProofReads);
     }
 
@@ -582,11 +605,21 @@ public sealed class DeepIdV2NetworkPlacementRuntimeTests
         }
         internal bool NetworkFloorExists => File.Exists(Path.Combine(root, "node-state", "did2-network-state", "floor.bin"));
         internal void DeleteNetworkFloor() => File.Delete(Path.Combine(root, "node-state", "did2-network-state", "floor.bin"));
+        internal void CorruptBundleMagic()
+        {
+            var path = Path.Combine(root, "network.ncp2"); var bytes = File.ReadAllBytes(path);
+            bytes[0] ^= 1; File.WriteAllBytes(path, bytes);
+        }
         internal FileDeepIdV2NetworkFloorStore OpenFloor(Action? afterFloorWrite = null) => new(Path.Combine(root, "node-state"),
             protector, new MailboxStorageSecurity(), new ObservedDurability(afterFloorWrite));
         internal DeepIdV2NetworkPlacementRuntime Source(FileDeepIdV2NetworkFloorStore floor,
             bool observer = true, bool atomic = false, bool duplicateIssuer = false, TimeProvider? resourceTimeProvider = null,
             IDeepIdV2CurrentDirectoryProofSource? proofSource = null)
+        {
+            var source = ClosureSource(observer, atomic, duplicateIssuer);
+            return new(proofSource ?? signed, new(signed.GenesisPin, [authority], [time]), source, floor, signed, resourceTimeProvider);
+        }
+        internal DeepIdV2NetworkClosureFileSource ClosureSource(bool observer = true, bool atomic = false, bool duplicateIssuer = false)
         {
             var issuerPaths = new[] { mailboxAuthority };
             if (duplicateIssuer)
@@ -602,7 +635,7 @@ public sealed class DeepIdV2NetworkPlacementRuntimeTests
                         issuerPaths.Select(path => (ReadOnlyMemory<byte>)File.ReadAllBytes(path)).ToArray())), this.observer)
                 : new DeepIdV2NetworkClosureFileSource([policy], [view], [head], nodes, [projection],
                     issuerPaths, observer ? this.observer : "");
-            return new(proofSource ?? signed, new(signed.GenesisPin, [authority], [time]), source, floor, signed, resourceTimeProvider);
+            return source;
         }
         public void Dispose() => Directory.Delete(root, recursive: true);
     }

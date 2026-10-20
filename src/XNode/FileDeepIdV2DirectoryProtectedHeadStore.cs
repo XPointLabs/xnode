@@ -38,6 +38,7 @@ internal sealed class FileDeepIdV2DirectoryProtectedHeadStore :
     private VerifiedXPointNetworkAuthority? headSignatureAuthority;
     private (FloorRecord Record, AccountDirectoryProtectedLkg Head)[] verifiedPublicHeads = [];
     internal long PublicHeadSignatureVerifications { get; private set; }
+    internal long HeadGrammarDecodes { get; private set; }
     private bool disposed;
 
     internal FileDeepIdV2DirectoryProtectedHeadStore(string stateDirectory,
@@ -367,7 +368,11 @@ internal sealed class FileDeepIdV2DirectoryProtectedHeadStore :
             if (plaintext.Length is < HeaderBytes or > MaximumProtectedBytes)
                 throw new InvalidDataException(
                     "The unprotected DID2 head floor record exceeds its bound.");
-            return FloorRecord.Decode(plaintext);
+            var revision = plaintext.Length >= HeaderBytes ? BinaryPrimitives.ReadUInt64BigEndian(plaintext.AsSpan(6)) : ulong.MaxValue;
+            var known = revision < (ulong)verifiedPublicHeads.Length ? verifiedPublicHeads[(int)revision].Record : null;
+            var result = FloorRecord.Decode(plaintext, known, out var decodedHead);
+            if (decodedHead) HeadGrammarDecodes++;
+            return result;
         }
         finally
         {
@@ -561,7 +566,7 @@ internal sealed class FileDeepIdV2DirectoryProtectedHeadStore :
             return result;
         }
 
-        internal static FloorRecord Decode(ReadOnlySpan<byte> value)
+        internal static FloorRecord Decode(ReadOnlySpan<byte> value, FloorRecord? known, out bool decodedHead)
         {
             if (value.Length < HeaderBytes ||
                 !value[..4].SequenceEqual("DHF2"u8) ||
@@ -571,8 +576,12 @@ internal sealed class FileDeepIdV2DirectoryProtectedHeadStore :
                 throw new InvalidDataException(
                     "The protected DID2 head floor record is malformed.");
             var exact = value[HeaderBytes..].ToArray();
-            var head = AccountDirectoryAdh1Codec.Decode(exact);
-            if (!head.NetworkId.Span.SequenceEqual(value.Slice(46, 16)))
+            // Reuse only canonical grammar of identical public head bytes.
+            // The actual protected file was just reread/unprotected; all floor
+            // headers, chain joins, anchor/index and authority still revalidate.
+            decodedHead = known is null || !exact.AsSpan().SequenceEqual(known.ExactAdh1);
+            var parsedNetwork = decodedHead ? AccountDirectoryAdh1Codec.Decode(exact).NetworkId.Span : known!.NetworkId.AsSpan();
+            if (!parsedNetwork.SequenceEqual(value.Slice(46, 16)))
                 throw new InvalidDataException(
                     "The DID2 head floor network differs.");
             return new FloorRecord(
