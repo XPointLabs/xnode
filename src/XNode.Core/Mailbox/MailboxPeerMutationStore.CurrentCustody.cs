@@ -149,6 +149,12 @@ public sealed partial class MailboxPeerMutationStore
             if (!targets.Contains(key))
                 throw new InvalidDataException("Current native peer mutation has no independent fact.");
         }
+        // Multiple independent replay facts can name this same immutable record
+        // (Store, tombstone, exact re-ACK). Reuse only its pure canonical digest
+        // inside THIS fresh native inventory join, never a previous file read,
+        // floor comparison, callback or authority boundary.
+        var storeIdentities = new Dictionary<string, string>(StringComparer.Ordinal);
+        var tombstoneIdentities = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var floor in floors.Values)
         {
             token.ThrowIfCancellationRequested();
@@ -165,11 +171,20 @@ public sealed partial class MailboxPeerMutationStore
                 continue; // Known Pending Store before its first mutation.
             }
             if (RecordKey(record.Epoch, record.MailboxId, record.EnvelopeDigest) != floor.TargetKey ||
-                StoreIdentity(record) != floor.StoreDigest ||
+                Identity(storeIdentities, floor.TargetKey, record, StoreIdentity) != floor.StoreDigest ||
                 floor.MutationCompleted && (floor.TombstoneDigest.Length == 0 ? record.State == "pending" : record.State != "tombstoned") ||
                 floor.TombstoneDigest.Length != 0 && (record.State is "tombstone-pending" or "tombstoned") &&
-                    TombstoneIdentity(record) != floor.TombstoneDigest)
+                    Identity(tombstoneIdentities, floor.TargetKey, record, TombstoneIdentity) != floor.TombstoneDigest)
                 throw new InvalidDataException("Current peer mutation rolled back independent custody.");
+        }
+
+        static string Identity(Dictionary<string, string> identities, string target,
+            PersistedMutation record, Func<PersistedMutation, string> compute)
+        {
+            if (identities.TryGetValue(target, out var digest)) return digest;
+            digest = compute(record);
+            identities.Add(target, digest);
+            return digest;
         }
     }
 

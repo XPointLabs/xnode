@@ -257,6 +257,7 @@ public sealed partial class MailboxPeerMutationStore : IDisposable
     {
         if (Interlocked.Exchange(ref _disposed, 1) == 0)
         {
+            ClearMutationGrammar();
             _lease.Dispose();
             _gate.Dispose();
         }
@@ -484,16 +485,35 @@ public sealed partial class MailboxPeerMutationStore : IDisposable
         try
         {
             var info = new FileInfo(path);
-            if (info.Length is <= 0 or > 16 * 1024)
+            if (info.Length is <= 0 or > MaximumMutationDocumentBytes)
             {
                 throw new InvalidDataException("A PRQ2 mutation record is not bounded.");
             }
 
             using var stream = File.OpenRead(path);
-            var record = JsonSerializer.Deserialize<PersistedMutation>(stream, JsonOptions)
-                ?? throw new InvalidDataException("A PRQ2 mutation record is empty.");
-            record.Validate();
-            return record;
+            var length = stream.Length;
+            if (length is <= 0 or > MaximumMutationDocumentBytes)
+                throw new InvalidDataException("A PRQ2 mutation record is not bounded.");
+            var encoded = new byte[checked((int)length)];
+            try
+            {
+                stream.ReadExactly(encoded);
+                if (stream.ReadByte() != -1 || stream.Length != length || stream.Position != length)
+                    throw new InvalidDataException("A PRQ2 mutation record changed while reading.");
+                // Always read and hash the actual opened file. Only immutable
+                // grammar is reused; current native inventory and independently
+                // protected floor/lease decisions still run at every boundary.
+                var key = (Convert.ToHexString(SHA256.HashData(encoded)), encoded.Length);
+                if (TryGetMutationGrammar(key, out var known)) return known;
+                Interlocked.Increment(ref _mutationGrammarDecodeCount);
+                using var grammarStream = new MemoryStream(encoded, writable: false);
+                var record = JsonSerializer.Deserialize<PersistedMutation>(grammarStream, JsonOptions)
+                    ?? throw new InvalidDataException("A PRQ2 mutation record is empty.");
+                record.Validate();
+                RememberMutationGrammar(key, record);
+                return record;
+            }
+            finally { CryptographicOperations.ZeroMemory(encoded); }
         }
         catch (Exception exception) when (
             exception is IOException or JsonException or FormatException)

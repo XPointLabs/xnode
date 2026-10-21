@@ -39,6 +39,22 @@ all checkpoint, replacement, file/parent flushes and authenticated readbacks
 remain. This avoids synchronous disk work for every JSON chunk, not the actual
 commit barriers. See [custody ordering](mailbox-operation-custody.md).
 
+Native mutation records also reuse only immutable parsed grammar: every read
+opens and reads the actual bounded file through EOF, checks length and hashes
+the complete bytes. The store-local FIFO holds at most1024 parsed entries and
+4MiB of encoded-source accounting (not a resident-heap size guarantee); no raw
+file bytes, path metadata or authority result is retained. Changed bytes parse
+and validate again; failed parsing is never remembered. Disposal clears the
+memo. All filename/index, protected floor/MAC, native inventory and live lease
+checks still execute. An authentic old pre-ACK snapshot is not valid current
+custody merely because its grammar is remembered.
+
+Within one fresh native inventory join, repeated facts for the same immutable
+record share only canonical Store/Tombstone digest computation; every floor is
+still compared independently. ACK grammar builds its target-conflict lookup
+only for that validation invocation and checks all matching tombstone facts.
+Neither optimization reuses authority across callbacks or future joins.
+
 Optional throttled numeric resource logs now separate ONION binding/open,
 forwarding, terminal dispatch and seal; native admission/intent/local/remote/
 completion and actual origin waits are separate closed counters. They contain

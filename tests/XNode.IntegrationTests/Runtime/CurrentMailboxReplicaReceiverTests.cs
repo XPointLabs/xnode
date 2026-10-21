@@ -264,6 +264,7 @@ public sealed class CurrentMailboxReplicaReceiverTests
         private readonly ReplicatedMailboxOptions options = new() { Enabled = true };
         private DurableMailboxPeerReplayJournal replay = null!;
         private MailboxPeerMutationStore mutations = null!;
+        internal MailboxPeerMutationStore Mutations => mutations;
         private ReplicatedMailboxStore blobs = null!;
         internal CurrentMailboxReplicaReceiver Receiver = null!;
         internal MailboxClientOperationLedger Operations = null!;

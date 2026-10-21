@@ -624,6 +624,8 @@ public sealed partial class MailboxClientOperationLedger
     {
         var ackTargets = new Dictionary<(ulong Epoch, string MailboxId, string Placement, string Membership, ulong Cursor),
             (bool Current, string Digest, string Placement, string Membership, ulong Expiry)>();
+        ILookup<string, MailboxCurrentPeerReplayFloor>? tombstonesByTarget = null;
+        var conflictingTombstoneTargets = new Dictionary<string, bool>(StringComparer.Ordinal);
         foreach (var pair in document.AckOperations)
         {
             var operation = pair.Value
@@ -710,13 +712,28 @@ public sealed partial class MailboxClientOperationLedger
                     var nativeTarget = MailboxPeerMutationStore.RecordKey(operation.Epoch, mailbox, digest);
                     if (!current || !previous.Current) throw new InvalidDataException("Current ACK target conflicts with neutral custody.");
                     if (previous != targetBinding) throw new InvalidDataException("Current ACK target digest or expiry changed.");
-                    var tombstones = document.PeerReplayFloors.Values.Where(floor =>
-                        floor.TargetKey == nativeTarget && floor.TombstoneDigest.Length != 0).ToArray();
                     // New current pre-intents are valid prefixes. Mutation
                     // completion is enforced by the actual owner, not a grammar
                     // bit that would reject this new pre-intent itself.
-                    if (tombstones.Any(floor => floor.IsAbsentTarget) ||
-                        tombstones.Select(floor => floor.TombstoneDigest).Distinct(StringComparer.Ordinal).Skip(1).Any())
+                    // Index only this invocation's document, and inspect every
+                    // matching fact before remembering its deterministic result.
+                    // Re-ACK history otherwise rescans ALL peer floors for each
+                    // duplicate. No live custody/currentness result is reused.
+                    if (!conflictingTombstoneTargets.TryGetValue(nativeTarget, out var conflicts))
+                    {
+                        tombstonesByTarget ??= document.PeerReplayFloors.Values
+                            .Where(floor => floor.TombstoneDigest.Length != 0)
+                            .ToLookup(floor => floor.TargetKey, StringComparer.Ordinal);
+                        string? firstDigest = null;
+                        foreach (var floor in tombstonesByTarget[nativeTarget])
+                        {
+                            conflicts |= floor.IsAbsentTarget ||
+                                firstDigest is not null && firstDigest != floor.TombstoneDigest;
+                            firstDigest ??= floor.TombstoneDigest;
+                        }
+                        conflictingTombstoneTargets.Add(nativeTarget, conflicts);
+                    }
+                    if (conflicts)
                         throw new InvalidDataException("Current ACK target has conflicting original mutation custody.");
                 }
                 else ackTargets.Add(target, targetBinding);
