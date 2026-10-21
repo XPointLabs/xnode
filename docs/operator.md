@@ -55,6 +55,14 @@ still compared independently. ACK grammar builds its target-conflict lookup
 only for that validation invocation and checks all matching tombstone facts.
 Neither optimization reuses authority across callbacks or future joins.
 
+Fresh recipient Store/tombstone processing keeps the signed response private
+until its peer completion and protected response digest are durable. One full
+post-sign native join also guards the immediately following private recipient
+commit in that same continuation; no response, callback or I/O escapes between
+them. Cached completed replay still acquires its separate pre-commit join.
+Sender processing, post-effect/read-back checks and the generic post-callback
+native/authority join remain independent. This is not a cross-request cache.
+
 Optional throttled numeric resource logs now separate ONION binding/open,
 forwarding, terminal dispatch and seal; native admission/intent/local/remote/
 completion and actual origin waits are separate closed counters. They contain

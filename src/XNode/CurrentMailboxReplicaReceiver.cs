@@ -252,14 +252,7 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
         var original = MailboxPeerWireV2Codec.DecodeForwardedTombstoneRequest(owned);
         return WithPeerAsync(original, MailboxPeerReplicationOperation.Tombstone,
             MailboxPeerWireResponseReplicaV2.Recipient,
-            async (operation, ct) =>
-            {
-                var response = operation.Verified.ReplayDisposition == MailboxPeerReplayDisposition.IdempotentCompleted
-                    ? operation.Verified.CachedResponse.ToArray()
-                    : await operation.ApplyAndSignLocalAsync(ct).ConfigureAwait(false);
-                await operation.CommitRecipientAsync(response, ct).ConfigureAwait(false);
-                return response;
-            }, token, forwarding: owned);
+            (operation, ct) => operation.ApplySignAndCommitRecipientAsync(ct), token, forwarding: owned);
     }
 
     internal ValueTask<ReadOnlyMemory<byte>> ReceiveForwardedStoreAsync(ReadOnlyMemory<byte> forwarding,
@@ -267,27 +260,14 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
     {
         var owned = forwarding.ToArray();
         return WithPeerAsync(MailboxPeerWireV2Codec.DecodeForwardedStoreRequest(owned), MailboxPeerReplicationOperation.Store,
-            MailboxPeerWireResponseReplicaV2.Recipient, async (operation, ct) =>
-            {
-                var response = operation.Verified.ReplayDisposition == MailboxPeerReplayDisposition.IdempotentCompleted
-                    ? operation.Verified.CachedResponse.ToArray()
-                    : await operation.ApplyAndSignLocalAsync(ct).ConfigureAwait(false);
-                await operation.CommitRecipientAsync(response, ct).ConfigureAwait(false);
-                return response;
-            }, token, forwarding: owned);
+            MailboxPeerWireResponseReplicaV2.Recipient,
+            (operation, ct) => operation.ApplySignAndCommitRecipientAsync(ct), token, forwarding: owned);
     }
 
     internal ValueTask<ReadOnlyMemory<byte>> ReceiveAsync(ReadOnlyMemory<byte> canonicalRequest,
         MailboxPeerReplicationOperation expectedOperation, CancellationToken token = default) =>
         WithPeerAsync(canonicalRequest, expectedOperation, MailboxPeerWireResponseReplicaV2.Recipient,
-            async (operation, ct) =>
-            {
-                var response = operation.Verified.ReplayDisposition == MailboxPeerReplayDisposition.IdempotentCompleted
-                    ? operation.Verified.CachedResponse.ToArray()
-                    : await operation.ApplyAndSignLocalAsync(ct).ConfigureAwait(false);
-                await operation.CommitRecipientAsync(response, ct).ConfigureAwait(false);
-                return response;
-            }, token);
+            (operation, ct) => operation.ApplySignAndCommitRecipientAsync(ct), token);
 
     internal async ValueTask<T> WithPeerAsync<T>(ReadOnlyMemory<byte> canonicalRequest,
         MailboxPeerReplicationOperation expectedOperation, MailboxPeerWireResponseReplicaV2 localRole,
@@ -507,7 +487,25 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
             await owner.RequireOperationCustodyAsync(scope, token).ConfigureAwait(false);
             ObjectDisposedException.ThrowIf(Volatile.Read(ref owner.disposed) != 0, owner);
         }
-        internal async ValueTask<ReadOnlyMemory<byte>> ApplyAndSignLocalAsync(CancellationToken token)
+        internal ValueTask<ReadOnlyMemory<byte>> ApplyAndSignLocalAsync(CancellationToken token) =>
+            ApplyAndSignLocalCoreAsync(token, commitRecipient: false);
+
+        internal async ValueTask<ReadOnlyMemory<byte>> ApplySignAndCommitRecipientAsync(CancellationToken token)
+        {
+            if (localRole != MailboxPeerWireResponseReplicaV2.Recipient)
+                throw new InvalidOperationException("Only recipient work can use the private recipient completion path.");
+            if (verified.ReplayDisposition == MailboxPeerReplayDisposition.IdempotentCompleted)
+            {
+                var response = verified.CachedResponse.ToArray();
+                // No freshly signed post-mutation fence exists on this branch.
+                // Preserve the independently current pre-commit check for replay.
+                await CommitRecipientAsync(response, token).ConfigureAwait(false);
+                return response;
+            }
+            return await ApplyAndSignLocalCoreAsync(token, commitRecipient: true).ConfigureAwait(false);
+        }
+
+        private async ValueTask<ReadOnlyMemory<byte>> ApplyAndSignLocalCoreAsync(CancellationToken token, bool commitRecipient)
         {
             await EnsureCurrentAsync(token).ConfigureAwait(false);
             var mutation = fact.IsAbsentTarget
@@ -520,6 +518,13 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
                 localRole, mutation.Disposition, verified.ReplayClaim.ReservedAtUnixSeconds, durableAt);
             var result = MailboxReceiptV2Codec.EncodeReplica(owner.crypto.SignReplicaResponse(receipt, owner.seed));
             await EnsureCurrentAsync(token).ConfigureAwait(false);
+            // This exact post-sign full native join is also the recipient's
+            // pre-commit join. The receipt remains private in THIS continuation:
+            // no method return, external callback, I/O or effect intervenes before
+            // entering the private commit continuation. Other callers keep the
+            // separate CommitRecipientAsync fence; generic post-action joins stay.
+            if (commitRecipient)
+                await CommitRecipientAfterFenceAsync(result, token).ConfigureAwait(false);
             return result;
         }
         internal async ValueTask CommitRecipientAsync(ReadOnlyMemory<byte> response, CancellationToken token)
