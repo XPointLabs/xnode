@@ -1,11 +1,13 @@
 namespace XNode.Core.Mailbox;
 
+using System.Diagnostics;
 using System.Security.Cryptography;
 
 /// <summary>Internal native composition seam. The owner binds this to its actual
 /// closed authority and both protected MGR leases; no public time/trust input.</summary>
 internal sealed class MailboxCurrentOperationLease(
-    Func<CancellationToken, ValueTask<ulong>> check, Action requireActive)
+    Func<CancellationToken, ValueTask<ulong>> check, Action requireActive,
+    Action<double>? observeOriginWait = null)
 {
     internal void RequireActive() => requireActive();
     internal async ValueTask<ulong> CheckAsync(CancellationToken token)
@@ -24,7 +26,15 @@ internal sealed class MailboxCurrentOperationLease(
         // Scheduling only, before an immutable peer intent or any peer effect.
         // Match the existing bounded durable-origin convergence (at most5s).
         if (lead > 4) throw new CryptographicException("The envelope origin is outside the current native time bound.");
-        await Task.Delay(TimeSpan.FromSeconds(lead + 1), token).ConfigureAwait(false);
+        var started = Stopwatch.GetTimestamp();
+        try { await Task.Delay(TimeSpan.FromSeconds(lead + 1), token).ConfigureAwait(false); }
+        finally
+        {
+            // Resource duration only, never an authority clock or a reason to
+            // accept a nonconverging origin. A sink cannot alter cancellation.
+            try { observeOriginWait?.Invoke(Stopwatch.GetElapsedTime(started).TotalMilliseconds); }
+            catch { /* Optional observation preserves the original outcome. */ }
+        }
         upper = await CheckAsync(token).ConfigureAwait(false);
         if (upper < minimumCreatedAt)
             throw new CryptographicException("The envelope origin did not converge under authenticated native time.");

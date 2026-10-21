@@ -429,7 +429,13 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
             // Fully signed exact origin evidence, not an unauthenticated clock
             // hint. One <=5s pre-reservation wait; original peer/client budgets
             // still apply. Never use the peer's timestamp as policy.Now.
-            await Task.Delay(TimeSpan.FromSeconds(lead + 1), ct).ConfigureAwait(false);
+            var started = System.Diagnostics.Stopwatch.GetTimestamp();
+            try { await Task.Delay(TimeSpan.FromSeconds(lead + 1), ct).ConfigureAwait(false); }
+            finally
+            {
+                CurrentMailboxDiagnostics.RecordOriginWait(
+                    System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+            }
             upper = await scope.Lease.CheckAsync(ct).ConfigureAwait(false);
             policy = policy with { NowUnixSeconds = upper };
             prepared = await PrepareReservationAsync().ConfigureAwait(false); // repeats actual authority and crypto

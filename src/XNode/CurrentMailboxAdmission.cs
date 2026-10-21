@@ -284,7 +284,7 @@ internal sealed partial class CurrentMailboxAdmission(
                 try
                 {
                     var scope = new AuthorityScope(authority, host, replicas,
-                        new MailboxCurrentOperationLease(CheckAsync, RequireActive));
+                        new MailboxCurrentOperationLease(CheckAsync, RequireActive, CurrentMailboxDiagnostics.RecordOriginWait));
                     _ = await scope.Lease.CheckAsync(innerToken).ConfigureAwait(false);
                     var result = await action(scope, innerToken).ConfigureAwait(false);
                     _ = await scope.Lease.CheckAsync(innerToken).ConfigureAwait(false);

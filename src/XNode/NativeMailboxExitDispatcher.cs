@@ -153,7 +153,7 @@ public sealed class NativeMailboxExitDispatcher(IServiceProvider services)
         try
         {
             var logger = services.GetService<ILogger<NativeMailboxExitDispatcher>>();
-            if (logger is null || !logger.IsEnabled(LogLevel.Warning) || work.LeaseMs < 1000) return;
+            if (logger is null || !logger.IsEnabled(LogLevel.Warning) || work.LeaseMs < 1000 && work.OriginWaits == 0) return;
             var now = Stopwatch.GetTimestamp(); var last = Volatile.Read(ref workLogTimestamp);
             if (last != 0 && Stopwatch.GetElapsedTime(last, now) < TimeSpan.FromSeconds(10) ||
                 Interlocked.CompareExchange(ref workLogTimestamp, now, last) != last) return;
@@ -162,6 +162,10 @@ public sealed class NativeMailboxExitDispatcher(IServiceProvider services)
                 work.NativeJoinMs, work.RevocationMs, work.OperationMs);
             logger.LogWarning("Current mailbox authority work: lineageMs={Lineage}; sourceFilesMs={SourceFiles}; floorMs={Floor}; proofObserveMs={ProofObserve}; networkVerifyMs={NetworkVerify}; gateMs={Gate}; policyMs={Policy}.",
                 work.LineageMs, work.SourceFilesMs, work.FloorMs, work.ProofObserveMs, work.NetworkVerifyMs, work.NetworkGateMs, work.MailboxPolicyMs);
+            logger.LogWarning("Current mailbox origin work: waitCount={WaitCount}; waitMs={WaitMs}.",
+                work.OriginWaits, work.OriginWaitMs);
+            logger.LogWarning("Current mailbox critical work: admissionMs={AdmissionMs}; intentMs={IntentMs}; localMs={LocalMs}; remoteMs={RemoteMs}; completeMs={CompleteMs}.",
+                work.AdmissionMs, work.IntentMs, work.LocalMs, work.RemoteMs, work.CompleteMs);
         }
         catch { /* Resource observation cannot change the native result. */ }
     }

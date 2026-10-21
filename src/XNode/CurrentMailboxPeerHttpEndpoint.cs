@@ -13,6 +13,7 @@ internal sealed class CurrentMailboxPeerHttpEndpoint(CurrentMailboxReplicaReceiv
 {
     private readonly MailboxPeerIngressLimiter limiter = new();
     private long lastDiagnostic;
+    private long lastWorkDiagnostic;
 
     internal void Map(IEndpointRouteBuilder endpoints)
     {
@@ -35,6 +36,8 @@ internal sealed class CurrentMailboxPeerHttpEndpoint(CurrentMailboxReplicaReceiv
         using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(token))
         {
             deadline.CancelAfter(TimeSpan.FromSeconds(contract.RequestTimeoutSeconds));
+            var started = Stopwatch.GetTimestamp();
+            using var work = CurrentMailboxDiagnostics.BeginWork(summary => ReportOriginWork(summary, started));
             try
             {
                 var body = new byte[checked((int)context.Request.ContentLength!.Value)];
@@ -63,6 +66,22 @@ internal sealed class CurrentMailboxPeerHttpEndpoint(CurrentMailboxReplicaReceiv
                 or MailboxPeerReplayCapacityException or ArgumentException)
             { Report(MailboxHttpFailure.DependencyUnavailable, error); return Failure(MailboxHttpFailure.DependencyUnavailable); }
         }
+    }
+
+    private void ReportOriginWork(CurrentMailboxDiagnostics.WorkSummary work, long started)
+    {
+        if (logger is null) return;
+        try
+        {
+            var now = Stopwatch.GetTimestamp(); var previous = Volatile.Read(ref lastWorkDiagnostic);
+            var total = Math.Clamp((long)Stopwatch.GetElapsedTime(started, now).TotalMilliseconds, 0, 3600000);
+            if (work.OriginWaits == 0 && total < 1000) return;
+            if (previous != 0 && Stopwatch.GetElapsedTime(previous, now) < TimeSpan.FromSeconds(10) ||
+                Interlocked.CompareExchange(ref lastWorkDiagnostic, now, previous) != previous) return;
+            logger.LogWarning("Current mailbox peer work: waitCount={WaitCount}; waitMs={WaitMs}; totalMs={TotalMs}; leaseChecks={LeaseChecks}; leaseMs={LeaseMs}; nativeJoinMs={NativeJoinMs}; operationMs={OperationMs}.",
+                work.OriginWaits, work.OriginWaitMs, total, work.LeaseChecks, work.LeaseMs, work.NativeJoinMs, work.OperationMs);
+        }
+        catch { /* Timing cannot alter a durable peer outcome or cancellation. */ }
     }
 
     private void Report(MailboxHttpFailure failure, Exception? error)

@@ -18,7 +18,7 @@ internal sealed partial class CurrentMailboxReplicationCoordinator
         if (client.Binding.Operation != MailboxAuthenticatedOperation.Ack)
             throw new CryptographicException("Current ACK requires its exact client operation.");
         var body = MailboxAuthenticatedRequestTranscript.DecodeAckBody(client.Binding.CanonicalRequest.Span);
-        return local.WithClientRequestAsync<ReadOnlyMemory<byte>>(owned, MailboxAuthenticatedOperation.Ack,
+        return WithClientAdmissionTimingAsync<ReadOnlyMemory<byte>>(owned, MailboxAuthenticatedOperation.Ack,
             async (request, ct) =>
             {
                 var scope = request.Scope;
@@ -29,20 +29,24 @@ internal sealed partial class CurrentMailboxReplicationCoordinator
                 // Retained reads/ACK keep the authenticated original object
                 // projection. The independently current host still owns time,
                 // revocation and selection verification, not this intent key.
-                var intent = await ledger.ReserveCurrentAckAsync(body, scope.Grant.MembershipCommitment,
-                    scope.Replicas.Select(replica => replica.NodeId).ToArray(), scope.Lease,
-                    async inner =>
-                    {
-                        // A live page token admits a new exact batch. Recovery
-                        // instead uses the already persisted request-bound intent;
-                        // current grant/revocation/time and peer checks still apply.
-                        await local.RequireAckContinuationAsync(scope, body, inner).ConfigureAwait(false);
-                        return await local.ReadAckTargetsAsync(scope, body, inner).ConfigureAwait(false);
-                    },
-                    (target, upper) => local.AuthorTombstoneRequest(scope, body, target, upper),
-                    (original, floor) => local.RequireOriginalAckIntent(scope, original, floor),
-                    recovered is not null || request.ReplayDisposition is not
-                        (MailboxAuthenticatedReplayDisposition.NewReserved or MailboxAuthenticatedReplayDisposition.InFlight), ct).ConfigureAwait(false);
+                MailboxClientAckReservation intent;
+                using (CurrentMailboxDiagnostics.Measure("native-intent"))
+                {
+                    intent = await ledger.ReserveCurrentAckAsync(body, scope.Grant.MembershipCommitment,
+                        scope.Replicas.Select(replica => replica.NodeId).ToArray(), scope.Lease,
+                        async inner =>
+                        {
+                            // A live page token admits a new exact batch. Recovery
+                            // instead uses the already persisted request-bound intent;
+                            // current grant/revocation/time and peer checks still apply.
+                            await local.RequireAckContinuationAsync(scope, body, inner).ConfigureAwait(false);
+                            return await local.ReadAckTargetsAsync(scope, body, inner).ConfigureAwait(false);
+                        },
+                        (target, upper) => local.AuthorTombstoneRequest(scope, body, target, upper),
+                        (original, floor) => local.RequireOriginalAckIntent(scope, original, floor),
+                        recovered is not null || request.ReplayDisposition is not
+                            (MailboxAuthenticatedReplayDisposition.NewReserved or MailboxAuthenticatedReplayDisposition.InFlight), ct).ConfigureAwait(false);
+                }
                 MailboxAggregateAckResponse? saved = null;
                 if (recovered is not null)
                 {
@@ -72,12 +76,14 @@ internal sealed partial class CurrentMailboxReplicationCoordinator
                             var result = await ReplicateAdmittedAsync(current, MailboxPeerReplicationOperation.Tombstone, inner).ConfigureAwait(false);
                             if (result.Status != MailboxPeerQuorumStatus.Durable)
                                 throw new IOException("Current ACK retains pending custody until both replicas acknowledge deletion.");
-                            await ledger.SaveCurrentAckQuorumAsync(intent.OperationKey, item.Cursor, result.CanonicalMqr3,
-                                scope.Lease, inner).ConfigureAwait(false);
+                            using (CurrentMailboxDiagnostics.Measure("native-complete"))
+                                await ledger.SaveCurrentAckQuorumAsync(intent.OperationKey, item.Cursor, result.CanonicalMqr3,
+                                    scope.Lease, inner).ConfigureAwait(false);
                             return result.CanonicalMqr3;
                         }, ct).ConfigureAwait(false);
                     quorums.Add(quorum);
                 }
+                using var completion = CurrentMailboxDiagnostics.Measure("native-complete");
                 if (recovered is not null)
                     return (await request.CompleteRecoveredAsync(ct).ConfigureAwait(false)).CanonicalBytes;
                 // Reuse only the neutral MAR1 framing. The older aggregate helper

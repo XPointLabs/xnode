@@ -43,7 +43,7 @@ internal sealed partial class CurrentMailboxReplicationCoordinator(CurrentMailbo
         if (client.Binding.Operation != MailboxAuthenticatedOperation.Store)
             throw new CryptographicException("Current Store requires its exact client operation.");
         var envelope = MailboxAuthenticatedRequestTranscript.DecodeStoreBody(client.Binding.CanonicalRequest.Span);
-        return local.WithClientRequestAsync<MailboxPeerQuorumResult>(ownedClient, MailboxAuthenticatedOperation.Store,
+        return WithClientAdmissionTimingAsync<MailboxPeerQuorumResult>(ownedClient, MailboxAuthenticatedOperation.Store,
             async (request, ct) =>
             {
                 // The native ledger owns the random nonce and the COMPLETE signed
@@ -53,23 +53,30 @@ internal sealed partial class CurrentMailboxReplicationCoordinator(CurrentMailbo
                 // authenticates absence; rollback/missing documents still fail
                 // Load, and actual mutation or recovered outcome still pins an
                 // existing intent. Never remint an already persisted PRQ2.
-                var boundary = request.ReplayDisposition is not
-                        (MailboxAuthenticatedReplayDisposition.NewReserved or MailboxAuthenticatedReplayDisposition.InFlight) ||
-                    request.RecoveredOutcome is not null ? "settled-replay" :
-                    await local.HasStoreCustodyAsync(request.Scope, envelope, ct).ConfigureAwait(false) ? "native-store" : "pre-intent";
-                var requireExisting = boundary != "pre-intent";
-                if (requireExisting) ReportStoreBoundary(boundary);
-                var intent = await ledger.ReserveCurrentStoreAsync(envelope, request.Scope.Grant.MembershipCommitment,
-                    request.Scope.Replicas.Select(replica => replica.NodeId).ToArray(), request.Scope.Lease,
-                    (cursor, upper) => local.AuthorStoreRequest(request.Scope, client.Binding.CanonicalRequest, cursor, upper), request.Scope.Host, ct,
-                    requireExisting: requireExisting).ConfigureAwait(false);
+                MailboxClientStoreReservation intent;
+                using (CurrentMailboxDiagnostics.Measure("native-intent"))
+                {
+                    var boundary = request.ReplayDisposition is not
+                            (MailboxAuthenticatedReplayDisposition.NewReserved or MailboxAuthenticatedReplayDisposition.InFlight) ||
+                        request.RecoveredOutcome is not null ? "settled-replay" :
+                        await local.HasStoreCustodyAsync(request.Scope, envelope, ct).ConfigureAwait(false) ? "native-store" : "pre-intent";
+                    var requireExisting = boundary != "pre-intent";
+                    if (requireExisting) ReportStoreBoundary(boundary);
+                    intent = await ledger.ReserveCurrentStoreAsync(envelope, request.Scope.Grant.MembershipCommitment,
+                        request.Scope.Replicas.Select(replica => replica.NodeId).ToArray(), request.Scope.Lease,
+                        (cursor, upper) => local.AuthorStoreRequest(request.Scope, client.Binding.CanonicalRequest, cursor, upper), request.Scope.Host, ct,
+                        requireExisting: requireExisting).ConfigureAwait(false);
+                }
                 var result = await StoreAdmittedClientAsync(request, intent.CanonicalPeerRequest, ct,
                     intent.State == MailboxClientLedgerState.Durable ? intent.CachedReceipt : ReadOnlyMemory<byte>.Empty).ConfigureAwait(false);
                 if (result.Status == MailboxPeerQuorumStatus.Durable)
+                {
+                    using var completion = CurrentMailboxDiagnostics.Measure("native-complete");
                     await ledger.SaveCurrentStoreQuorumAsync(intent.OperationKey, result.CanonicalMqr3,
                         request.Scope.Host, request.Scope.Lease, ct).ConfigureAwait(false);
+                }
                 return result;
-            }, token, storeLedger: ledger);
+            }, token, ledger);
     }
 
     private void ReportStoreBoundary(string boundary)
@@ -101,8 +108,32 @@ internal sealed partial class CurrentMailboxReplicationCoordinator(CurrentMailbo
             first.Length != 342 || second.Length != 342 || !first.Span.SequenceEqual(second.Span) ||
             !first.Span[38..].SequenceEqual(exactGrant))
             throw new CryptographicException("Client Store and current peer request differ.");
-        return local.WithClientRequestAsync<MailboxPeerQuorumResult>(ownedClient, MailboxAuthenticatedOperation.Store,
+        return WithClientAdmissionTimingAsync<MailboxPeerQuorumResult>(ownedClient, MailboxAuthenticatedOperation.Store,
             (request, ct) => StoreAdmittedClientAsync(request, ownedPeer, ct), token);
+    }
+
+    private async ValueTask<T> WithClientAdmissionTimingAsync<T>(ReadOnlyMemory<byte> canonicalRequest,
+        MailboxAuthenticatedOperation operation,
+        Func<CurrentMailboxAdmission.Request, CancellationToken, ValueTask<T>> action,
+        CancellationToken token, MailboxClientOperationLedger? ledger = null)
+    {
+        // Wall time until the real native owner invokes its admitted callback.
+        // Nothing is skipped or retained; this is not an admission-result cache.
+        var measurement = CurrentMailboxDiagnostics.Measure("native-admission");
+        void EndMeasurement()
+        {
+            var completed = measurement; measurement = null;
+            try { completed?.Dispose(); } catch { /* Optional observation only. */ }
+        }
+        try
+        {
+            return await local.WithClientRequestAsync<T>(canonicalRequest, operation, async (request, ct) =>
+            {
+                EndMeasurement();
+                return await action(request, ct).ConfigureAwait(false);
+            }, token, ledger).ConfigureAwait(false);
+        }
+        finally { EndMeasurement(); }
     }
 
     private async ValueTask<MailboxPeerQuorumResult> StoreAdmittedClientAsync(CurrentMailboxAdmission.Request request,
@@ -116,6 +147,7 @@ internal sealed partial class CurrentMailboxReplicationCoordinator(CurrentMailbo
             await local.WithAdmittedPeerAsync(ownedPeer, MailboxPeerReplicationOperation.Store, MailboxPeerWireResponseReplicaV2.Sender,
                 request.Scope, async (current, innerToken) =>
                 { await current.ValidateQuorumAsync(recovered.CanonicalBytes, innerToken).ConfigureAwait(false); return 0; }, ct).ConfigureAwait(false);
+            using var completion = CurrentMailboxDiagnostics.Measure("native-complete");
             var completed = await request.CompleteRecoveredAsync(ct).ConfigureAwait(false);
             return new(MailboxPeerQuorumStatus.Durable, completed.CanonicalBytes, 2);
         }
@@ -128,6 +160,7 @@ internal sealed partial class CurrentMailboxReplicationCoordinator(CurrentMailbo
                 MailboxPeerWireResponseReplicaV2.Sender, request.Scope,
                 async (current, innerToken) =>
                 { await current.ValidateQuorumAsync(settled, innerToken).ConfigureAwait(false); return 0; }, ct).ConfigureAwait(false);
+            using var completion = CurrentMailboxDiagnostics.Measure("native-complete");
             var adopted = await request.PersistSuccessAsync(settled, maximum, ct).ConfigureAwait(false);
             return new(MailboxPeerQuorumStatus.Durable, adopted.CanonicalBytes, 2);
         }
@@ -135,6 +168,7 @@ internal sealed partial class CurrentMailboxReplicationCoordinator(CurrentMailbo
             MailboxPeerWireResponseReplicaV2.Sender, request.Scope,
             (current, innerToken) => ReplicateAdmittedAsync(current, MailboxPeerReplicationOperation.Store, innerToken), ct).ConfigureAwait(false);
         if (result.Status != MailboxPeerQuorumStatus.Durable) return result;
+        using var persistence = CurrentMailboxDiagnostics.Measure("native-complete");
         var persisted = await request.PersistSuccessAsync(result.CanonicalMqr3, maximum, ct).ConfigureAwait(false);
         return new(MailboxPeerQuorumStatus.Durable, persisted.CanonicalBytes, 2);
     }
@@ -142,7 +176,9 @@ internal sealed partial class CurrentMailboxReplicationCoordinator(CurrentMailbo
     private async ValueTask<MailboxPeerQuorumResult> ReplicateAdmittedAsync(CurrentMailboxReplicaReceiver.PeerOperation current,
         MailboxPeerReplicationOperation operation, CancellationToken ct)
     {
-        var localReceipt = await current.ApplyAndSignLocalAsync(ct).ConfigureAwait(false);
+        ReadOnlyMemory<byte> localReceipt;
+        using (CurrentMailboxDiagnostics.Measure("native-local"))
+            localReceipt = await current.ApplyAndSignLocalAsync(ct).ConfigureAwait(false);
         // ReadOnlyMemory's implicit array conversion makes a mixed
         // memory/null conditional produce empty memory, not null.
         // Pending must contact the peer, never verify an empty receipt.
@@ -156,6 +192,7 @@ internal sealed partial class CurrentMailboxReplicationCoordinator(CurrentMailbo
             var started = Stopwatch.GetTimestamp();
             try
             {
+                using var remoteWork = CurrentMailboxDiagnostics.Measure("native-remote");
                 remote = await peer.SendAsync(current.RecipientTransport, operation,
                 current.CreateForwarding(localReceipt), deadline.Token).ConfigureAwait(false);
             }
@@ -176,7 +213,11 @@ internal sealed partial class CurrentMailboxReplicationCoordinator(CurrentMailbo
         ReadOnlyMemory<byte> quorum;
         // The owned method starts with the same full post-HTTP/pre-crypto
         // native fence; do not duplicate it immediately before entering it.
-        try { quorum = await current.CreateQuorumAndCommitRecipientAsync(localReceipt, remote.Value, ct).ConfigureAwait(false); }
+        try
+        {
+            using var completion = CurrentMailboxDiagnostics.Measure("native-complete");
+            quorum = await current.CreateQuorumAndCommitRecipientAsync(localReceipt, remote.Value, ct).ConfigureAwait(false);
+        }
         catch (MailboxPeerReplicationException) { return new(MailboxPeerQuorumStatus.PartialFailure, ReadOnlyMemory<byte>.Empty, 1); }
         return new(MailboxPeerQuorumStatus.Durable, quorum, 2);
     }

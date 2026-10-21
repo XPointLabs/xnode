@@ -198,6 +198,14 @@ label is not snapshot authentication. Every current save uses:
 3. replace/flush/read-back the operation document;
 4. commit/read-back the protected root.
 
+The unique, unpublished operation temporary file may buffer serialization writes.
+Its complete `Flush(flushToDisk: true)` MUST succeed before protected pending
+preparation; no prefix/chunk is a recoverable document or an authorized effect.
+Per-chunk `WriteThrough` is not an additional commit requirement. The protected
+pending/commit writes, exact digest/readbacks, atomic replacement and all existing
+file/parent-directory durability barriers above remain mandatory. This changes
+neither the on-disk format nor interruption/recovery ownership.
+
 Client and peer recovery join the same authenticated operation snapshot under
 the ledger lock. Peer floor, mutation index and blob validation then share one
 fresh mutation inventory under its native owner lock; it is not reused at the

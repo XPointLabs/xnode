@@ -25,6 +25,27 @@ and wrong entry types for the full path to the custody root; an additional
 validate on every read. No configuration, format, key or state reset is needed.
 The focused Linux lane is documented in [local development](../../deep-devops/docs/DEEP_DEV.md).
 
+The current mailbox operation ledger also reuses only detached JSON grammar
+within the SAME actual operation lease and exact newly read length/SHA. Every
+load still authenticates independent custody/MAC, repeats the actual file hash
+after custody/lease callbacks and joins the document snapshot. All dictionaries
+and nested Store/ACK arrays are separately owned. The one-snapshot8MiB limit is
+only a memory bound: larger valid documents use the existing streaming parser;
+no file migration, rekey, reset, format or durability change is needed.
+
+Operation-ledger serialization buffers only its unique unpublished scratch
+file. The complete file still flushes to disk before protected pending state;
+all checkpoint, replacement, file/parent flushes and authenticated readbacks
+remain. This avoids synchronous disk work for every JSON chunk, not the actual
+commit barriers. See [custody ordering](mailbox-operation-custody.md).
+
+Optional throttled numeric resource logs now separate ONION binding/open,
+forwarding, terminal dispatch and seal; native admission/intent/local/remote/
+completion and actual origin waits are separate closed counters. They contain
+no request/route/account identifiers, headers, payloads or authority timestamps.
+Nested counters are not additive partitions. Resource clocks and observation
+failures have no authority and cannot change results, cancellation or leases.
+
 ## DR-0141 local BLOB candidate
 
 The [owned chunk-plane allocation](../../docs/survival-program/decisions/DR-0141-owned-blob-chunk-plane.md)

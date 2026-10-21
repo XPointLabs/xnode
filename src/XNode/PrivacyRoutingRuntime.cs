@@ -85,6 +85,7 @@ public sealed class PrivacyRoutingRuntime
     private readonly OnionReplayAuthority? replay;
     private readonly PrivacyRoutingCodec? codec;
     private readonly PrivacyRoutingFailureDiagnostics diagnostics;
+    private readonly PrivacyRoutingWorkDiagnostics workDiagnostics;
 
     public bool ProductionCapabilityAvailable =>
         configuration.Enabled
@@ -129,6 +130,7 @@ public sealed class PrivacyRoutingRuntime
         this.replay = replay;
         this.codec = codec;
         diagnostics = new(logger);
+        workDiagnostics = new(logger);
         var protocolBoundaryCount =
             (productionCapability is null ? 0 : 1)
             + (keyAgreement is null ? 0 : 1)
@@ -161,6 +163,7 @@ public sealed class PrivacyRoutingRuntime
         var exactFrame = frame.ToArray();
         var effectStarted = false;
         var phase = "Binding";
+        using var work = workDiagnostics.Begin();
         try
         {
             var binding = await productionCapability.GetCurrentAsync(cancellationToken)
@@ -172,6 +175,7 @@ public sealed class PrivacyRoutingRuntime
             }
 
             phase = "Open";
+            work?.Next(PrivacyRoutingWorkDiagnostics.Phase.Open);
             var keyHandle = keyAgreement.BindKeyHandle(binding.KeyHandleId);
             var receives = new List<VerifiedOnionReceiveContext>();
             foreach (var position in binding.Positions)
@@ -187,6 +191,7 @@ public sealed class PrivacyRoutingRuntime
             if (opened is OpenedOnionRelay relay)
             {
                 phase = "Forward";
+                work?.Next(PrivacyRoutingWorkDiagnostics.Phase.Forward);
                 effectStarted = true;
                 return await ForwardAsync(relay, binding.Network, cancellationToken)
                     .ConfigureAwait(false);
@@ -200,7 +205,8 @@ public sealed class PrivacyRoutingRuntime
 
             effectStarted = true;
             phase = "Dispatch";
-            return await DispatchAndSealAsync(exit, cancellationToken)
+            work?.Next(PrivacyRoutingWorkDiagnostics.Phase.Dispatch);
+            return await DispatchAndSealAsync(exit, cancellationToken, work)
                 .ConfigureAwait(false);
         }
         catch (OnionBoundaryException exception)
@@ -282,7 +288,8 @@ public sealed class PrivacyRoutingRuntime
 
     private async Task<PrivacyRuntimeResult> DispatchAndSealAsync(
         OpenedOnionExit exit,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        PrivacyRoutingWorkDiagnostics.Work? work)
     {
         var dispatched = await terminalDispatcher.DispatchAsync(
                 exit.Request,
@@ -302,6 +309,7 @@ public sealed class PrivacyRoutingRuntime
                 PrivacyRuntimeOutcome.OutcomeUnknownAfterForward);
         }
 
+        work?.Next(PrivacyRoutingWorkDiagnostics.Phase.Seal);
         var terminal = dispatched.Success
             ? OnionTerminalPayloadVerifierV1.VerifySuccess(
                 exit.Request,

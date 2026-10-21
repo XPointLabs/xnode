@@ -118,7 +118,10 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
     private readonly IMailboxOperationCustody? _currentCustody;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly ConditionalWeakTable<MailboxCurrentOperationLease, ValidatedStructure> _validatedStructures = new();
-    private sealed record ValidatedStructure(byte[] Hash, long Length);
+    private const int MaximumGrammarMemoBytes = 8 * 1024 * 1024;
+    private sealed record ValidatedStructure(byte[] Hash, long Length, MailboxClientLedgerDocument? Grammar);
+    private long _grammarDecodeCount;
+    internal long GrammarDecodeCount => Interlocked.Read(ref _grammarDecodeCount);
     private readonly FileStream _directoryLease;
     private readonly object _lifecycleGate = new();
     private int _disposed;
@@ -573,6 +576,8 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
     private async Task<MailboxClientLedgerDocument> LoadAsync(CancellationToken cancellationToken,
         MailboxCurrentOperationLease? lease = null)
     {
+        ThrowIfDisposed();
+        lease?.RequireActive();
         if (_currentCustody is not null || lease is not null)
         {
             if (_currentCustody is null || lease is null)
@@ -605,12 +610,13 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
             if (!CryptographicOperations.FixedTimeEquals(actualHash, capturedHash))
                 throw new InvalidDataException("Mailbox operation snapshot changed after verification.");
             cancellationToken.ThrowIfCancellationRequested();
-            // A digest of already checked grammar, not a cached document,
-            // currentness result, replay floor or native admission. This actual
-            // lease alone owns reuse; every Load above still re-reads/parses,
-            // hashes and authenticates the real committed file after callbacks.
+            // Only already checked grammar, not a currentness result, replay
+            // decision or native admission. The actual lease owns one bounded
+            // detached snapshot. Every Load still reads/hashes actual bytes,
+            // authenticates independent custody and repeats post-callback reads.
             _validatedStructures.Remove(lease);
-            _validatedStructures.Add(lease, new(actualHash, length));
+            _validatedStructures.Add(lease, new(actualHash, length,
+                length <= MaximumGrammarMemoBytes ? CopyGrammarDocument(captured) : null));
             return captured;
         }
         return await ReadDocumentAsync(_path, cancellationToken, allowMissing: true).ConfigureAwait(false);
@@ -646,10 +652,42 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
             var length = stream.Length;
             if (length is < 1 or > MaximumDocumentBytes)
                 throw new InvalidDataException("Mailbox client operation snapshot exceeds its bound.");
+            if (capture is not null && length <= MaximumGrammarMemoBytes)
+            {
+                // Read/hash the complete actual opened file before considering
+                // grammar reuse. Never look up parsed state by path or metadata.
+                var encoded = new byte[checked((int)length)];
+                try
+                {
+                    await stream.ReadExactlyAsync(encoded, cancellationToken).ConfigureAwait(false);
+                    if (await stream.ReadAsync(new byte[1], cancellationToken).ConfigureAwait(false) != 0 ||
+                        stream.Length != length || stream.Position != length)
+                        throw new InvalidDataException("Mailbox operation snapshot changed while reading.");
+                    var actualHash = SHA256.HashData(encoded);
+                    MailboxClientLedgerDocument parsed;
+                    if (knownStructure?.Grammar is not null && knownStructure.Length == length &&
+                        CryptographicOperations.FixedTimeEquals(actualHash, knownStructure.Hash))
+                        parsed = CopyGrammarDocument(knownStructure.Grammar);
+                    else
+                    {
+                        Interlocked.Increment(ref _grammarDecodeCount);
+                        using var grammarStream = new MemoryStream(encoded, writable: false);
+                        parsed = await JsonSerializer.DeserializeAsync<MailboxClientLedgerDocument>(
+                            grammarStream, JsonOptions, cancellationToken).ConfigureAwait(false)
+                            ?? throw new InvalidDataException("Mailbox client operation ledger is empty.");
+                        ValidateDocument(parsed);
+                    }
+                    cancellationToken.ThrowIfCancellationRequested();
+                    capture(parsed, actualHash, length);
+                    return parsed;
+                }
+                finally { CryptographicOperations.ZeroMemory(encoded); }
+            }
             // Hash and parse the same opened snapshot, not a path verified before
             // an external authority callback and reopened without authentication.
             using var algorithm = capture is not null ? SHA256.Create() : null;
             using var hashing = algorithm is not null ? new CryptoStream(stream, algorithm, CryptoStreamMode.Read, leaveOpen: true) : null;
+            Interlocked.Increment(ref _grammarDecodeCount);
             var document = await JsonSerializer.DeserializeAsync<MailboxClientLedgerDocument>(
                 hashing ?? (Stream)stream,
                 JsonOptions,
@@ -689,7 +727,7 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
                 throw new InvalidDataException("Mailbox operation snapshot hashing is incomplete."), length);
             return document;
         }
-        catch (JsonException exception)
+        catch (Exception exception) when (exception is JsonException or EndOfStreamException)
         {
             throw new InvalidDataException("Mailbox client operation ledger is corrupt.", exception);
         }
@@ -697,6 +735,9 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
 
     private void ValidateDocument(MailboxClientLedgerDocument document)
     {
+        if (document.NextCursorByMailbox is null || document.Operations is null ||
+            document.AckOperations is null || document.ClientReplayFloors is null || document.PeerReplayFloors is null)
+            throw new InvalidDataException("Mailbox client operation ledger authority is missing.");
         if (document.SchemaVersion != SchemaVersion
             || LedgerEntryCost(document) > _maxEntries
             || document.ClientReplayFloors.Count > _maxEntries
@@ -981,8 +1022,12 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
                              FileAccess.Write,
                              FileShare.None,
                              8192,
-                             FileOptions.Asynchronous | FileOptions.WriteThrough))
+                             FileOptions.Asynchronous))
             {
+                // This unique scratch file has no protected pending reference
+                // yet. Flush the complete serialized bytes below before Prepare;
+                // forcing every JSON chunk through the disk adds no recoverable
+                // state. All protected checkpoint/replace/file+parent fences stay.
                 await JsonSerializer.SerializeAsync(
                     stream,
                     document,
@@ -1244,6 +1289,7 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
             }
 
             _disposed = 1;
+            _validatedStructures.Clear();
             _directoryLease.Dispose();
             _gate.Dispose();
         }
