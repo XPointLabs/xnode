@@ -41,6 +41,18 @@ if (args.Length > 0 && args[0] is "current-mailbox-export-store-recovery" or "cu
     }
     return;
 }
+if (args.Length > 0 && args[0] == "current-mailbox-policy-successor")
+{
+    try { await CurrentMailboxPolicySuccessorCommand.RunAsync(args); }
+    catch (Exception error)
+    {
+        Console.Error.WriteLine("Mailbox policy successor rejected; retained native state and predecessor floors were not reset.");
+        var location = CurrentMailboxDiagnostics.FailureLocation(error);
+        Console.Error.WriteLine($"Policy successor failure: method={location.Method}; il={location.Il}.");
+        Environment.ExitCode = 1;
+    }
+    return;
+}
 if (args.Length > 0 && args[0] == "current-mailbox-enroll")
 {
     try { await CurrentMailboxEnrollmentCommand.RunAsync(args); }

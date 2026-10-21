@@ -81,7 +81,7 @@ internal static class CurrentMailboxHostComposition
         if (!mailbox.Enabled || !services.Any(d => d.ServiceType == typeof(IDeepIdV2ContactStoreAuthoritySource)) ||
             !services.Any(d => d.ServiceType == typeof(IOnionMonotonicClock)))
             throw new InvalidOperationException("Current mailbox requires the real current network/time source.");
-        Type[] ownedServices = [typeof(CurrentMailboxReplicaReceiver), typeof(CurrentMailboxReplicationCoordinator),
+        Type[] ownedServices = [typeof(CurrentMailboxCustodyConfiguration), typeof(CurrentMailboxReplicaReceiver), typeof(CurrentMailboxReplicationCoordinator),
             typeof(MailboxClientOperationLedger), typeof(FileMailboxOperationCustody), typeof(FileMailboxGrantRevocationStore),
             typeof(ReplicatedMailboxStore), typeof(MailboxPeerMutationStore), typeof(DurableMailboxPeerReplayJournal),
             typeof(DurableMailboxCapabilityReplayJournal), typeof(MailboxClientCanonicalOutcomeStore),
@@ -95,6 +95,7 @@ internal static class CurrentMailboxHostComposition
         // Capture local bindings before deferred DI callbacks; mutable options
         // must not redirect a native owner after registration.
         configuration = configuration with { NetworkId = configuration.NetworkId.ToArray(), PolicyReference = configuration.PolicyReference.ToArray() };
+        services.AddSingleton(configuration);
         var dataDirectory = Path.GetFullPath(node.DataDirectory);
         var id = Convert.FromHexString(node.GetRouterId().Value);
         services.AddKeyedSingleton<IDataProtectionProvider>(typeof(CurrentMailboxHostComposition), (provider, _) =>

@@ -29,8 +29,8 @@ internal sealed partial class CurrentMailboxAdmission
             if (diagnostics is not null) diagnostics.Phase = MailboxRevocationRefreshPhase.Authority;
             var authority = await source.ReadPublicationAuthorityAsync(ct).ConfigureAwait(false);
             if (diagnostics is not null) diagnostics.Phase = MailboxRevocationRefreshPhase.Host;
-            var host = await MailboxHostAuthorityV2Verifier.VerifyAsync(authority.Network, authority.Authority,
-                authority.MailboxAuthority.ExactPma2, authority.TrustedTime, ct).ConfigureAwait(false);
+            var host = await MailboxHostAuthorityV2Verifier.VerifyPolicyAsync(authority.Network, authority.Authority,
+                authority.MailboxAuthority, authority.TrustedTime, ct).ConfigureAwait(false);
             _ = await host.ResolveReplicaAsync(node, ct).ConfigureAwait(false);
             byte[] policy = [.. "PMA2"u8, 0, 1, .. authority.MailboxAuthority.CoreHash.Span];
             deposit.RequireScope(node, host.NetworkId.Span, policy, MailboxCapabilityDomain.Deposit);
@@ -47,8 +47,8 @@ internal sealed partial class CurrentMailboxAdmission
                     !Fixed(current.Authority.TimeSourcePolicyHash.Span, authority.Authority.TimeSourcePolicyHash.Span) ||
                     !Fixed(current.MailboxAuthority.ExactPma2.Span, authority.MailboxAuthority.ExactPma2.Span))
                     throw new CryptographicException("Mailbox control source changed during refresh.");
-                var currentHost = await MailboxHostAuthorityV2Verifier.VerifyAsync(current.Network, current.Authority,
-                    current.MailboxAuthority.ExactPma2, current.TrustedTime, ct).ConfigureAwait(false);
+                var currentHost = await MailboxHostAuthorityV2Verifier.VerifyPolicyAsync(current.Network, current.Authority,
+                    current.MailboxAuthority, current.TrustedTime, ct).ConfigureAwait(false);
                 await currentHost.EnsureCurrentAsync(ct).ConfigureAwait(false);
                 await host.EnsureCurrentAsync(ct).ConfigureAwait(false);
             }

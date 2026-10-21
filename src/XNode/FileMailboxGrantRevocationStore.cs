@@ -92,6 +92,25 @@ internal sealed class FileMailboxGrantRevocationStore : IAsyncDisposable
         finally { gate.Release(); }
     }
 
+    // Explicit successor command only. Completed exact replay is read-only;
+    // split/missing protected roots still reject rather than re-enroll.
+    internal async ValueTask EnrollPolicySuccessorAsync(VerifiedMailboxHostAuthorityV2 host,
+        ReadOnlyMemory<byte> exact, CancellationToken token)
+    {
+        var owned = Capture(exact);
+        var existing = await ReadProtectedOrAbsentAsync(token).ConfigureAwait(false);
+        if (existing is null) { await EnrollAsync(host, owned, token).ConfigureAwait(false); return; }
+        if (!Fixed(existing, owned)) throw new CryptographicException("Successor enrollment replay differs from its exact installed floor.");
+        _ = await MailboxGrantRevocationV1Verifier.PlanInitialEnrollmentAsync(host, existing, token).ConfigureAwait(false);
+    }
+
+    private async ValueTask<byte[]?> ReadProtectedOrAbsentAsync(CancellationToken token)
+    {
+        await gate.WaitAsync(token).ConfigureAwait(false);
+        try { CheckAvailable(); return ReadCore(); }
+        finally { gate.Release(); }
+    }
+
     /// <summary>Explicit genuinely new-scope provisioning only; never a missing-floor recovery fallback.</summary>
     internal async ValueTask EnrollAsync(VerifiedMailboxHostAuthorityV2 host, ReadOnlyMemory<byte> exactInitialSnapshot,
         CancellationToken cancellationToken = default)

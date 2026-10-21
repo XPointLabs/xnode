@@ -20,8 +20,8 @@ internal sealed partial class CurrentMailboxAdmission
         {
             await receiver.ValidateNewNativeScopeAsync(this, token).ConfigureAwait(false);
             var authority = await source.ReadPublicationAuthorityAsync(token).ConfigureAwait(false);
-            var host = await MailboxHostAuthorityV2Verifier.VerifyAsync(authority.Network, authority.Authority,
-                authority.MailboxAuthority.ExactPma2, authority.TrustedTime, token).ConfigureAwait(false);
+            var host = await MailboxHostAuthorityV2Verifier.VerifyPolicyAsync(authority.Network, authority.Authority,
+                authority.MailboxAuthority, authority.TrustedTime, token).ConfigureAwait(false);
             byte[] policyReference = [.. "PMA2"u8, 0, 1, .. authority.MailboxAuthority.CoreHash.Span];
             deposit.RequireScope(node, host.NetworkId.Span, policyReference, MailboxCapabilityDomain.Deposit);
             retrieve.RequireScope(node, host.NetworkId.Span, policyReference, MailboxCapabilityDomain.Retrieve);

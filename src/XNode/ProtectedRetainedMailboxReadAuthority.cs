@@ -60,8 +60,8 @@ internal sealed class ProtectedRetainedMailboxReadAuthority(
         ct.ThrowIfCancellationRequested();
         var exact = ContactReplicaPayloadCodec.DecodeRetainedMailboxGrantRequest(exactXmg2.Span);
         var snapshot = await source.ReadPublicationAuthorityAsync(ct).ConfigureAwait(false);
-        var host = await MailboxHostAuthorityV2Verifier.VerifyAsync(snapshot.Network, snapshot.Authority,
-            snapshot.MailboxAuthority.ExactPma2, snapshot.TrustedTime, ct).ConfigureAwait(false);
+        var host = await MailboxHostAuthorityV2Verifier.VerifyPolicyAsync(snapshot.Network, snapshot.Authority,
+            snapshot.MailboxAuthority, snapshot.TrustedTime, ct).ConfigureAwait(false);
         var request = await host.VerifyRetainedReadRequestAsync(exact, ct).ConfigureAwait(false);
         var history = OnionNetworkProtectedHistoryCodec.Encode(snapshot.Network);
         await RequirePlacementAsync(snapshot, request).ConfigureAwait(false);
@@ -76,8 +76,8 @@ internal sealed class ProtectedRetainedMailboxReadAuthority(
                 !Fixed(current.Authority.TimeSourcePolicyHash.Span, snapshot.Authority.TimeSourcePolicyHash.Span) ||
                 !Fixed(current.MailboxAuthority.ExactPma2.Span, snapshot.MailboxAuthority.ExactPma2.Span))
                 throw new CryptographicException("Actual retained-read authority changed during the operation.");
-            var currentHost = await MailboxHostAuthorityV2Verifier.VerifyAsync(current.Network, current.Authority,
-                current.MailboxAuthority.ExactPma2, current.TrustedTime, ct).ConfigureAwait(false);
+            var currentHost = await MailboxHostAuthorityV2Verifier.VerifyPolicyAsync(current.Network, current.Authority,
+                current.MailboxAuthority, current.TrustedTime, ct).ConfigureAwait(false);
             var currentRequest = await currentHost.VerifyRetainedReadRequestAsync(exact, ct).ConfigureAwait(false);
             await RequirePlacementAsync(current, currentRequest).ConfigureAwait(false);
             await request.EnsureCurrentAsync(ct).ConfigureAwait(false);

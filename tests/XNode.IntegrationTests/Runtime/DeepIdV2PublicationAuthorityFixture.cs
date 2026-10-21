@@ -576,7 +576,7 @@ internal sealed partial class DeepIdV2PublicationAuthorityFixture : IDisposable,
         await RefreshNetworkProofAsync(Sample, 1_100);
     }
 
-    internal async Task<AuthoredXPointNetworkOperationalSuccessor> AdvancePublicNetworkAsync()
+    internal async Task<AuthoredXPointNetworkOperationalSuccessor> AdvancePublicNetworkAsync(bool rotateMailboxIssuers = false)
     {
         using var root = new TestSigner(0x20);
         using var w1 = new TestSigner(0x30); using var w2 = new TestSigner(0x31); using var w3 = new TestSigner(0x32);
@@ -589,7 +589,10 @@ internal sealed partial class DeepIdV2PublicationAuthorityFixture : IDisposable,
             Policy, Descriptors, [View], Head, MailboxAuthority, Projection,
             XPointNetworkOperationalSuccessorAuthor.ComputeXnh1CoreHash(Head.Span),
             ContactCodec.Decode("PMT2", Projection.Span).ArtifactHash.Span,
-            [.. "ADH1"u8, 0, 1, .. directoryMutation.ProtectedHead.CoreHash.Span], 1_070, 1_080, 1_500));
+            [.. "ADH1"u8, 0, 1, .. directoryMutation.ProtectedHead.CoreHash.Span], 1_070, 1_080, 1_500,
+            mailboxIssuerRollover: rotateMailboxIssuers ? new(
+                PublicKeyAuth.GenerateKeyPair(Bytes(32, 0xa1)).PublicKey, PublicKeyAuth.GenerateKeyPair(Bytes(32, 0xa2)).PublicKey,
+                XPointNetworkOperationalSuccessorAuthor.ComputeNextMailboxGrantFloor(Authority, MailboxAuthority.Span)) : null));
         Policy = successor.ExactXvp1; View = successor.ExactXnv1; Head = successor.ExactXnh1;
         Descriptors = successor.ExactXnd1; Projection = successor.ExactPmt2; MailboxAuthority = successor.ExactPma2;
         await RefreshDirectoryProofAsync(Sample, 1_100);

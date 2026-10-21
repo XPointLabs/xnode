@@ -53,8 +53,8 @@ internal static class ContactResolverEnrollmentCommand
         var node = services.GetRequiredService<RouterNodeOptions>();
         var source = services.GetRequiredService<IDeepIdV2ContactStoreAuthoritySource>();
         var first = await source.ReadPublicationAuthorityAsync(ct).ConfigureAwait(false);
-        var host = await MailboxHostAuthorityV2Verifier.VerifyAsync(first.Network, first.Authority,
-            first.MailboxAuthority.ExactPma2, first.TrustedTime, ct).ConfigureAwait(false);
+        var host = await MailboxHostAuthorityV2Verifier.VerifyPolicyAsync(first.Network, first.Authority,
+            first.MailboxAuthority, first.TrustedTime, ct).ConfigureAwait(false);
         var history = OnionNetworkProtectedHistoryCodec.Encode(first.Network);
         var seed = Convert.FromHexString(node.GetEd25519PrivateKey());
         using var signing = CreateSigner(node.GetRouterId().ToBytes(), seed);
@@ -73,8 +73,8 @@ internal static class ContactResolverEnrollmentCommand
             !CryptographicOperations.FixedTimeEquals(first.MailboxAuthority.CoreHash.Span, final.MailboxAuthority.CoreHash.Span))
             throw new CryptographicException("Resolver enrollment crossed a current authority change.");
         signing.EnsureSigningCustody(final.Network); custody.RequireNetwork(final.Network.NetworkId.Span);
-        var finalHost = await MailboxHostAuthorityV2Verifier.VerifyAsync(final.Network, final.Authority,
-            final.MailboxAuthority.ExactPma2, final.TrustedTime, ct).ConfigureAwait(false);
+        var finalHost = await MailboxHostAuthorityV2Verifier.VerifyPolicyAsync(final.Network, final.Authority,
+            final.MailboxAuthority, final.TrustedTime, ct).ConfigureAwait(false);
         await finalHost.EnsureCurrentAsync(ct).ConfigureAwait(false);
         custody.RequireSnapshot(Path.Combine(Path.GetFullPath(node.DataDirectory), "contact-service-v1", "resolver.state"));
         ct.ThrowIfCancellationRequested();

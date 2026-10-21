@@ -306,7 +306,7 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
     // trusted interval. No clock, floor, currentness decision or TTL is cached.
     // Access is serialized by the real network-source gate.
     private sealed record MailboxPolicyMemo(VerifiedXPointNetworkAuthority Authority,
-        byte[] Exact, ulong Lower, ulong Upper, VerifiedMailboxAuthorityV2 Policy);
+        byte[] Exact, byte[][] History, ulong Lower, ulong Upper, VerifiedMailboxAuthorityV2 Policy);
     private MailboxPolicyMemo? mailboxPolicyMemo;
     internal long MailboxPolicySignatureVerifications { get; private set; }
     private byte[]? parsedMailboxProjection;
@@ -680,13 +680,15 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
         VerifiedMailboxAuthorityV2 policy;
         if (memo is not null && ReferenceEquals(memo.Authority, authority) &&
             memo.Lower == lower && memo.Upper == upper &&
-            CryptographicOperations.FixedTimeEquals(memo.Exact, matches[0].CanonicalBytes.Span))
+            CryptographicOperations.FixedTimeEquals(memo.Exact, matches[0].CanonicalBytes.Span) &&
+            memo.History.Length == exact.MailboxAuthorities.Count &&
+            !exact.MailboxAuthorities.Where((bytes, i) => !bytes.Span.SequenceEqual(memo.History[i])).Any())
             policy = memo.Policy;
         else
         {
-            policy = MailboxAuthorityV2Verifier.Verify(authority, matches[0].CanonicalBytes.Span, lower, upper);
+            policy = MailboxAuthorityV2Verifier.VerifyWithHistory(authority, exact.MailboxAuthorities, lower, upper);
             MailboxPolicySignatureVerifications++;
-            mailboxPolicyMemo = new(authority, matches[0].CanonicalBytes.ToArray(), lower, upper, policy);
+            mailboxPolicyMemo = new(authority, matches[0].CanonicalBytes.ToArray(), exact.MailboxAuthorities.Select(bytes => bytes.ToArray()).ToArray(), lower, upper, policy);
         }
         if (!policy.BindsProjection(projection.CanonicalBytes.Span))
             throw new CryptographicException("DID2 mailbox issuer does not bind the current projection.");

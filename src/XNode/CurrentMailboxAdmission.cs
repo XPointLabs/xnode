@@ -185,8 +185,8 @@ internal sealed partial class CurrentMailboxAdmission(
         var authority = grant is null
             ? await source.ReadAdmissionAuthorityAsync(token).ConfigureAwait(false)
             : await source.ReadGrantAdmissionAuthorityAsync(grant, token).ConfigureAwait(false);
-        var host = await MailboxHostAuthorityV2Verifier.VerifyAsync(authority.Network, authority.Authority,
-            authority.MailboxAuthority.ExactPma2, authority.TrustedTime, token).ConfigureAwait(false);
+        var host = await MailboxHostAuthorityV2Verifier.VerifyPolicyAsync(authority.Network, authority.Authority,
+            authority.MailboxAuthority, authority.TrustedTime, token).ConfigureAwait(false);
         _ = await host.ResolveReplicaAsync(node, token).ConfigureAwait(false);
         IReadOnlyList<VerifiedMailboxReplicaV2> replicas = exactGrant is null ? [] :
             grant!.Domain == MailboxCapabilityDomain.Retrieve
@@ -227,8 +227,8 @@ internal sealed partial class CurrentMailboxAdmission(
                         throw CurrentMailboxDiagnostics.AdmissionRejection(CurrentMailboxAdmissionRejection.AuthorityChanged);
                     VerifiedMailboxHostAuthorityV2 currentHost;
                     using (CurrentMailboxDiagnostics.Measure("host-verify"))
-                        currentHost = await MailboxHostAuthorityV2Verifier.VerifyAsync(current.Network, current.Authority,
-                            current.MailboxAuthority.ExactPma2, current.TrustedTime, checkToken).ConfigureAwait(false);
+                        currentHost = await MailboxHostAuthorityV2Verifier.VerifyPolicyAsync(current.Network, current.Authority,
+                            current.MailboxAuthority, current.TrustedTime, checkToken).ConfigureAwait(false);
                     RequireActive();
                     await RequireGrantCurrentAsync(currentHost, checkToken).ConfigureAwait(false);
                     RequireActive();
