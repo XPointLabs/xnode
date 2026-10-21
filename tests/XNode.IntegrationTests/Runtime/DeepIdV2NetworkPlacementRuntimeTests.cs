@@ -22,12 +22,22 @@ public sealed class DeepIdV2NetworkPlacementRuntimeTests
         Assert.Equal(1, source.BundleGrammarDecodes);
         using var first = source.ReadCurrent();
         using var second = source.ReadCurrent();
+        Assert.Equal(first.SourceDigest.ToArray(), second.SourceDigest.ToArray());
+        var expectedDigest = first.SourceDigest.ToArray();
+        // Even mutation through a backing-array escape must not change a
+        // later source read or the memo's independently owned public digest.
+        System.Runtime.InteropServices.MemoryMarshal.AsMemory(first.SourceDigest).Span[0] ^= 1;
         first.Dispose();
+        using var third = source.ReadCurrent();
+        Assert.Equal(expectedDigest, third.SourceDigest.ToArray());
+        using var independent = files.ClosureSource().ReadCurrent();
+        Assert.Equal(expectedDigest, independent.SourceDigest.ToArray());
         Assert.Equal(signed.MailboxAuthority.ToArray(), second.MailboxAuthorities.Single().ToArray());
         Assert.Equal(1, source.BundleGrammarDecodes);
         files.CorruptIssuerSignature();
         using var changed = source.ReadCurrent(); // Framing is not signature authority.
         Assert.NotEqual(signed.MailboxAuthority.ToArray(), changed.MailboxAuthorities.Single().ToArray());
+        Assert.NotEqual(expectedDigest, changed.SourceDigest.ToArray());
         Assert.Equal(2, source.BundleGrammarDecodes);
         files.CorruptBundleMagic();
         Assert.Throws<FormatException>(() => source.ReadCurrent());

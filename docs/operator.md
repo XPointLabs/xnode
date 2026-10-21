@@ -12,6 +12,19 @@ See the [network owner](../../docs/architecture/XPOINT-NETWORK-V1.md#11-request-
 for isolation and resource bounds. Source tests and local CLI evidence do not
 qualify production/device or full transport rehearsal by themselves.
 
+### Public closure processing and native path checks
+
+The node can reuse a public closure's framing digest only after rereading the
+actual bounded atomic file through EOF and comparing every byte. Returned
+record/digest buffers are independently owned. This does not retain an
+admission result: protected floors, signatures, source readback, trusted clock,
+issuer/revocation checks and original captured deadlines remain required.
+On Linux, fresh entry attributes reject symlinks (including dangling links)
+and wrong entry types for the full path to the custody root; an additional
+`readlink` is unnecessary. Actual file permissions and protected MACs still
+validate on every read. No configuration, format, key or state reset is needed.
+The focused Linux lane is documented in [local development](../../deep-devops/docs/DEEP_DEV.md).
+
 ## DR-0141 local BLOB candidate
 
 The [owned chunk-plane allocation](../../docs/survival-program/decisions/DR-0141-owned-blob-chunk-plane.md)

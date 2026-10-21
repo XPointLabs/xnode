@@ -70,6 +70,7 @@ internal sealed class DeepIdV2NetworkClosureFileSource
     private readonly object bundleGrammarGate = new();
     private byte[]? bundleGrammarBytes;
     private byte[][][]? bundleGrammarGroups;
+    private byte[]? bundleSourceDigest;
     internal long BundleGrammarDecodes { get; private set; }
     internal ParsedDid2? Observer { get; }
 
@@ -135,7 +136,7 @@ internal sealed class DeepIdV2NetworkClosureFileSource
             lock (bundleGrammarGate)
             {
                 if (bundleGrammarBytes is not null && bundleGrammarGroups is not null && bytes.AsSpan().SequenceEqual(bundleGrammarBytes))
-                    return new(CloneGroups(bundleGrammarGroups));
+                    return new(CloneGroups(bundleGrammarGroups), bundleSourceDigest);
                 BundleGrammarDecodes++;
                 var raw = XPointNetworkClosureWireCodec.DecodeResponse(bytes);
                 var framedGroups = new[] {
@@ -146,9 +147,10 @@ internal sealed class DeepIdV2NetworkClosureFileSource
                 if (bytes.Length <= 4 * 1024 * 1024)
                 {
                     bundleGrammarBytes = bytes; bundleGrammarGroups = framedGroups;
-                    return new(CloneGroups(framedGroups));
+                    bundleSourceDigest = DeepIdV2NetworkClosureArtifacts.ComputeSourceDigest(framedGroups);
+                    return new(CloneGroups(framedGroups), bundleSourceDigest);
                 }
-                bundleGrammarBytes = null; bundleGrammarGroups = null;
+                bundleGrammarBytes = null; bundleGrammarGroups = null; bundleSourceDigest = null;
                 return new(framedGroups);
             }
         }
@@ -194,9 +196,30 @@ internal sealed class DeepIdV2NetworkClosureFileSource
     }
 }
 
-internal sealed class DeepIdV2NetworkClosureArtifacts(byte[][][] groups) :
+internal sealed class DeepIdV2NetworkClosureArtifacts(byte[][][] groups, byte[]? sourceDigest = null) :
     IDisposable
 {
+    // Pure public framing digest, never an authority decision. Atomic-source
+    // reuse follows a full fresh file/EOF read and exact byte comparison. Own
+    // the digest just like record buffers; callers cannot poison the memo.
+    internal ReadOnlyMemory<byte> SourceDigest { get; } = sourceDigest?.ToArray() ?? ComputeSourceDigest(groups);
+
+    internal static byte[] ComputeSourceDigest(byte[][][] groups)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        Span<byte> length = stackalloc byte[4];
+        foreach (var group in groups)
+        {
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(length, checked((uint)group.Length));
+            hash.AppendData(length);
+            foreach (var bytes in group)
+            {
+                System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(length, checked((uint)bytes.Length));
+                hash.AppendData(length); hash.AppendData(bytes);
+            }
+        }
+        return hash.GetHashAndReset();
+    }
     internal IReadOnlyList<ReadOnlyMemory<byte>> Policies => Copy(groups[0]);
     internal IReadOnlyList<ReadOnlyMemory<byte>> Views => Copy(groups[1]);
     internal IReadOnlyList<ReadOnlyMemory<byte>> Heads => Copy(groups[2]);
@@ -493,7 +516,7 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
             using (timing.Measure(CurrentMailboxNetworkReadTiming.Phase.SourceRead))
                 exactSource = artifacts.ReadCurrent();
             using var exact = exactSource;
-            var sourceDigest = ComputeSourceDigest(exact);
+            var sourceDigest = exact.SourceDigest.ToArray();
             if (observed is not null && !CryptographicOperations.FixedTimeEquals(sourceDigest, observed.SourceDigest))
                 throw new DeepIdV2NetworkObservationChangedException();
             var time = new OnionTrustedTimeAuthority(clock);
@@ -629,24 +652,6 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
         CryptographicOperations.FixedTimeEquals(left.AuthorityCoreReference.Span, right.AuthorityCoreReference.Span) &&
         CryptographicOperations.FixedTimeEquals(left.Dts1PolicyCoreReference.Span, right.Dts1PolicyCoreReference.Span) &&
         CryptographicOperations.FixedTimeEquals(left.TimeSourcePolicyHash.Span, right.TimeSourcePolicyHash.Span);
-
-    // Private resource-cache key only, never a wire hash or authority. Closed
-    // group/count/length framing prevents series or record-boundary ambiguity.
-    private static byte[] ComputeSourceDigest(DeepIdV2NetworkClosureArtifacts exact)
-    {
-        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        Span<byte> length = stackalloc byte[4];
-        foreach (var group in new[] { exact.Policies, exact.Views, exact.Heads, exact.Nodes, exact.Projections, exact.MailboxAuthorities })
-        {
-            System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(length, checked((uint)group.Count)); hash.AppendData(length);
-            foreach (var bytes in group)
-            {
-                System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(length, checked((uint)bytes.Length));
-                hash.AppendData(length); hash.AppendData(bytes.Span);
-            }
-        }
-        return hash.GetHashAndReset();
-    }
 
     private async ValueTask<(VerifiedMailboxAuthorityV2 Policy, OnionMonotonicReading Reading)>
         VerifyMailboxAuthorityAsync(VerifiedOnionNetworkContext network,

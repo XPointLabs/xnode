@@ -485,50 +485,25 @@ internal sealed class FileDeepIdV2DirectoryProtectedHeadStore :
             Path.IsPathFullyQualified(relative))
             throw new UnauthorizedAccessException(
                 "The DID2 head floor path escaped its node data root.");
-        if (OperatingSystem.IsWindows())
+        // A fresh attribute query checks the actual entry on every platform.
+        // Unix .NET maps lstat's symlink flag (including dangling targets) to
+        // ReparsePoint; a second readlink per ancestor adds no validation.
+        var expectDirectory = !expectFile;
+        for (var currentPath = full; currentPath is not null;
+             currentPath = Path.GetDirectoryName(currentPath))
         {
-            var expectDirectory = !expectFile;
-            for (var currentPath = full; currentPath is not null;
-                 currentPath = Path.GetDirectoryName(currentPath))
-            {
-                FileAttributes attributes;
-                try { attributes = File.GetAttributes(currentPath); }
-                catch (Exception error) when (error is IOException or UnauthorizedAccessException)
-                { throw new InvalidDataException("The DID2 head floor path is missing or linked.", error); }
-                if ((attributes & FileAttributes.ReparsePoint) != 0 ||
-                    ((attributes & FileAttributes.Directory) != 0) != expectDirectory)
-                    throw new InvalidDataException("The DID2 head floor path is missing or linked.");
-                if (string.Equals(Path.TrimEndingDirectorySeparator(currentPath), trustRoot,
-                        StringComparison.OrdinalIgnoreCase)) return;
-                expectDirectory = true;
-            }
-            throw new UnauthorizedAccessException("The DID2 head floor path escaped its node data root.");
+            FileAttributes attributes;
+            try { attributes = File.GetAttributes(currentPath); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            { throw new InvalidDataException("The DID2 head floor path is missing or linked.", error); }
+            if ((attributes & FileAttributes.ReparsePoint) != 0 ||
+                ((attributes & FileAttributes.Directory) != 0) != expectDirectory)
+                throw new InvalidDataException("The DID2 head floor path is missing or linked.");
+            if (string.Equals(Path.TrimEndingDirectorySeparator(currentPath), trustRoot,
+                    OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)) return;
+            expectDirectory = true;
         }
-        FileSystemInfo? current = expectFile
-            ? new FileInfo(full) : new DirectoryInfo(full);
-        while (current is not null)
-        {
-            if (!current.Exists ||
-                (current.Attributes & FileAttributes.ReparsePoint) != 0 ||
-                current.LinkTarget is not null)
-                throw new InvalidDataException(
-                    "The DID2 head floor path is missing or linked.");
-            if (string.Equals(Path.GetFullPath(current.FullName)
-                    .TrimEnd(Path.DirectorySeparatorChar,
-                        Path.AltDirectorySeparatorChar), trustRoot,
-                    OperatingSystem.IsWindows()
-                        ? StringComparison.OrdinalIgnoreCase
-                        : StringComparison.Ordinal))
-                return;
-            current = current switch
-            {
-                FileInfo file => file.Directory,
-                DirectoryInfo parent => parent.Parent,
-                _ => null
-            };
-        }
-        throw new UnauthorizedAccessException(
-            "The DID2 head floor path escaped its node data root.");
+        throw new UnauthorizedAccessException("The DID2 head floor path escaped its node data root.");
     }
 
     private static bool IsWindowsReparsePoint(string path)
