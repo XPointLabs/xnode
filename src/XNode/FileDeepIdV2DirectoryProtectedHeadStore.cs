@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Security.Cryptography;
+using System.Runtime.ExceptionServices;
 using Deep.Protocol.AccountDirectoryV1;
 using Deep.Protocol.XPointNetworkV1;
 using Microsoft.AspNetCore.DataProtection;
@@ -38,7 +39,8 @@ internal sealed class FileDeepIdV2DirectoryProtectedHeadStore :
     private VerifiedXPointNetworkAuthority? headSignatureAuthority;
     private (FloorRecord Record, AccountDirectoryProtectedLkg Head)[] verifiedPublicHeads = [];
     internal long PublicHeadSignatureVerifications { get; private set; }
-    internal long HeadGrammarDecodes { get; private set; }
+    private long headGrammarDecodes;
+    internal long HeadGrammarDecodes => Interlocked.Read(ref headGrammarDecodes);
     private bool disposed;
 
     internal FileDeepIdV2DirectoryProtectedHeadStore(string stateDirectory,
@@ -291,7 +293,6 @@ internal sealed class FileDeepIdV2DirectoryProtectedHeadStore :
         }
         var files = Directory.EnumerateFiles(directory, "tip-*.floor")
             .OrderBy(static path => path, StringComparer.Ordinal).ToArray();
-        var records = new List<FloorRecord>(files.Length);
         for (var index = 0; index < files.Length; index++)
         {
             var expectedName = $"tip-{(ulong)index:X16}.floor";
@@ -299,9 +300,25 @@ internal sealed class FileDeepIdV2DirectoryProtectedHeadStore :
                     StringComparison.Ordinal))
                 throw new InvalidDataException(
                     "The DID2 head floor has a missing or foreign revision.");
-            records.Add(ReadRecord(files[index]));
         }
-        return records;
+        if (files.Length < 16) return files.Select(ReadRecord).ToList();
+        // Independent native acquisition only. Every record still passes its
+        // actual path/ACL/handle/EOF, Data Protection (including revocation)
+        // and grammar checks. No authenticated plaintext or permission is cached.
+        // The outer owner gate pins the public grammar memo until all workers
+        // finish; chain/anchor/index authentication stays ordered afterwards.
+        var records = new FloorRecord[files.Length];
+        var errors = new ExceptionDispatchInfo?[files.Length];
+        Parallel.For(0, files.Length, new ParallelOptions { MaxDegreeOfParallelism = 4 }, index =>
+        {
+            try { records[index] = ReadRecord(files[index]); }
+            catch (Exception error) { errors[index] = ExceptionDispatchInfo.Capture(error); }
+        });
+        // Drain ALL workers before returning/releasing the owner, including
+        // failures. Preserve the typed first-in-source-order refusal rather
+        // than exposing AggregateException or a partial successful snapshot.
+        foreach (var error in errors) error?.Throw();
+        return records.ToList();
     }
 
     private void ValidateChain(IReadOnlyList<FloorRecord> records,
@@ -371,7 +388,7 @@ internal sealed class FileDeepIdV2DirectoryProtectedHeadStore :
             var revision = plaintext.Length >= HeaderBytes ? BinaryPrimitives.ReadUInt64BigEndian(plaintext.AsSpan(6)) : ulong.MaxValue;
             var known = revision < (ulong)verifiedPublicHeads.Length ? verifiedPublicHeads[(int)revision].Record : null;
             var result = FloorRecord.Decode(plaintext, known, out var decodedHead);
-            if (decodedHead) HeadGrammarDecodes++;
+            if (decodedHead) Interlocked.Increment(ref headGrammarDecodes);
             return result;
         }
         finally

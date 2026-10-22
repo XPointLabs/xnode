@@ -10,6 +10,43 @@ namespace XNode.IntegrationTests.Runtime;
 public sealed class FileDeepIdV2DirectoryProtectedHeadStoreTests
 {
     [Fact]
+    public async Task BatchedHistoryReadsEveryProtectedRecordAndDrainsTypedFailureBeforeReturning()
+    {
+        using var fixture = await Fixture.CreateAsync();
+        var protection = new CountingProtection(new EphemeralDataProtectionProvider());
+        using var store = fixture.Open(protection: protection);
+        await fixture.PopulateAsync(store, 32);
+        var head = await store.ReadRetainedAsync(fixture.Authority, default);
+        var signatures = store.PublicHeadSignatureVerifications;
+        var grammar = store.HeadGrammarDecodes;
+        protection.Reset();
+        Assert.Same(head, await store.ReadRetainedAsync(fixture.Authority, default));
+        Assert.Equal(34, protection.Reads); // ALL32 tips + independent anchor/index.
+        Assert.InRange(protection.MaximumActive, 1, 4);
+        Assert.Equal(0, protection.Active);
+        Assert.Equal(signatures, store.PublicHeadSignatureVerifications);
+        Assert.Equal(grammar, store.HeadGrammarDecodes);
+
+        var late = Path.Combine(Path.GetDirectoryName(fixture.TipPath)!, "tip-000000000000001F.floor");
+        var original = File.ReadAllBytes(late);
+        var damaged = original.ToArray(); damaged[^1] ^= 1;
+        File.WriteAllBytes(late, damaged);
+        protection.Reject = File.ReadAllBytes(fixture.TipPath);
+        protection.Reset();
+        // Earlier injected IO refusal wins over later REAL ciphertext damage,
+        // regardless of worker order. All actual native attempts finish first.
+        await Assert.ThrowsAsync<IOException>(async () => await store.ReadRetainedAsync(fixture.Authority, default));
+        Assert.Equal(32, protection.Reads);
+        Assert.InRange(protection.MaximumActive, 1, 4);
+        Assert.Equal(0, protection.Active);
+        protection.Reject = null;
+        await Assert.ThrowsAnyAsync<CryptographicException>(async () => await store.ReadRetainedAsync(fixture.Authority, default));
+        Assert.Equal(0, protection.Active);
+        File.WriteAllBytes(late, original);
+        Assert.Same(head, await store.ReadRetainedAsync(fixture.Authority, default));
+    }
+
+    [Fact]
     public async Task PublicSignatureMemoStillAuthenticatesActualNativeFilesOnEveryWarmRead()
     {
         using var fixture = await Fixture.CreateAsync();
@@ -204,7 +241,7 @@ public sealed class FileDeepIdV2DirectoryProtectedHeadStoreTests
         internal string TipPath => Path.Combine(root, "did2-head-journal", "tip-0000000000000000.floor");
         internal string LatestPath => Path.Combine(root, "did2-head-journal", "latest.floor");
 
-        internal FileDeepIdV2DirectoryProtectedHeadStore Open(byte[]? hash = null)
+        internal FileDeepIdV2DirectoryProtectedHeadStore Open(byte[]? hash = null, IDataProtectionProvider? protection = null)
         {
             var keys = Path.Combine(root, "dp-keys");
             Directory.CreateDirectory(keys);
@@ -212,8 +249,23 @@ public sealed class FileDeepIdV2DirectoryProtectedHeadStoreTests
                 builder => builder.SetApplicationName("XNode.DID2.HeadFloor.Test"));
             return new FileDeepIdV2DirectoryProtectedHeadStore(
                 Path.Combine(root, "did2-head-journal"), root,
-                ExactGenesis, hash ?? GenesisHash, provider,
+                ExactGenesis, hash ?? GenesisHash, protection ?? provider,
                 new MailboxStorageSecurity(), new MailboxDurabilityBarrier());
+        }
+
+        internal async Task PopulateAsync(FileDeepIdV2DirectoryProtectedHeadStore store, int count)
+        {
+            var head = await store.RestoreAsync(Authority, default);
+            var witnesses = Enumerable.Range(0, 2).Select(index =>
+                (IAccountDirectoryAdh1WitnessSigner)new WitnessSigner(Bytes(32, (byte)(0x60 + index)), privateKeys[2 + index])).ToArray();
+            for (var index = 1; index < count; index++)
+            {
+                var authored = await DeepIdV2DirectoryHeadAuthor.AdvanceAsync(Authority, head,
+                    new DeepIdV2DirectoryHeadMutationRequest([], [], [], (ulong)(1000 + index), (ulong)(2000 + index), 2), witnesses);
+                var verified = DeepIdV2DirectoryCatchupVerifier.Verify(Authority, head, [authored.ExactAdh1], default);
+                await store.CommitCatchupAsync(verified, default);
+                head = authored.ProtectedHead;
+            }
         }
 
         internal static async Task<Fixture> CreateAsync(byte witnessSeedOffset = 0)
@@ -272,6 +324,34 @@ public sealed class FileDeepIdV2DirectoryProtectedHeadStoreTests
             foreach (var key in privateKeys)
                 CryptographicOperations.ZeroMemory(key);
             if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private sealed class CountingProtection(IDataProtectionProvider provider) : IDataProtectionProvider, IDataProtector
+    {
+        private IDataProtector protector = null!;
+        private int reads, active, maximumActive;
+        internal int Reads => Volatile.Read(ref reads);
+        internal int Active => Volatile.Read(ref active);
+        internal int MaximumActive => Volatile.Read(ref maximumActive);
+        internal byte[]? Reject { get; set; }
+        internal void Reset() { Assert.Equal(0, Active); reads = maximumActive = 0; }
+        public IDataProtector CreateProtector(string purpose) { protector = provider.CreateProtector(purpose); return this; }
+        public byte[] Protect(byte[] plaintext) => protector.Protect(plaintext);
+        public byte[] Unprotect(byte[] protectedData)
+        {
+            Interlocked.Increment(ref reads);
+            var current = Interlocked.Increment(ref active);
+            int prior;
+            do { prior = Volatile.Read(ref maximumActive); }
+            while (current > prior && Interlocked.CompareExchange(ref maximumActive, current, prior) != prior);
+            try
+            {
+                if (Reject is { } rejected && protectedData.AsSpan().SequenceEqual(rejected))
+                    throw new IOException("Test-owned first source refusal.");
+                return protector.Unprotect(protectedData);
+            }
+            finally { Interlocked.Decrement(ref active); }
         }
     }
 

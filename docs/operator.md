@@ -25,6 +25,19 @@ and wrong entry types for the full path to the custody root; an additional
 validate on every read. No configuration, format, key or state reset is needed.
 The focused Linux lane is documented in [local development](../../deep-devops/docs/DEEP_DEV.md).
 
+Directory-head histories of16 or more records acquire native records with at
+most4 workers under the same owner gate. Each actual file still passes full
+path/permissions/handle/EOF, Data Protection Unprotect and grammar checks;
+ordered chain, independent anchor and latest-index joins remain mandatory.
+All workers finish before any result, failure or owner-gate release. A failure
+keeps its original exception type and source order, not AggregateException.
+No decrypted-record/permission cache, file format, key, lifetime or operator
+setting is added. Preserve existing volumes on the ordinary node upgrade.
+This uses the documented thread-safe
+[Data Protection consumer API](https://learn.microsoft.com/aspnet/core/security/data-protection/consumer-apis/overview?view=aspnetcore-10.0).
+It does not make the O(history) native integrity scan constant-time or establish
+a delivery SLO; connected measurements remain required.
+
 The current mailbox operation ledger also reuses only detached JSON grammar
 within the SAME actual operation lease and exact newly read length/SHA. Every
 load still authenticates independent custody/MAC, repeats the actual file hash
