@@ -30,7 +30,7 @@ internal static class ContactReplicaHttpEndpoint
                 ContactReplicaHttpContract.MediaType,
                 StringComparison.Ordinal)
             || context.Request.ContentLength is not long length
-            || length is < 236 or > ContactReplicaWireCodec.MaximumRequestBytes)
+            || length is < 228 or > ContactReplicaWireCodec.MaximumRequestBytes)
         {
             return Results.NotFound();
         }

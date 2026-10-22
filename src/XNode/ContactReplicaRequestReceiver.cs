@@ -407,10 +407,12 @@ internal sealed class ContactReplicaRequestReceiver : IContactReplicaCommandRece
         ContactServicePlacementCapability received,
         ContactServicePlacementCapability current)
     {
+        // Assignment identity is shared; local ADH/DTT admission lifetimes
+        // are not. CRQ2 carries no deadline. Only the independently minted
+        // current capability and the actual request/effect guards authorize.
         if (received.RequestKind != current.RequestKind
             || received.ServiceClass != current.ServiceClass
             || received.SelectionEpoch != current.SelectionEpoch
-            || received.ValidUntilUnixSeconds != current.ValidUntilUnixSeconds
             || !Fixed(received.NetworkId.Span, current.NetworkId.Span)
             || !Fixed(received.ViewHash.Span, current.ViewHash.Span)
             || !Fixed(received.PlacementHash.Span, current.PlacementHash.Span)

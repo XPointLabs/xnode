@@ -545,9 +545,9 @@ internal static class ContactReplicaWireCodec
 {
     internal const int MaximumRequestBytes = 100_000;
     internal const int MaximumResponseBytes = 2_200_000;
-    private const byte Version = 1;
-    private static ReadOnlySpan<byte> RequestMagic => "CRQ1"u8;
-    private static ReadOnlySpan<byte> ResponseMagic => "CRS1"u8;
+    private const byte Version = 2;
+    private static ReadOnlySpan<byte> RequestMagic => "CRQ2"u8;
+    private static ReadOnlySpan<byte> ResponseMagic => "CRS2"u8;
 
     internal static byte[] Encode(ContactReplicaRpcCommand command)
     {
@@ -558,7 +558,7 @@ internal static class ContactReplicaWireCodec
         }
 
         var replicas = command.Placement.ReplicaIds;
-        var output = new byte[236 + command.Payload.Length];
+        var output = new byte[228 + command.Payload.Length];
         RequestMagic.CopyTo(output);
         output[4] = Version;
         output[5] = (byte)command.Operation;
@@ -569,12 +569,13 @@ internal static class ContactReplicaWireCodec
         command.Placement.PlacementHash.Span.CopyTo(output.AsSpan(56));
         command.Placement.ShardKey.Span.CopyTo(output.AsSpan(88));
         BinaryPrimitives.WriteUInt64BigEndian(output.AsSpan(120), command.Placement.SelectionEpoch);
-        BinaryPrimitives.WriteUInt64BigEndian(output.AsSpan(128), command.Placement.ValidUntilUnixSeconds);
-        replicas[0].Span.CopyTo(output.AsSpan(136));
-        replicas[1].Span.CopyTo(output.AsSpan(168));
-        command.CorrelationId.Span.CopyTo(output.AsSpan(200));
-        BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(232), checked((uint)command.Payload.Length));
-        command.Payload.Span.CopyTo(output.AsSpan(236));
+        // Admission lifetime belongs to the independently verified LOCAL
+        // authority, not the cross-peer assignment identity (DR-0166).
+        replicas[0].Span.CopyTo(output.AsSpan(128));
+        replicas[1].Span.CopyTo(output.AsSpan(160));
+        command.CorrelationId.Span.CopyTo(output.AsSpan(192));
+        BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(224), checked((uint)command.Payload.Length));
+        command.Payload.Span.CopyTo(output.AsSpan(228));
         if (output.Length > MaximumRequestBytes)
         {
             throw new InvalidDataException("The contact replica request exceeds its transport bound.");
@@ -584,7 +585,7 @@ internal static class ContactReplicaWireCodec
 
     internal static ContactReplicaRpcCommand DecodeRequest(ReadOnlySpan<byte> exact)
     {
-        if (exact.Length is < 236 or > MaximumRequestBytes
+        if (exact.Length is < 228 or > MaximumRequestBytes
             || !exact[..4].SequenceEqual(RequestMagic)
             || exact[4] != Version
             || !Enum.IsDefined((ContactReplicaRpcOperation)exact[5])
@@ -593,8 +594,8 @@ internal static class ContactReplicaWireCodec
         {
             throw new InvalidDataException("The contact replica request envelope is malformed.");
         }
-        var length = BinaryPrimitives.ReadUInt32BigEndian(exact.Slice(232, 4));
-        if (length != exact.Length - 236)
+        var length = BinaryPrimitives.ReadUInt32BigEndian(exact.Slice(224, 4));
+        if (length != exact.Length - 228)
         {
             throw new InvalidDataException("The contact replica request length is non-canonical.");
         }
@@ -607,8 +608,8 @@ internal static class ContactReplicaWireCodec
             exact.Slice(56, 32),
             exact.Slice(88, 32),
             BinaryPrimitives.ReadUInt64BigEndian(exact.Slice(120, 8)),
-            BinaryPrimitives.ReadUInt64BigEndian(exact.Slice(128, 8)),
-            [exact.Slice(136, 32).ToArray(), exact.Slice(168, 32).ToArray()]);
+            0, // An untrusted wire projection has no local admission lifetime.
+            [exact.Slice(128, 32).ToArray(), exact.Slice(160, 32).ToArray()]);
         if (capability.ServiceClass != (ContactServiceClass)exact[7])
         {
             throw new InvalidDataException("The contact replica service class is invalid.");
@@ -616,8 +617,8 @@ internal static class ContactReplicaWireCodec
         return new ContactReplicaRpcCommand(
             capability,
             (ContactReplicaRpcOperation)exact[5],
-            exact.Slice(200, 32).ToArray(),
-            exact[236..].ToArray());
+            exact.Slice(192, 32).ToArray(),
+            exact[228..].ToArray());
     }
 
     internal static byte[] Encode(ContactReplicaRpcResponse response)

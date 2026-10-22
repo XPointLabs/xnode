@@ -2057,3 +2057,16 @@ parser/verification path; larger valid bundles keep the original uncached path.
 Bundle consumers own independent buffers, so disposal cannot alter the memo or
 another read. No remembered file metadata, native floor or currentness decision
 replaces these checks.
+
+### Replica assignment and local admission (2026-10-22)
+
+[DR-0166](../../docs/survival-program/decisions/DR-0166-replica-assignment-and-local-admission.md)
+requires a coordinated pre-production peer-cohort upgrade to the private
+`/api/peer/contact-replica/v2/execute` endpoint and CRQ2/CRS2 only. There is no
+old reader/route fallback. The wire carries exact placement identity, not the
+sender's local ADH-dependent admission deadline. A received projection has no
+local admission authority; the receiver independently mints and checks current
+NETCODEC/time/custody before effects and response. Actual view/epoch/placement/
+peer changes still reject. Public client formats, private keys, accounts and
+pending original business commands are unchanged; recover uncertain commands
+normally after all peers run the matching image, without data resets.

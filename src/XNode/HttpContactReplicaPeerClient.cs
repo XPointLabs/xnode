@@ -8,8 +8,8 @@ namespace XNode;
 
 internal static class ContactReplicaHttpContract
 {
-    internal const string Route = "/api/peer/contact-replica/v1/execute";
-    internal const string MediaType = "application/vnd.deep.contact-replica-v1";
+    internal const string Route = "/api/peer/contact-replica/v2/execute";
+    internal const string MediaType = "application/vnd.deep.contact-replica-v2";
 }
 
 internal sealed class HttpContactReplicaPeerClient : IContactReplicaPeerClient

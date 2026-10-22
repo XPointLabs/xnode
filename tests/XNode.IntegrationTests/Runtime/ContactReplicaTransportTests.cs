@@ -23,6 +23,46 @@ public sealed class ContactReplicaTransportTests : IDisposable
         Guid.NewGuid().ToString("N"));
 
     [Fact]
+    public async Task ReplicaWireBindsAssignmentButCannotCarryLocalAdmissionAuthority()
+    {
+        using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        var shard = Bytes(0x43, 32);
+        var current = VerifiedPlacement(signed, shard);
+        var otherLocalDeadline = ContactServicePlacementCapability.FromUntrustedProjection(
+            current.RequestKind, current.NetworkId.Span, current.ViewHash.Span,
+            current.PlacementHash.Span, current.ShardKey.Span, current.SelectionEpoch,
+            current.ValidUntilUnixSeconds - 1, current.ReplicaIds);
+        var command = new ContactReplicaRpcCommand(current,
+            ContactReplicaRpcOperation.ReadCurrentDcr, Bytes(0x44, 32), shard);
+        var wire = ContactReplicaWireCodec.Encode(command);
+        Assert.Equal(wire, ContactReplicaWireCodec.Encode(command with { Placement = otherLocalDeadline }));
+        var received = ContactReplicaWireCodec.DecodeRequest(wire);
+        Assert.Equal(0UL, received.Placement.ValidUntilUnixSeconds);
+        Assert.Throws<InvalidOperationException>(() => received.Placement.EnsureUsable(1100));
+        Assert.Throws<InvalidOperationException>(() => _ = received.Placement.VerifiedPlacement);
+        ContactReplicaRequestReceiver.EnsureExactPlacement(received.Placement, current);
+        // Independent local expiry is still a refusal, never renewed by wire.
+        Assert.Throws<InvalidOperationException>(() => current.EnsureUsable(current.ValidUntilUnixSeconds));
+        foreach (var offset in new[] { 8, 24, 56, 88, 120, 128, 160 })
+        {
+            var changed = wire.ToArray(); changed[offset] ^= 1;
+            var foreign = ContactReplicaWireCodec.DecodeRequest(changed);
+            Assert.Throws<UnauthorizedAccessException>(() =>
+                ContactReplicaRequestReceiver.EnsureExactPlacement(foreign.Placement, current));
+        }
+        var oldVersion = wire.ToArray(); oldVersion[4] = 1;
+        Assert.Throws<InvalidDataException>(() => ContactReplicaWireCodec.DecodeRequest(oldVersion));
+        var oldMagic = wire.ToArray(); "CRQ1"u8.CopyTo(oldMagic);
+        Assert.Throws<InvalidDataException>(() => ContactReplicaWireCodec.DecodeRequest(oldMagic));
+        Assert.Throws<InvalidDataException>(() => ContactReplicaWireCodec.DecodeRequest(wire.AsSpan(0, wire.Length - 1)));
+        var response = ContactReplicaWireCodec.Encode(new ContactReplicaRpcResponse(
+            command.Operation, command.CorrelationId, current.ReplicaIds[0], shard));
+        Assert.Equal(shard, ContactReplicaWireCodec.DecodeResponse(response).Payload.ToArray());
+        "CRS1"u8.CopyTo(response); response[4] = 1;
+        Assert.Throws<InvalidDataException>(() => ContactReplicaWireCodec.DecodeResponse(response));
+    }
+
+    [Fact]
     public void MaximumBoundedXpp1FitsExactReplicaRpcEnvelopeWithoutAggregateFraming()
     {
         var placement = ContactServicePlacementCapability.FromUntrustedProjection(
