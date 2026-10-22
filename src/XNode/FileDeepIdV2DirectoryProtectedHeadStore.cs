@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Runtime.ExceptionServices;
+using System.Globalization;
 using Deep.Protocol.AccountDirectoryV1;
 using Deep.Protocol.XPointNetworkV1;
 using Microsoft.AspNetCore.DataProtection;
@@ -10,9 +11,11 @@ namespace XNode;
 
 /// <summary>
 /// Node-local DID2 head custody. Exact signed heads are retained as an
-/// append-only, Data-Protection-authenticated chain; latest is only a
+/// monotonic, Data-Protection-authenticated chain; latest is only a
 /// recoverable index. The independently located anchor detects journal-only
-/// rollback. A coordinated rollback of both journal and anchor is outside
+/// rollback. Only a fully committed prefix below that anchor can be retired;
+/// every remaining record is authenticated on every observation. A coordinated
+/// rollback of both journal and anchor is outside
 /// this local store's threat boundary even when the Data Protection keys
 /// remain intact; network freshness still requires live threshold evidence.
 /// </summary>
@@ -21,6 +24,7 @@ internal sealed class FileDeepIdV2DirectoryProtectedHeadStore :
 {
     private const int MaximumProtectedBytes = 65_536;
     private const int HeaderBytes = 130;
+    private const int MaximumRetiredTipsPerMaintenance = 64;
     private readonly string directory;
     private readonly string anchorDirectory;
     private readonly string trustRoot;
@@ -144,23 +148,21 @@ internal sealed class FileDeepIdV2DirectoryProtectedHeadStore :
             }
             var latest = records[^1];
             ValidateChain(records, authority);
-            if (anchor is null || anchor.Revision > latest.Revision ||
-                !anchor.ExactlyMatches(records[(int)anchor.Revision]))
+            if (anchor is null || !ContainsExact(records, anchor))
                 throw new InvalidDataException(
                     "The independent DID2 head anchor is missing or conflicts.");
-            if (anchor.Revision < latest.Revision)
-                WriteAnchor(latest);
             var indexed = ReadRecordIfExists(LatestPath());
-            if (indexed is not null &&
-                (indexed.Revision >= (ulong)records.Count ||
-                 !indexed.ExactlyMatches(records[(int)indexed.Revision])))
+            if (indexed is not null && !ContainsExact(records, indexed))
                 throw new InvalidDataException(
                     "The DID2 head index is outside its append-only chain.");
+            if (anchor.Revision < latest.Revision)
+                WriteAnchor(latest);
             if (indexed is null || indexed.Revision < latest.Revision)
                 WriteLatest(latest);
             else if (!indexed.ExactlyMatches(latest))
                 throw new InvalidDataException(
                     "The DID2 head index conflicts with its append-only tip.");
+            RetireCommittedPrefix(records, latest, cancellationToken);
             restoredAuthority = authority;
             return latest.Revision == 0
                 ? genesis
@@ -253,6 +255,7 @@ internal sealed class FileDeepIdV2DirectoryProtectedHeadStore :
                 if (!next.CoreHash.Span.SequenceEqual(current.CoreHash))
                     throw new CryptographicException(
                         "The DID2 replay changed the protected head hash.");
+                RetireCommittedPrefix(records, current, cancellationToken);
                 return;
             }
             if (next.LogGeneration <= expected.LogGeneration ||
@@ -268,6 +271,7 @@ internal sealed class FileDeepIdV2DirectoryProtectedHeadStore :
             WriteTip(candidate);
             WriteAnchor(candidate);
             WriteLatest(candidate);
+            RetireCommittedPrefix(records, candidate, cancellationToken);
         }
         finally { gate.Release(); }
     }
@@ -293,15 +297,16 @@ internal sealed class FileDeepIdV2DirectoryProtectedHeadStore :
         }
         var files = Directory.EnumerateFiles(directory, "tip-*.floor")
             .OrderBy(static path => path, StringComparer.Ordinal).ToArray();
+        var firstRevision = files.Length == 0 ? 0 : ParseRevision(files[0]);
         for (var index = 0; index < files.Length; index++)
         {
-            var expectedName = $"tip-{(ulong)index:X16}.floor";
+            var expectedName = $"tip-{checked(firstRevision + (ulong)index):X16}.floor";
             if (!string.Equals(Path.GetFileName(files[index]), expectedName,
                     StringComparison.Ordinal))
                 throw new InvalidDataException(
                     "The DID2 head floor has a missing or foreign revision.");
         }
-        if (files.Length < 16) return files.Select(ReadRecord).ToList();
+        if (files.Length < 16) return files.Select(ReadTip).ToList();
         // Independent native acquisition only. Every record still passes its
         // actual path/ACL/handle/EOF, Data Protection (including revocation)
         // and grammar checks. No authenticated plaintext or permission is cached.
@@ -311,7 +316,7 @@ internal sealed class FileDeepIdV2DirectoryProtectedHeadStore :
         var errors = new ExceptionDispatchInfo?[files.Length];
         Parallel.For(0, files.Length, new ParallelOptions { MaxDegreeOfParallelism = 4 }, index =>
         {
-            try { records[index] = ReadRecord(files[index]); }
+            try { records[index] = ReadTip(files[index]); }
             catch (Exception error) { errors[index] = ExceptionDispatchInfo.Capture(error); }
         });
         // Drain ALL workers before returning/releasing the owner, including
@@ -319,6 +324,14 @@ internal sealed class FileDeepIdV2DirectoryProtectedHeadStore :
         // than exposing AggregateException or a partial successful snapshot.
         foreach (var error in errors) error?.Throw();
         return records.ToList();
+    }
+
+    private FloorRecord ReadTip(string path)
+    {
+        var record = ReadRecord(path);
+        if (record.Revision != ParseRevision(path))
+            throw new InvalidDataException("The DID2 head floor filename differs from its authenticated revision.");
+        return record;
     }
 
     private void ValidateChain(IReadOnlyList<FloorRecord> records,
@@ -338,23 +351,24 @@ internal sealed class FileDeepIdV2DirectoryProtectedHeadStore :
         for (var index = 0; index < records.Count; index++)
         {
             var record = records[index];
-            if (record.Revision != (ulong)index ||
+            if (record.Revision != checked(records[0].Revision + (ulong)index) ||
                 !record.NetworkId.AsSpan().SequenceEqual(networkId) ||
                 !record.GenesisCoreHash.AsSpan().SequenceEqual(genesisCoreHash) ||
-                (index == 0
+                (record.Revision == 0
                     ? !record.ExactAdh1.AsSpan().SequenceEqual(exactGenesis) ||
                       record.PreviousCoreHash.AsSpan().IndexOfAnyExcept((byte)0) >= 0
-                    : !record.PreviousCoreHash.AsSpan().SequenceEqual(
+                    : index > 0 && !record.PreviousCoreHash.AsSpan().SequenceEqual(
                           records[index - 1].CoreHash)))
                 throw new InvalidDataException(
                     "The DID2 head floor chain is incomplete or cross-scope.");
             AccountDirectoryProtectedLkg restored;
-            if (sameAuthority && index < verifiedPublicHeads.Length &&
-                record.ExactlyMatches(verifiedPublicHeads[index].Record))
-                restored = verifiedPublicHeads[index].Head;
+            var memoIndex = MemoIndex(record.Revision);
+            if (sameAuthority && memoIndex >= 0 &&
+                record.ExactlyMatches(verifiedPublicHeads[memoIndex].Record))
+                restored = verifiedPublicHeads[memoIndex].Head;
             else
             {
-                restored = index == 0
+                restored = record.Revision == 0
                     ? DeepIdV2DirectoryBootstrapVerifier.RestoreGenesis(authority, record.ExactAdh1, record.CoreHash)
                     : AccountDirectoryProtectedLkgFactory.Restore(authority, record.ExactAdh1, record.CoreHash);
                 PublicHeadSignatureVerifications++;
@@ -372,6 +386,63 @@ internal sealed class FileDeepIdV2DirectoryProtectedHeadStore :
     private FloorRecord? ReadRecordIfExists(string path) =>
         File.Exists(path) ? ReadRecord(path) : null;
 
+    private int MemoIndex(ulong revision) => verifiedPublicHeads.Length > 0 &&
+        revision >= verifiedPublicHeads[0].Record.Revision &&
+        revision - verifiedPublicHeads[0].Record.Revision < (ulong)verifiedPublicHeads.Length
+            ? (int)(revision - verifiedPublicHeads[0].Record.Revision) : -1;
+
+    private static bool ContainsExact(IReadOnlyList<FloorRecord> records, FloorRecord record) =>
+        records.Count > 0 && record.Revision >= records[0].Revision &&
+        record.Revision - records[0].Revision < (ulong)records.Count &&
+        record.ExactlyMatches(records[(int)(record.Revision - records[0].Revision)]);
+
+    private static ulong ParseRevision(string path)
+    {
+        var name = Path.GetFileName(path);
+        if (name.Length != 26 || !name.StartsWith("tip-", StringComparison.Ordinal) ||
+            !name.EndsWith(".floor", StringComparison.Ordinal) ||
+            !ulong.TryParse(name.AsSpan(4, 16), NumberStyles.AllowHexSpecifier,
+                CultureInfo.InvariantCulture, out var revision) ||
+            name != $"tip-{revision:X16}.floor")
+            throw new InvalidDataException("The DID2 head floor revision name is not canonical.");
+        return revision;
+    }
+
+    // Acquisition-owner maintenance only, NEVER observational repair. No
+    // revision is renumbered, and no pending higher descendant is discarded.
+    // The independently protected anchor is the rollback floor, not tip count.
+    private void RetireCommittedPrefix(IReadOnlyList<FloorRecord> records,
+        FloorRecord committed, CancellationToken cancellationToken)
+    {
+        RequireCommitted(committed);
+        var retired = 0;
+        foreach (var record in records)
+        {
+            if (record.Revision >= committed.Revision ||
+                retired == MaximumRetiredTipsPerMaintenance) break;
+            cancellationToken.ThrowIfCancellationRequested();
+            var path = TipPath(record.Revision);
+            ValidatePath(path, expectFile: true);
+            // Delete in ascending order and stop on ANY failure. A crash leaves
+            // a contiguous authenticated suffix, never a hole or a lower floor.
+            // Flush EACH deletion before the next: a crash must not persist a
+            // later removal while resurrecting an earlier prefix entry.
+            durability.DeleteFile(path);
+            retired++;
+        }
+        if (retired > 0)
+            durability.FlushFileAndParentDirectory(TipPath(committed.Revision));
+        RequireCommitted(committed);
+    }
+
+    private void RequireCommitted(FloorRecord committed)
+    {
+        if (!ReadRecord(TipPath(committed.Revision)).ExactlyMatches(committed) ||
+            ReadRecordIfExists(AnchorPath()) is not { } anchor || !anchor.ExactlyMatches(committed) ||
+            ReadRecordIfExists(LatestPath()) is not { } indexed || !indexed.ExactlyMatches(committed))
+            throw new InvalidDataException("The DID2 floor is not durably joined to its independent anchor and index.");
+    }
+
     private FloorRecord ReadRecord(string path)
     {
         ValidatePath(path, expectFile: true);
@@ -386,7 +457,8 @@ internal sealed class FileDeepIdV2DirectoryProtectedHeadStore :
                 throw new InvalidDataException(
                     "The unprotected DID2 head floor record exceeds its bound.");
             var revision = plaintext.Length >= HeaderBytes ? BinaryPrimitives.ReadUInt64BigEndian(plaintext.AsSpan(6)) : ulong.MaxValue;
-            var known = revision < (ulong)verifiedPublicHeads.Length ? verifiedPublicHeads[(int)revision].Record : null;
+            var memoIndex = MemoIndex(revision);
+            var known = memoIndex >= 0 ? verifiedPublicHeads[memoIndex].Record : null;
             var result = FloorRecord.Decode(plaintext, known, out var decodedHead);
             if (decodedHead) Interlocked.Increment(ref headGrammarDecodes);
             return result;

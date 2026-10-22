@@ -25,7 +25,17 @@ and wrong entry types for the full path to the custody root; an additional
 validate on every read. No configuration, format, key or state reset is needed.
 The focused Linux lane is documented in [local development](../../deep-devops/docs/DEEP_DEV.md).
 
-Directory-head histories of16 or more records acquire native records with at
+Native directory floors use the bounded anchored-prefix lifecycle in
+[DR-0170](../../docs/survival-program/decisions/DR-0170-anchored-directory-floor-prefix-retirement.md).
+Ordinary owner restore/commit may retire obsolete tips only after the actual
+current tip, independent anchor and index durably match. Preserve all existing
+volumes and Data Protection keys on upgrade; no identity/account reset is needed.
+Older binaries expecting a revision-zero history need a coherent pre-upgrade
+journal+anchor+key-ring snapshot for rollback. Do not restore only the journal.
+Retired tips cannot be recovered from the live store; they are obsolete public
+head custody, never mailbox/acquisition replay state. Observations never collect.
+
+Uncollected directory-head histories of16 or more records acquire native records with at
 most4 workers under the same owner gate. Each actual file still passes full
 path/permissions/handle/EOF, Data Protection Unprotect and grammar checks;
 ordered chain, independent anchor and latest-index joins remain mandatory.

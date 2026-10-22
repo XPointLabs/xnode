@@ -15,7 +15,7 @@ public sealed class FileDeepIdV2DirectoryProtectedHeadStoreTests
         using var fixture = await Fixture.CreateAsync();
         var protection = new CountingProtection(new EphemeralDataProtectionProvider());
         using var store = fixture.Open(protection: protection);
-        await fixture.PopulateAsync(store, 32);
+        await fixture.PopulateAsync(store, 32, retainHistory: true);
         var head = await store.ReadRetainedAsync(fixture.Authority, default);
         var signatures = store.PublicHeadSignatureVerifications;
         var grammar = store.HeadGrammarDecodes;
@@ -219,6 +219,171 @@ public sealed class FileDeepIdV2DirectoryProtectedHeadStoreTests
         Assert.False(File.Exists(fixture.TipPath));
     }
 
+    [Fact]
+    public async Task CommittedPrefixRetirementKeepsGlobalRevisionAndFreshNativeChecks()
+    {
+        using var fixture = await Fixture.CreateAsync();
+        var protection = new CountingProtection(new EphemeralDataProtectionProvider());
+        using (var store = fixture.Open(protection: protection))
+        {
+            await fixture.PopulateAsync(store, 32);
+            Assert.Single(fixture.Tips);
+            Assert.EndsWith("tip-000000000000001F.floor", fixture.Tips[0]);
+            var head = await store.ReadRetainedAsync(fixture.Authority, default);
+            var signatures = store.PublicHeadSignatureVerifications;
+            var grammar = store.HeadGrammarDecodes;
+            protection.Reset();
+            Assert.Same(head, await store.ReadRetainedAsync(fixture.Authority, default));
+            Assert.Equal(3, protection.Reads); // Actual tip, independent anchor, index.
+            Assert.Equal(signatures, store.PublicHeadSignatureVerifications);
+            Assert.Equal(grammar, store.HeadGrammarDecodes);
+        }
+        using var restarted = fixture.Open(protection: protection);
+        var restored = await restarted.RestoreAsync(fixture.Authority, default);
+        Assert.Equal(31UL, restored.LogGeneration);
+        Assert.Single(fixture.Tips);
+    }
+
+    [Fact]
+    public async Task OwnerRetiresAtMost64OldTipsAndInterruptedPrefixRemainsRecoverable()
+    {
+        using var fixture = await Fixture.CreateAsync();
+        using (var store = fixture.Open())
+        {
+            await fixture.PopulateAsync(store, 80, retainHistory: true);
+            Assert.Equal(80, fixture.Tips.Length);
+            // Models interruption after deleting only a leading prefix. Every
+            // retained record is still a genuine native-protected signed head.
+            foreach (var tip in fixture.Tips.Take(3)) File.Delete(tip);
+            Assert.Equal(79UL, (await store.ReadRetainedAsync(fixture.Authority, default)).LogGeneration);
+            await store.RestoreAsync(fixture.Authority, default);
+            Assert.Equal(13, fixture.Tips.Length); //77 - bounded64, NOT renumbered.
+        }
+        using var restarted = fixture.Open();
+        Assert.Equal(79UL, (await restarted.RestoreAsync(fixture.Authority, default)).LogGeneration);
+        Assert.Single(fixture.Tips);
+        Assert.EndsWith("tip-000000000000004F.floor", fixture.Tips[0]);
+    }
+
+    [Theory]
+    [InlineData("tip")]
+    [InlineData("anchor")]
+    [InlineData("index")]
+    public async Task CrashAfterDurableSuccessorPublicationRecoversSameRevision(string stage)
+    {
+        using var fixture = await Fixture.CreateAsync();
+        var barrier = new FaultBarrier();
+        using (var store = fixture.Open(durability: barrier))
+        {
+            await fixture.PopulateAsync(store, 3);
+            barrier.FailName = stage == "tip" ? "tip-0000000000000003.floor" : stage == "anchor" ? "anchor.floor" : "latest.floor";
+            await Assert.ThrowsAsync<IOException>(() => fixture.PopulateAsync(store, 2));
+            // Failed commit has not retired the previous floor.
+            Assert.Contains(fixture.Tips, path => path.EndsWith("tip-0000000000000002.floor", StringComparison.Ordinal));
+            if (stage == "index")
+                Assert.Equal(3UL, (await store.ReadRetainedAsync(fixture.Authority, default)).LogGeneration);
+            else
+                await Assert.ThrowsAnyAsync<Exception>(() => store.ReadRetainedAsync(fixture.Authority, default).AsTask());
+        }
+        using var restarted = fixture.Open();
+        Assert.Equal(3UL, (await restarted.RestoreAsync(fixture.Authority, default)).LogGeneration);
+        Assert.Single(fixture.Tips);
+    }
+
+    [Theory]
+    [InlineData("rollback")]
+    [InlineData("gap")]
+    [InlineData("rename")]
+    [InlineData("corrupt")]
+    public async Task AdvancedFloorRejectsJournalRollbackAndDamagedRetainedSuffix(string damage)
+    {
+        using var fixture = await Fixture.CreateAsync();
+        using (var store = fixture.Open())
+        {
+            await fixture.PopulateAsync(store, 4, retainHistory: true);
+            if (damage == "rollback")
+            {
+                File.Copy(fixture.TipPath, fixture.LatestPath, overwrite: true);
+                foreach (var tip in fixture.Tips.Skip(1)) File.Delete(tip);
+            }
+            else if (damage == "gap") File.Delete(fixture.Tips[1]);
+            else if (damage == "rename") File.Move(fixture.Tips[^1], fixture.Tips[^1].Replace("0000000000000003", "0000000000000004"));
+            else
+            {
+                var path = fixture.Tips[^1];
+                var bytes = File.ReadAllBytes(path); bytes[^1] ^= 1; File.WriteAllBytes(path, bytes);
+            }
+            await Assert.ThrowsAnyAsync<Exception>(() => store.ReadRetainedAsync(fixture.Authority, default).AsTask());
+        }
+        using var restarted = fixture.Open();
+        await Assert.ThrowsAnyAsync<Exception>(() => restarted.RestoreAsync(fixture.Authority, default).AsTask());
+    }
+
+    [Theory]
+    [InlineData("tip", false)]
+    [InlineData("anchor", false)]
+    [InlineData("index", false)]
+    [InlineData("tip", true)]
+    [InlineData("anchor", true)]
+    [InlineData("index", true)]
+    public async Task CompactedFloorStillRejectsChangedOrLinkedActualCustody(string kind, bool linked)
+    {
+        using var fixture = await Fixture.CreateAsync();
+        using var store = fixture.Open();
+        await fixture.PopulateAsync(store, 4);
+        _ = await store.ReadRetainedAsync(fixture.Authority, default);
+        var path = kind == "tip" ? fixture.Tips.Single() : kind == "anchor" ? fixture.AnchorPath : fixture.LatestPath;
+        if (linked)
+        {
+            var target = path + ".actual";
+            File.Move(path, target);
+            File.CreateSymbolicLink(path, target);
+        }
+        else
+        {
+            var bytes = File.ReadAllBytes(path); bytes[^1] ^= 1; File.WriteAllBytes(path, bytes);
+        }
+        await Assert.ThrowsAnyAsync<Exception>(() => store.ReadRetainedAsync(fixture.Authority, default).AsTask());
+    }
+
+    [Fact]
+    public async Task InterruptedDurableDeletionStopsAtPrefixAndColdOwnerCompletes()
+    {
+        using var fixture = await Fixture.CreateAsync();
+        var barrier = new FaultBarrier();
+        using (var store = fixture.Open(durability: barrier))
+        {
+            await fixture.PopulateAsync(store, 8, retainHistory: true);
+            barrier.FailAfterDeletion = true;
+            await Assert.ThrowsAsync<IOException>(() => store.RestoreAsync(fixture.Authority, default).AsTask());
+            Assert.Equal(7, fixture.Tips.Length);
+            Assert.EndsWith("tip-0000000000000001.floor", fixture.Tips[0]);
+            Assert.Equal(7UL, (await store.ReadRetainedAsync(fixture.Authority, default)).LogGeneration);
+        }
+        using var restarted = fixture.Open();
+        Assert.Equal(7UL, (await restarted.RestoreAsync(fixture.Authority, default)).LogGeneration);
+        Assert.Single(fixture.Tips);
+    }
+
+    private sealed class FaultBarrier : IMailboxDurabilityBarrier
+    {
+        private readonly MailboxDurabilityBarrier inner = new();
+        internal string? FailName { get; set; }
+        internal bool FailAfterDeletion { get; set; }
+        public void FlushFileAndParentDirectory(string path)
+        {
+            inner.FlushFileAndParentDirectory(path);
+            if (Path.GetFileName(path) == FailName) throw new IOException("Test-owned crash after durable publication.");
+        }
+        public void FlushParentDirectory(string path) => inner.FlushParentDirectory(path);
+        public void ReplaceFile(string temporaryPath, string finalPath) => inner.ReplaceFile(temporaryPath, finalPath);
+        public void DeleteFile(string path)
+        {
+            inner.DeleteFile(path);
+            if (FailAfterDeletion) throw new IOException("Test-owned crash after durable prefix deletion.");
+        }
+    }
+
     private sealed class Fixture : IDisposable
     {
         private readonly string root;
@@ -240,8 +405,10 @@ public sealed class FileDeepIdV2DirectoryProtectedHeadStoreTests
         internal string AnchorPath => Path.Combine(root, "did2-head-anchor", "anchor.floor");
         internal string TipPath => Path.Combine(root, "did2-head-journal", "tip-0000000000000000.floor");
         internal string LatestPath => Path.Combine(root, "did2-head-journal", "latest.floor");
+        internal string[] Tips => Directory.GetFiles(Path.Combine(root, "did2-head-journal"), "tip-*.floor").Order(StringComparer.Ordinal).ToArray();
 
-        internal FileDeepIdV2DirectoryProtectedHeadStore Open(byte[]? hash = null, IDataProtectionProvider? protection = null)
+        internal FileDeepIdV2DirectoryProtectedHeadStore Open(byte[]? hash = null, IDataProtectionProvider? protection = null,
+            IMailboxDurabilityBarrier? durability = null)
         {
             var keys = Path.Combine(root, "dp-keys");
             Directory.CreateDirectory(keys);
@@ -250,21 +417,31 @@ public sealed class FileDeepIdV2DirectoryProtectedHeadStoreTests
             return new FileDeepIdV2DirectoryProtectedHeadStore(
                 Path.Combine(root, "did2-head-journal"), root,
                 ExactGenesis, hash ?? GenesisHash, protection ?? provider,
-                new MailboxStorageSecurity(), new MailboxDurabilityBarrier());
+                new MailboxStorageSecurity(), durability ?? new MailboxDurabilityBarrier());
         }
 
-        internal async Task PopulateAsync(FileDeepIdV2DirectoryProtectedHeadStore store, int count)
+        internal async Task PopulateAsync(FileDeepIdV2DirectoryProtectedHeadStore store, int count, bool retainHistory = false)
         {
             var head = await store.RestoreAsync(Authority, default);
+            var retained = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+            if (retainHistory) foreach (var tip in Tips) retained.Add(tip, File.ReadAllBytes(tip));
             var witnesses = Enumerable.Range(0, 2).Select(index =>
                 (IAccountDirectoryAdh1WitnessSigner)new WitnessSigner(Bytes(32, (byte)(0x60 + index)), privateKeys[2 + index])).ToArray();
             for (var index = 1; index < count; index++)
             {
                 var authored = await DeepIdV2DirectoryHeadAuthor.AdvanceAsync(Authority, head,
-                    new DeepIdV2DirectoryHeadMutationRequest([], [], [], (ulong)(1000 + index), (ulong)(2000 + index), 2), witnesses);
+                    new DeepIdV2DirectoryHeadMutationRequest([], [], [], 1001 + head.LogGeneration, 2001 + head.LogGeneration, 2), witnesses);
                 var verified = DeepIdV2DirectoryCatchupVerifier.Verify(Authority, head, [authored.ExactAdh1], default);
                 await store.CommitCatchupAsync(verified, default);
                 head = authored.ProtectedHead;
+                if (retainHistory) foreach (var tip in Tips) retained.TryAdd(tip, File.ReadAllBytes(tip));
+            }
+            // Reinstall genuine CURRENT-format protected test records to model
+            // an uncollected prefix; production observations must validate ALL.
+            foreach (var entry in retained)
+            {
+                File.WriteAllBytes(entry.Key, entry.Value);
+                new MailboxStorageSecurity().SecureFile(entry.Key);
             }
         }
 
