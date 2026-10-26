@@ -239,6 +239,13 @@ interrupted operation-checkpoint recovery retain their full recovery path.
 This removes two redundant authority acquisitions per ordinary custody fence;
 it does not make retained-history work constant or qualify messaging latency.
 
+Constructing the disabled routing graph for readiness does not acquire the
+production Blob clock. An actual admitted Blob operation still resolves the
+required configured clock before touching durable Blob custody. Linux procfs
+remains the production authority; an unsupported host or unavailable clock has
+no fallback. The bounded Windows source check is recorded in
+[the clock dependency checkpoint](testing/s05-blob-clock-health-2026-10-26.md).
+
 Windows MGR1 and operation-custody reads now inspect entry attributes instead
 of resolving every ordinary ancestor's link target. Every read still checks the
 full ancestor chain without a cache, rejects reparse points (including dangling

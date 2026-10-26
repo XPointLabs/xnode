@@ -54,9 +54,12 @@ Four observed failures remain unresolved: three theory cases of
 `ActualProgramHealthCannotSubstituteDisabledOrMissingCompositionForRecovery`
 and `ActualProgramDefaultRoutesHaveCurrentHealthAndNoRetiredMailboxFallback`
 received a text/plain health response instead of the expected JSON. No cause or
-pre-existing classification is established. No assertions were relaxed. Existing
-targeted crash/rollback/revocation/quorum regressions, isolated health diagnosis
-and the required final source gate still need qualification on coherent inputs.
+pre-existing classification is established by that interrupted run. The later
+[bounded Blob clock dependency fix](s05-blob-clock-health-2026-10-26.md) passed
+the same four health cases and three clock lifecycle/guard cases; it does not
+qualify the interrupted regression. No assertions were relaxed. Existing
+targeted crash/rollback/revocation/quorum regressions and the required final
+source gate still need qualification on coherent inputs.
 
 ## Remaining work
 

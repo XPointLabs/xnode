@@ -8,7 +8,7 @@ using XNode.Core.Mailbox;
 namespace XNode;
 
 internal sealed class BlobChunkOnionDispatcher(IServiceProvider services, RouterNodeOptions node,
-    IMailboxStorageSecurity security, IMailboxDurabilityBarrier durability, IOnionMonotonicClock clock) : IDisposable
+    IMailboxStorageSecurity security, IMailboxDurabilityBarrier durability) : IDisposable
 {
     private readonly SemaphoreSlim capacity = new(4, 4);
     private readonly object gate = new();
@@ -53,6 +53,10 @@ internal sealed class BlobChunkOnionDispatcher(IServiceProvider services, Router
             !received.NetworkId.Span.SequenceEqual(request.Descriptor.NetworkId.Span) ||
             !OnionPathContextFactory.BlobNodeIds(authority.Network, request.Descriptor.ObjectId).Any(id => id.Span.SequenceEqual(node.GetRouterId().ToBytes())))
             throw new CryptographicException("Blob network or local role differs from the verified descriptor roster.");
+        // Disabled routing/readiness may construct this dispatcher on a host
+        // that cannot supply production Linux time. Resolve that same required
+        // authority only for an actual admitted Blob operation; no fallback.
+        var clock = services.GetRequiredService<IOnionMonotonicClock>();
         var now = await clock.ReadAsync(ct).ConfigureAwait(false) ?? throw new CryptographicException("Blob monotonic clock unavailable.");
         if (!authority.Freshness.IsCurrentAtMonotonic(now.BootId.Span, now.SampleSeconds)) throw new CryptographicException("Blob directory observation expired.");
         var elapsed = checked(now.SampleSeconds - authority.Freshness.MonotonicSample);
