@@ -103,7 +103,7 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
             throw new InvalidOperationException("Current client work must use this receiver's operation owner.");
         return admission.WithRequestAsync(exactRequest, operation, action, token, operationLedger,
             storeLedger is null ? null : mutations, RequireSigningCustody,
-            ValidatePeerCustodyAsync);
+            ValidatePeerCustodyAsync, ValidatePeerOperationAsync);
     }
 
     private void RequireSigningCustody(CurrentMailboxAdmission.GrantScope scope)
@@ -150,6 +150,25 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
             replay.ValidateCurrentFloors(floors, token);
         using (CurrentMailboxDiagnostics.Measure("peer-native-join"))
             await mutations.ValidateCurrentRecoveryAsync(lease, token, floors).ConfigureAwait(false);
+    }
+
+    private async Task ValidatePeerOperationAsync(IReadOnlyDictionary<string, MailboxCurrentPeerReplayFloor> floors,
+        MailboxCurrentCustodyReadScope readScope, CancellationToken token)
+    {
+        readScope.RequireActive();
+        using (CurrentMailboxDiagnostics.Measure("peer-replay-join"))
+            replay.ValidateCurrentFloors(floors, token);
+        using (CurrentMailboxDiagnostics.Measure("peer-native-join"))
+            await mutations.ValidateCurrentOperationAsync(readScope, token, floors).ConfigureAwait(false);
+        // The ledger performs the final actual check AFTER both diagnostic
+        // scopes have closed. Neither this helper nor the scope can do effects.
+    }
+
+    private async Task CheckOperationCustodyAsync(CurrentMailboxAdmission.GrantScope scope, CancellationToken token)
+    {
+        RequireSigningCustody(scope);
+        _ = await admission.CheckGrantOperationsAsync(operationLedger, scope, token, ValidatePeerOperationAsync).ConfigureAwait(false);
+        RequireSigningCustody(scope);
     }
 
     internal Task<bool> HasStoreCustodyAsync(CurrentMailboxAdmission.GrantScope scope,
@@ -460,7 +479,7 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
         if (recovery is not null) replay.ReconcileUnpairedCurrentPending(prepared, fact);
         var verified = MailboxPeerWireV2Codec.CommitPreparedReservation(prepared, replay, crypto);
         var result = await action(new PeerOperation(this, scope, verified, owned, localRole, fact), ct).ConfigureAwait(false);
-        await RequireOperationCustodyAsync(scope, ct).ConfigureAwait(false);
+        await CheckOperationCustodyAsync(scope, ct).ConfigureAwait(false);
         return result;
     }
 
@@ -481,10 +500,9 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
         internal async ValueTask EnsureCurrentAsync(CancellationToken token)
         {
             ObjectDisposedException.ThrowIf(Volatile.Read(ref owner.disposed) != 0, owner);
-            // InitializeCurrent authenticates a fresh document and checks the
-            // lease both before native reads and after all joins. An extra check
-            // immediately before that same boundary adds no protected evidence.
-            await owner.RequireOperationCustodyAsync(scope, token).ConfigureAwait(false);
+            // One denial-only segment authenticates all actual retained state;
+            // the enclosing ledger owns the actual final callback fence.
+            await owner.CheckOperationCustodyAsync(scope, token).ConfigureAwait(false);
             ObjectDisposedException.ThrowIf(Volatile.Read(ref owner.disposed) != 0, owner);
         }
         internal ValueTask<ReadOnlyMemory<byte>> ApplyAndSignLocalAsync(CancellationToken token) =>

@@ -20,14 +20,25 @@ public sealed partial class MailboxPeerMutationStore
         finally { _gate.Release(); }
     }
 
-    internal async Task ValidateCurrentRecoveryAsync(MailboxCurrentOperationLease lease, CancellationToken token,
-        IReadOnlyDictionary<string, MailboxCurrentPeerReplayFloor>? floors = null)
+    internal Task ValidateCurrentRecoveryAsync(MailboxCurrentOperationLease lease, CancellationToken token,
+        IReadOnlyDictionary<string, MailboxCurrentPeerReplayFloor>? floors = null) =>
+        ValidateCurrentInventoryAsync(lease, null, token, floors);
+
+    internal Task ValidateCurrentOperationAsync(MailboxCurrentCustodyReadScope scope, CancellationToken token,
+        IReadOnlyDictionary<string, MailboxCurrentPeerReplayFloor> floors) =>
+        ValidateCurrentInventoryAsync(null, scope, token, floors);
+
+    private async Task ValidateCurrentInventoryAsync(MailboxCurrentOperationLease? lease,
+        MailboxCurrentCustodyReadScope? readScope, CancellationToken token,
+        IReadOnlyDictionary<string, MailboxCurrentPeerReplayFloor>? floors)
     {
         await _gate.WaitAsync(token).ConfigureAwait(false);
+        var transferGate = false;
         try
         {
             ObjectDisposedException.ThrowIf(_disposed != 0, this);
-            _ = await lease.CheckAsync(token).ConfigureAwait(false);
+            if (readScope is null) _ = await lease!.CheckAsync(token).ConfigureAwait(false);
+            else readScope.RequireActive();
             MailboxNativeRecovery.RequireDirectory(_directory, token);
             var unmatched = new Dictionary<string, PersistedMutation>(StringComparer.Ordinal);
             var records = new Dictionary<string, PersistedMutation>(StringComparer.Ordinal);
@@ -53,7 +64,7 @@ public sealed partial class MailboxPeerMutationStore
             // records while holding this mutation owner, not two inventories
             // separated by a gate release and another authority callback.
             if (floors is not null) ValidateCurrentFloorRecords(floors, records, token);
-            await _blobStore.ValidateCurrentRecoveryAsync(blob =>
+            void RequireMutation(EncryptedMailboxBlob blob)
             {
                 token.ThrowIfCancellationRequested();
                 if (!unmatched.Remove(blob.MailboxId + "/" + blob.BlobId, out var record) || record.State == "tombstoned")
@@ -68,17 +79,35 @@ public sealed partial class MailboxPeerMutationStore
                     envelope.ExpiresAtUnixSeconds != record.ExpiresAtUnixSeconds ||
                     blob.ExpiresAtUnixMs != checked((long)record.ExpiresAtUnixSeconds * 1000))
                     throw new InvalidDataException("Mailbox recovery envelope differs from mutation custody.");
-            }, lease, token).ConfigureAwait(false);
-            var upper = await lease.CheckAsync(token).ConfigureAwait(false);
+            }
+            if (readScope is null)
+                await _blobStore.ValidateCurrentRecoveryAsync(RequireMutation, lease!, token).ConfigureAwait(false);
+            else
+                await _blobStore.ValidateCurrentOperationAsync(RequireMutation, readScope, token).ConfigureAwait(false);
             // Pending prefixes remain available for exact retry; readiness must
             // not complete them or turn uncertainty into a success receipt.
-            if (unmatched.Values.Any(record => record.State == "completed" && record.ExpiresAtUnixSeconds > upper))
-                throw new InvalidDataException("Mailbox recovery live completed Store has lost its blob.");
+            if (readScope is null)
+            {
+                var upper = await lease!.CheckAsync(token).ConfigureAwait(false);
+                if (unmatched.Values.Any(record => record.State == "completed" && record.ExpiresAtUnixSeconds > upper))
+                    throw new InvalidDataException("Mailbox recovery live completed Store has lost its blob.");
+            }
+            else
+            {
+                foreach (var record in unmatched.Values)
+                    if (record.State == "completed") readScope.RequireMissingCompletedBlobExpired(record.ExpiresAtUnixSeconds);
+                readScope.RequireActive(); token.ThrowIfCancellationRequested();
+                // Keep the native inventory owner through the enclosing final
+                // callback, exactly as recovery's post-scan fence does. This
+                // loan ends before any request action or network dispatch.
+                readScope.HoldMutationOwner(_gate);
+                transferGate = true;
+            }
         }
         catch (MailboxAuthenticatedCapabilityException error)
         {
             throw new InvalidDataException("Mailbox recovery envelope framing is corrupt.", error);
         }
-        finally { _gate.Release(); }
+        finally { if (!transferGate) _gate.Release(); }
     }
 }

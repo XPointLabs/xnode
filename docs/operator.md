@@ -229,6 +229,16 @@ before reservation and across the callback/result boundary. Holder/body rejectio
 does not advance the replay time floor. Expiry, cancellation or unavailable
 authority after reservation retains exact Pending custody.
 
+Ordinary client and peer `EnsureCurrent` fences now use one internal custody read
+segment after the operation ledger's actual authenticated load. Client outcomes,
+replay, every retained peer mutation and blob are still read and joined on every
+fence. The segment keeps the mutation owner through one final actual source,
+time and role-floor callback; it closes before request work or peer dispatch.
+Pure native read helpers do not reacquire authority. Startup/readiness and
+interrupted operation-checkpoint recovery retain their full recovery path.
+This removes two redundant authority acquisitions per ordinary custody fence;
+it does not make retained-history work constant or qualify messaging latency.
+
 Windows MGR1 and operation-custody reads now inspect entry attributes instead
 of resolving every ordinary ancestor's link target. Every read still checks the
 full ancestor chain without a cache, rejects reparse points (including dangling

@@ -40,9 +40,13 @@ internal sealed partial class CurrentMailboxAdmission(
         MailboxClientOperationLedger? operationLedger = null, MailboxPeerMutationStore? storeMutations = null,
         Action<GrantScope>? requireSigningCustody = null,
         Func<IReadOnlyDictionary<string, MailboxCurrentPeerReplayFloor>, MailboxCurrentOperationLease,
-            CancellationToken, Task>? validatePeerCustody = null)
+            CancellationToken, Task>? validatePeerCustody = null,
+        Func<IReadOnlyDictionary<string, MailboxCurrentPeerReplayFloor>, MailboxCurrentCustodyReadScope,
+            CancellationToken, Task>? validatePeerOperation = null)
     {
         ArgumentNullException.ThrowIfNull(action);
+        if (validatePeerCustody is not null && validatePeerOperation is null)
+            throw new ArgumentException("Peer recovery requires its denial-only current operation validator.", nameof(validatePeerOperation));
         // The decoder bounds and owns request bytes before any external callback.
         var decoded = MailboxAuthenticatedClientRequestCodec.Decode(exactRequest.Span);
         var owned = MailboxAuthenticatedClientRequestCodec.Encode(decoded);
@@ -106,9 +110,8 @@ internal sealed partial class CurrentMailboxAdmission(
                     requireSigningCustody?.Invoke(scope);
                     var now = operationLedger is null
                         ? await scope.Lease.CheckAsync(checkToken).ConfigureAwait(false)
-                        : await operationLedger.InitializeCurrentAsync(node, scope.Host, scope.Lease, checkToken,
-                            runtime.ValidateCurrentNativeRecovery, validatePeerCustody is null ? null :
-                                (floors, peerToken) => validatePeerCustody(floors, scope.Lease, peerToken)).ConfigureAwait(false);
+                        : await operationLedger.CheckCurrentOperationAsync(node, scope.Host, scope.Lease, checkToken,
+                            runtime.ValidateCurrentNativeRecovery, validatePeerOperation).ConfigureAwait(false);
                     requireSigningCustody?.Invoke(scope);
                     return now;
                 }
@@ -170,6 +173,15 @@ internal sealed partial class CurrentMailboxAdmission(
     {
         if (!ReferenceEquals(scope.Owner, this)) throw new InvalidOperationException("Operation scope differs.");
         return ledger.InitializeCurrentAsync(node, scope.Host, scope.Lease, token, runtime.ValidateCurrentNativeRecovery, validatePeer);
+    }
+
+    internal Task<ulong> CheckGrantOperationsAsync(MailboxClientOperationLedger ledger, GrantScope scope, CancellationToken token,
+        Func<IReadOnlyDictionary<string, MailboxCurrentPeerReplayFloor>, MailboxCurrentCustodyReadScope,
+            CancellationToken, Task> validatePeer)
+    {
+        if (!ReferenceEquals(scope.Owner, this)) throw new InvalidOperationException("Operation scope differs.");
+        return ledger.CheckCurrentOperationAsync(node, scope.Host, scope.Lease, token,
+            runtime.ValidateCurrentNativeRecovery, validatePeer);
     }
 
     internal ValueTask<bool> EnrollNewOperationsAsync(MailboxClientOperationLedger ledger, CancellationToken token = default) =>

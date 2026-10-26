@@ -87,4 +87,34 @@ public sealed partial class MailboxClientOperationLedger
         }
         finally { _gate.Release(); }
     }
+
+    // Ordinary RPC custody fence. Unlike initialization, every validator here
+    // is denial-only and shares this bounded read segment. All actual retained
+    // files and independent roots are still read on EVERY invocation.
+    internal async Task<ulong> CheckCurrentOperationAsync(ReadOnlyMemory<byte> localNode,
+        VerifiedMailboxHostAuthorityV2 host, MailboxCurrentOperationLease lease, CancellationToken token,
+        Action<IReadOnlyDictionary<string, MailboxCurrentClientReplayFloor>, CancellationToken> validateReplay,
+        Func<IReadOnlyDictionary<string, MailboxCurrentPeerReplayFloor>, MailboxCurrentCustodyReadScope,
+            CancellationToken, Task>? validatePeer)
+    {
+        ThrowIfDisposed(); lease.RequireActive();
+        (_currentCustody ?? throw new InvalidOperationException("Current operation custody is required."))
+            .RequireScope(localNode.Span, host.NetworkId.Span);
+        await _gate.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            // Load retains its complete actual root/document authentication,
+            // interrupted-checkpoint closure and post-callback actual reread.
+            // The read segment begins only AFTER that recovery-capable owner.
+            var document = await LoadAsync(token, lease).ConfigureAwait(false);
+            using var scope = new MailboxCurrentCustodyReadScope(lease);
+            validateReplay(document.ClientReplayFloors, token);
+            if (validatePeer is not null)
+                await validatePeer(document.PeerReplayFloors, scope, token).ConfigureAwait(false);
+            // No validator, diagnostic callback or I/O intervenes after this
+            // actual admission check and before returning its exact upper.
+            return await scope.CompleteAsync(token).ConfigureAwait(false);
+        }
+        finally { _gate.Release(); }
+    }
 }

@@ -14,7 +14,7 @@ namespace XNode.IntegrationTests.Runtime;
 
 /// <summary>Actual signed current peer proofs, native replay/blob/mutation
 /// custody and descriptor-key receipt. Not HTTP/TLS, quorum or device evidence.</summary>
-public sealed class CurrentMailboxReplicaReceiverTests
+public sealed partial class CurrentMailboxReplicaReceiverTests
 {
     [Fact]
     [Trait("FixturePreflight", "true")]
@@ -265,6 +265,7 @@ public sealed class CurrentMailboxReplicaReceiverTests
         private DurableMailboxPeerReplayJournal replay = null!;
         private MailboxPeerMutationStore mutations = null!;
         internal MailboxPeerMutationStore Mutations => mutations;
+        internal DurableMailboxPeerReplayJournal PeerReplay => replay;
         private ReplicatedMailboxStore blobs = null!;
         internal CurrentMailboxReplicaReceiver Receiver = null!;
         internal MailboxClientOperationLedger Operations = null!;

@@ -22,13 +22,21 @@ public sealed partial class ReplicatedMailboxStore
     // join. That owner brackets the complete scan/callbacks with live checks
     // before returning any recovered authority. No blob/state mutation, public
     // response or independently usable capability is released by this helper.
-    internal async Task ValidateCurrentRecoveryAsync(Action<EncryptedMailboxBlob> requireMutation,
-        MailboxCurrentOperationLease lease, CancellationToken token)
+    internal Task ValidateCurrentRecoveryAsync(Action<EncryptedMailboxBlob> requireMutation,
+        MailboxCurrentOperationLease lease, CancellationToken token) =>
+        ValidateCurrentInventoryAsync(requireMutation, lease.RequireActive, token);
+
+    internal Task ValidateCurrentOperationAsync(Action<EncryptedMailboxBlob> requireMutation,
+        MailboxCurrentCustodyReadScope scope, CancellationToken token) =>
+        ValidateCurrentInventoryAsync(requireMutation, scope.RequireActive, token);
+
+    private async Task ValidateCurrentInventoryAsync(Action<EncryptedMailboxBlob> requireMutation,
+        Action requireActive, CancellationToken token)
     {
         await _gate.WaitAsync(token).ConfigureAwait(false);
         try
         {
-            lease.RequireActive(); token.ThrowIfCancellationRequested();
+            requireActive(); token.ThrowIfCancellationRequested();
             try { MailboxNativeRecovery.RequireDirectory(_rootDirectory, token); }
             catch (FileNotFoundException) { return; } // new, still-empty blob owner
             catch (DirectoryNotFoundException) { return; }
@@ -65,7 +73,7 @@ public sealed partial class ReplicatedMailboxStore
             }
             if (_storedBlobCount >= 0 && _storedBlobCount != blobs)
                 throw new InvalidDataException("Mailbox recovery blob count differs from native custody.");
-            lease.RequireActive(); token.ThrowIfCancellationRequested();
+            requireActive(); token.ThrowIfCancellationRequested();
         }
         catch (JsonException error)
         {
