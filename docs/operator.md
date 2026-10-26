@@ -2022,6 +2022,14 @@ replacement and commit retain their separate pre-effect fences. Each load still
 rejoins the actual native bytes and independent protected snapshot after callbacks.
 No document, protected root or currentness result is cached by this change.
 
+Fresh Store's denial-only native intent-prefix walk now acquires actual current
+authority at entry and exit, with lease lifetime/cancellation checked per record.
+Every native file/hash/index/PRQ2/intent join and all effect/callback fences remain.
+This removes one source acquisition per scanned record; inventory remains linear
+and Retrieve is unchanged. See the [bounded Store prefix evidence](testing/s05-store-prefix-read-segment-2026-10-26.md)
+for synthetic scaling limits, genuine signed Store/quorum evidence and retained
+failed attempts. It does not establish P2 or latency acceptance.
+
 Contact admission now emits only a closed `IssuedFuture`, `Expired` or
 `InvalidWindow` reason alongside the existing sanitized phase/method diagnostic.
 For a near-future lower bound, it can wait once **before forwarding**, bounded

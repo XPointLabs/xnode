@@ -27,6 +27,7 @@ public sealed partial class MailboxPeerMutationStore
             {
                 foreach (var pair in index)
                 {
+                    lease.RequireActive(); token.ThrowIfCancellationRequested();
                     // Exact recovery allocates nothing and must be able to
                     // reconcile its original intent. Unrelated lost custody
                     // blocks NEW allocation, not that bounded reconciliation.
@@ -49,7 +50,10 @@ public sealed partial class MailboxPeerMutationStore
                     if (!record.MatchesStoreContext(peer, body) || !FixedHex(record.ReplayNonce, peer.ReplayNonce.Span) ||
                         !FixedHex(record.BlobId, peer.PayloadDigest.Span))
                         throw new InvalidDataException("Current Store intent differs from native mutation custody.");
-                    _ = await lease.CheckAsync(token).ConfigureAwait(false);
+                    // This owned walk reads actual native files and performs
+                    // only pure index/request/hash comparisons. Its entry and
+                    // exit acquire actual authority; no effect or external
+                    // callback is exposed between records in this segment.
                 }
             }
             _ = await lease.CheckAsync(token).ConfigureAwait(false);

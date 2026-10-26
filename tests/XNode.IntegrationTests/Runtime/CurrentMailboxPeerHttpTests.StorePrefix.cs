@@ -7,6 +7,34 @@ namespace XNode.IntegrationTests.Runtime;
 public sealed partial class CurrentMailboxPeerHttpTests
 {
     [Fact]
+    public async Task FreshSignedStoreAfterNativePrefixRetainsLocalDurabilityAndTwoReplicaQuorum()
+    {
+        await using var f = await Fixture.CreateAsync(); f.OpenLedger();
+        Assert.Equal(XNode.Core.Mailbox.MailboxPeerQuorumStatus.Durable,
+            (await f.Coordinator.StoreClientAsync(f.ClientStoreFrame())).Status);
+        var observedLocalDurability = false;
+        f.PeerClient.BeforeSend = () =>
+        {
+            Assert.Equal(1, f.AllHttpRequests);
+            Assert.Equal(2, f.Sender.MutationFiles.Length);
+            var floors = JsonNode.Parse(File.ReadAllBytes(f.LedgerFile))!["peerReplayFloors"]!.AsObject();
+            Assert.Equal(2, floors.Count);
+            Assert.All(floors, floor => Assert.True(floor.Value!["mutationCompleted"]!.GetValue<bool>()));
+            observedLocalDurability = true;
+        };
+        CurrentMailboxDiagnostics.WorkSummary? work = null;
+        XNode.Core.Mailbox.MailboxPeerQuorumResult result;
+        using (CurrentMailboxDiagnostics.BeginWork(value => work = value))
+            result = await f.Coordinator.StoreClientAsync(DifferentGrantStore(f));
+        Assert.True(observedLocalDurability);
+        Assert.Equal(XNode.Core.Mailbox.MailboxPeerQuorumStatus.Durable, result.Status);
+        Assert.Equal(2, result.DurableReplicaCount);
+        Assert.Equal(2, f.AllHttpRequests); Assert.Equal(2, f.ExactIntents.Length);
+        Assert.Equal(2, f.Sender.MutationFiles.Length); Assert.Equal(2, f.Recipient.MutationFiles.Length);
+        output.WriteLine($"Genuine signed fresh Store; prior native prefix=1; sender lease checks={work!.LeaseChecks}; prefix-owner actual checks=2 (previous source shape=3). Remaining request fences retained.");
+    }
+
+    [Fact]
     public async Task CurrentStorePrefixFinalNativeRejoinRejectsTamperingBeforeAnyNewReservation()
     {
         await using var f = await Fixture.CreateAsync(); f.OpenLedger();
