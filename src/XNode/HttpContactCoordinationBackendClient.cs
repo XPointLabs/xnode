@@ -65,6 +65,9 @@ internal sealed class HttpContactCoordinationBackendClient
             ContactCoordinationTarget.PublicationCurrent => (DeepIdV2PublicationCurrentWireCodec.MinimumRequestBytes, DeepIdV2PublicationCurrentWireCodec.MaximumRequestBytes,
                 DeepIdV2PublicationCurrentWireCodec.MinimumResponseBytes, DeepIdV2PublicationCurrentWireCodec.MaximumResponseBytes,
                 DeepIdV2PublicationCurrentWireCodec.EndpointPath, DeepIdV2PublicationCurrentWireCodec.RequestMediaType, DeepIdV2PublicationCurrentWireCodec.ResponseMediaType),
+            ContactCoordinationTarget.RouteRecovery => (DeepIdV2ContactRouteRecoveryWireCodec.MinimumRequestBytes, DeepIdV2ContactRouteRecoveryWireCodec.MaximumRequestBytes,
+                DeepIdV2ContactRouteRecoveryWireCodec.MinimumResponseBytes, DeepIdV2ContactRouteRecoveryWireCodec.MaximumResponseBytes,
+                DeepIdV2ContactRouteRecoveryWireCodec.EndpointPath, DeepIdV2ContactRouteRecoveryWireCodec.RequestMediaType, DeepIdV2ContactRouteRecoveryWireCodec.ResponseMediaType),
             _ => throw new ArgumentException("Unknown private coordination target.", nameof(target)),
         };
         if (exactRequest.Length < limits.Item1 || exactRequest.Length > limits.Item2)
@@ -73,6 +76,7 @@ internal sealed class HttpContactCoordinationBackendClient
         ContactRouteAuthorityWireRequest? route = null;
         ContactPublicationAuthorityWireRequest? publication = null;
         PublicationCurrentWireRequest? current = null;
+        DeepIdV2ContactRouteRecoveryWireRequest? recovery = null;
         ContactCoordinationPeerHeaders authentication;
         try
         {
@@ -81,6 +85,7 @@ internal sealed class HttpContactCoordinationBackendClient
                 ContactCoordinationTarget.Route => (route = ContactRouteAuthorityWireCodec.DecodeRequest(body)).NetworkId,
                 ContactCoordinationTarget.Publication => (publication = ContactPublicationAuthorityWireCodec.DecodeRequest(body)).NetworkId,
                 ContactCoordinationTarget.PublicationCurrent => (current = DeepIdV2PublicationCurrentWireCodec.DecodeRequest(body)).NetworkId,
+                ContactCoordinationTarget.RouteRecovery => (recovery = DeepIdV2ContactRouteRecoveryWireCodec.DecodeRequest(body)).NetworkId,
                 _ => throw new ArgumentException("Unknown private coordination target.")
             };
             if (publication is not null && publication.PublicationKind != 2)
@@ -155,6 +160,7 @@ internal sealed class HttpContactCoordinationBackendClient
                 if (route is not null) _ = ContactRouteAuthorityWireCodec.DecodeResponse(route, result);
                 else if (publication is not null) _ = ContactPublicationAuthorityWireCodec.DecodeResponse(publication, result);
                 else if (current is not null) _ = DeepIdV2PublicationCurrentWireCodec.DecodeResponse(current, result);
+                else if (recovery is not null) _ = DeepIdV2ContactRouteRecoveryWireCodec.DecodeResponse(recovery, result);
                 else throw new InvalidDataException("Private coordination target is not canonical.");
                 verifiedNetwork.EnsureCurrent();
                 return result;

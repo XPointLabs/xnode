@@ -16,6 +16,69 @@ namespace XNode.IntegrationTests.Runtime;
 public sealed class ContactCoordinationOnionDispatcherTests
 {
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RouteRecoveryUsesFreshOuterViewTimeAndPairedAuthenticatedTarget(bool corruptResponse)
+    {
+        using var f = await DeepIdV2PublicationAuthorityFixture.CreateAsync(authorContactPublication: true, authorRouteSuccessor: true);
+        await f.RefreshNetworkProofAsync(560, 1_460); f.Sample = 560;
+        var floor = f.Freshness.NextProtectedLkg;
+        var issued = f.Freshness.TrustedLowerUnixSeconds;
+        var request = new DeepIdV2ContactRouteRecoveryWireRequest(DeepIdV2ContactRouteRecoveryMode.ReadRecordedWinner,
+            DeepIdV2PublicationAuthorityFixture.Network, Enumerable.Repeat((byte)0x61, 32).ToArray(),
+            f.RouteSuccessorRequest.DirectoryLookupKey.Span, floor.LogGeneration, floor.CoreHash.Span,
+            f.NetworkContext.ProtectedLkg!.ViewCoreReference.Span[6..], issued, issued + 20,
+            ContactRouteAuthorityWireCodec.EncodeRequest(f.RouteSuccessorRequest), [], Enumerable.Repeat((byte)0x62, 64).ToArray());
+        // This is carrier/HTTP pairing evidence only. The private Registry separately
+        // authenticates the subject signature and expired recorded threshold.
+        Assert.True(BinaryPrimitives.ReadUInt64BigEndian(ContactCodec.Decode("XRA1",
+            request.BaseRequest.ExactXra1.Span).Field(13).Span) < issued);
+        var placement = ContactServicePlacementFactory.Create(f.NetworkContext,
+            ContactServiceRequestKind.CoordinateContact, request.GatewayShard);
+        var id = placement.RankedReplicaNodeIds[0]; var signer = f.Node(id.Span);
+        var node = new RouterNodeOptions { RouterId = Convert.ToHexStringLower(id.Span),
+            Ed25519PrivateKey = Convert.ToHexStringLower(signer.Seed) };
+        var calls = 0;
+        var backend = new HttpContactCoordinationBackendClient(new("https://authority.example/"),
+            DeepIdV2PublicationAuthorityFixture.Network, node, new SystemClock(), () => new Handler(async (message, ct) =>
+            {
+                calls++;
+                Assert.Equal(DeepIdV2ContactRouteRecoveryWireCodec.EndpointPath, message.RequestUri!.AbsolutePath);
+                Assert.Equal(DeepIdV2ContactRouteRecoveryWireCodec.RequestMediaType, message.Content!.Headers.ContentType!.ToString());
+                var body = await message.Content.ReadAsByteArrayAsync(ct);
+                Assert.Equal(request.CanonicalBytes.ToArray(), body);
+                var headers = new ContactCoordinationPeerHeaders(
+                    message.Headers.GetValues(ContactCoordinationPeerAuthentication.NodeHeader).Single(),
+                    message.Headers.GetValues(ContactCoordinationPeerAuthentication.TimestampHeader).Single(),
+                    message.Headers.GetValues(ContactCoordinationPeerAuthentication.NonceHeader).Single(),
+                    message.Headers.GetValues(ContactCoordinationPeerAuthentication.SignatureHeader).Single());
+                Assert.True(ContactCoordinationPeerAuthentication.Verify(headers, request.NetworkId.Span,
+                    ContactCoordinationTarget.RouteRecovery, body, DateTimeOffset.UtcNow));
+                var response = DeepIdV2ContactRouteRecoveryWireCodec.EncodeResponse(request, f.RouteSuccessorResponse);
+                if (corruptResponse) response[24] ^= 1;
+                var result = new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(response) };
+                result.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(DeepIdV2ContactRouteRecoveryWireCodec.ResponseMediaType);
+                return result;
+            }));
+        var dispatcher = new ContactCoordinationOnionDispatcher(f, backend, node, f, new DiagnosticLogger());
+        var exact = ContactCoordinationOnionCodec.EncodeRequest(ContactCoordinationTarget.RouteRecovery, request.CanonicalBytes.Span);
+        var verified = OnionTerminalPayloadVerifierV1.VerifyRequest(f.NetworkContext, OnionOperation.ContactResolve, exact);
+        var result = await dispatcher.DispatchAsync(verified, default);
+        Assert.Equal(!corruptResponse, result.Success);
+        Assert.Equal(1, calls);
+        if (!corruptResponse)
+            Assert.Equal(ContactRouteAuthorityWireCodec.EncodeResponse(f.RouteSuccessorRequest, f.RouteSuccessorResponse),
+                ContactRouteAuthorityWireCodec.EncodeResponse(request.BaseRequest,
+                    DeepIdV2ContactRouteRecoveryWireCodec.DecodeResponse(request,
+                        ContactCoordinationOnionCodec.DecodeResponse(ContactCoordinationOnionCodec.DecodeRequest(exact), result.CanonicalBody.Span))));
+        var wrongView = request.CanonicalBytes.ToArray(); wrongView[128] ^= 1;
+        var foreign = OnionTerminalPayloadVerifierV1.VerifyRequest(f.NetworkContext, OnionOperation.ContactResolve,
+            ContactCoordinationOnionCodec.EncodeRequest(ContactCoordinationTarget.RouteRecovery, wrongView));
+        Assert.Equal(NativeMailboxDispatchCertainty.RejectedBeforeForward, (await dispatcher.DispatchAsync(foreign, default)).Certainty);
+        Assert.Equal(1, calls);
+    }
+
+    [Theory]
     [InlineData(true, 1)]
     [InlineData(false, 1)]
     [InlineData(true, 3)]
