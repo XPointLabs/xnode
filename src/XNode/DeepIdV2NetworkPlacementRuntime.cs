@@ -60,6 +60,7 @@ public sealed class DeepIdV2NetworkPlacementOptions
 
 internal sealed class DeepIdV2NetworkClosureFileSource
 {
+    internal const int MaximumMemoizedFrameBytes = 8 * 1024 * 1024;
     private const int MaximumChainCount = 4_096;
     private const long MaximumClosureBytes = 64L * 1024 * 1024;
     private readonly string[][] paths;
@@ -71,7 +72,9 @@ internal sealed class DeepIdV2NetworkClosureFileSource
     private byte[]? bundleGrammarBytes;
     private byte[][][]? bundleGrammarGroups;
     private byte[]? bundleSourceDigest;
+    private long bundlePhysicalReads;
     internal long BundleGrammarDecodes { get; private set; }
+    internal long BundlePhysicalReads => Interlocked.Read(ref bundlePhysicalReads);
     internal ParsedDid2? Observer { get; }
 
     internal DeepIdV2NetworkClosureFileSource(string bundlePath, string publicObservationDid2Path)
@@ -127,32 +130,32 @@ internal sealed class DeepIdV2NetworkClosureFileSource
         using var measurement = CurrentMailboxDiagnostics.Measure("network-source-files");
         if (publicBundlePath is not null)
         {
-            using var stream = new FileStream(publicBundlePath, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
-            if (stream.Length is < 1 || stream.Length > XPointNetworkClosureWireCodec.MaximumResponseLength)
-                throw new InvalidDataException("The atomic network closure is unbounded.");
-            var bytes = new byte[checked((int)stream.Length)];
-            stream.ReadExactly(bytes);
-            if (stream.ReadByte() != -1) throw new IOException("The network closure changed while reading.");
-            lock (bundleGrammarGate)
+            var bytes = ReadAtomicFrame();
+            try
             {
-                if (bundleGrammarBytes is not null && bundleGrammarGroups is not null && bytes.AsSpan().SequenceEqual(bundleGrammarBytes))
-                    return new(CloneGroups(bundleGrammarGroups), bundleSourceDigest);
-                BundleGrammarDecodes++;
-                var raw = XPointNetworkClosureWireCodec.DecodeResponse(bytes);
-                var framedGroups = new[] {
-                    raw.ExactNetworkPolicyChain, raw.ExactViewChain, raw.ExactHeadChain,
-                    raw.ExactActiveNodeDescriptors, raw.ExactPlacementTopologyChain, raw.ExactMailboxAuthorityChain
-                }.Select(static group => group.Select(static b => b.ToArray()).ToArray()).ToArray();
-                // Resource bound only: larger valid frames keep the full path.
-                if (bytes.Length <= 4 * 1024 * 1024)
+                lock (bundleGrammarGate)
                 {
-                    bundleGrammarBytes = bytes; bundleGrammarGroups = framedGroups;
-                    bundleSourceDigest = DeepIdV2NetworkClosureArtifacts.ComputeSourceDigest(framedGroups);
-                    return new(CloneGroups(framedGroups), bundleSourceDigest);
+                    if (bundleGrammarBytes is not null && bundleGrammarGroups is not null && bytes.AsSpan().SequenceEqual(bundleGrammarBytes))
+                        return new(CloneGroups(bundleGrammarGroups), bundleSourceDigest, this, bytes);
+                    BundleGrammarDecodes++;
+                    var raw = XPointNetworkClosureWireCodec.DecodeResponse(bytes);
+                    var framedGroups = new[] {
+                        raw.ExactNetworkPolicyChain, raw.ExactViewChain, raw.ExactHeadChain,
+                        raw.ExactActiveNodeDescriptors, raw.ExactPlacementTopologyChain, raw.ExactMailboxAuthorityChain
+                    }.Select(static group => group.Select(static b => b.ToArray()).ToArray()).ToArray();
+                    // The memo never owns a caller's disposable complete frame.
+                    // Resource bound only: larger valid frames keep the full path.
+                    if (bytes.Length <= MaximumMemoizedFrameBytes)
+                    {
+                        bundleGrammarBytes = bytes.ToArray(); bundleGrammarGroups = framedGroups;
+                        bundleSourceDigest = DeepIdV2NetworkClosureArtifacts.ComputeSourceDigest(framedGroups);
+                        return new(CloneGroups(framedGroups), bundleSourceDigest, this, bytes);
+                    }
+                    bundleGrammarBytes = null; bundleGrammarGroups = null; bundleSourceDigest = null;
+                    return new(framedGroups, atomicSource: this, atomicFrame: bytes);
                 }
-                bundleGrammarBytes = null; bundleGrammarGroups = null; bundleSourceDigest = null;
-                return new(framedGroups);
             }
+            catch { CryptographicOperations.ZeroMemory(bytes); throw; }
         }
         var groups = new byte[paths.Length][][];
         var budget = new BoundedFileRead.ByteBudget(MaximumClosureBytes,
@@ -177,6 +180,46 @@ internal sealed class DeepIdV2NetworkClosureFileSource
         }
     }
 
+    // Only an exact same-call PUBLIC frame can supply the final grammar.
+    // Null means the fresh atomic read matched it; multi-file sources retain
+    // their complete independent read and the caller's series comparison.
+    internal DeepIdV2NetworkClosureArtifacts? ReadCurrentReadback(DeepIdV2NetworkClosureArtifacts initial)
+    {
+        ArgumentNullException.ThrowIfNull(initial);
+        if (publicBundlePath is null) return ReadCurrent();
+        using (CurrentMailboxDiagnostics.Measure("network-source-files"))
+        {
+            var expected = initial.RequireAtomicFrame(this);
+            var actual = ReadAtomicFrame();
+            try
+            {
+                if (!actual.AsSpan().SequenceEqual(expected))
+                    throw new CryptographicException("DID2 network authority changed before capability release.");
+            }
+            finally { CryptographicOperations.ZeroMemory(actual); }
+        }
+        // A timing listener is a synchronous callback too. Rejoin the private
+        // captured grammar only after that callback and the full raw readback.
+        initial.RequireUnchangedGrammar();
+        return null;
+    }
+
+    private byte[] ReadAtomicFrame()
+    {
+        using var stream = new FileStream(publicBundlePath!, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+        Interlocked.Increment(ref bundlePhysicalReads);
+        if (stream.Length is < 1 || stream.Length > XPointNetworkClosureWireCodec.MaximumResponseLength)
+            throw new InvalidDataException("The atomic network closure is unbounded.");
+        var bytes = new byte[checked((int)stream.Length)];
+        try
+        {
+            stream.ReadExactly(bytes);
+            if (stream.ReadByte() != -1) throw new IOException("The network closure changed while reading.");
+            return bytes;
+        }
+        catch { CryptographicOperations.ZeroMemory(bytes); throw; }
+    }
+
     private static byte[][][] CloneGroups(byte[][][] groups) =>
         groups.Select(static group => group.Select(static bytes => bytes.ToArray()).ToArray()).ToArray();
 
@@ -196,13 +239,16 @@ internal sealed class DeepIdV2NetworkClosureFileSource
     }
 }
 
-internal sealed class DeepIdV2NetworkClosureArtifacts(byte[][][] groups, byte[]? sourceDigest = null) :
+internal sealed class DeepIdV2NetworkClosureArtifacts(byte[][][] groups, byte[]? sourceDigest = null,
+    DeepIdV2NetworkClosureFileSource? atomicSource = null, byte[]? atomicFrame = null) :
     IDisposable
 {
+    private int disposed;
+    private readonly byte[] capturedGrammarDigest = sourceDigest?.ToArray() ?? ComputeSourceDigest(groups);
     // Pure public framing digest, never an authority decision. Atomic-source
     // reuse follows a full fresh file/EOF read and exact byte comparison. Own
     // the digest just like record buffers; callers cannot poison the memo.
-    internal ReadOnlyMemory<byte> SourceDigest { get; } = sourceDigest?.ToArray() ?? ComputeSourceDigest(groups);
+    internal ReadOnlyMemory<byte> SourceDigest => capturedGrammarDigest.ToArray();
 
     internal static byte[] ComputeSourceDigest(byte[][][] groups)
     {
@@ -227,14 +273,32 @@ internal sealed class DeepIdV2NetworkClosureArtifacts(byte[][][] groups, byte[]?
     internal IReadOnlyList<ReadOnlyMemory<byte>> Projections => Copy(groups[4]);
     internal IReadOnlyList<ReadOnlyMemory<byte>> MailboxAuthorities => Copy(groups[5]);
 
+    internal ReadOnlySpan<byte> RequireAtomicFrame(DeepIdV2NetworkClosureFileSource source)
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
+        if (!ReferenceEquals(atomicSource, source) || atomicFrame is null)
+            throw new InvalidOperationException("Atomic readback requires this source's owned initial frame.");
+        return atomicFrame;
+    }
+
+    internal void RequireUnchangedGrammar()
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
+        if (!CryptographicOperations.FixedTimeEquals(capturedGrammarDigest, ComputeSourceDigest(groups)))
+            throw new CryptographicException("DID2 initial network grammar changed before capability release.");
+    }
+
     private static IReadOnlyList<ReadOnlyMemory<byte>> Copy(byte[][] group) =>
         Array.AsReadOnly(group.Select(static exact =>
             (ReadOnlyMemory<byte>)exact).ToArray());
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref disposed, 1) != 0) return;
         foreach (var exact in groups.SelectMany(static group => group))
             CryptographicOperations.ZeroMemory(exact);
+        if (atomicFrame is not null) CryptographicOperations.ZeroMemory(atomicFrame);
+        CryptographicOperations.ZeroMemory(capturedGrammarDigest);
     }
 }
 
@@ -590,14 +654,15 @@ internal sealed class DeepIdV2NetworkPlacementRuntime(
                 throw new IOException("The DID2 network floor changed before capability release.");
             network.EnsureCurrent();
             VerifiedXPointNetworkAuthority retainedAuthority;
-            DeepIdV2NetworkClosureArtifacts retainedSource;
+            DeepIdV2NetworkClosureArtifacts? retainedSource;
             using (timing.Measure(CurrentMailboxNetworkReadTiming.Phase.SourceReadback))
             {
                 using (CurrentMailboxDiagnostics.Measure("authority-lineage"))
                     retainedAuthority = authoritySource.ReadCurrent();
-                retainedSource = artifacts.ReadCurrent();
+                retainedSource = artifacts.ReadCurrentReadback(exact);
             }
-            using var retainedArtifacts = retainedSource;
+            using var ownedReadback = retainedSource;
+            var retainedArtifacts = retainedSource ?? exact;
             if (!CryptographicOperations.FixedTimeEquals(authority.AuthorityCoreReference.Span, retainedAuthority.AuthorityCoreReference.Span) ||
                 !CryptographicOperations.FixedTimeEquals(authority.Dts1PolicyCoreReference.Span, retainedAuthority.Dts1PolicyCoreReference.Span) ||
                 !CryptographicOperations.FixedTimeEquals(authority.TimeSourcePolicyHash.Span, retainedAuthority.TimeSourcePolicyHash.Span) ||

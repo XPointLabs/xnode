@@ -13,6 +13,145 @@ namespace XNode.IntegrationTests.Runtime;
 /// <summary>Actual file source/floor/runtime with real signed proof; no HTTP or device claim.</summary>
 public sealed class DeepIdV2NetworkPlacementRuntimeTests
 {
+    [Theory]
+    [InlineData("small")]
+    [InlineData("between")]
+    [InlineData("above")]
+    public async Task AtomicSameCallReadbackRereadsCompleteFrameWithoutDecodingAgain(string size)
+    {
+        using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var files = new Assets(signed);
+        var source = files.ClosureSource(atomic: true);
+        if (size == "between")
+            Assert.True(files.InstallFramingOnlyBundleLargerThan(5 * 1024 * 1024) <= DeepIdV2NetworkClosureFileSource.MaximumMemoizedFrameBytes);
+        else if (size == "above")
+            files.InstallFramingOnlyBundleLargerThan(DeepIdV2NetworkClosureFileSource.MaximumMemoizedFrameBytes);
+        var initialDecodes = size == "small" ? 0 : 1;
+        var aboveMemoCap = size == "above";
+        var decodesBefore = source.BundleGrammarDecodes;
+        using var first = source.ReadCurrent();
+        Assert.Equal(decodesBefore + initialDecodes, source.BundleGrammarDecodes);
+        var readsBefore = source.BundlePhysicalReads;
+        Assert.Null(source.ReadCurrentReadback(first));
+        Assert.Equal(readsBefore + 1, source.BundlePhysicalReads);
+        Assert.Equal(decodesBefore + initialDecodes, source.BundleGrammarDecodes);
+
+        var expected = first.MailboxAuthorities[0].ToArray();
+        first.Dispose();
+        Assert.Throws<ObjectDisposedException>(() => source.ReadCurrentReadback(first));
+        var nextReadsBefore = source.BundlePhysicalReads;
+        using var next = source.ReadCurrent();
+        Assert.Equal(expected, next.MailboxAuthorities[0].ToArray());
+        Assert.Null(source.ReadCurrentReadback(next));
+        Assert.Equal(nextReadsBefore + 2, source.BundlePhysicalReads);
+        // Above the memo cap a NEW call still decodes its own actual frame.
+        Assert.Equal(decodesBefore + initialDecodes + (aboveMemoCap ? 1 : 0), source.BundleGrammarDecodes);
+        var foreign = files.ClosureSource();
+        using var other = foreign.ReadCurrent();
+        Assert.Throws<InvalidOperationException>(() => source.ReadCurrentReadback(other));
+    }
+
+    [Theory]
+    [InlineData("policy")]
+    [InlineData("view")]
+    [InlineData("node")]
+    [InlineData("issuer")]
+    public async Task AtomicReadbackRejectsMutatedDetachedGrammarWithUnchangedPhysicalFrame(string group)
+    {
+        using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var files = new Assets(signed);
+        var source = files.ClosureSource(atomic: true);
+        using var first = source.ReadCurrent();
+        var record = group switch
+        {
+            "policy" => first.Policies[0],
+            "view" => first.Views[0],
+            "node" => first.Nodes[0],
+            "issuer" => first.MailboxAuthorities[0],
+            _ => throw new ArgumentOutOfRangeException(nameof(group))
+        };
+        System.Runtime.InteropServices.MemoryMarshal.AsMemory(record).Span[^1] ^= 1;
+        // The public digest is also an owned copy, never the private guard.
+        System.Runtime.InteropServices.MemoryMarshal.AsMemory(first.SourceDigest).Span[0] ^= 1;
+        var readsBefore = source.BundlePhysicalReads;
+        var error = Assert.Throws<CryptographicException>(() => source.ReadCurrentReadback(first));
+        Assert.Contains("initial network grammar changed", error.Message);
+        Assert.Equal(readsBefore + 1, source.BundlePhysicalReads);
+        using var next = source.ReadCurrent();
+        Assert.Null(source.ReadCurrentReadback(next));
+    }
+
+    [Fact]
+    public async Task AtomicReadbackRejectsGrammarMutationFromSourceTimingCompletion()
+    {
+        using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var files = new Assets(signed);
+        var source = files.ClosureSource(atomic: true);
+        using var first = source.ReadCurrent();
+        using var listener = new System.Diagnostics.Metrics.MeterListener();
+        var readbackThread = Environment.CurrentManagedThreadId;
+        var mutations = 0;
+        listener.InstrumentPublished = (instrument, observer) =>
+        {
+            if (instrument.Meter.Name == CurrentMailboxDiagnostics.MeterName && instrument.Name == "phase.duration")
+                observer.EnableMeasurementEvents(instrument);
+        };
+        listener.SetMeasurementEventCallback<double>((_, _, tags, _) =>
+        {
+            if (Environment.CurrentManagedThreadId != readbackThread) return;
+            foreach (var tag in tags)
+                if (tag.Key == "phase" && Equals(tag.Value, "network-source-files"))
+                {
+                    System.Runtime.InteropServices.MemoryMarshal.AsMemory(first.Views[0]).Span[^1] ^= 1;
+                    mutations++;
+                }
+        });
+        listener.Start();
+        var error = Assert.Throws<CryptographicException>(() => source.ReadCurrentReadback(first));
+        Assert.Contains("initial network grammar changed", error.Message);
+        Assert.Equal(1, mutations);
+    }
+
+    [Theory]
+    [InlineData("replacement")]
+    [InlineData("truncated")]
+    [InlineData("missing")]
+    [InlineData("issuer")]
+    [InlineData("successor")]
+    public async Task AtomicFinalReadbackRejectsActualFileChangeDuringFloorCommit(string change)
+    {
+        using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var files = new Assets(signed);
+        var closure = files.ClosureSource(atomic: true);
+        var successor = change == "successor" ? await signed.AuthorPublicNetworkSuccessorAsync() : null;
+        var changes = 0;
+        using var floor = files.OpenFloor(() =>
+        {
+            if (++changes != 1) return;
+            if (change == "successor")
+                files.InstallSuccessor(successor!);
+            else files.ChangeAtomicBundle(change);
+        });
+        var source = files.Source(floor, closureSource: closure);
+        var readsBefore = closure.BundlePhysicalReads;
+        var decodesBefore = closure.BundleGrammarDecodes;
+        if (change == "missing")
+            await Assert.ThrowsAsync<FileNotFoundException>(async () => await RefreshAsync(source, signed));
+        else
+        {
+            var error = await Assert.ThrowsAsync<CryptographicException>(async () => await RefreshAsync(source, signed));
+            Assert.Contains("changed before capability release", error.Message);
+        }
+        Assert.Equal(1, changes);
+        Assert.Equal(readsBefore + (change == "missing" ? 1 : 2), closure.BundlePhysicalReads);
+        Assert.Equal(decodesBefore, closure.BundleGrammarDecodes);
+        // The first independently valid NET floor committed, but no capability
+        // or observation may escape the final actual-file substitution fence.
+        Assert.NotNull(await floor.ReadAsync(default));
+        await Assert.ThrowsAsync<DeepIdV2NetworkObservationMissingException>(async () =>
+            await source.ReadPublicationAuthorityAsync(default));
+    }
+
     [Fact]
     public async Task AtomicGrammarMemoRereadsActualBytesAndReturnsIndependentBuffers()
     {
@@ -620,13 +759,44 @@ public sealed class DeepIdV2NetworkPlacementRuntimeTests
             var path = Path.Combine(root, "network.ncp2"); var bytes = File.ReadAllBytes(path);
             bytes[0] ^= 1; File.WriteAllBytes(path, bytes);
         }
+        internal int InstallFramingOnlyBundleLargerThan(int lowerBound)
+        {
+            // Component framing fixture only: every record is genuinely signed,
+            // but repeated records do not claim a verified authority lineage.
+            ReadOnlyMemory<byte>[] originals = [signed.ExactAuthority, signed.ExactTimePolicy,
+                signed.Policy, signed.View, signed.Head, signed.Descriptors[0], signed.Projection, signed.MailboxAuthority];
+            var count = checked(lowerBound / originals.Sum(static exact => exact.Length) + 1);
+            Assert.InRange(count, 1, XPointNetworkClosureWireCodec.MaximumChainCount);
+            var records = originals.Select(exact => Enumerable.Repeat(exact, count).ToArray()).ToArray();
+            var frame = XPointNetworkClosureWireCodec.EncodeResponse(DeepIdV2PublicationAuthorityFixture.Network,
+                records[0], records[1], records[2], records[3], records[4], records[5], records[6], records[7]);
+            Assert.True(frame.Length > lowerBound);
+            Write("network.ncp2", frame);
+            return frame.Length;
+        }
+        internal void ChangeAtomicBundle(string change)
+        {
+            var path = Path.Combine(root, "network.ncp2");
+            switch (change)
+            {
+                case "replacement": CorruptBundleMagic(); break;
+                case "truncated":
+                    var exact = File.ReadAllBytes(path);
+                    File.WriteAllBytes(path, exact[..^1]);
+                    break;
+                case "missing": File.Delete(path); break;
+                case "issuer": CorruptIssuerSignature(); break;
+                default: throw new ArgumentOutOfRangeException(nameof(change));
+            }
+        }
         internal FileDeepIdV2NetworkFloorStore OpenFloor(Action? afterFloorWrite = null) => new(Path.Combine(root, "node-state"),
             protector, new MailboxStorageSecurity(), new ObservedDurability(afterFloorWrite));
         internal DeepIdV2NetworkPlacementRuntime Source(FileDeepIdV2NetworkFloorStore floor,
             bool observer = true, bool atomic = false, bool duplicateIssuer = false, TimeProvider? resourceTimeProvider = null,
-            IDeepIdV2CurrentDirectoryProofSource? proofSource = null)
+            IDeepIdV2CurrentDirectoryProofSource? proofSource = null,
+            DeepIdV2NetworkClosureFileSource? closureSource = null)
         {
-            var source = ClosureSource(observer, atomic, duplicateIssuer);
+            var source = closureSource ?? ClosureSource(observer, atomic, duplicateIssuer);
             return new(proofSource ?? signed, new(signed.GenesisPin, [authority], [time]), source, floor, signed, resourceTimeProvider);
         }
         internal DeepIdV2NetworkClosureFileSource ClosureSource(bool observer = true, bool atomic = false, bool duplicateIssuer = false)

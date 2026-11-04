@@ -2099,12 +2099,23 @@ clock failure, stopped sources and cancellation do not become positive results.
 
 Repeated native checks still read actual public bundle bytes/EOF and authenticate
 every actual protected head file and its independent anchor/index. Only pure
-grammar work is reused: one identical public bundle up to4MiB, and exact public
+grammar work is reused: one identical public bundle up to8MiB, and exact public
 head bytes already in the bounded signed-head memo. Changed bytes take the full
 parser/verification path; larger valid bundles keep the original uncached path.
 Bundle consumers own independent buffers, so disposal cannot alter the memo or
 another read. No remembered file metadata, native floor or currentness decision
 replaces these checks.
+
+The bundle limit bounds parser memory, not accepted authority: one retained
+frame and its six copied record groups use at most16MiB of public payload plus
+array/object overhead. The separate PMT/PMA and signed-head memo limits above
+remain unchanged. Within one call, the final physical source read compares the
+complete frame byte for byte against a privately owned initial frame. On an
+exact match it reuses the initial grammar, then verifies its private digest
+after the source-read diagnostic callback. This avoids a second framing/copy
+pass while still rejecting changed files or mutated in-memory record buffers.
+Authority, proof, protected floor, issuer, currentness and revocation checks
+remain independent; no changed observation is accepted inside an effect.
 
 ### Replica assignment and local admission (2026-10-22)
 
