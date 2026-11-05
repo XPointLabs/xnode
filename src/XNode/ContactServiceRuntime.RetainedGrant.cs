@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Security.Cryptography;
+using System.Diagnostics;
 using Deep.Protocol.ContactV1;
 using Deep.Protocol.ContactV2;
 using Deep.Protocol.DeepExtension.MailboxCapabilities;
@@ -12,7 +13,9 @@ internal sealed partial class ProductionContactServiceOpaqueDispatcher
 {
     // Retrieve uses original protected custody from the outset, not a fallback
     // after a current-route miss. Deposit continues its current-only branch.
-    private ValueTask<ReadOnlyMemory<byte>> DispatchRetainedRetrieveGrantAsync(
+    private long retainedGrantWorkTimestamp;
+
+    private async ValueTask<ReadOnlyMemory<byte>> DispatchRetainedRetrieveGrantAsync(
         ContactServicePlacementCapability placement, AuthenticatedRemoteContactServiceReplica remote,
         ContactRecord request, CancellationToken ct)
     {
@@ -21,17 +24,29 @@ internal sealed partial class ProductionContactServiceOpaqueDispatcher
         var exact = request.CanonicalBytes.ToArray();
         // Keep the local protected revision and actual current source checked
         // around the complete two-store -> private issuer -> response boundary.
-        return owner.WithProtectedReadAsync<ReadOnlyMemory<byte>>(placement, exact, async (first, token) =>
+        return await owner.WithProtectedReadAsync<ReadOnlyMemory<byte>>(placement, exact, async (first, token) =>
         {
-            var second = await remote.ReadRetainedMailboxGrantRouteAsync(token).ConfigureAwait(false);
+            RetainedMailboxRouteLookup second;
+            using (CurrentMailboxDiagnostics.Measure("retained-remote-read"))
+                second = await remote.ReadRetainedMailboxGrantRouteAsync(token).ConfigureAwait(false);
             RequireSameRetainedFacts(first, second);
             var tuple = MailboxRetainedReadEvidenceAuthentication.CreateTuple(SHA256.HashData(exact),
                 request.Field(3).Span, Deep.Protocol.ContactV1.MailboxGrantCapabilityDigest.Compute(
                     request.Field(4).Span, Deep.Protocol.DeepExtension.MailboxCapabilities.MailboxCapabilityDomain.Retrieve),
                 SHA256.HashData(first.ExactRouteClosure.Span), first.ReadUntilUnixSeconds);
             var receipt = new ContactServiceReplicaReceiptRequest(ContactServiceReceiptKind.MailboxRetainedRead, tuple);
-            var localTask = owner.IssueAsync(placement, exact, receipt, token).AsTask();
-            var remoteTask = remote.IssueAsync(receipt, token).AsTask();
+            async Task<ContactServiceReplicaReceipt> LocalReceiptAsync()
+            {
+                using var phase = CurrentMailboxDiagnostics.Measure("retained-local-receipt");
+                return await owner.IssueAsync(placement, exact, receipt, token).ConfigureAwait(false);
+            }
+            async Task<ContactServiceReplicaReceipt> RemoteReceiptAsync()
+            {
+                using var phase = CurrentMailboxDiagnostics.Measure("retained-remote-receipt");
+                return await remote.IssueAsync(receipt, token).ConfigureAwait(false);
+            }
+            var localTask = LocalReceiptAsync();
+            var remoteTask = RemoteReceiptAsync();
             await Task.WhenAll(localTask, remoteTask).ConfigureAwait(false);
             var evidence = new[] {
                 VerifyRetainedReceipt(await localTask.ConfigureAwait(false), node.GetRouterId().ToBytes()),
@@ -47,13 +62,17 @@ internal sealed partial class ProductionContactServiceOpaqueDispatcher
                     throw new ContactServiceReceiptAuthorityException("Invalid independently protected retained evidence.");
                 return new(actual.ReplicaId.ToArray(), actual.Signature.ToArray());
             }
-            var responseBytes = await mailboxGrantAuthority.AuthorizeAsync(new(
+            ReadOnlyMemory<byte> responseBytes;
+            using (CurrentMailboxDiagnostics.Measure("retained-issuer"))
+            responseBytes = await mailboxGrantAuthority.AuthorizeAsync(new(
                 placement.VerifiedPlacement, exact, MailboxGrantAcquisitionResultCode.Success,
                 first.ExactRouteClosure, 1, 0, BinaryPrimitives.ReadUInt64BigEndian(request.Field(10).Span), evidence,
                 MailboxGrantAuthorityEvidenceKind.RetainedRead, first.ReadUntilUnixSeconds), token).ConfigureAwait(false);
             // A remote state/source loss after attestation cannot be reported as
             // successful current custody by the forwarding node.
-            RequireSameRetainedFacts(first, await remote.ReadRetainedMailboxGrantRouteAsync(token).ConfigureAwait(false));
+            using (CurrentMailboxDiagnostics.Measure("retained-remote-read"))
+                RequireSameRetainedFacts(first, await remote.ReadRetainedMailboxGrantRouteAsync(token).ConfigureAwait(false));
+            using var responsePhase = CurrentMailboxDiagnostics.Measure("retained-response");
             var response = ContactCodec.Decode(ProtocolMagic.XMC2, responseBytes.Span);
             ContactCodec.ValidateMailboxGrantResultBinding(request, response);
             ContactCodec.ValidateMailboxGrantResultRouteBinding(response, ContactRouteClosureCodec.Decode(first.ExactRouteClosure.Span));
@@ -62,7 +81,26 @@ internal sealed partial class ProductionContactServiceOpaqueDispatcher
                     Deep.Protocol.DeepExtension.MailboxCapabilities.MailboxCapabilityDomain.Retrieve)
                 throw new ContactServiceUnavailableException("Retained Retrieve requires its exact successful role grant.");
             token.ThrowIfCancellationRequested(); return response.CanonicalBytes.ToArray();
-        }, ct);
+        }, ct).ConfigureAwait(false);
+    }
+
+    private void ReportRetainedGrantWork(CurrentMailboxDiagnostics.WorkSummary work)
+    {
+        try
+        {
+            if (publicationLogger?.IsEnabled(LogLevel.Warning) != true || work.TotalMs < 1000) return;
+            var now = Stopwatch.GetTimestamp(); var previous = Volatile.Read(ref retainedGrantWorkTimestamp);
+            if (previous != 0 && Stopwatch.GetElapsedTime(previous, now) < TimeSpan.FromSeconds(10) ||
+                Interlocked.CompareExchange(ref retainedGrantWorkTimestamp, now, previous) != previous) return;
+            // Fixed per-call resource scalars only. LocalScope is inclusive and
+            // the two receipt phases overlap; these values must not be summed.
+            publicationLogger.LogWarning("Retained Retrieve issuance work: totalMs={TotalMs}; gateMs={GateMs}; sourceCalls={SourceCalls}; sourceMs={SourceMs}; hostMs={HostMs}; requestMs={RequestMs}; placementMs={PlacementMs}; localScopeMs={LocalScopeMs}; remoteReadMs={RemoteReadMs}; localReceiptMs={LocalReceiptMs}; remoteReceiptMs={RemoteReceiptMs}; issuerMs={IssuerMs}; responseMs={ResponseMs}.",
+                work.TotalMs, work.RetainedGateMs, work.RetainedSourceCalls, work.RetainedSourceMs, work.RetainedHostMs,
+                work.RetainedRequestMs, work.RetainedPlacementMs, work.RetainedLocalScopeMs,
+                work.RetainedRemoteReadMs, work.RetainedLocalReceiptMs, work.RetainedRemoteReceiptMs,
+                work.RetainedIssuerMs, work.RetainedResponseMs);
+        }
+        catch { /* Timing cannot change original issuer custody, outcome or cancellation. */ }
     }
 
     private static void RequireSameRetainedFacts(RetainedMailboxRouteLookup first, RetainedMailboxRouteLookup second)

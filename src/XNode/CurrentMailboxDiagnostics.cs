@@ -38,17 +38,35 @@ internal static class CurrentMailboxDiagnostics
         long HostMs, long GrantMs, long NativeJoinMs, long RevocationMs, long OperationMs,
         long LineageMs, long SourceFilesMs, long FloorMs, long ProofObserveMs, long NetworkVerifyMs,
         long NetworkGateMs, long MailboxPolicyMs, long OriginWaits, long OriginWaitMs,
-        long AdmissionMs, long IntentMs, long LocalMs, long RemoteMs, long CompleteMs);
+        long AdmissionMs, long IntentMs, long LocalMs, long RemoteMs, long CompleteMs)
+    {
+        internal long TotalMs { get; init; }
+        internal long RetainedGateMs { get; init; }
+        internal long RetainedSourceCalls { get; init; }
+        internal long RetainedSourceMs { get; init; }
+        internal long RetainedHostMs { get; init; }
+        internal long RetainedRequestMs { get; init; }
+        internal long RetainedPlacementMs { get; init; }
+        internal long RetainedLocalScopeMs { get; init; }
+        internal long RetainedRemoteReadMs { get; init; }
+        internal long RetainedLocalReceiptMs { get; init; }
+        internal long RetainedRemoteReceiptMs { get; init; }
+        internal long RetainedIssuerMs { get; init; }
+        internal long RetainedResponseMs { get; init; }
+    }
 
     private sealed class Work : IDisposable
     {
         private readonly Work? parent = CurrentWork.Value;
         private readonly Action<WorkSummary> report;
         private readonly object gate = new();
+        private readonly long started = Stopwatch.GetTimestamp();
         private long checks, lease, authority, host, grant, native, revocation, operation;
         private long lineage, sourceFiles, floor, proofObserve, networkVerify;
         private long networkGate, mailboxPolicy, originWaits, originWait;
         private long admission, intent, local, remote, complete;
+        private long retainedGate, retainedSourceCalls, retainedSource, retainedHost, retainedRequest, retainedPlacement;
+        private long retainedLocalScope, retainedRemoteRead, retainedLocalReceipt, retainedRemoteReceipt, retainedIssuer, retainedResponse;
         private bool disposed;
         internal Work(Action<WorkSummary> report) { this.report = report; CurrentWork.Value = this; }
         internal void Record(string phase, double ms)
@@ -74,6 +92,17 @@ internal static class CurrentMailboxDiagnostics
                     case "native-local": local += elapsed; break;
                     case "native-remote": remote += elapsed; break;
                     case "native-complete": complete += elapsed; break;
+                    case "retained-gate": retainedGate += elapsed; break;
+                    case "retained-source": retainedSourceCalls++; retainedSource += elapsed; break;
+                    case "retained-host": retainedHost += elapsed; break;
+                    case "retained-request": retainedRequest += elapsed; break;
+                    case "retained-placement": retainedPlacement += elapsed; break;
+                    case "retained-local-scope": retainedLocalScope += elapsed; break;
+                    case "retained-remote-read": retainedRemoteRead += elapsed; break;
+                    case "retained-local-receipt": retainedLocalReceipt += elapsed; break;
+                    case "retained-remote-receipt": retainedRemoteReceipt += elapsed; break;
+                    case "retained-issuer": retainedIssuer += elapsed; break;
+                    case "retained-response": retainedResponse += elapsed; break;
                     case "host-verify": host += elapsed; break;
                     case "grant-context-check": grant += elapsed; break;
                     case "peer-replay-join" or "peer-native-join": native += elapsed; break;
@@ -92,7 +121,16 @@ internal static class CurrentMailboxDiagnostics
                 disposed = true;
                 result = new(checks, lease, authority, host, grant, native, revocation, operation,
                     lineage, sourceFiles, floor, proofObserve, networkVerify, networkGate, mailboxPolicy,
-                    originWaits, originWait, admission, intent, local, remote, complete);
+                    originWaits, originWait, admission, intent, local, remote, complete)
+                {
+                    TotalMs = Math.Clamp((long)Stopwatch.GetElapsedTime(started).TotalMilliseconds, 0, 3600000),
+                    RetainedGateMs = retainedGate, RetainedSourceCalls = retainedSourceCalls, RetainedSourceMs = retainedSource,
+                    RetainedHostMs = retainedHost, RetainedRequestMs = retainedRequest,
+                    RetainedPlacementMs = retainedPlacement, RetainedLocalScopeMs = retainedLocalScope,
+                    RetainedRemoteReadMs = retainedRemoteRead, RetainedLocalReceiptMs = retainedLocalReceipt,
+                    RetainedRemoteReceiptMs = retainedRemoteReceipt, RetainedIssuerMs = retainedIssuer,
+                    RetainedResponseMs = retainedResponse
+                };
             }
             if (ReferenceEquals(CurrentWork.Value, this)) CurrentWork.Value = parent;
             try { report(result); } catch { /* Timing never replaces the original outcome. */ }
@@ -189,11 +227,17 @@ internal static class CurrentMailboxDiagnostics
     private sealed class Measurement(string phase, Work? work) : IDisposable
     {
         private readonly long started = Stopwatch.GetTimestamp();
+        private int disposed;
         public void Dispose()
         {
-            var elapsed = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
-            work?.Record(phase, elapsed);
-            if (Duration.Enabled) Duration.Record(elapsed, new KeyValuePair<string, object?>("phase", phase));
+            if (Interlocked.Exchange(ref disposed, 1) != 0) return;
+            try
+            {
+                var elapsed = Math.Clamp(Stopwatch.GetElapsedTime(started).TotalMilliseconds, 0, 3600000);
+                work?.Record(phase, elapsed);
+                if (Duration.Enabled) Duration.Record(elapsed, new KeyValuePair<string, object?>("phase", phase));
+            }
+            catch { /* An optional timing observer cannot replace the original outcome. */ }
         }
     }
 }

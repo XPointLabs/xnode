@@ -59,28 +59,43 @@ internal sealed class ProtectedRetainedMailboxReadAuthority(
         ArgumentNullException.ThrowIfNull(placement); ArgumentNullException.ThrowIfNull(action);
         ct.ThrowIfCancellationRequested();
         var exact = ContactReplicaPayloadCodec.DecodeRetainedMailboxGrantRequest(exactXmg2.Span);
-        var snapshot = await source.ReadPublicationAuthorityAsync(ct).ConfigureAwait(false);
-        var host = await MailboxHostAuthorityV2Verifier.VerifyPolicyAsync(snapshot.Network, snapshot.Authority,
-            snapshot.MailboxAuthority, snapshot.TrustedTime, ct).ConfigureAwait(false);
-        var request = await host.VerifyRetainedReadRequestAsync(exact, ct).ConfigureAwait(false);
+        DeepIdV2ContactStoreAuthority snapshot;
+        using (CurrentMailboxDiagnostics.Measure("retained-source"))
+            snapshot = await source.ReadPublicationAuthorityAsync(ct).ConfigureAwait(false);
+        VerifiedMailboxHostAuthorityV2 host;
+        using (CurrentMailboxDiagnostics.Measure("retained-host"))
+            host = await MailboxHostAuthorityV2Verifier.VerifyPolicyAsync(snapshot.Network, snapshot.Authority,
+                snapshot.MailboxAuthority, snapshot.TrustedTime, ct).ConfigureAwait(false);
+        VerifiedMailboxRetainedReadRequestV2 request;
+        using (CurrentMailboxDiagnostics.Measure("retained-request"))
+            request = await host.VerifyRetainedReadRequestAsync(exact, ct).ConfigureAwait(false);
         var history = OnionNetworkProtectedHistoryCodec.Encode(snapshot.Network);
-        await RequirePlacementAsync(snapshot, request).ConfigureAwait(false);
+        using (CurrentMailboxDiagnostics.Measure("retained-placement"))
+            await RequirePlacementAsync(snapshot, request).ConfigureAwait(false);
 
         async ValueTask RequireSourceAsync()
         {
             ct.ThrowIfCancellationRequested();
-            var current = await source.ReadPublicationAuthorityAsync(ct).ConfigureAwait(false);
+            DeepIdV2ContactStoreAuthority current;
+            using (CurrentMailboxDiagnostics.Measure("retained-source"))
+                current = await source.ReadPublicationAuthorityAsync(ct).ConfigureAwait(false);
             if (!Fixed(OnionNetworkProtectedHistoryCodec.Encode(current.Network), history) ||
                 !Fixed(current.Authority.AuthorityCoreReference.Span, snapshot.Authority.AuthorityCoreReference.Span) ||
                 !Fixed(current.Authority.Dts1PolicyCoreReference.Span, snapshot.Authority.Dts1PolicyCoreReference.Span) ||
                 !Fixed(current.Authority.TimeSourcePolicyHash.Span, snapshot.Authority.TimeSourcePolicyHash.Span) ||
                 !Fixed(current.MailboxAuthority.ExactPma2.Span, snapshot.MailboxAuthority.ExactPma2.Span))
                 throw new CryptographicException("Actual retained-read authority changed during the operation.");
-            var currentHost = await MailboxHostAuthorityV2Verifier.VerifyPolicyAsync(current.Network, current.Authority,
-                current.MailboxAuthority, current.TrustedTime, ct).ConfigureAwait(false);
-            var currentRequest = await currentHost.VerifyRetainedReadRequestAsync(exact, ct).ConfigureAwait(false);
-            await RequirePlacementAsync(current, currentRequest).ConfigureAwait(false);
-            await request.EnsureCurrentAsync(ct).ConfigureAwait(false);
+            VerifiedMailboxHostAuthorityV2 currentHost;
+            using (CurrentMailboxDiagnostics.Measure("retained-host"))
+                currentHost = await MailboxHostAuthorityV2Verifier.VerifyPolicyAsync(current.Network, current.Authority,
+                    current.MailboxAuthority, current.TrustedTime, ct).ConfigureAwait(false);
+            VerifiedMailboxRetainedReadRequestV2 currentRequest;
+            using (CurrentMailboxDiagnostics.Measure("retained-request"))
+                currentRequest = await currentHost.VerifyRetainedReadRequestAsync(exact, ct).ConfigureAwait(false);
+            using (CurrentMailboxDiagnostics.Measure("retained-placement"))
+                await RequirePlacementAsync(current, currentRequest).ConfigureAwait(false);
+            using (CurrentMailboxDiagnostics.Measure("retained-request"))
+                await request.EnsureCurrentAsync(ct).ConfigureAwait(false);
         }
 
         async ValueTask RequirePlacementAsync(DeepIdV2ContactStoreAuthority current,
@@ -97,6 +112,9 @@ internal sealed class ProtectedRetainedMailboxReadAuthority(
             ct.ThrowIfCancellationRequested();
         }
 
+        // Inclusive native scope: source checks and the supplied action remain
+        // inside the same original protected revision/read-back boundary.
+        using (CurrentMailboxDiagnostics.Measure("retained-local-scope"))
         return await local.WithProtectedRetainedMailboxRouteAsync(request, async (facts, token) =>
         {
             await RequireSourceAsync().ConfigureAwait(false);

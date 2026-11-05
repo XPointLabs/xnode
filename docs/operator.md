@@ -1,5 +1,18 @@
 # Operator Guide
 
+### Retained Retrieve issuance timing
+
+Slow retained Retrieve grant calls report one closed numeric `Retained Retrieve
+issuance work` summary, throttled to one per ten resource seconds. It separates
+the local execution gate, current source reads, host/request/placement checks,
+protected local scope, remote readbacks, parallel replica receipts, private issuer
+and final response verification. The same fixed phases use the existing
+`XPoint.XNode.CurrentMailbox` `phase.duration` meter with `retained-*` labels.
+The local scope is inclusive and replica receipt phases overlap; do not add these
+durations or treat them as CPU time. No request identity, correlation tag,
+payload, authority time or exception text is recorded. Observation never changes
+original custody, currentness, cancellation or dispatch outcome.
+
 ## ONION peer HTTP/2 resources
 
 `HttpPrivacyPeerClient` owns a bounded, draining connection pool scoped to the

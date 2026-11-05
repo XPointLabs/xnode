@@ -386,12 +386,17 @@ internal sealed partial class ProductionContactServiceOpaqueDispatcher :
                 ContactMailboxGrantRole.Retrieve,
             _ => throw new InvalidDataException("The XMG2 mailbox grant role is invalid.")
         };
+        using var retainedWork = role == ContactMailboxGrantRole.Retrieve
+            ? CurrentMailboxDiagnostics.BeginWork(ReportRetainedGrantWork) : null;
         var gate = executionGates[BinaryPrimitives.ReadUInt16BigEndian(
             SHA256.HashData(locatorHash.Span)) % executionGates.Length];
-        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        using (role == ContactMailboxGrantRole.Retrieve ? CurrentMailboxDiagnostics.Measure("retained-gate") : null)
+            await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var placement = await authorities.Placements.MintAsync(
+            ContactServicePlacementCapability placement;
+            using (role == ContactMailboxGrantRole.Retrieve ? CurrentMailboxDiagnostics.Measure("retained-placement") : null)
+            placement = await authorities.Placements.MintAsync(
                     ContactServiceRequestKind.ResolveInvite,
                     locatorHash,
                     cancellationToken)
