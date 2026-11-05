@@ -166,7 +166,7 @@ with quarantine, not migration or empty recovery. Do not reset production data
 or registered node identities to activate this source candidate. File integrity
 is not a protected rollback floor, and quota exhaustion is backpressure rather
 than permission to evict outstanding read paths. See the
-[source qualification](testing/s01-retained-route-custody-2026-10-07.md).
+[source qualification](https://github.com/XPointLabs/xnode/blob/534596d8ea082149e95ff7b3425c0398ca2bab0f/docs/testing/s01-retained-route-custody-2026-10-07.md).
 
 The subsequent DR-0103 native checkpoint candidate protects that same resolver
 document with a separate node/network-bound enrollment and checkpoint. It uses
@@ -179,7 +179,7 @@ guarantee. The enabled DID2 resolver now requires protected custody in its nativ
 composition, without unprotected fallback. This is still an unqualified source
 candidate: do not activate or reset existing production data to try it.
 Its focused tests do not qualify retained issuance or physical
-Retrieve/ACK. See the [candidate receipt](testing/s01-protected-retained-route-2026-10-07.md).
+Retrieve/ACK. See the [candidate receipt](https://github.com/XPointLabs/xnode/blob/534596d8ea082149e95ff7b3425c0398ca2bab0f/docs/testing/s01-protected-retained-route-2026-10-07.md).
 
 The DR-0104 peer producer candidate adds private retained read/signing using the
 same real protected document. The enabled DID2 peer composition requires its
@@ -188,7 +188,7 @@ snapshot, wrong signing key or expired request cannot return a retained signatur
 This is not an operator import/reenrollment path and adds no public operation.
 Public grant acquisition and physical Retrieve/ACK remain gated; do not reset
 registered identities or existing state to enable the candidate. See its
-[exact verification scope](testing/s01-retained-native-peer-2026-10-07.md).
+[exact verification scope](https://github.com/XPointLabs/xnode/blob/534596d8ea082149e95ff7b3425c0398ca2bab0f/docs/testing/s01-retained-native-peer-2026-10-07.md).
 
 The matched private HTTPS boundary now requires explicit evidence kind and
 retained horizon, using the independent DR-0104 forwarding purpose. Deploying
@@ -196,7 +196,7 @@ only one side of the Node/Registry private JSON cutover is unsupported. At the
 `8607c60` checkpoint public grant dispatch was current-only; that checkpoint is not automatic retained fallback or
 permission to reset identities, floors or journals. Current source qualification
 and its remaining activation boundaries are recorded in the
-[matched private-boundary receipt](testing/s01-retained-private-forwarding-2026-10-07.md).
+[matched private-boundary receipt](https://github.com/XPointLabs/xnode/blob/534596d8ea082149e95ff7b3425c0398ca2bab0f/docs/testing/s01-retained-private-forwarding-2026-10-07.md).
 
 The next coupled source batch now selects protected retained custody for public
 Retrieve from the outset; Deposit stays current-only. It checks both native
@@ -206,7 +206,7 @@ Current Shared/Node full source matrices and required isolated infrastructure
 checks pass; matching Protocol source qualification preserves its shipping FAIL.
 Registry connected qualification and complete shipping/installed boundaries are
 still required. These results do not authorize automatic runtime activation.
-[Current source follow-up](testing/s01-retained-private-forwarding-2026-10-07.md#coupled-public-retrieve-follow-up).
+[Current source follow-up](https://github.com/XPointLabs/xnode/blob/534596d8ea082149e95ff7b3425c0398ca2bab0f/docs/testing/s01-retained-private-forwarding-2026-10-07.md#coupled-public-retrieve-follow-up).
 
 `ContactResolverCustody` contains only local bindings: canonical public
 `networkIdHex`, absolute `independentCustodyDirectory` and existing persistent
@@ -257,14 +257,14 @@ production Blob clock. An actual admitted Blob operation still resolves the
 required configured clock before touching durable Blob custody. Linux procfs
 remains the production authority; an unsupported host or unavailable clock has
 no fallback. The bounded Windows source check is recorded in
-[the clock dependency checkpoint](testing/s05-blob-clock-health-2026-10-26.md).
+[the clock dependency checkpoint](https://github.com/XPointLabs/xnode/blob/534596d8ea082149e95ff7b3425c0398ca2bab0f/docs/testing/s05-blob-clock-health-2026-10-26.md).
 
 Windows MGR1 and operation-custody reads now inspect entry attributes instead
 of resolving every ordinary ancestor's link target. Every read still checks the
 full ancestor chain without a cache, rejects reparse points (including dangling
 links), and propagates access failures. This changes no custody format, ACL,
 enrollment, grant/replay check or Store deadline. Source qualification is tracked
-in [the S01 path checkpoint](testing/s01-native-store-path-safety-2026-10-08.md).
+in [the S01 path checkpoint](https://github.com/XPointLabs/xnode/blob/534596d8ea082149e95ff7b3425c0398ca2bab0f/docs/testing/s01-native-store-path-safety-2026-10-08.md).
 
 The same protected operation now also guards `CurrentMailboxReplicaReceiver`:
 current grant-bound peer verification, native replay, blob mutation/read-back,
@@ -305,12 +305,12 @@ second admission server: the selected exit admits through the current native
 owner. The retired configuration section still rejects, even when empty.
 Current binary replication remains HTTPS-only on its exact configured listener;
 API/public client mailbox URLs are not an alternate admission path. The
-[Program pipeline checkpoint](testing/s02-current-program-2026-10-04.md#actual-program-peer-pipeline-follow-up)
+[Program pipeline checkpoint](https://github.com/XPointLabs/xnode/blob/534596d8ea082149e95ff7b3425c0398ca2bab0f/docs/testing/s02-current-program-2026-10-04.md#actual-program-peer-pipeline-follow-up)
 records actual local Kestrel/TLS evidence and its fixture/provisioning limits.
-See the [native terminal checkpoint](testing/s02-native-terminal-2026-10-04.md)
+See the [native terminal checkpoint](https://github.com/XPointLabs/xnode/blob/534596d8ea082149e95ff7b3425c0398ca2bab0f/docs/testing/s02-native-terminal-2026-10-04.md)
 for the precise local three-hop/current two-store evidence, not device qualification.
 The matching
-[descriptor-key checkpoint](testing/s03-descriptor-keys-2026-10-04.md) now
+[descriptor-key checkpoint](https://github.com/XPointLabs/xnode/blob/534596d8ea082149e95ff7b3425c0398ca2bab0f/docs/testing/s03-descriptor-keys-2026-10-04.md) now
 exercises genuinely separate node IDs and immutable descriptor identity keys
 through the current producer and native consumer, not fabricated rotation.
 Signing custody must match that actual descriptor key; a node ID is never
@@ -405,7 +405,7 @@ do not delete independent records or initialize a new counter to clear unready.
 This scoped recovery check does not detect loss of an intent before any native
 mutation, nor qualify global startup/rollback protection or retained-route
 ordering. Those remain activation blockers. See the
-[recovery checkpoint](testing/s03-store-recovery-2026-10-04.md).
+[recovery checkpoint](https://github.com/XPointLabs/xnode/blob/534596d8ea082149e95ff7b3425c0398ca2bab0f/docs/testing/s03-store-recovery-2026-10-04.md).
 Internal client Retrieve now reads the actual completed mutation/blob custody
 on either replica under that same current admission, without requiring the
 coordinator's client ledger. It persists the canonical MRP1 in the existing
@@ -441,21 +441,21 @@ network source when composing this candidate. No host-UTC fallback is accepted.
 The sole contracts remain
 [DR-0081](../../docs/survival-program/decisions/DR-0081-did2-mailbox-selection-grant-clean-break.md)
 and [DR-0083](../../docs/survival-program/decisions/DR-0083-current-mailbox-grant-revocation.md).
-See the [native connected checkpoint](testing/s02-current-mailbox-admission-2026-10-03.md).
-The [current peer checkpoint](testing/s03-current-peer-native-2026-10-03.md)
+See the [native connected checkpoint](https://github.com/XPointLabs/xnode/blob/534596d8ea082149e95ff7b3425c0398ca2bab0f/docs/testing/s02-current-mailbox-admission-2026-10-03.md).
+The [current peer checkpoint](https://github.com/XPointLabs/xnode/blob/534596d8ea082149e95ff7b3425c0398ca2bab0f/docs/testing/s03-current-peer-native-2026-10-03.md)
 records durable Store/read/tombstone/reopen and callback-expiry tests.
-The [HTTP checkpoint](testing/s03-current-peer-http-2026-10-03.md) records actual
+The [HTTP checkpoint](https://github.com/XPointLabs/xnode/blob/534596d8ea082149e95ff7b3425c0398ca2bab0f/docs/testing/s03-current-peer-http-2026-10-03.md) records actual
 pinned TLS/HTTP2, two-store quorum, lost-response and concurrent-retry evidence.
-The [client outcome checkpoint](testing/s03-client-outcome-2026-10-03.md) records
+The [client outcome checkpoint](https://github.com/XPointLabs/xnode/blob/534596d8ea082149e95ff7b3425c0398ca2bab0f/docs/testing/s03-client-outcome-2026-10-03.md) records
 same-owner composition, durable final Store outcome and completion-write recovery.
-The [server intent checkpoint](testing/s03-server-intent-2026-10-04.md) records
+The [server intent checkpoint](https://github.com/XPointLabs/xnode/blob/534596d8ea082149e95ff7b3425c0398ca2bab0f/docs/testing/s03-server-intent-2026-10-04.md) records
 actual producer custody, crash/capacity/hostile-input boundaries and final gates.
-The [current Retrieve checkpoint](testing/s03-current-retrieve-2026-10-04.md)
+The [current Retrieve checkpoint](https://github.com/XPointLabs/xnode/blob/534596d8ea082149e95ff7b3425c0398ca2bab0f/docs/testing/s03-current-retrieve-2026-10-04.md)
 records both-replica reads, bounded cross-replica pagination, native custody
 failure checks and the remaining ordering/activation boundaries.
-The [current ACK checkpoint](testing/s03-current-ack-2026-10-04.md) records
+The [current ACK checkpoint](https://github.com/XPointLabs/xnode/blob/534596d8ea082149e95ff7b3425c0398ca2bab0f/docs/testing/s03-current-ack-2026-10-04.md) records
 either-replica ACK, exact batch/quorum recovery, capacity and crash boundaries.
-The [pending-prefix regression](testing/s03-pending-prefix-2026-10-04.md) records
+The [pending-prefix regression](https://github.com/XPointLabs/xnode/blob/534596d8ea082149e95ff7b3425c0398ca2bab0f/docs/testing/s03-pending-prefix-2026-10-04.md) records
 the live/reopened cross-replica continuation defect, fix and its ordering limits.
 The descriptor transport API owner is
 [DR-0085](../../docs/survival-program/decisions/DR-0085-current-mailbox-replica-transport-facts.md).
@@ -472,7 +472,7 @@ This structural check grants no issuer, holder, selected-exit or mutation author
 the remaining checks and fail-closed readiness are unchanged. It is not activation
 of the current mailbox composition required by
 [DR-0081](../../docs/survival-program/decisions/DR-0081-did2-mailbox-selection-grant-clean-break.md).
-See the [ingress regression checkpoint](testing/s00-mailbox-ingress-binding-2026-10-03.md).
+See the [ingress regression checkpoint](https://github.com/XPointLabs/xnode/blob/534596d8ea082149e95ff7b3425c0398ca2bab0f/docs/testing/s00-mailbox-ingress-binding-2026-10-03.md).
 
 ## Current DID2 mailbox issuer input
 
@@ -580,7 +580,7 @@ repin Registry, Protocol and Shared/client consumers together before activation.
 No node-state generation, registered key, certbot configuration or object TTL
 changes in this increment. Exact lookup still does not establish protected
 retained authority, renewed issuance or physical Retrieve/ACK. See the
-[source checkpoint](testing/s01-exact-request-binding-2026-10-07.md).
+[source checkpoint](https://github.com/XPointLabs/xnode/blob/534596d8ea082149e95ff7b3425c0398ca2bab0f/docs/testing/s01-exact-request-binding-2026-10-07.md).
 
 ## Private DID2 coordination backend candidate
 
@@ -1046,7 +1046,7 @@ hardware monotonic counter: joint rollback/loss of all independent custody and
 keys across restart cannot be detected by these files alone. No automated
 enrollment is provided for that recovery condition. Native source/restart
 evidence and remaining integration limits are recorded in the
-[S01 checkpoint](testing/s01-mailbox-revocation-native-2026-10-03.md).
+[S01 checkpoint](https://github.com/XPointLabs/xnode/blob/534596d8ea082149e95ff7b3425c0398ca2bab0f/docs/testing/s01-mailbox-revocation-native-2026-10-03.md).
 
 The registry payload advertises the transport parameters clients need:
 
@@ -1606,7 +1606,7 @@ performed. A rejected unrelated publisher or cancelled observation request does
 not invalidate the independent healthy observer. Every later use still repeats
 the same source/floor/time checks. Configured live acquisition budgets and HTTPS producer-to-consumer
 qualification still need closure in the same delivery vertical. See the
-[exact scope and receipts](testing/s05-mgr1-lifecycle-2026-10-04.md).
+[exact scope and receipts](https://github.com/XPointLabs/xnode/blob/534596d8ea082149e95ff7b3425c0398ca2bab0f/docs/testing/s05-mgr1-lifecycle-2026-10-04.md).
 
 Retired ContactAuthority, GroupControlAuthority, MailboxPeerAuthority,
 MailboxClient, MailboxClientAdapter, MailboxClientProductionAuthority and
@@ -1627,7 +1627,7 @@ remain activation requirements under the
 Neutral storage limits remain bounded; no entry is retired by this change and
 no TTL, grant validity or timeout is lengthened to make a test pass.
 
-See [composition evidence](testing/s02-current-program-2026-10-04.md) for the
+See [composition evidence](https://github.com/XPointLabs/xnode/blob/534596d8ea082149e95ff7b3425c0398ca2bab0f/docs/testing/s02-current-program-2026-10-04.md) for the
 exact local tests and remaining gates. Physical contact/text and release
 qualification are not implied.
 
@@ -1827,7 +1827,7 @@ physical device acceptance. No deadline was raised and no refusal was waived.
 The private issuer HTTP client records only a bounded phase/status/category,
 without endpoint, request, exception object/message or identity. A diagnostic
 failure does not change the original retry/unknown outcome. See the
-[S05 checkpoint](testing/s05-private-grant-hop-2026-10-16.md) for exact source
+[S05 checkpoint](https://github.com/XPointLabs/xnode/blob/534596d8ea082149e95ff7b3425c0398ca2bab0f/docs/testing/s05-private-grant-hop-2026-10-16.md) for exact source
 tests and deployment limitations; these records are not issuance or absence
 proof and must never justify replacing an unknown pending request.
 
@@ -2045,7 +2045,7 @@ Fresh Store's denial-only native intent-prefix walk now acquires actual current
 authority at entry and exit, with lease lifetime/cancellation checked per record.
 Every native file/hash/index/PRQ2/intent join and all effect/callback fences remain.
 This removes one source acquisition per scanned record; inventory remains linear
-and Retrieve is unchanged. See the [bounded Store prefix evidence](testing/s05-store-prefix-read-segment-2026-10-26.md)
+and Retrieve is unchanged. See the [bounded Store prefix evidence](https://github.com/XPointLabs/xnode/blob/534596d8ea082149e95ff7b3425c0398ca2bab0f/docs/testing/s05-store-prefix-read-segment-2026-10-26.md)
 for synthetic scaling limits, genuine signed Store/quorum evidence and retained
 failed attempts. It does not establish P2 or latency acceptance.
 

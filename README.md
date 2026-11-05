@@ -1,4 +1,6 @@
-﻿# XNode
+# XNode
+
+Current architecture: [Deep / XPoint specification](../docs/architecture/README.md).
 
 Production images are published to `ghcr.io/xpointlabs/xnode` only through the
 manual **Publish production image** GitHub Actions workflow. A push to `main`

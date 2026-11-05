@@ -1,5 +1,7 @@
 # XNode agent rules
 
+Current architecture: [Deep / XPoint specification](../docs/architecture/README.md).
+
 The workspace rules in `../AGENTS.md` apply. This file contains only node-runtime deltas.
 
 ## Owns

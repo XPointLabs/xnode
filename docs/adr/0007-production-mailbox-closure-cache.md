@@ -14,7 +14,7 @@ Current behavior belongs to
 accepted decisions. Node consequences and custody configuration belong to
 [the operator guide](../operator.md#current-selected-mailbox-exits).
 The removal scope and actual checks are recorded in
-[the existing checkpoint](../testing/s02-retired-forwarding-2026-10-04.md#s00-continuation-compiled-pma1-providercache-removal-2026-10-05).
+[the existing checkpoint](https://github.com/XPointLabs/xnode/blob/534596d8ea082149e95ff7b3425c0398ca2bab0f/docs/testing/s02-retired-forwarding-2026-10-04.md#s00-continuation-compiled-pma1-providercache-removal-2026-10-05).
 
 Source removal does not delete or reset registered keys, retained signed
 lineage, native journals, independent protected floors or installed volumes.
