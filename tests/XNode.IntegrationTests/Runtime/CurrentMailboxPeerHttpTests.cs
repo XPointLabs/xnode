@@ -772,6 +772,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
     {
         internal bool SuppressNext;
         internal Action? BeforeSend;
+        internal Func<CancellationToken, ValueTask>? BeforeSendAsync;
         internal int Calls;
         internal readonly List<byte[]> ExactRequests = [];
         internal string? Failure;
@@ -784,6 +785,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
             ExactRequests.Add(exactRequest.ToArray());
             if (SuppressNext) { SuppressNext = false; return null; }
             BeforeSend?.Invoke();
+            if (BeforeSendAsync is not null) await BeforeSendAsync(token);
             Failure = null;
             var started = Stopwatch.GetTimestamp();
             try { return await new CurrentMailboxReplicaPeerClient().SendAsync(recipient, operation, exactRequest, token); }
@@ -809,6 +811,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
         internal CurrentMailboxPeerHttpEndpoint? Endpoint;
         internal bool DropNext;
         internal Func<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>? AfterReceive;
+        internal Func<CancellationToken, ValueTask>? BeforeResponseAsync;
         internal static async Task<Host> CreateAsync()
         {
             var host = CreateCertificate();
@@ -848,6 +851,7 @@ public sealed partial class CurrentMailboxPeerHttpTests
                         if (host.DropNext && context.Response.StatusCode == 200) { host.DropNext = false; context.Abort(); return Results.Empty; }
                         var bytes = captured.ToArray();
                         if (context.Response.StatusCode != 200) return Results.StatusCode(context.Response.StatusCode);
+                        if (host.BeforeResponseAsync is not null) await host.BeforeResponseAsync(token);
                         var response = host.AfterReceive?.Invoke(bytes) ?? bytes;
                         return Results.Bytes(response.ToArray(), contract.ResponseContentType);
                     }

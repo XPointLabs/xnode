@@ -64,7 +64,35 @@ public sealed class CurrentMailboxRevocationRefreshTests
         if (observed)
         {
             Assert.Equal(1, f.Signed.ProofReads);
-            Assert.True(f.Signed.ObservationChecks > 260);
+            var protectedDeposit = (await f.Deposit.ReadProtectedAsync()).ToArray();
+            var protectedRetrieve = (await f.Retrieve.ReadProtectedAsync()).ToArray();
+            snapshots[(MailboxCapabilityDomain.Deposit, 72)] = Snapshot(f.Signed, generation: 72,
+                prior: protectedDeposit, expires: 1_140);
+            var beforeRead = handler.Calls; var atResponse = -1;
+            // A real signed next target crosses the HTTP callback. Its current
+            // directory observation must be checked again before any commit,
+            // regardless of how many historical source reads preceded it.
+            handler.AfterRead = () => { atResponse = f.Signed.ObservationChecks; f.Signed.RejectProof = true; };
+            try
+            {
+                await Assert.ThrowsAsync<CryptographicException>(() => admission.RefreshRevocationsAsync(artifacts, default).AsTask());
+                Assert.True(atResponse >= 0); Assert.True(f.Signed.ObservationChecks > atResponse);
+                Assert.Equal(beforeRead + 1, handler.Calls);
+                Assert.Equal(protectedDeposit, (await f.Deposit.ReadProtectedAsync()).ToArray());
+                Assert.Equal(protectedRetrieve, (await f.Retrieve.ReadProtectedAsync()).ToArray());
+                Assert.Equal(1, f.Signed.ProofReads);
+            }
+            finally { handler.AfterRead = null; f.Signed.RejectProof = false; }
+            // Failed observation closes the acquired view. Recovery is an
+            // explicit fresh acquisition, never an observational fallback.
+            var local = OnionPathCandidateSnapshotFactory.Create(f.Signed.NetworkContext).Candidates.Single(candidate =>
+                candidate.NodeId.Span.SequenceEqual(f.Node));
+            await source!.ReadCurrentAsync(local.RouterOwnerId,
+                ScalarMult.Base(f.Signed.TestOnionScalar(local.NodeId.Span)), default, default);
+            await admission.RefreshRevocationsAsync(artifacts, default);
+            Assert.Equal(snapshots[(MailboxCapabilityDomain.Deposit, 72)], (await f.Deposit.ReadProtectedAsync()).ToArray());
+            Assert.Equal(protectedRetrieve, (await f.Retrieve.ReadProtectedAsync()).ToArray());
+            Assert.Equal(2, f.Signed.ProofReads);
         }
     }
 
@@ -317,6 +345,7 @@ public sealed class CurrentMailboxRevocationRefreshTests
         internal int TransientResponses;
         internal TimeSpan RetryAfter = TimeSpan.Zero;
         internal Action? AfterTransient;
+        internal Action? AfterRead;
         internal List<string> Paths { get; } = [];
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
@@ -349,6 +378,7 @@ public sealed class CurrentMailboxRevocationRefreshTests
             if (Fault == "parameters") response.Content.Headers.ContentType.Parameters.Add(new("charset", "utf-8"));
             if (Fault == "encoding") response.Content.Headers.ContentEncoding.Add("gzip");
             if (Fault == "redirect") response.RequestMessage = new(HttpMethod.Get, "https://other.example/");
+            AfterRead?.Invoke();
             return Task.FromResult(response);
         }
     }

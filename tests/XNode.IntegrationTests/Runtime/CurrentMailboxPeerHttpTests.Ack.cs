@@ -75,18 +75,24 @@ public sealed partial class CurrentMailboxPeerHttpTests
 
     private static byte[] AckFrame(Fixture f, MailboxRetrievePage page, ulong counter = 1, byte operation = 0x74,
         ReadOnlyMemory<byte>? continuation = null, IReadOnlyList<MailboxAcknowledgement>? acknowledgements = null,
-        byte grantSerial = 0x52)
+        byte grantSerial = 0x52, byte holderSeed = 0x57)
     {
         var envelope = MailboxAuthenticatedRequestTranscript.DecodeStoreBody(f.Recipient.Envelope);
         var binding = MailboxAuthenticatedRequestTranscript.ForAck(envelope.Epoch, Enumerable.Repeat(operation, 16).ToArray(),
             envelope.MailboxId, envelope.PlacementId, !page.HasMore, (continuation ?? page.ContinuationToken).Span,
             acknowledgements ?? page.Items.Select(item => item.ToAcknowledgement()).ToArray());
         var grant = MailboxGrantRevocationStoreTests.Grant(f.Signed, f.Recipient.Node.Host, MailboxCapabilityDomain.Retrieve, grantSerial);
+        var crypto = new SodiumMailboxCapabilityCrypto();
+        if (holderSeed != 0x57)
+            grant = MailboxAuthenticatedCapabilityCodec.EncodeGrant(crypto.SignGrant(
+                MailboxAuthenticatedCapabilityCodec.DecodeGrant(grant) with
+                { HolderPublicKey = crypto.GetPublicKey(Enumerable.Repeat(holderSeed, 32).ToArray()) },
+                Enumerable.Repeat((byte)0x32, 32).ToArray()));
         return MailboxAuthenticatedClientRequestCodec.Encode(new()
         {
             Binding = binding,
-            Presentation = new SodiumMailboxCapabilityCrypto().SignPresentation(MailboxAuthenticatedCapabilityCodec.DecodeGrant(grant),
-                binding, counter, Enumerable.Repeat((byte)0x57, 32).ToArray())
+            Presentation = crypto.SignPresentation(MailboxAuthenticatedCapabilityCodec.DecodeGrant(grant),
+                binding, counter, Enumerable.Repeat(holderSeed, 32).ToArray())
         });
     }
     private static byte[][] AckIntents(Fixture f) => !File.Exists(f.AckLedgerFile) ? [] : JsonNode.Parse(File.ReadAllBytes(f.AckLedgerFile))!["ackOperations"]!.AsObject()
@@ -313,6 +319,11 @@ public sealed partial class CurrentMailboxPeerHttpTests
         await using var f = await Fixture.CreateAsync(); f.OpenLedger(); await StoreItem(f, 1); await StoreItem(f, 2);
         var first = DecodePage((await f.Sender.Receiver.RetrieveClientAsync(RetrieveFrame(f, maximum: 1))).ToArray(), f);
         var page = first with { ContinuationToken = ShortLivedPageToken(f, first) }; var exact = AckFrame(f, page);
+        var decoded = MailboxAuthenticatedClientRequestCodec.Decode(exact);
+        var grant = MailboxAuthenticatedCapabilityCodec.EncodeGrant(decoded.Presentation.Grant);
+        var body = MailboxAuthenticatedRequestTranscript.DecodeAckBody(decoded.Binding.CanonicalRequest.Span);
+        await f.Sender.Node.Admission.WithGrantAsync(grant, MailboxCapabilityDomain.Retrieve, async (scope, token) =>
+        { await f.Sender.Receiver.RequireAckContinuationAsync(scope, body, token); return true; });
         byte[]? completed = null;
         if (pending)
         {
@@ -324,12 +335,21 @@ public sealed partial class CurrentMailboxPeerHttpTests
         var recovered = (await f.Coordinator.AcknowledgeClientAsync(exact, f.AckLedger)).ToArray();
         AssertAck(recovered, page, 0x74); if (completed is not null) Assert.Equal(completed, recovered);
         Assert.Equal(intents, AckIntents(f)); Assert.Equal(pending ? 4 : 3, f.AllHttpRequests);
-        // Independent native tombstone custody now rejects a new batch before
-        // the expired continuation could be considered. Exact original replay
-        // above remains admitted; no new request may replace its saved intent.
-        await Assert.ThrowsAsync<InvalidDataException>(() => f.Coordinator.AcknowledgeClientAsync(
+        // The identical signed page token is now expired under actual current
+        // authority. Original saved replay above is distinct from new work;
+        // a new counter/operation must pass current continuation validation.
+        await Assert.ThrowsAsync<CryptographicException>(() => f.Sender.Node.Admission.WithGrantAsync(grant,
+            MailboxCapabilityDomain.Retrieve, async (scope, token) =>
+            { await f.Sender.Receiver.RequireAckContinuationAsync(scope, body, token); return true; }).AsTask());
+        var nativePaths = f.Sender.MutationFiles.Concat(f.Recipient.MutationFiles)
+            .Concat(f.Sender.ReplayFiles).Concat(f.Recipient.ReplayFiles).Order(StringComparer.Ordinal).ToArray();
+        var native = nativePaths.Select(File.ReadAllBytes).ToArray();
+        await Assert.ThrowsAsync<CryptographicException>(() => f.Coordinator.AcknowledgeClientAsync(
             AckFrame(f, page, counter: 2, operation: 0x79), f.AckLedger).AsTask());
         Assert.Equal(intents, AckIntents(f)); Assert.Equal(pending ? 4 : 3, f.AllHttpRequests);
+        Assert.Equal(nativePaths, f.Sender.MutationFiles.Concat(f.Recipient.MutationFiles)
+            .Concat(f.Sender.ReplayFiles).Concat(f.Recipient.ReplayFiles).Order(StringComparer.Ordinal).ToArray());
+        Assert.Equal(native, nativePaths.Select(File.ReadAllBytes).ToArray());
     }
 
     [Fact]

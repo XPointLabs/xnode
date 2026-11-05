@@ -115,6 +115,7 @@ public sealed class MailboxAuthenticatedRuntimeReservation
     }
 
     internal void RequireCurrentLease() => _requireCurrentLease?.Invoke();
+    internal bool HasCurrentLease => Volatile.Read(ref _requireCurrentLease) is not null;
 
     public void MarkSideEffectsStarted()
     {
@@ -589,6 +590,24 @@ public sealed class MailboxAuthenticatedCapabilityRuntime
         }
     }
 
+    // Native current admissions unconditionally mark the durable claim as
+    // possibly effected. A rejected/cancelled rejoin must still release this
+    // request's memory-only execution and outcome capacity without requiring
+    // its now-invalid authority, aborting replay or touching native custody.
+    internal void CleanupCurrentRequest(MailboxAuthenticatedRuntimeReservation reservation)
+    {
+        RequireOwnedIdentity(reservation);
+        if (!reservation.HasCurrentLease || !reservation.SideEffectsStarted)
+            throw new InvalidOperationException("Current cleanup requires its original pending native reservation.");
+        if (!reservation.TryBeginRequestCleanup()) return;
+        try
+        {
+            reservation.ReleaseOutcomeReservation();
+            ReleaseExecution(reservation);
+        }
+        catch { reservation.ResetRequestCleanup(); throw; }
+    }
+
     /// <summary>
     /// Collects one bounded expiry batch. Replay records are durably marked expired first,
     /// then only their exact canonical outcomes are deleted, and finally the replay markers
@@ -642,6 +661,12 @@ public sealed class MailboxAuthenticatedCapabilityRuntime
 
     private void RequireOwned(MailboxAuthenticatedRuntimeReservation reservation)
     {
+        RequireOwnedIdentity(reservation);
+        reservation.RequireCurrentLease();
+    }
+
+    private void RequireOwnedIdentity(MailboxAuthenticatedRuntimeReservation reservation)
+    {
         ArgumentNullException.ThrowIfNull(reservation);
         if (!ReferenceEquals(reservation.Owner, this))
         {
@@ -649,6 +674,5 @@ public sealed class MailboxAuthenticatedCapabilityRuntime
                 "The authenticated mailbox reservation belongs to another runtime.",
                 nameof(reservation));
         }
-        reservation.RequireCurrentLease();
     }
 }

@@ -21,6 +21,9 @@ internal sealed partial class CurrentMailboxAdmission(
 {
     private readonly byte[] node = CaptureNode(localNodeId);
     private readonly MailboxClientVerifiedHolderLimiter holderLimiter = new();
+    // Preserve the original per-node origin/retry ordering while allowing
+    // independent peer ingress and health work during an outbound wait.
+    private readonly SemaphoreSlim originOperations = new(1, 1);
     internal ReadOnlyMemory<byte> LocalNodeId => node.ToArray();
 
     internal void ValidateNewNativeScope(CancellationToken token) => runtime.ValidateNewNativeScope(token);
@@ -128,19 +131,21 @@ internal sealed partial class CurrentMailboxAdmission(
                 await request.EnsureCurrentAsync(ct).ConfigureAwait(false);
                 return result;
             }
-            finally { if (reservation is not null) runtime.CleanupRequest(reservation); }
+            finally { if (reservation is not null) runtime.CleanupCurrentRequest(reservation); }
         }, token).ConfigureAwait(false);
     }
 
     internal async ValueTask<T> WithGrantAsync<T>(ReadOnlyMemory<byte> canonicalGrant, MailboxCapabilityDomain role,
-        Func<GrantScope, CancellationToken, ValueTask<T>> action, CancellationToken token = default)
+        Func<GrantScope, CancellationToken, ValueTask<T>> action, CancellationToken token = default,
+        bool peerIngress = false)
     {
         ArgumentNullException.ThrowIfNull(action);
         var grant = MailboxAuthenticatedCapabilityCodec.DecodeGrant(canonicalGrant.Span);
         var exactGrant = MailboxAuthenticatedCapabilityCodec.EncodeGrant(grant);
         if (grant.Domain != role) throw new CryptographicException("Current grant role differs from the operation.");
         return await WithAuthorityAsync(exactGrant, grant, (scope, ct) => action(new GrantScope(this,
-            scope.Authority, scope.Host, scope.Replicas, grant, scope.Lease), ct), token).ConfigureAwait(false);
+            scope.Authority, scope.Host, scope.Replicas, grant, scope.Lease), ct), token, peerIngress,
+            origin: !peerIngress).ConfigureAwait(false);
     }
 
     // Native startup/recovery needs independently current host authority, not a
@@ -192,7 +197,8 @@ internal sealed partial class CurrentMailboxAdmission(
         }, token);
 
     private async ValueTask<T> WithAuthorityAsync<T>(byte[]? exactGrant, MailboxAuthenticatedGrant? grant,
-        Func<AuthorityScope, CancellationToken, ValueTask<T>> action, CancellationToken token)
+        Func<AuthorityScope, CancellationToken, ValueTask<T>> action, CancellationToken token,
+        bool peerIngress = false, bool origin = false)
     {
         var authority = grant is null
             ? await source.ReadAdmissionAuthorityAsync(token).ConfigureAwait(false)
@@ -211,16 +217,48 @@ internal sealed partial class CurrentMailboxAdmission(
         deposit.RequireScope(node, host.NetworkId.Span, policyReference, MailboxCapabilityDomain.Deposit);
         retrieve.RequireScope(node, host.NetworkId.Span, policyReference, MailboxCapabilityDomain.Retrieve);
 
-        // All consumers take the two protected owners in this order. A successor
-        // cannot commit between a revocation check and a mailbox/outcome effect.
+        // The exclusive pair serializes each local multi-file segment. Only
+        // an already handed-off immutable peer wait may suspend that segment.
+        if (origin) await originOperations.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
         return await deposit.WithCurrentAsync(host, (depositLease, ct) =>
             retrieve.WithCurrentAsync(host, async (retrieveLease, innerToken) =>
             {
                 var active = true;
+                var ownsLocalEffects = true;
                 void RequireActive()
                 {
-                    if (!Volatile.Read(ref active)) throw new InvalidOperationException("Current mailbox operation is closed.");
+                    if (!Volatile.Read(ref active) || !Volatile.Read(ref ownsLocalEffects))
+                        throw new InvalidOperationException("Current mailbox local operation is closed or suspended.");
                     depositLease.RequireActive(); retrieveLease.RequireActive();
+                }
+                async ValueTask AwaitPeerAsync(Func<CancellationToken, ValueTask> peerWork, CancellationToken peerToken)
+                {
+                    RequireActive();
+                    // Actual transport handoff happens while the original
+                    // protected segment is still held. No first dispatch may
+                    // begin after an installed revoke in a released segment.
+                    var pending = peerWork(peerToken);
+                    if (pending.IsCompleted) { await pending.ConfigureAwait(false); return; }
+                    Volatile.Write(ref ownsLocalEffects, false);
+                    try
+                    {
+                        retrieveLease.Suspend(); depositLease.Suspend();
+                        await pending.ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        // Never hold a local lane while waiting for a floor.
+                        // Each rejoin rereads actual custody and rejects ANY
+                        // changed original generation. Partial acquisition is
+                        // released by the enclosing store owners on failure.
+                        innerToken.ThrowIfCancellationRequested();
+                        if (depositLease.NeedsRejoin) await depositLease.RejoinAsync(innerToken).ConfigureAwait(false);
+                        if (retrieveLease.NeedsRejoin) await retrieveLease.RejoinAsync(innerToken).ConfigureAwait(false);
+                        Volatile.Write(ref ownsLocalEffects, true);
+                    }
+                    RequireActive();
                 }
                 var roleLease = grant?.Domain == MailboxCapabilityDomain.Deposit ? depositLease : retrieveLease;
                 async ValueTask<ulong> CheckAsync(CancellationToken checkToken)
@@ -296,7 +334,7 @@ internal sealed partial class CurrentMailboxAdmission(
                 try
                 {
                     var scope = new AuthorityScope(authority, host, replicas,
-                        new MailboxCurrentOperationLease(CheckAsync, RequireActive, CurrentMailboxDiagnostics.RecordOriginWait));
+                        new MailboxCurrentOperationLease(CheckAsync, RequireActive, CurrentMailboxDiagnostics.RecordOriginWait, AwaitPeerAsync));
                     _ = await scope.Lease.CheckAsync(innerToken).ConfigureAwait(false);
                     var result = await action(scope, innerToken).ConfigureAwait(false);
                     _ = await scope.Lease.CheckAsync(innerToken).ConfigureAwait(false);
@@ -304,6 +342,8 @@ internal sealed partial class CurrentMailboxAdmission(
                 }
                 finally { Volatile.Write(ref active, false); }
             }, ct), token).ConfigureAwait(false);
+        }
+        finally { if (origin) originOperations.Release(); }
     }
 
     internal sealed record GrantScope(CurrentMailboxAdmission Owner, DeepIdV2ContactStoreAuthority Authority,

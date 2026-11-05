@@ -1028,7 +1028,13 @@ must not clear the latch, remove partial records, re-enroll an old scope or
 reset node identity just to obtain readiness. A complete exact write can be
 restored after restart even when the original call returned uncertainty.
 
-Floor replacement and the entire bounded operation callback share one owner.
+Floor replacement and each local operation segment share one exclusive owner.
+An already dispatched peer wait releases both role segments so revocation and
+opposite peer ingress can proceed. Rejoin reads actual protected records and
+rejects any changed original floor before local completion or a later batch
+item. A remote effect already in flight may remain uncertain; the original
+intent is retained for current exact retry. See
+[operation custody](mailbox-operation-custody.md) for these boundaries.
 Consumers must await their work, check authority at the required mutation and
 receipt boundaries, and not retain the operation lease. A check continuing
 after lease closure also rejects after its awaited verification. The callback

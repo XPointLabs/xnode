@@ -190,20 +190,25 @@ internal sealed partial class CurrentMailboxReplicationCoordinator(CurrentMailbo
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
             deadline.CancelAfter(timeout);
             var started = Stopwatch.GetTimestamp();
-            try
+            using var remoteWork = CurrentMailboxDiagnostics.Measure("native-remote");
+            var recipient = current.RecipientTransport;
+            var forwarding = current.CreateForwarding(localReceipt);
+            // Invoke transport under the original protected local segment;
+            // suspend only its returned in-flight wait. Catch transport errors
+            // inside that wait so a failed native rejoin cannot become a
+            // partial transport result or re-enter an unpinned scope.
+            remote = await current.AwaitPeerAsync(async peerToken =>
             {
-                using var remoteWork = CurrentMailboxDiagnostics.Measure("native-remote");
-                remote = await peer.SendAsync(current.RecipientTransport, operation,
-                current.CreateForwarding(localReceipt), deadline.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                ReportPeerFailure(ct.IsCancellationRequested ? "caller-cancelled" : "peer-deadline", started);
-                if (ct.IsCancellationRequested) throw;
-                remote = null;
-            }
-            catch (Exception error) when (error is HttpRequestException or IOException)
-            { ReportPeerFailure("transport", started); remote = null; }
+                try { return await peer.SendAsync(recipient, operation, forwarding, peerToken).ConfigureAwait(false); }
+                catch (OperationCanceledException)
+                {
+                    ReportPeerFailure(ct.IsCancellationRequested ? "caller-cancelled" : "peer-deadline", started);
+                    if (ct.IsCancellationRequested) throw;
+                    return null;
+                }
+                catch (Exception error) when (error is HttpRequestException or IOException)
+                { ReportPeerFailure("transport", started); return null; }
+            }, deadline.Token).ConfigureAwait(false);
         }
         if (remote is null)
         {

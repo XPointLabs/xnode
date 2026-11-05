@@ -7,7 +7,8 @@ using System.Security.Cryptography;
 /// closed authority and both protected MGR leases; no public time/trust input.</summary>
 internal sealed class MailboxCurrentOperationLease(
     Func<CancellationToken, ValueTask<ulong>> check, Action requireActive,
-    Action<double>? observeOriginWait = null)
+    Action<double>? observeOriginWait = null,
+    Func<Func<CancellationToken, ValueTask>, CancellationToken, ValueTask>? awaitPeer = null)
 {
     internal void RequireActive() => requireActive();
     internal async ValueTask<ulong> CheckAsync(CancellationToken token)
@@ -16,6 +17,18 @@ internal sealed class MailboxCurrentOperationLease(
         var upper = await check(token).ConfigureAwait(false);
         requireActive(); token.ThrowIfCancellationRequested();
         return upper;
+    }
+
+    // Only the native owner can suspend its protected local segment after
+    // immutable transport handoff, and rejoin its actual unchanged floors.
+    internal async ValueTask<T> AwaitPeerAsync<T>(Func<CancellationToken, ValueTask<T>> operation, CancellationToken token)
+    {
+        requireActive();
+        var suspend = awaitPeer ?? throw new InvalidOperationException("Current mailbox peer wait requires its native admission owner.");
+        T result = default!;
+        await suspend(async ct => { result = await operation(ct).ConfigureAwait(false); }, token).ConfigureAwait(false);
+        requireActive();
+        return result;
     }
 
     internal async ValueTask<ulong> RequireOriginTimeAsync(ulong minimumCreatedAt, CancellationToken token)

@@ -5,6 +5,40 @@ namespace XNode.IntegrationTests.Runtime;
 
 public sealed partial class MailboxGrantRevocationStoreTests
 {
+    [Fact]
+    public async Task EscapedQueuedRejoinCannotReactivateClosedLeaseOrLeakTheNativeOwner()
+    {
+        using var signed = await DeepIdV2PublicationAuthorityFixture.CreateAsync();
+        using var files = new Custody(signed); var host = await Host(signed);
+        var store = files.Open(); await store.EnrollAsync(host, Snapshot(signed));
+        var entered = Signal(); var release = Signal();
+        Task<int>? other = null; Task? escaped = null;
+        try
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(() => store.WithCurrentAsync(host, async (lease, token) =>
+            {
+                lease.Suspend();
+                other = store.WithCurrentAsync(host, async (_, inner) =>
+                { entered.TrySetResult(); await release.Task.WaitAsync(inner); return 1; }).AsTask();
+                await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                escaped = lease.RejoinAsync(token).AsTask();
+                Assert.False(escaped.IsCompleted);
+                // Returning without awaiting this already queued rejoin closes
+                // the original owner while another actual segment holds it.
+                return 1;
+            }).AsTask());
+            release.TrySetResult(); Assert.Equal(1, await other!.WaitAsync(TimeSpan.FromSeconds(10)));
+            await Assert.ThrowsAsync<InvalidOperationException>(() => escaped!).WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.Equal(1, await store.WithCurrentAsync(host, async (lease, token) =>
+            { await lease.EnsureCurrentAsync(token); return 1; }).AsTask().WaitAsync(TimeSpan.FromSeconds(10)));
+        }
+        finally
+        {
+            release.TrySetResult();
+            await store.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+        }
+    }
+
     [Theory]
     [InlineData(false, false)]
     [InlineData(false, true)]

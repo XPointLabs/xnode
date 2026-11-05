@@ -217,8 +217,9 @@ internal sealed class FileMailboxGrantRevocationStore : IAsyncDisposable
         finally { gate.Release(); }
     }
 
-    /// <summary>The same scoped concurrency owner serializes floor replacement
-    /// with the complete bounded admission/mutation callback. Capabilities cannot escape this lease.</summary>
+    /// <summary>The same owner serializes each local admission/mutation segment
+    /// with floor replacement. Only an already dispatched peer wait may suspend
+    /// ownership; rejoin rejects any changed original floor.</summary>
     internal async ValueTask<T> WithCurrentAsync<T>(VerifiedMailboxHostAuthorityV2 host,
         Func<CurrentLease, CancellationToken, ValueTask<T>> operation,
         CancellationToken cancellationToken = default)
@@ -226,43 +227,111 @@ internal sealed class FileMailboxGrantRevocationStore : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(operation);
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         var reader = new LeasedReader(this);
+        var ownership = new CurrentOwnership(this, reader);
         try
         {
             CheckAvailable(); var exact = RequireFloor();
+            ownership.BindOriginal(exact);
             var plan = await MailboxGrantRevocationV1Verifier.PlanAdvanceAsync(host, exact, exact, cancellationToken).ConfigureAwait(false);
             var capability = await MailboxGrantRevocationV1Verifier.VerifyCommittedAsync(plan,
                 exact, reader, cancellationToken).ConfigureAwait(false);
-            var result = await operation(new(capability, reader.RequireActive), cancellationToken).ConfigureAwait(false);
+            var result = await operation(new(capability, ownership.RequireActive, ownership.Suspend,
+                () => ownership.NeedsRejoin, ownership.RejoinAsync), cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
             await capability.EnsureCurrentAsync(cancellationToken).ConfigureAwait(false);
             return result;
         }
-        finally { reader.Close(); gate.Release(); }
+        finally { ownership.Close(); }
     }
 
     /// <summary>Native operation-scoped use only. The raw Protocol capability
     /// is never exposed; a callback or async continuation outliving the owner
     /// must fail again after its awaited verification, not only before I/O.</summary>
-    internal sealed class CurrentLease(VerifiedMailboxGrantRevocationV1 capability, Action requireActive)
+    internal sealed class CurrentLease(VerifiedMailboxGrantRevocationV1 capability, Action requireActive,
+        Action suspend, Func<bool> needsRejoin, Func<CancellationToken, ValueTask> rejoin)
     {
         internal void RequireActive() => requireActive();
+        internal bool NeedsRejoin => needsRejoin();
+        internal void Suspend() => suspend();
+        internal ValueTask RejoinAsync(CancellationToken token) => rejoin(token);
         internal async ValueTask EnsureCurrentAsync(CancellationToken token = default)
         {
-            requireActive();
+            RequireActive();
             await capability.EnsureCurrentAsync(token).ConfigureAwait(false);
-            requireActive();
+            RequireActive();
         }
         internal async ValueTask EnsureGrantNotRevokedAsync(ReadOnlyMemory<byte> exactGrant, CancellationToken token = default)
         {
-            requireActive();
+            RequireActive();
             await capability.EnsureGrantNotRevokedAsync(exactGrant, token).ConfigureAwait(false);
-            requireActive();
+            RequireActive();
         }
         internal async ValueTask EnsureRetainedReadGrantNotRevokedAsync(ReadOnlyMemory<byte> exactGrant, CancellationToken token = default)
         {
-            requireActive();
+            RequireActive();
             await capability.EnsureRetainedReadGrantNotRevokedAsync(exactGrant, token).ConfigureAwait(false);
-            requireActive();
+            RequireActive();
+        }
+    }
+
+    // Only current admission may lend an owned local segment to an already
+    // dispatched immutable peer operation. Rejoin checks the actual protected
+    // bytes against this original segment; any installed generation change
+    // requires a fresh exact request admission, even if its serial was retained.
+    private sealed class CurrentOwnership(FileMailboxGrantRevocationStore owner, LeasedReader reader)
+    {
+        private byte[]? original;
+        private readonly object sync = new();
+        private bool held = true, closed, rejoining;
+        internal void BindOriginal(byte[] exact) => original = exact;
+        internal bool NeedsRejoin { get { lock (sync) return !held && !closed && !rejoining; } }
+        internal void RequireActive() => reader.RequireActive();
+        internal void Suspend()
+        {
+            lock (sync)
+            {
+                RequireActive();
+                reader.Suspend(); held = false;
+                owner.gate.Release();
+            }
+        }
+        internal async ValueTask RejoinAsync(CancellationToken token)
+        {
+            lock (sync)
+            {
+                if (held || closed || rejoining) throw new InvalidOperationException("The native MGR1 segment is not suspended.");
+                rejoining = true;
+            }
+            try
+            {
+                await owner.gate.WaitAsync(token).ConfigureAwait(false);
+                lock (sync)
+                {
+                    // An escaped async rejoin cannot resurrect an owner that
+                    // closed while the semaphore was held by another segment.
+                    if (closed)
+                    {
+                        owner.gate.Release();
+                        throw new InvalidOperationException("The native MGR1 segment closed before rejoin.");
+                    }
+                    held = true;
+                }
+                token.ThrowIfCancellationRequested();
+                owner.CheckAvailable();
+                if (!Fixed(owner.RequireFloor(), original!))
+                    throw new CryptographicException("The protected MGR1 floor changed during peer dispatch.");
+                reader.Resume(); reader.RequireActive();
+            }
+            finally { lock (sync) rejoining = false; }
+        }
+        internal void Close()
+        {
+            lock (sync)
+            {
+                if (closed) return;
+                closed = true; reader.Close();
+                if (held) { held = false; owner.gate.Release(); }
+            }
         }
     }
 
@@ -277,6 +346,16 @@ internal sealed class FileMailboxGrantRevocationStore : IAsyncDisposable
     {
         private int active = 1;
         internal void Close() => Volatile.Write(ref active, 0);
+        internal void Suspend()
+        {
+            if (Interlocked.CompareExchange(ref active, 2, 1) != 1)
+                throw new InvalidOperationException("The native MGR1 reader is not active.");
+        }
+        internal void Resume()
+        {
+            if (Interlocked.CompareExchange(ref active, 1, 2) != 2)
+                throw new InvalidOperationException("The native MGR1 reader is not suspended.");
+        }
         internal void RequireActive()
         {
             if (Volatile.Read(ref active) != 1) throw new InvalidOperationException("The native MGR1 custody lease is closed.");
@@ -390,8 +469,9 @@ internal sealed class FileMailboxGrantRevocationStore : IAsyncDisposable
     }
     public async ValueTask DisposeAsync()
     {
-        // Wait for the complete operation before releasing the process-independent
-        // writer lease. The managed semaphore remains usable by queued disposal/read
+        // Wait for any currently held local segment before releasing the process-independent
+        // writer lease. A suspended peer continuation must reject rejoin after disposal.
+        // The managed semaphore remains usable by queued disposal/read
         // attempts so each observes disposed rather than bypassing serialization.
         await gate.WaitAsync().ConfigureAwait(false);
         try { if (!disposed) { disposed = true; writerLease.Dispose(); } }

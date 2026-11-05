@@ -218,6 +218,24 @@ their fresh lease checks around the actual durable effects; their callers do
 not add an identical check with no intervening callback. Both MGR roles remain
 held and validated, including the grant role's before/after serial checks.
 
+The exclusive native role pair serializes each local multi-file segment. After
+immutable peer transport handoff, the owner may suspend both role leases only
+while awaiting that exact in-flight operation. A successor can commit during
+this wait; the remote replica independently uses its own current authority.
+The origin rejoins deposit then retrieve and rereads the complete protected
+records against both original snapshots. Any changed generation rejects the
+old callback, including a successor that did not revoke this particular grant.
+The existing full source/time/grant, replay, operation-root and native inventory
+joins still precede quorum/outcome completion and every later batch item.
+
+Suspended leases deny local use. Failed partial rejoin closes/releases only
+actually held owners; it is not classified as a transport-only failure. A
+revocation cannot retract an already dispatched remote effect: its origin
+retains the original uncertain intent and emits no fresh success. A later exact
+retry obtains fresh current admission and uses the same saved request; a revoked
+grant still refuses that retry. Original per-node client ordering, peer budgets
+and two-replica quorum remain unchanged.
+
 If the pending next document is already installed, verified startup finalizes
 the protected commit. If the predecessor is still installed, only the named,
 hash-matching, structurally valid temporary can finish replacement. Missing or

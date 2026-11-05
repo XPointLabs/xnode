@@ -315,7 +315,7 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
             {
                 if (beforeAdmitted is not null) await beforeAdmitted(scope, ct).ConfigureAwait(false);
                 return await WithAdmittedPeerAsync(owned, expectedOperation, localRole, scope, action, ct, forwarding).ConfigureAwait(false);
-            }, token).ConfigureAwait(false);
+            }, token, peerIngress: localRole == MailboxPeerWireResponseReplicaV2.Recipient).ConfigureAwait(false);
     }
 
     internal async ValueTask<T> WithCapturedAckPeerAsync<T>(string operationKey, ulong cursor,
@@ -505,6 +505,12 @@ internal sealed partial class CurrentMailboxReplicaReceiver(CurrentMailboxAdmiss
             await owner.CheckOperationCustodyAsync(scope, token).ConfigureAwait(false);
             ObjectDisposedException.ThrowIf(Volatile.Read(ref owner.disposed) != 0, owner);
         }
+        // ApplyAndSignLocal already ends at the full pre-HTTP custody fence.
+        // Both the unknown and quorum paths below begin with the full post-HTTP
+        // fence, after this owner has rejoined its exclusive local lane.
+        internal ValueTask<ReadOnlyMemory<byte>?> AwaitPeerAsync(
+            Func<CancellationToken, ValueTask<ReadOnlyMemory<byte>?>> send, CancellationToken token) =>
+            scope.Lease.AwaitPeerAsync(send, token);
         internal ValueTask<ReadOnlyMemory<byte>> ApplyAndSignLocalAsync(CancellationToken token) =>
             ApplyAndSignLocalCoreAsync(token, commitRecipient: false);
 
