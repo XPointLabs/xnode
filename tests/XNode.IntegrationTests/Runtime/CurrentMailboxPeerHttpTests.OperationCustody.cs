@@ -208,5 +208,12 @@ public sealed partial class CurrentMailboxPeerHttpTests
         public async ValueTask VerifyAsync(string path, MailboxCurrentOperationLease lease,
             Func<string, CancellationToken, Task> validate, CancellationToken token)
         { await inner.VerifyAsync(path, lease, validate, token); callback(); }
+        public async ValueTask<bool> TryVerifyCommittedReadAsync(string path, MailboxCurrentCustodyReadScope scope,
+            Func<string, CancellationToken, Task> validate, CancellationToken token)
+        {
+            var verified = await inner.TryVerifyCommittedReadAsync(path, scope, validate, token);
+            if (verified) callback();
+            return verified;
+        }
     }
 }

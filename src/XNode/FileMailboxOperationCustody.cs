@@ -140,6 +140,24 @@ internal sealed class FileMailboxOperationCustody : IMailboxOperationCustody, ID
         }
     }
 
+    public async ValueTask<bool> TryVerifyCommittedReadAsync(string operationFile, MailboxCurrentCustodyReadScope scope,
+        Func<string, CancellationToken, Task> validate, CancellationToken token)
+    {
+        using var measurement = CurrentMailboxDiagnostics.Measure("operation-verify");
+        RequirePath(operationFile); scope.RequireActive(); token.ThrowIfCancellationRequested();
+        var state = ReadState();
+        // Recovery and temporary cleanup retain their full existing checks.
+        // This segment can only inspect an already committed document.
+        if (state.Next is not null || Directory.EnumerateFiles(Path.GetDirectoryName(operationPath)!,
+                "operations.json.*.tmp").Any())
+            return false;
+        RequireDigest(await HashAsync(operationPath, token).ConfigureAwait(false), state.Hash, state.Length);
+        await validate(operationPath, token).ConfigureAwait(false);
+        // Disposing the diagnostic may invoke an external listener. The ledger
+        // must repeat its actual read/hash/root join after this method returns.
+        return true;
+    }
+
     public async ValueTask PrepareAsync(string operationFile, string temporaryFile,
         MailboxCurrentOperationLease lease, CancellationToken token)
     {

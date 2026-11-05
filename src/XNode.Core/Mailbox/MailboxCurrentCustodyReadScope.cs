@@ -1,9 +1,9 @@
 namespace XNode.Core.Mailbox;
 
 // A private denial-only segment of one ledger fence. It owns no admission
-// result: actual ledger/root authentication precedes it and the actual lease
-// callback follows ALL native reads and diagnostics. It cannot span an effect,
-// recovery, network callback or return from CheckCurrentOperationAsync.
+// result: actual ledger/root authentication is mandatory before completion and
+// the actual lease callback follows ALL native reads and diagnostics. It cannot
+// span an effect, recovery, network callback or return from CheckCurrentOperationAsync.
 internal sealed class MailboxCurrentCustodyReadScope(MailboxCurrentOperationLease lease) : IDisposable
 {
     private bool closed;

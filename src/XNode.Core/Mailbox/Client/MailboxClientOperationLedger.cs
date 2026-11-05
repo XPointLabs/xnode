@@ -582,44 +582,57 @@ public sealed partial class MailboxClientOperationLedger : IDisposable
         {
             if (_currentCustody is null || lease is null)
                 throw new InvalidOperationException("Current operation custody and live host lease are required together.");
-            MailboxClientLedgerDocument? captured = null;
-            byte[]? capturedHash = null;
-            long capturedLength = 0;
-            _validatedStructures.TryGetValue(lease, out var knownStructure);
-            await _currentCustody.VerifyAsync(_path, lease, async (path, token) =>
-            {
-                _ = await ReadDocumentAsync(path, token, allowMissing: false,
-                    capture: (document, hash, length) =>
-                    { captured = document; capturedHash = hash; capturedLength = length; },
-                    knownStructure: knownStructure).ConfigureAwait(false);
-            }, cancellationToken).ConfigureAwait(false);
-            if (captured is null || capturedHash is null)
-                throw new InvalidDataException("Current operation custody did not validate its document.");
-            // Re-read and authenticate the actual snapshot AFTER every custody/
-            // lease callback, but do not deserialize and structurally validate
-            // the identical whole ledger twice. This reuse is local to this
-            // single Load under _gate, never a reused mutable document or admission.
-            await using var stream = File.OpenRead(_path);
-            var length = stream.Length;
-            if (length is < 1 or > MaximumDocumentBytes || length != capturedLength)
-                throw new InvalidDataException("Mailbox operation snapshot changed after verification.");
-            var actualHash = await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false);
-            if (stream.Length != length || stream.Position != length)
-                throw new InvalidDataException("Mailbox operation snapshot changed while reading.");
-            _currentCustody.RequireDocumentSnapshot(_path, actualHash, length);
-            if (!CryptographicOperations.FixedTimeEquals(actualHash, capturedHash))
-                throw new InvalidDataException("Mailbox operation snapshot changed after verification.");
-            cancellationToken.ThrowIfCancellationRequested();
-            // Only already checked grammar, not a currentness result, replay
-            // decision or native admission. The actual lease owns one bounded
-            // detached snapshot. Every Load still reads/hashes actual bytes,
-            // authenticates independent custody and repeats post-callback reads.
-            _validatedStructures.Remove(lease);
-            _validatedStructures.Add(lease, new(actualHash, length,
-                length <= MaximumGrammarMemoBytes ? CopyGrammarDocument(captured) : null));
-            return captured;
+            return await LoadCurrentAsync(cancellationToken, lease, null).ConfigureAwait(false)
+                ?? throw new InvalidDataException("Current operation custody did not validate its document.");
         }
         return await ReadDocumentAsync(_path, cancellationToken, allowMissing: true).ConfigureAwait(false);
+    }
+
+    private async Task<MailboxClientLedgerDocument?> LoadCurrentAsync(CancellationToken cancellationToken,
+        MailboxCurrentOperationLease lease, MailboxCurrentCustodyReadScope? scope)
+    {
+        ThrowIfDisposed(); lease.RequireActive();
+        var custody = _currentCustody ?? throw new InvalidOperationException("Current operation custody is required.");
+        MailboxClientLedgerDocument? captured = null;
+        byte[]? capturedHash = null;
+        long capturedLength = 0;
+        _validatedStructures.TryGetValue(lease, out var knownStructure);
+        async Task Validate(string path, CancellationToken token)
+        {
+            _ = await ReadDocumentAsync(path, token, allowMissing: false,
+                capture: (document, hash, length) =>
+                { captured = document; capturedHash = hash; capturedLength = length; },
+                knownStructure: knownStructure).ConfigureAwait(false);
+        }
+        if (scope is null)
+            await custody.VerifyAsync(_path, lease, Validate, cancellationToken).ConfigureAwait(false);
+        else if (!await custody.TryVerifyCommittedReadAsync(_path, scope, Validate, cancellationToken).ConfigureAwait(false))
+            return null;
+        if (captured is null || capturedHash is null)
+            throw new InvalidDataException("Current operation custody did not validate its document.");
+        // Re-read and authenticate the actual snapshot AFTER every custody/
+        // lease callback, but do not deserialize and structurally validate
+        // the identical whole ledger twice. This reuse is local to this
+        // single Load under _gate, never a reused mutable document or admission.
+        await using var stream = File.OpenRead(_path);
+        var length = stream.Length;
+        if (length is < 1 or > MaximumDocumentBytes || length != capturedLength)
+            throw new InvalidDataException("Mailbox operation snapshot changed after verification.");
+        var actualHash = await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false);
+        if (stream.Length != length || stream.Position != length)
+            throw new InvalidDataException("Mailbox operation snapshot changed while reading.");
+        custody.RequireDocumentSnapshot(_path, actualHash, length);
+        if (!CryptographicOperations.FixedTimeEquals(actualHash, capturedHash))
+            throw new InvalidDataException("Mailbox operation snapshot changed after verification.");
+        cancellationToken.ThrowIfCancellationRequested();
+        // Only already checked grammar, not a currentness result, replay
+        // decision or native admission. The actual lease owns one bounded
+        // detached snapshot. Every Load still reads/hashes actual bytes,
+        // authenticates independent custody and repeats post-callback reads.
+        _validatedStructures.Remove(lease);
+        _validatedStructures.Add(lease, new(actualHash, length,
+            length <= MaximumGrammarMemoBytes ? CopyGrammarDocument(captured) : null));
+        return captured;
     }
 
     private async Task<MailboxClientLedgerDocument> ReadDocumentAsync(string path, CancellationToken cancellationToken,

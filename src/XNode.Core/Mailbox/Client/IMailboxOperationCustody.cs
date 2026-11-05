@@ -11,6 +11,8 @@ internal interface IMailboxOperationCustody
     ValueTask EnrollAsync(string operationFile, MailboxCurrentOperationLease lease, CancellationToken token);
     ValueTask VerifyAsync(string operationFile, MailboxCurrentOperationLease lease,
         Func<string, CancellationToken, Task> validate, CancellationToken token);
+    ValueTask<bool> TryVerifyCommittedReadAsync(string operationFile, MailboxCurrentCustodyReadScope scope,
+        Func<string, CancellationToken, Task> validate, CancellationToken token);
     ValueTask PrepareAsync(string operationFile, string temporaryFile, MailboxCurrentOperationLease lease,
         CancellationToken token);
     ValueTask CommitAsync(string operationFile, MailboxCurrentOperationLease lease, CancellationToken token);

@@ -61,6 +61,26 @@ qualify the interrupted regression. No assertions were relaxed. Existing
 targeted crash/rollback/revocation/quorum regressions and the required final
 source gate still need qualification on coherent inputs.
 
+## 2026-11-05 committed-read follow-up
+
+Ordinary reads now open a tentative segment before authenticating the operation
+document. Only an authenticated checkpoint with no pending successor and no
+operation temporary can use the committed-only verifier. Its diagnostic closes
+before the repeated physical read/hash/protected-root join. All replay, mutation,
+blob and currentness checks still precede the single final lease check. Pending
+or temporary state closes that segment and uses the unchanged recovery load;
+authentication/corruption failures never select recovery as a fallback.
+
+`artifacts/node-committed-read-20261105-focused01/` passed the Release source-mode
+build with zero warnings/errors and1714 unchanged source inputs. Focused31 passed
+31/0fail/0skip/native0 with2388 unchanged source/binary inputs under Windows
+PowerShell5.1.26100.9711 / SDK10.0.301. The selection retains the initialization
+four-check assertion, now requires one ordinary check, and covers actual
+post-verification callbacks, MeterListener source/same-length changes,
+pending/temporary recovery, eight checkpoint crash cuts and hostile pending
+files. Four rows are new. No deployment, connected latency improvement or full
+qualification is established by this focused receipt.
+
 ## Remaining work
 
 Actual inventory reads, replay joins and operation-document authentication remain

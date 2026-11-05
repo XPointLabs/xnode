@@ -103,17 +103,25 @@ public sealed partial class MailboxClientOperationLedger
         await _gate.WaitAsync(token).ConfigureAwait(false);
         try
         {
-            // Load retains its complete actual root/document authentication,
-            // interrupted-checkpoint closure and post-callback actual reread.
-            // The read segment begins only AFTER that recovery-capable owner.
-            var document = await LoadAsync(token, lease).ConfigureAwait(false);
-            using var scope = new MailboxCurrentCustodyReadScope(lease);
-            validateReplay(document.ClientReplayFloors, token);
-            if (validatePeer is not null)
-                await validatePeer(document.PeerReplayFloors, scope, token).ConfigureAwait(false);
-            // No validator, diagnostic callback or I/O intervenes after this
-            // actual admission check and before returning its exact upper.
-            return await scope.CompleteAsync(token).ConfigureAwait(false);
+            MailboxCurrentCustodyReadScope? scope = new(lease);
+            try
+            {
+                var document = await LoadCurrentAsync(token, lease, scope).ConfigureAwait(false);
+                if (document is null)
+                {
+                    // No tentative read segment spans recovery or cleanup.
+                    scope.Dispose(); scope = null;
+                    document = await LoadAsync(token, lease).ConfigureAwait(false);
+                    scope = new(lease);
+                }
+                validateReplay(document.ClientReplayFloors, token);
+                if (validatePeer is not null)
+                    await validatePeer(document.PeerReplayFloors, scope, token).ConfigureAwait(false);
+                // No validator, diagnostic callback or I/O intervenes after this
+                // actual admission check and before returning its exact upper.
+                return await scope.CompleteAsync(token).ConfigureAwait(false);
+            }
+            finally { scope?.Dispose(); }
         }
         finally { _gate.Release(); }
     }

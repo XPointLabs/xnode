@@ -270,6 +270,7 @@ public sealed partial class CurrentMailboxReplicaReceiverTests
         internal CurrentMailboxReplicaReceiver Receiver = null!;
         internal MailboxClientOperationLedger Operations = null!;
         private FileMailboxOperationCustody? operationCustody;
+        internal FileMailboxOperationCustody OperationCustody => operationCustody!;
         private byte[] activeSigningSeed = [];
         internal byte[] Envelope = [], SenderSeed = [];
         private ulong envelopeExpiry;
