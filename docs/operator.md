@@ -1028,6 +1028,14 @@ must not clear the latch, remove partial records, re-enroll an old scope or
 reset node identity just to obtain readiness. A complete exact write can be
 restored after restart even when the original call returned uncertainty.
 
+Background revocation catch-up alternates the first role each flight. Every
+successor still passes the original source, host, signature and exact protected
+readback checks within the existing 30-second flight and 5-second HTTP budgets.
+A bounded incomplete batch, or a read-only interruption after verified durable
+progress, schedules the next flight after 1–3 seconds. No-progress failures keep
+the existing backoff; a native write with an uncertain result is not progress.
+Incomplete progress never grants mailbox admission or changes readiness.
+
 Floor replacement and each local operation segment share one exclusive owner.
 An already dispatched peer wait releases both role segments so revocation and
 opposite peer ingress can proceed. Rejoin reads actual protected records and

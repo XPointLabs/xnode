@@ -8,16 +8,24 @@ namespace XNode;
 internal sealed partial class CurrentMailboxAdmission
 {
     internal const int MaximumRefreshStepsPerRole = 64;
+    // Scheduling only, serialized by enrollmentGate. Advance before callbacks
+    // so an unavailable first role cannot starve the other role's next flight.
+    private MailboxCapabilityDomain nextRevocationRefreshRole = MailboxCapabilityDomain.Deposit;
 
     // Restore first, then independently current host. Never WithHostAsync to
     // bootstrap expired floors: that path requires fresh MGR admission already.
-    internal async ValueTask RefreshRevocationsAsync(IMailboxGrantRevocationArtifactSource artifacts, CancellationToken token,
+    internal async ValueTask<MailboxRevocationRefreshResult> RefreshRevocationsAsync(IMailboxGrantRevocationArtifactSource artifacts, CancellationToken token,
         MailboxRevocationRefreshDiagnostics? diagnostics = null)
     {
         ArgumentNullException.ThrowIfNull(artifacts); token.ThrowIfCancellationRequested();
         if (!await enrollmentGate.WaitAsync(0, token).ConfigureAwait(false)) throw new IOException("Mailbox floor refresh is busy.");
+        var firstRole = nextRevocationRefreshRole;
+        var secondRole = firstRole == MailboxCapabilityDomain.Deposit ? MailboxCapabilityDomain.Retrieve : MailboxCapabilityDomain.Deposit;
+        nextRevocationRefreshRole = secondRole;
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
         deadline.CancelAfter(TimeSpan.FromSeconds(30)); var ct = deadline.Token;
+        var verifiedSteps = 0;
+        var nativeStepInFlight = false;
         try
         {
             // Both missing/partial roots reject before even a remote control read.
@@ -53,7 +61,7 @@ internal sealed partial class CurrentMailboxAdmission
                 await host.EnsureCurrentAsync(ct).ConfigureAwait(false);
             }
             var moreRetainedSteps = false;
-            foreach (var role in new[] { MailboxCapabilityDomain.Deposit, MailboxCapabilityDomain.Retrieve })
+            foreach (var role in new[] { firstRole, secondRole })
             {
                 if (diagnostics is not null)
                 { diagnostics.Role = role; diagnostics.TargetGeneration = null; diagnostics.Phase = MailboxRevocationRefreshPhase.Restore; }
@@ -65,7 +73,7 @@ internal sealed partial class CurrentMailboxAdmission
                     else diagnostics.RetrieveGeneration = before.Generation;
                 }
                 if (diagnostics is not null) diagnostics.Phase = MailboxRevocationRefreshPhase.TargetRead;
-                var bytes = (await artifacts.FetchAsync(host.NetworkId, policy, role, null, ct).ConfigureAwait(false)).ToArray();
+                var bytes = (await FetchControlAsync(role, null).ConfigureAwait(false)).ToArray();
                 await RequireSourcesAsync().ConfigureAwait(false);
                 if (diagnostics is not null) diagnostics.Phase = MailboxRevocationRefreshPhase.TargetVerify;
                 var latest = MailboxGrantRevocationV1Codec.Decode(bytes);
@@ -80,23 +88,29 @@ internal sealed partial class CurrentMailboxAdmission
                 if (generation == latest.Generation)
                 {
                     if (diagnostics is not null) diagnostics.Phase = MailboxRevocationRefreshPhase.Advance;
+                    nativeStepInFlight = true;
                     await store.CatchUpAsync(host, bytes, ct).ConfigureAwait(false); // exact replay or authenticated fork latch
+                    nativeStepInFlight = false;
                 }
                 for (var step = 0; generation < latest.Generation && step < MaximumRefreshStepsPerRole; step++)
                 {
                     var nextGeneration = checked(generation + 1);
                     if (diagnostics is not null) diagnostics.Phase = MailboxRevocationRefreshPhase.HistoryRead;
                     var next = nextGeneration == latest.Generation ? bytes :
-                        (await artifacts.FetchAsync(host.NetworkId, policy, role, nextGeneration, ct).ConfigureAwait(false)).ToArray();
+                        (await FetchControlAsync(role, nextGeneration).ConfigureAwait(false)).ToArray();
                     await RequireSourcesAsync().ConfigureAwait(false);
                     if (MailboxGrantRevocationV1Codec.Decode(next).Generation != nextGeneration)
                         throw new CryptographicException("Mailbox control step differs from the requested successor.");
                     if (diagnostics is not null) diagnostics.Phase = MailboxRevocationRefreshPhase.Advance;
+                    nativeStepInFlight = true;
                     await store.CatchUpAsync(host, next, ct).ConfigureAwait(false);
+                    nativeStepInFlight = false;
                     await RequireSourcesAsync().ConfigureAwait(false);
                     if (diagnostics is not null) diagnostics.Phase = MailboxRevocationRefreshPhase.ReadBack;
-                    generation = MailboxGrantRevocationV1Codec.Decode((await store.ReadProtectedAsync(ct).ConfigureAwait(false)).Span).Generation;
-                    if (generation != nextGeneration) throw new IOException("Mailbox control native read-back changed.");
+                    var readback = await store.ReadProtectedAsync(ct).ConfigureAwait(false);
+                    generation = MailboxGrantRevocationV1Codec.Decode(readback.Span).Generation;
+                    if (generation != nextGeneration || !Fixed(readback.Span, next)) throw new IOException("Mailbox control native read-back changed.");
+                    verifiedSteps++;
                     if (diagnostics is not null)
                     {
                         if (role == MailboxCapabilityDomain.Deposit) diagnostics.DepositGeneration = generation;
@@ -112,13 +126,40 @@ internal sealed partial class CurrentMailboxAdmission
             }
             await RequireSourcesAsync().ConfigureAwait(false);
             if (diagnostics is not null) diagnostics.Phase = MailboxRevocationRefreshPhase.Completion;
-            if (moreRetainedSteps) throw new IOException("Mailbox control catch-up has more retained steps.");
+            if (moreRetainedSteps) return new(false, verifiedSteps);
             if (diagnostics is not null) diagnostics.Phase = MailboxRevocationRefreshPhase.Admission;
             _ = await WithHostAsync(async (scope, checkToken) =>
             { _ = await scope.Lease.CheckAsync(checkToken).ConfigureAwait(false); return true; }, ct).ConfigureAwait(false);
+            return new(true, verifiedSteps);
+
+            async ValueTask<ReadOnlyMemory<byte>> FetchControlAsync(MailboxCapabilityDomain role, ulong? generation)
+            {
+                try { return await artifacts.FetchAsync(host.NetworkId, policy, role, generation, ct).ConfigureAwait(false); }
+                catch (Exception error) when (verifiedSteps > 0 && !token.IsCancellationRequested &&
+                    error is HttpRequestException or TimeoutException or OperationCanceledException or IOException)
+                {
+                    // Read-only transport interruption after independently
+                    // verified native progress. This carries scheduling facts,
+                    // never current revocation/admission authority.
+                    throw new MailboxRevocationRefreshProgressException(verifiedSteps, error);
+                }
+            }
         }
+        catch (OperationCanceledException error) when (!token.IsCancellationRequested && deadline.IsCancellationRequested &&
+            verifiedSteps > 0 && !nativeStepInFlight)
+        { throw new MailboxRevocationRefreshProgressException(verifiedSteps, error); }
         finally { enrollmentGate.Release(); }
     }
+}
+
+internal readonly record struct MailboxRevocationRefreshResult(bool CaughtUp, int VerifiedSteps);
+
+// Only actual expected-next protected readbacks contribute to this count.
+// It changes retry scheduling; it cannot activate a stale or partial floor.
+internal sealed class MailboxRevocationRefreshProgressException(int verifiedSteps, Exception inner)
+    : IOException("Mailbox control catch-up retains verified sequential progress.", inner)
+{
+    internal int VerifiedSteps { get; } = verifiedSteps > 0 ? verifiedSteps : throw new ArgumentOutOfRangeException(nameof(verifiedSteps));
 }
 
 internal enum MailboxRevocationRefreshPhase { Starting, Restore, Authority, Host, Sources, TargetRead, TargetVerify, HistoryRead, Advance, ReadBack, Completion, Admission }
@@ -165,19 +206,36 @@ internal sealed class CurrentMailboxRevocationRefreshWorker(CurrentMailboxAdmiss
         while (!stoppingToken.IsCancellationRequested)
         {
             var diagnostics = new MailboxRevocationRefreshDiagnostics();
-            try { await admission.RefreshRevocationsAsync(artifacts, stoppingToken, diagnostics).ConfigureAwait(false); failures = 0; }
+            var continueProgress = false;
+            try
+            {
+                var result = await admission.RefreshRevocationsAsync(artifacts, stoppingToken, diagnostics).ConfigureAwait(false);
+                failures = 0;
+                continueProgress = !result.CaughtUp && result.VerifiedSteps > 0;
+            }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
+            catch (MailboxRevocationRefreshProgressException progress)
+            {
+                failures = 0; continueProgress = true;
+                ReportFailure(progress.InnerException!);
+                logger.LogInformation("Mailbox control refresh retained {Steps} verified sequential steps; continuing bounded recovery.", progress.VerifiedSteps);
+            }
             catch (Exception error) when (error is HttpRequestException or IOException or InvalidDataException or CryptographicException or UnauthorizedAccessException or
                 InvalidOperationException or ArgumentException or FormatException or OverflowException or OnionBoundaryException or
                 OperationCanceledException or TimeoutException)
             {
                 failures = Math.Min(failures + 1, 4);
-                logger.LogWarning("Mailbox control refresh unavailable ({Category}; phase={Phase}; reason={Reason}; role={Role}; deposit={Deposit}; retrieve={Retrieve}; target={Target}).",
-                    error.GetType().Name, diagnostics.PhaseLabel, MailboxRevocationRefreshDiagnostics.FailureReason(error), diagnostics.RoleLabel,
-                    diagnostics.DepositGeneration, diagnostics.RetrieveGeneration, diagnostics.TargetGeneration);
+                ReportFailure(error);
             }
-            var seconds = failures == 0 ? 15 : Math.Min(60, 5 * (1 << failures));
+            var seconds = RetryDelaySeconds(continueProgress, failures);
             await Task.Delay(TimeSpan.FromSeconds(seconds + Random.Shared.Next(0, 3)), stoppingToken).ConfigureAwait(false);
+
+            void ReportFailure(Exception error) => logger.LogWarning(
+                "Mailbox control refresh unavailable ({Category}; phase={Phase}; reason={Reason}; role={Role}; deposit={Deposit}; retrieve={Retrieve}; target={Target}).",
+                error.GetType().Name, diagnostics.PhaseLabel, MailboxRevocationRefreshDiagnostics.FailureReason(error), diagnostics.RoleLabel,
+                diagnostics.DepositGeneration, diagnostics.RetrieveGeneration, diagnostics.TargetGeneration);
         }
     }
+    internal static int RetryDelaySeconds(bool verifiedProgress, int failures) =>
+        verifiedProgress ? 1 : failures == 0 ? 15 : Math.Min(60, 5 * (1 << Math.Clamp(failures, 1, 4)));
 }

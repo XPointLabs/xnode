@@ -42,7 +42,8 @@ public sealed class CurrentMailboxRevocationRefreshTests
         using var handler = new Records(snapshots); using var client = new HttpClient(handler);
         var artifacts = new HttpsMailboxGrantRevocationArtifactSource(client, "https://registry.example/");
         var diagnostics = new MailboxRevocationRefreshDiagnostics();
-        await Assert.ThrowsAsync<IOException>(() => admission.RefreshRevocationsAsync(artifacts, default, diagnostics).AsTask());
+        var partial = await admission.RefreshRevocationsAsync(artifacts, default, diagnostics);
+        Assert.False(partial.CaughtUp); Assert.Equal(65, partial.VerifiedSteps);
         Assert.Equal(65UL, diagnostics.DepositGeneration); Assert.Equal(2UL, diagnostics.RetrieveGeneration);
         Assert.Equal("completion", diagnostics.PhaseLabel);
         Assert.Equal(65UL, MailboxGrantRevocationV1Codec.Decode((await f.Deposit.ReadProtectedAsync()).Span).Generation);
@@ -95,6 +96,65 @@ public sealed class CurrentMailboxRevocationRefreshTests
             Assert.Equal(2, f.Signed.ProofReads);
         }
     }
+
+    [Fact]
+    public async Task VerifiedProgressResumesPromptlyAndUnavailableFirstRoleCannotStarveOtherRole()
+    {
+        await using var f = await CurrentMailboxAdmissionTests.Fixture.CreateAsync(MailboxAuthenticatedOperation.Retrieve);
+        var prior = (await f.Deposit.ReadProtectedAsync()).ToArray();
+        var snapshots = new Dictionary<(MailboxCapabilityDomain, ulong), byte[]>();
+        for (ulong generation = 2; generation <= 4; generation++)
+        {
+            var next = Snapshot(f.Signed, generation: generation, prior: prior, expires: generation == 4 ? 1_140UL : 1_120UL);
+            snapshots[(MailboxCapabilityDomain.Deposit, generation)] = next; prior = next;
+        }
+        snapshots[(MailboxCapabilityDomain.Retrieve, 2)] = Snapshot(f.Signed, MailboxCapabilityDomain.Retrieve, 2,
+            (await f.Retrieve.ReadProtectedAsync()).ToArray(), expires: 1_140);
+        f.Signed.Sample = 115;
+        using var handler = new Records(snapshots)
+        { FailureFor = (role, generation) => role == MailboxCapabilityDomain.Deposit && generation == 3 ? new HttpRequestException() : null };
+        using var client = new HttpClient(handler);
+        var artifacts = new HttpsMailboxGrantRevocationArtifactSource(client, "https://registry.example/");
+        var interrupted = await Assert.ThrowsAsync<MailboxRevocationRefreshProgressException>(() => f.Admission.RefreshRevocationsAsync(artifacts, default).AsTask());
+        Assert.Equal(1, interrupted.VerifiedSteps); Assert.IsType<HttpRequestException>(interrupted.InnerException);
+        Assert.Equal(2UL, MailboxGrantRevocationV1Codec.Decode((await f.Deposit.ReadProtectedAsync()).Span).Generation);
+        var callbacks = 0;
+        await Assert.ThrowsAsync<CryptographicException>(() => f.Admission.WithHostAsync((_, _) =>
+        { callbacks++; return ValueTask.FromResult(true); }).AsTask());
+        Assert.Equal(0, callbacks); // Historical progress never authorizes admission.
+        handler.FailureFor = (role, _) => role == MailboxCapabilityDomain.Deposit ? new HttpRequestException() : null;
+        var otherRole = await Assert.ThrowsAsync<MailboxRevocationRefreshProgressException>(() => f.Admission.RefreshRevocationsAsync(artifacts, default).AsTask());
+        Assert.Equal(1, otherRole.VerifiedSteps);
+        Assert.Equal(2UL, MailboxGrantRevocationV1Codec.Decode((await f.Retrieve.ReadProtectedAsync()).Span).Generation);
+        handler.FailureFor = null;
+        var completed = await f.Admission.RefreshRevocationsAsync(artifacts, default);
+        Assert.True(completed.CaughtUp); Assert.Equal(2, completed.VerifiedSteps);
+        await f.Admission.WithHostAsync(async (scope, token) => { _ = await scope.Lease.CheckAsync(token); return true; });
+    }
+
+    [Fact]
+    public async Task UnavailableInitialRoleStillAlternatesAndDoesNotInventProgress()
+    {
+        await using var f = await CurrentMailboxAdmissionTests.Fixture.CreateAsync(MailboxAuthenticatedOperation.Retrieve);
+        var snapshots = new Dictionary<(MailboxCapabilityDomain, ulong), byte[]>();
+        snapshots[(MailboxCapabilityDomain.Retrieve, 2)] = Snapshot(f.Signed, MailboxCapabilityDomain.Retrieve, 2,
+            (await f.Retrieve.ReadProtectedAsync()).ToArray());
+        using var handler = new Records(snapshots)
+        { FailureFor = (role, _) => role == MailboxCapabilityDomain.Deposit ? new HttpRequestException() : null };
+        using var client = new HttpClient(handler);
+        var artifacts = new HttpsMailboxGrantRevocationArtifactSource(client, "https://registry.example/");
+        await Assert.ThrowsAsync<HttpRequestException>(() => f.Admission.RefreshRevocationsAsync(artifacts, default).AsTask());
+        var resumed = await Assert.ThrowsAsync<MailboxRevocationRefreshProgressException>(() => f.Admission.RefreshRevocationsAsync(artifacts, default).AsTask());
+        Assert.Equal(1, resumed.VerifiedSteps);
+        Assert.Equal(2UL, MailboxGrantRevocationV1Codec.Decode((await f.Retrieve.ReadProtectedAsync()).Span).Generation);
+    }
+
+    [Theory]
+    [InlineData(true, 0, 1)] [InlineData(true, 4, 1)]
+    [InlineData(false, 0, 15)] [InlineData(false, 1, 10)]
+    [InlineData(false, 2, 20)] [InlineData(false, 3, 40)] [InlineData(false, 4, 60)]
+    public void OnlyVerifiedProgressUsesPromptScheduling(bool progress, int failures, int expected)
+        => Assert.Equal(expected, CurrentMailboxRevocationRefreshWorker.RetryDelaySeconds(progress, failures));
 
     [Theory]
     [InlineData("signature")]
@@ -346,6 +406,7 @@ public sealed class CurrentMailboxRevocationRefreshTests
         internal TimeSpan RetryAfter = TimeSpan.Zero;
         internal Action? AfterTransient;
         internal Action? AfterRead;
+        internal Func<MailboxCapabilityDomain, ulong?, Exception?>? FailureFor;
         internal List<string> Paths { get; } = [];
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
@@ -365,6 +426,8 @@ public sealed class CurrentMailboxRevocationRefreshTests
             }
             var parts = request.RequestUri!.AbsolutePath.Split('/');
             var role = (MailboxCapabilityDomain)byte.Parse(parts[^2], System.Globalization.CultureInfo.InvariantCulture);
+            var requested = parts[^1] == "latest" ? (ulong?)null : ulong.Parse(parts[^1], System.Globalization.CultureInfo.InvariantCulture);
+            if (FailureFor?.Invoke(role, requested) is { } failure) throw failure;
             var generation = parts[^1] == "latest" ? records.Keys.Where(key => key.Role == role).Max(key => key.Generation) :
                 ulong.Parse(parts[^1], System.Globalization.CultureInfo.InvariantCulture);
             var exact = records[(role, generation)];
